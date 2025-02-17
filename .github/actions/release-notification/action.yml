@@ -1,0 +1,63 @@
+name: 'Slack Release Notification'
+description: 'Sends a notification to Slack when a new release is published'
+inputs:
+  version:
+    description: 'Release version'
+    required: true
+  changes:
+    description: 'Release changes'
+    required: true
+  is_draft:
+    description: 'Is this a draft release?'
+    required: false
+    default: 'false'
+  is_prerelease:
+    description: 'Is this a pre-release?'
+    required: false
+    default: 'false'
+  target_repo:
+    description: 'Target repository'
+    required: true
+  product:
+    description: 'Product name (vCluster or vCluster Platform)'
+    required: true
+  webhook_url:
+    description: 'Slack Webhook URL'
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Post release notification
+      uses: slackapi/slack-github-action@v2.0.0
+      with:
+        webhook-type: incoming-webhook
+        webhook: ${{ inputs.webhook_url }}
+        payload: |
+          text: "New ${{ inputs.product }} Release: ${{ inputs.version }}"
+          blocks:
+            - type: header
+              text:
+                type: plain_text
+                text: "New ${{ inputs.product }} Release"
+                emoji: false
+            - type: section
+              fields:
+                - type: mrkdwn
+                  text: "*Version:*\n${{ inputs.version }}"
+                - type: mrkdwn
+                  text: "*Status:*\n${{ inputs.is_draft && 'Draft' || inputs.is_prerelease && 'Pre-release' || 'Release' }}"
+            - type: section
+              fields:
+                - type: mrkdwn
+                  text: "*Repository:*\n${{ inputs.target_repo }}"
+                - type: mrkdwn
+                  text: "*Released by:*\n${{ github.actor }}"
+            - type: section
+              text:
+                type: mrkdwk
+                text: "*Changes:*\n${{ inputs.changes }}"
+            - type: context
+              elements:
+                - type: mrkdwk
+                  text: "<https://github.com/${{ inputs.target_repo }}/releases/tag/${{ inputs.version }}|View Release>"
