@@ -1,6 +1,5 @@
 name: 'Slack Release Notification'
 description: 'Sends a notification to Slack when a new release is published'
-
 inputs:
   version:
     description: 'Release version'
@@ -20,7 +19,7 @@ inputs:
     description: 'Target repository'
     required: true
   product:
-    description: 'Product name'
+    description: 'Product name (vCluster or vCluster Platform)'
     required: true
   webhook_url:
     description: 'Slack Webhook URL'
@@ -30,12 +29,11 @@ runs:
   using: "composite"
   steps:
     - name: Post release notification
-      shell: bash
       uses: slackapi/slack-github-action@v2.0.0
       with:
+        errors: true
         webhook-type: incoming-webhook
         webhook: ${{ inputs.webhook_url }}
-        errors: true
         payload: |
           text: "New ${{ inputs.product }} Release: ${{ inputs.version }}"
           blocks:
