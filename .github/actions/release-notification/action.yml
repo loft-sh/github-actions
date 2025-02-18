@@ -57,7 +57,7 @@ runs:
             - type: section
               text:
                 type: mrkdwn
-                text: "*Changes:*\n${{ inputs.changes }}"
+                text: "*Changes:*\n<https://github.com/${{ inputs.target_repo }}/compare/${{ inputs.previous_tag }}...${{ inputs.version }}|View Full Changelog>"
             - type: context
               elements:
                 - type: mrkdwn
