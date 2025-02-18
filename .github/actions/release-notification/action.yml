@@ -46,8 +46,6 @@ runs:
               fields:
                 - type: mrkdwn
                   text: "*Version:*\n${{ inputs.version }}"
-                - type: mrkdwn
-                  text: "*Status:*\n${{ inputs.is_draft && 'Draft' || inputs.is_prerelease && 'Pre-release' || 'Release' }}"
             - type: section
               fields:
                 - type: mrkdwn
