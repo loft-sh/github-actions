@@ -21,6 +21,9 @@ inputs:
   product:
     description: 'Product name (vCluster or vCluster Platform)'
     required: true
+  base_branch:
+    description: 'Source branch from which the release was cut'
+    required: false
   webhook_url:
     description: 'Slack Webhook URL'
     required: true
@@ -52,6 +55,10 @@ runs:
                   text: "*Repository:*\n${{ inputs.target_repo }}"
                 - type: mrkdwn
                   text: "*Released by:*\n${{ github.actor }}"
+            - type: section
+              fields:
+                - type: mrkdwn
+                  text: "*Source Branch:*\n${{ inputs.base_branch || 'main' }}"
             - type: section
               text:
                 type: mrkdwn
