@@ -1,0 +1,61 @@
+name: 'Slack Nightly E2E Test Notification'
+description: 'Sends a notification to Slack with E2E nightly test results'
+inputs:
+  test_results:
+    description: 'Test results summary'
+    required: true
+  run_id:
+    description: 'GitHub Actions run ID'
+    required: true
+  run_number:
+    description: 'GitHub Actions run number'
+    required: true
+  status:
+    description: 'Test status (success, failure)'
+    required: true
+  source_repo:
+    description: 'Source repository'
+    required: true
+  failed_tests:
+    description: 'List of failed test suites, if any'
+    required: true
+    default: ''
+  webhook_url:
+    description: 'Slack Webhook URL'
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Post E2E test results notification
+      uses: slackapi/slack-github-action@v2.0.0
+      with:
+        errors: true
+        webhook-type: incoming-webhook
+        webhook: ${{ inputs.webhook_url }}
+        payload: |
+          text: "Nightly E2E Tests: ${{ inputs.status == 'success' && '✅ Success' || '❌ Failure' }}"
+          blocks:
+            - type: header
+              text:
+                type: plain_text
+                text: "Nightly E2E Tests: ${{ inputs.status == 'success' && '✅ Success' || '❌ Failure' }}"
+                emoji: false
+            - type: section
+              fields:
+                - type: mrkdwn
+                  text: "*Repository:*\n${{ inputs.source_repo }}"
+                - type: mrkdwn
+                  text: "*Run:*\n#${{ inputs.run_number }}"
+            - type: section
+              text:
+                type: mrkdwn
+                text: "*Test Results:*\n${{ inputs.test_results }}"
+            - type: section
+              text:
+                type: mrkdwn
+                text: "*Failed tests:*\n${{ inputs.failed_tests }}"
+            - type: context
+              elements:
+                - type: mrkdwn
+                  text: "<https://github.com/${{ inputs.source_repo }}/actions/runs/${{ inputs.run_id }}|View Run Details>"
