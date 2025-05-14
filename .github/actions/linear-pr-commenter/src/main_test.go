@@ -8,6 +8,14 @@ import (
 )
 
 func TestExtractIssueIDs(t *testing.T) {
+	// Mock Linear teams
+	mockTeams := []linearTeam{
+		{ID: "team1", Name: "Engineering", Key: "ENG"},
+		{ID: "team2", Name: "Operations", Key: "OPS"},
+		{ID: "team3", Name: "Documentation", Key: "DOC"},
+		{ID: "team4", Name: "Quality Assurance", Key: "QA"},
+	}
+
 	tests := []struct {
 		name     string
 		pr       *github.PullRequest
@@ -28,20 +36,20 @@ func TestExtractIssueIDs(t *testing.T) {
 			pr: &github.PullRequest{
 				Body: github.String("This PR adds new features"),
 				Head: &github.PullRequestBranch{
-					Ref: github.String("feature/ABC-5678-new-feature"),
+					Ref: github.String("feature/OPS-5678-new-feature"),
 				},
 			},
-			expected: []string{"ABC-5678"},
+			expected: []string{"OPS-5678"},
 		},
 		{
 			name: "Extract multiple issue IDs",
 			pr: &github.PullRequest{
-				Body: github.String("This PR fixes ENG-1234 and DEV-5678"),
+				Body: github.String("This PR fixes ENG-1234 and DOC-5678"),
 				Head: &github.PullRequestBranch{
 					Ref: github.String("feature/fix-multiple"),
 				},
 			},
-			expected: []string{"ENG-1234", "DEV-5678"},
+			expected: []string{"ENG-1234", "DOC-5678"},
 		},
 		{
 			name: "No issue IDs",
@@ -51,7 +59,7 @@ func TestExtractIssueIDs(t *testing.T) {
 					Ref: github.String("feature/new-feature"),
 				},
 			},
-			expected: nil, // Changed from [] to nil
+			expected: nil,
 		},
 		{
 			name: "Exclude CVE IDs",
@@ -61,7 +69,7 @@ func TestExtractIssueIDs(t *testing.T) {
 					Ref: github.String("feature/security-fix"),
 				},
 			},
-			expected: nil, // Changed from [] to nil
+			expected: nil,
 		},
 		{
 			name: "Deduplicate issue IDs",
@@ -73,11 +81,51 @@ func TestExtractIssueIDs(t *testing.T) {
 			},
 			expected: []string{"ENG-1234"},
 		},
+		{
+			name: "Case insensitive matching",
+			pr: &github.PullRequest{
+				Body: github.String("This PR fixes eng-1234"),
+				Head: &github.PullRequestBranch{
+					Ref: github.String("feature/new-feature"),
+				},
+			},
+			expected: []string{"ENG-1234"},
+		},
+		{
+			name: "Short team keys (2 letters)",
+			pr: &github.PullRequest{
+				Body: github.String("This PR fixes QA-42"),
+				Head: &github.PullRequestBranch{
+					Ref: github.String("feature/qa-fix"),
+				},
+			},
+			expected: []string{"QA-42"},
+		},
+		{
+			name: "References format",
+			pr: &github.PullRequest{
+				Body: github.String("References OPS-160"),
+				Head: &github.PullRequestBranch{
+					Ref: github.String("feature/some-fix"),
+				},
+			},
+			expected: []string{"OPS-160"},
+		},
+		{
+			name: "Ignore unknown team keys",
+			pr: &github.PullRequest{
+				Body: github.String("This PR fixes ABC-1234"),
+				Head: &github.PullRequestBranch{
+					Ref: github.String("feature/new-feature"),
+				},
+			},
+			expected: nil,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := extractIssueIDs(tt.pr)
+			result := extractIssueIDs(tt.pr, mockTeams)
 			if (tt.expected == nil && len(result) != 0) || 
 			   (tt.expected != nil && !reflect.DeepEqual(result, tt.expected)) {
 				t.Errorf("extractIssueIDs() = %v, want %v", result, tt.expected)
@@ -104,7 +152,7 @@ func TestHasLinearComment(t *testing.T) {
 		{
 			name: "Comment doesn't exist",
 			comments: []*github.IssueComment{
-				{Body: github.String("Linear issue: [DEV-5678](https://linear.app/team/issue/DEV-5678)")},
+				{Body: github.String("Linear issue: [DOC-5678](https://linear.app/team/issue/DOC-5678)")},
 			},
 			issueID:  "ENG-1234",
 			expected: false,

@@ -4,7 +4,9 @@ A GitHub Action that automatically comments on PRs with Linear issue details whe
 
 ## Features
 
-- Detects Linear issue IDs in PR descriptions and branch names (format: `XXX-1234`)
+- Fetches all team IDs directly from Linear for accurate issue detection
+- Detects Linear issue IDs in PR descriptions and branch names (e.g., `ENG-1234`, `OPS-160`)
+- Works with any team key format (2+ letters) and issue number format
 - Fetches Linear issue details (title, URL, status)
 - Adds a comment to the PR with issue information
 - Checks for existing comments to avoid duplicates
@@ -13,6 +15,7 @@ A GitHub Action that automatically comments on PRs with Linear issue details whe
 ## Behavior
 
 - When a PR is created or edited, the action scans for Linear issue IDs
+- First, it fetches all team keys from Linear to ensure it only detects valid issue IDs
 - If an issue ID is found and no comment exists for it yet, a new comment is added
 - If a comment for an issue ID already exists, no duplicate comment is created
 - Comments are never removed, even if the issue ID is removed from the PR
@@ -34,7 +37,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Comment on PR with Linear issue details
-        uses: loft-sh/github-actions/.github/actions/linear-pr-commenter@v1
+        uses: loft-sh/github-actions/.github/actions/linear-pr-commenter@linear-pr-commenter/v1
         with:
           pr-number: ${{ github.event.pull_request.number }}
           repo-owner: ${{ github.repository_owner }}
@@ -64,10 +67,10 @@ jobs:
 
 ## Example
 
-When the action detects a Linear issue ID in a PR (e.g., `ENG-1234`), it will add a comment like:
+When the action detects a Linear issue ID in a PR (e.g., `OPS-160`), it will add a comment like:
 
 ```
-Linear issue: [ENG-1234](https://linear.app/team/issue/ENG-1234) - Implement new feature (In Progress)
+Linear issue: [OPS-160](https://linear.app/team/issue/OPS-160) - Implement documentation structure (In Progress)
 ```
 
 ## Development
