@@ -142,9 +142,9 @@ func TestHasLinearComment(t *testing.T) {
 		expected bool
 	}{
 		{
-			name: "Comment exists",
+			name: "Comment exists - new format",
 			comments: []*github.IssueComment{
-				{Body: github.String("Linear issue: [ENG-1234](https://linear.app/team/issue/ENG-1234)")},
+				{Body: github.String("[ENG-1234: Implement new feature](https://linear.app/team/issue/ENG-1234) (In Progress)")},
 			},
 			issueID:  "ENG-1234",
 			expected: true,
@@ -152,7 +152,7 @@ func TestHasLinearComment(t *testing.T) {
 		{
 			name: "Comment doesn't exist",
 			comments: []*github.IssueComment{
-				{Body: github.String("Linear issue: [DOC-5678](https://linear.app/team/issue/DOC-5678)")},
+				{Body: github.String("[DOC-5678: Document new API](https://linear.app/team/issue/DOC-5678) (In Progress)")},
 			},
 			issueID:  "ENG-1234",
 			expected: false,
@@ -162,6 +162,14 @@ func TestHasLinearComment(t *testing.T) {
 			comments: []*github.IssueComment{},
 			issueID:  "ENG-1234",
 			expected: false,
+		},
+		{
+			name: "Old format comment - should still detect",
+			comments: []*github.IssueComment{
+				{Body: github.String("Linear issue: [ENG-1234](https://linear.app/team/issue/ENG-1234) - Implement new feature (In Progress)")},
+			},
+			issueID:  "ENG-1234",
+			expected: true,
 		},
 	}
 

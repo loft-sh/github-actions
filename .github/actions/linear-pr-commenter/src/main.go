@@ -137,9 +137,9 @@ func main() {
 			continue
 		}
 
-		// Create comment with issue details
-		comment := fmt.Sprintf("Linear issue: [%s](%s) - %s (%s)", 
-			issueID, issue.URL, issue.Title, issue.State.Name)
+		// Create comment with issue details - entire title and ID as one link
+		comment := fmt.Sprintf("[%s: %s](%s) (%s)", 
+			issueID, issue.Title, issue.URL, issue.State.Name)
 		_, _, err = client.Issues.CreateComment(ctx, *repoOwner, *repoName, *prNumber, &github.IssueComment{
 			Body: &comment,
 		})
@@ -265,8 +265,18 @@ func extractIssueIDs(pr *github.PullRequest, teams []linearTeam) []string {
 // hasLinearComment checks if a comment about an issue already exists
 func hasLinearComment(comments []*github.IssueComment, issueID string) bool {
 	for _, comment := range comments {
-		if comment.Body != nil && strings.Contains(*comment.Body, fmt.Sprintf("Linear issue: [%s]", issueID)) {
-			return true
+		if comment.Body != nil {
+			commentBody := *comment.Body
+			
+			// Check for new format: [ENG-1234: Title](URL)
+			if strings.Contains(commentBody, fmt.Sprintf("[%s:", issueID)) {
+				return true
+			}
+			
+			// Check for old format: Linear issue: [ENG-1234](URL)
+			if strings.Contains(commentBody, fmt.Sprintf("Linear issue: [%s]", issueID)) {
+				return true
+			}
 		}
 	}
 	return false

@@ -20,6 +20,7 @@ A GitHub Action that automatically comments on PRs with Linear issue details whe
 - If a comment for an issue ID already exists, no duplicate comment is created
 - Comments are never removed, even if the issue ID is removed from the PR
 - Each issue ID gets its own separate comment
+- The comment shows the issue ID and title as a clickable link to the Linear issue
 
 ## Usage
 
@@ -70,8 +71,10 @@ jobs:
 When the action detects a Linear issue ID in a PR (e.g., `OPS-160`), it will add a comment like:
 
 ```
-Linear issue: [OPS-160](https://linear.app/team/issue/OPS-160) - Implement documentation structure (In Progress)
+[OPS-160: Implement documentation structure](https://linear.app/team/issue/OPS-160) (In Progress)
 ```
+
+The entire issue ID and title is a clickable link that takes you directly to the Linear issue.
 
 ## Development
 
