@@ -65,7 +65,3 @@ Run the included unit tests:
 ```bash
 ./test.sh
 ```
-
-## License
-
-MIT
