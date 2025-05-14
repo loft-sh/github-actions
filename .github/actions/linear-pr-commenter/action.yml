@@ -1,0 +1,47 @@
+name: 'Linear PR Commenter'
+description: 'A GitHub Action that comments on PRs with Linear issue details when Linear issue IDs are detected in PR descriptions or branch names'
+
+inputs:
+  pr-number:
+    description: 'The pull request number'
+    required: true
+  repo-owner:
+    description: 'The owner of the repository'
+    required: true
+  repo-name:
+    description: 'The name of the repository'
+    required: true
+  github-token:
+    description: 'GitHub token with permissions to comment on PRs'
+    required: true
+  linear-token:
+    description: 'Linear API token for retrieving issue details'
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+      
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.19'
+      
+    - name: Build and run Linear PR Commenter
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        LINEAR_TOKEN: ${{ inputs.linear-token }}
+      run: |
+        cd ${{ github.action_path }}/src
+        go build -o linear-pr-commenter .
+        ./linear-pr-commenter \
+          -pr-number=${{ inputs.pr-number }} \
+          -repo-owner=${{ inputs.repo-owner }} \
+          -repo-name=${{ inputs.repo-name }}
+
+branding:
+  icon: 'link'
+  color: 'blue'

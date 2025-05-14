@@ -1,0 +1,91 @@
+# Linear PR Commenter
+
+A GitHub Action that automatically comments on PRs with Linear issue details when Linear issue IDs are detected in PR descriptions or branch names.
+
+## Features
+
+- Detects Linear issue IDs in PR descriptions and branch names (format: `XXX-1234`)
+- Fetches Linear issue details (title, URL, status)
+- Adds a comment to the PR with issue information
+- Checks for existing comments to avoid duplicates
+- Skips CVE IDs
+
+## Behavior
+
+- When a PR is created or edited, the action scans for Linear issue IDs
+- If an issue ID is found and no comment exists for it yet, a new comment is added
+- If a comment for an issue ID already exists, no duplicate comment is created
+- Comments are never removed, even if the issue ID is removed from the PR
+- Each issue ID gets its own separate comment
+
+## Usage
+
+Create a workflow file in your repository:
+
+```yaml
+name: Linear PR Comment
+
+on:
+  pull_request:
+    types: [opened, edited]
+
+jobs:
+  linear-comment:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Comment on PR with Linear issue details
+        uses: loft-sh/github-actions/.github/actions/linear-pr-commenter@v1
+        with:
+          pr-number: ${{ github.event.pull_request.number }}
+          repo-owner: ${{ github.repository_owner }}
+          repo-name: ${{ github.event.repository.name }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          linear-token: ${{ secrets.LINEAR_TOKEN }}
+```
+
+## Configuration
+
+### Required Inputs
+
+| Input         | Description                                     |
+|---------------|-------------------------------------------------|
+| pr-number     | The pull request number                         |
+| repo-owner    | The owner of the repository                     |
+| repo-name     | The name of the repository                      |
+| github-token  | GitHub token with permissions to comment on PRs |
+| linear-token  | Linear API token for retrieving issue details   |
+
+### Setting up Linear API Token
+
+1. In Linear, go to your account settings
+2. Navigate to "API" section
+3. Create a new API key
+4. Add this key as a secret in your GitHub repository settings named `LINEAR_TOKEN`
+
+## Example
+
+When the action detects a Linear issue ID in a PR (e.g., `ENG-1234`), it will add a comment like:
+
+```
+Linear issue: [ENG-1234](https://linear.app/team/issue/ENG-1234) - Implement new feature (In Progress)
+```
+
+## Development
+
+### Testing
+
+Run the included tests:
+
+```bash
+./test.sh
+```
+
+The tests are fully mocked and don't require any GitHub or Linear API credentials.
+
+### Contributors
+
+- Loft Engineering Team
+
+## License
+
+MIT
