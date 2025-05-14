@@ -7,8 +7,8 @@ A GitHub Action that automatically comments on PRs with Linear issue details whe
 - Fetches all team IDs directly from Linear for accurate issue detection
 - Detects Linear issue IDs in PR descriptions and branch names (e.g., `ENG-1234`, `OPS-160`)
 - Works with any team key format (2+ letters) and issue number format
-- Fetches Linear issue details (title, URL, status)
-- Adds a comment to the PR with issue information
+- Fetches Linear issue details (title, URL)
+- Adds a comment to the PR with issue information as a clickable link
 - Checks for existing comments to avoid duplicates
 - Skips CVE IDs
 
@@ -71,7 +71,7 @@ jobs:
 When the action detects a Linear issue ID in a PR (e.g., `OPS-160`), it will add a comment like:
 
 ```
-[OPS-160: Implement documentation structure](https://linear.app/team/issue/OPS-160) (In Progress)
+[OPS-160: Implement documentation structure](https://linear.app/team/issue/OPS-160)
 ```
 
 The entire issue ID and title is a clickable link that takes you directly to the Linear issue.

@@ -137,9 +137,9 @@ func main() {
 			continue
 		}
 
-		// Create comment with issue details - entire title and ID as one link
-		comment := fmt.Sprintf("[%s: %s](%s) (%s)", 
-			issueID, issue.Title, issue.URL, issue.State.Name)
+		// Create comment with issue details - entire title and ID as one link, without the status
+		comment := fmt.Sprintf("[%s: %s](%s)", 
+			issueID, issue.Title, issue.URL)
 		_, _, err = client.Issues.CreateComment(ctx, *repoOwner, *repoName, *prNumber, &github.IssueComment{
 			Body: &comment,
 		})
