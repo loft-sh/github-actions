@@ -4,9 +4,14 @@ inputs:
   version:
     description: 'Release version'
     required: true
+  previous_tag:
+    description: 'Previous release tag for changelog comparison'
+    required: false
+    default: ''
   changes:
     description: 'Release changes'
-    required: true
+    required: false
+    default: 'See changelog link below'
   is_draft:
     description: 'Is this a draft release?'
     required: false
