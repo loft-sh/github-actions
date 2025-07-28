@@ -163,3 +163,54 @@ This action uses:
 
 - `@actions/core` for GitHub Actions integration
 - `semver` for robust semver validation and parsing
+
+## Development
+
+### Building the Action
+
+This action uses `@vercel/ncc` to bundle all dependencies into a single file for GitHub Actions:
+
+```bash
+npm install
+npm run build
+```
+
+The bundled output is generated in `dist/index.js` and must be committed to the repository.
+
+### Making Changes
+
+1. Edit the source code in `index.js`
+2. Run `npm run build` to create the bundled version
+3. Commit both the source and bundled files
+4. Create/update the action tag
+
+### Testing Locally
+
+You can test the action locally using environment variables:
+
+```bash
+# Test with valid semver
+INPUT_VERSION="1.2.3" node dist/index.js
+
+# Test with invalid semver
+INPUT_VERSION="invalid" node dist/index.js
+```
+
+### Running Tests
+
+The action includes comprehensive tests using Jest:
+
+```bash
+# Run all tests
+npm test
+
+# Run tests with coverage
+npm test -- --coverage
+```
+
+Tests cover:
+
+- Valid semver versions (basic, with prefixes, prerelease, build metadata)
+- Invalid semver versions (incomplete, non-numeric, malformed)
+- Edge cases (large numbers, the original failing case)
+- Error handling
