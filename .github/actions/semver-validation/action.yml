@@ -1,0 +1,23 @@
+name: "Semantic Version Validation"
+description: "Validates if a given version string follows semantic versioning (semver) format"
+author: "Loft Labs"
+branding:
+  icon: "check-circle"
+  color: "green"
+
+inputs:
+  version:
+    description: "Version string to validate against semver format"
+    required: true
+
+outputs:
+  is_valid:
+    description: "Whether the version is a valid semver (true/false)"
+  parsed_version:
+    description: "Parsed version object with major, minor, patch, prerelease, and build metadata"
+  error_message:
+    description: "Error message if validation fails"
+
+runs:
+  using: "node20"
+  main: "index.js"
