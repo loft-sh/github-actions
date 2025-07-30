@@ -1,0 +1,37 @@
+name: Detect Changes
+
+description: >
+  Reusable workflow to detect if specified files or directories have changed in a PR or push.
+
+on:
+  workflow_call:
+    inputs:
+      paths:
+        required: true
+        type: string
+        description: "Glob pattern(s) to check for changes (comma-separated or YAML list)"
+    outputs:
+      has_changed:
+        description: "Whether the specified directories/files have changed"
+        value: ${{ jobs.changes.outputs.has_changed }}
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+      contents: read
+    outputs:
+      has_changed: ${{ steps.filter.outputs.has_changed }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Filter paths
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          base: ${{ github.event_name == 'push' && github.event.before || '' }}
+          filters: |
+            has_changed:
+            ${{ inputs.paths }}
