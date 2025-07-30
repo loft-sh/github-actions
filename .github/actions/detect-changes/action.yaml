@@ -22,16 +22,20 @@ jobs:
       pull-requests: read
       contents: read
     outputs:
-      has_changed: ${{ steps.filter.outputs.has_changed }}
+      has_changed: ${{ steps.set-output.outputs.has_changed }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Filter paths
-        uses: dorny/paths-filter@v3
         id: filter
+        uses: dorny/paths-filter@v3
         with:
           base: ${{ github.event_name == 'push' && github.event.before || '' }}
           filters: |
             has_changed:
             ${{ inputs.paths }}
+
+      - name: Set output
+        id: set-output
+        run: echo "has_changed=${{ steps.filter.outputs.has_changed }}" >> $GITHUB_OUTPUT
