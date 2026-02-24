@@ -1,5 +1,8 @@
 name: 'Slack Nightly E2E Test Notification'
 description: 'Sends a notification to Slack with E2E nightly test results'
+branding:
+  icon: "bell"
+  color: "orange"
 inputs:
   test_results:
     description: 'Test results summary'

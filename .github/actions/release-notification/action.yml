@@ -1,5 +1,8 @@
 name: 'Slack Release Notification'
 description: 'Sends a notification to Slack when a new release is published'
+branding:
+  icon: "bell"
+  color: "orange"
 inputs:
   version:
     description: 'Release version'
