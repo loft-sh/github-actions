@@ -31,7 +31,7 @@ runs:
   using: "composite"
   steps:
     - name: Post E2E test results notification
-      uses: slackapi/slack-github-action@v2.0.0
+      uses: slackapi/slack-github-action@91efab103c0de0a537f72a35f6b8cda0ee76bf0a  # v2.1.1
       with:
         errors: true
         webhook-type: incoming-webhook
