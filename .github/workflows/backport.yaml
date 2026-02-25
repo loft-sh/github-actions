@@ -1,0 +1,47 @@
+name: Automatic backport action
+
+on:
+  workflow_call:
+    secrets:
+      gh-access-token:
+        description: 'GitHub PAT for creating backport PRs'
+        required: true
+
+jobs:
+  backport:
+    name: Backport PR
+    if: |
+      github.event.pull_request.merged == true &&
+      (
+        contains(
+          join(github.event.pull_request.labels.*.name, ','),
+          'backport-to-'
+        )
+      ) &&
+      (github.event.action == 'closed' || startsWith(github.event.label.name, 'backport-to-'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install GH CLI
+        uses: dev-hanz-ops/install-gh-cli-action@af38ce09b1ec248aeb08eea2b16bbecea9e059f8 # v0.2.1
+
+      - name: Backport Action
+        uses: sorenlouv/backport-github-action@516854e7c9f962b9939085c9a92ea28411d1ae90 # v10.2.0
+        with:
+          github_token: ${{ secrets.gh-access-token }}
+          auto_backport_label_prefix: backport-to-
+
+      - name: Info log
+        if: ${{ success() }}
+        run: cat ~/.backport/backport.info.log
+
+      - name: Debug log
+        if: ${{ failure() }}
+        run: cat ~/.backport/backport.debug.log
