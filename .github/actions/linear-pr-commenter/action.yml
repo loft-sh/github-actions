@@ -22,25 +22,31 @@ runs:
   using: 'composite'
   steps:
     - name: Checkout
-      uses: actions/checkout@v3
-      
-    - name: Set up Go
-      uses: actions/setup-go@v4
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
       with:
-        go-version: '1.19'
-      
+        persist-credentials: false
+
+    - name: Set up Go
+      uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5.6.0
+      with:
+        go-version-file: ${{ github.action_path }}/src/go.mod
+
     - name: Build and run Linear PR Commenter
       shell: bash
       env:
         GITHUB_TOKEN: ${{ inputs.github-token }}
         LINEAR_TOKEN: ${{ inputs.linear-token }}
+        ACTION_PATH: ${{ github.action_path }}
+        INPUT_PR_NUMBER: ${{ inputs.pr-number }}
+        INPUT_REPO_OWNER: ${{ inputs.repo-owner }}
+        INPUT_REPO_NAME: ${{ inputs.repo-name }}
       run: |
-        cd ${{ github.action_path }}/src
+        cd "$ACTION_PATH/src"
         go build -o linear-pr-commenter .
         ./linear-pr-commenter \
-          -pr-number=${{ inputs.pr-number }} \
-          -repo-owner=${{ inputs.repo-owner }} \
-          -repo-name=${{ inputs.repo-name }}
+          -pr-number="$INPUT_PR_NUMBER" \
+          -repo-owner="$INPUT_REPO_OWNER" \
+          -repo-name="$INPUT_REPO_NAME"
 
 branding:
   icon: 'link'
