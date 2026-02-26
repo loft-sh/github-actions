@@ -35,6 +35,52 @@ Validates whether a given version string follows semantic versioning (semver) fo
 
 See [semver-validation README](./.github/actions/semver-validation/README.md) for detailed documentation.
 
+## Available Reusable Workflows
+
+### Validate Renovate Config
+
+Validates Renovate configuration files when they change in a pull request.
+
+**Location:** `.github/workflows/validate-renovate.yaml`
+
+**Usage:**
+
+```yaml
+name: Validate Renovate Config
+
+on:
+  pull_request:
+
+jobs:
+  validate-renovate:
+    uses: loft-sh/github-actions/.github/workflows/validate-renovate.yaml@main
+```
+
+Detected config files: `renovate.json`, `renovate.json5`, `.renovaterc`, `.renovaterc.json`, `.github/renovate.json`, `.github/renovate.json5`.
+
+### Actionlint
+
+Lints GitHub Actions workflow files using actionlint with reviewdog integration.
+
+**Location:** `.github/workflows/actionlint.yaml`
+
+**Usage:**
+
+```yaml
+name: Actionlint
+
+on:
+  pull_request:
+
+jobs:
+  actionlint:
+    uses: loft-sh/github-actions/.github/workflows/actionlint.yaml@main
+```
+
+**Inputs:**
+
+- `reporter` (optional, default: `github-pr-review`): reviewdog reporter type
+
 ## Versioning Actions
 
 ### Release-notification Action
