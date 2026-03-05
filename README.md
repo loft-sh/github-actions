@@ -81,6 +81,60 @@ jobs:
 
 - `reporter` (optional, default: `github-pr-review`): reviewdog reporter type
 
+## Testing
+
+Run all action tests locally:
+
+```bash
+make test
+```
+
+Run tests for a specific action:
+
+```bash
+make test-semver-validation
+make test-linear-pr-commenter
+```
+
+Run linters (actionlint + zizmor):
+
+```bash
+make lint
+```
+
+See all available targets:
+
+```bash
+make help
+```
+
+### CI integration
+
+Each testable action has a dedicated workflow that runs its tests on PRs when
+the action's files change:
+
+- `test-semver-validation.yaml` - triggers on `.github/actions/semver-validation/**`
+- `test-linear-pr-commenter.yaml` - triggers on `.github/actions/linear-pr-commenter/**`
+
+### Writing tests for new actions
+
+1. Node.js actions - add a `test/` directory with Jest tests. See
+   `semver-validation/test/index.test.js` for the pattern: spawn the action's
+   `index.js` with `INPUT_*` env vars and a temp `GITHUB_OUTPUT` file, then
+   assert on the parsed outputs.
+
+2. Go actions - add `*_test.go` files next to the source. See
+   `linear-pr-commenter/src/main_test.go`. Use standard `go test`.
+
+3. Composite actions (YAML-only like `release-notification`) - these
+   delegate to third-party actions and have no local business logic to unit
+   test. Validate their YAML structure through actionlint instead.
+
+4. Add a Makefile target for the new action following the existing pattern.
+
+5. Add a CI workflow at `.github/workflows/test-<action-name>.yaml` with a
+   `paths` filter scoped to the action's directory.
+
 ## Versioning Actions
 
 ### Release-notification Action
