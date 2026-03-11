@@ -5,11 +5,15 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
+  validate-renovate:
+    uses: loft-sh/github-actions/.github/workflows/validate-renovate.yaml@b41351f2b29090ab8253645f3c06b0d1c62d637d # validate-renovate/v1
+
   actionlint:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -18,8 +22,6 @@ jobs:
 
   zizmor:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
