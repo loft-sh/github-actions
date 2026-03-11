@@ -1,0 +1,32 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended"
+  ],
+  "packageRules": [
+    {
+      "description": "Group all GitHub Actions updates into a single PR",
+      "matchManagers": ["github-actions"],
+      "groupName": "github-actions"
+    },
+    {
+      "description": "Group semver-validation npm dependencies",
+      "matchManagers": ["npm"],
+      "groupName": "semver-validation"
+    },
+    {
+      "description": "Group linear-pr-commenter Go dependencies",
+      "matchManagers": ["gomod"],
+      "groupName": "linear-pr-commenter"
+    }
+  ],
+  "regexManagers": [
+    {
+      "description": "Update zizmor version pinned inline in CI workflow",
+      "fileMatch": ["^\\.github/workflows/ci\\.yaml$"],
+      "matchStrings": ["pip install zizmor==(?<currentValue>[^\\s&]+)"],
+      "depNameTemplate": "zizmor",
+      "datasourceTemplate": "pypi"
+    }
+  ]
+}
