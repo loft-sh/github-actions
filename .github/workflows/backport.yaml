@@ -35,7 +35,7 @@ jobs:
       - name: Backport Action
         uses: sorenlouv/backport-github-action@516854e7c9f962b9939085c9a92ea28411d1ae90 # v10.2.0
         with:
-          github_token: ${{ secrets.gh-access-token }}
+          github_token: ${{ secrets.gh-access-token }} # zizmor: ignore[secrets-outside-env] -- PAT passed via workflow_call, not a repo secret
           auto_backport_label_prefix: backport-to-
 
       - name: Info log
