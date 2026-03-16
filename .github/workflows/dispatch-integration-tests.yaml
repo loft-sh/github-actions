@@ -1,0 +1,28 @@
+name: Dispatch integration tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/validate-renovate.yaml'
+      - '.github/workflows/actionlint.yaml'
+      - '.github/workflows/detect-changes.yaml'
+      - '.github/workflows/backport.yaml'
+      - '.github/workflows/clean-github-cache.yaml'
+      - '.github/workflows/cleanup-backport-branches.yaml'
+
+permissions:
+  contents: read
+
+jobs:
+  dispatch: # zizmor: ignore[secrets-outside-env] -- cross-org dispatch PAT, no dedicated environment needed
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger integration tests
+        env:
+          GH_TOKEN: ${{ secrets.VCLUSTERLABS_DISPATCH_TOKEN }}
+        run: |
+          gh api repos/vClusterLabs-Experiments/github-actions-test/dispatches \
+            -f event_type=integration-test \
+            -f "client_payload[sha]=$GITHUB_SHA" \
+            -f "client_payload[ref]=$GITHUB_REF"

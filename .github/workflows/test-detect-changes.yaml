@@ -1,0 +1,55 @@
+name: Test detect-changes
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/detect-changes.yaml'
+  pull_request:
+    paths:
+      - '.github/workflows/detect-changes.yaml'
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  detect-self:
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: ./.github/workflows/detect-changes.yaml
+    with:
+      paths: "- '.github/workflows/detect-changes.yaml'"
+
+  detect-none:
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: ./.github/workflows/detect-changes.yaml
+    with:
+      paths: "- 'nonexistent-dir/**'"
+
+  verify:
+    needs: [detect-self, detect-none]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assert detect-self found changes
+        env:
+          HAS_CHANGED: ${{ needs.detect-self.outputs.has_changed }}
+        run: |
+          echo "detect-self has_changed=$HAS_CHANGED"
+          if [ "$HAS_CHANGED" != "true" ]; then
+            echo "::error::Expected detect-self has_changed=true, got '$HAS_CHANGED'"
+            exit 1
+          fi
+
+      - name: Assert detect-none found no changes
+        env:
+          HAS_CHANGED: ${{ needs.detect-none.outputs.has_changed }}
+        run: |
+          echo "detect-none has_changed=$HAS_CHANGED"
+          if [ "$HAS_CHANGED" != "false" ]; then
+            echo "::error::Expected detect-none has_changed=false, got '$HAS_CHANGED'"
+            exit 1
+          fi

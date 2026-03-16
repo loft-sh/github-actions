@@ -1,0 +1,37 @@
+name: Test backport (parse)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/backport.yaml'
+  pull_request:
+    paths:
+      - '.github/workflows/backport.yaml'
+
+permissions:
+  contents: read
+
+jobs:
+  backport:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/backport.yaml
+    secrets:
+      gh-access-token: ${{ secrets.GITHUB_TOKEN }}
+
+  verify:
+    needs: [backport]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check backport result
+        env:
+          RESULT: ${{ needs.backport.result }}
+        run: |
+          echo "backport result=$RESULT"
+          if [ "$RESULT" = "failure" ]; then
+            echo "::error::Backport workflow failed unexpectedly"
+            exit 1
+          fi
+          echo "Backport workflow completed with result: $RESULT (expected skipped)"
