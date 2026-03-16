@@ -1,0 +1,38 @@
+name: Test actionlint workflow
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/actionlint.yaml'
+
+permissions: {}
+
+jobs:
+  actionlint:
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: ./.github/workflows/actionlint.yaml
+    with:
+      reporter: github-pr-check
+
+  verify:
+    needs: [actionlint]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check actionlint result
+        env:
+          RESULT: ${{ needs.actionlint.result }}
+        # actionlint.yaml skips fork PRs (head.repo.full_name != github.repository),
+        # so this verify step ensures we catch silent skips.
+        run: |
+          echo "actionlint result=$RESULT"
+          if [ "$RESULT" = "failure" ]; then
+            echo "::error::actionlint workflow failed unexpectedly"
+            exit 1
+          fi
+          if [ "$RESULT" = "skipped" ]; then
+            echo "::warning::actionlint was skipped (likely a fork PR — actionlint.yaml skips forks)"
+          fi
+          echo "actionlint workflow completed with result: $RESULT"

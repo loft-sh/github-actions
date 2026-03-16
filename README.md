@@ -119,6 +119,28 @@ the action's files change:
 - `test-semver-validation.yaml` - triggers on `.github/actions/semver-validation/**`
 - `test-linear-pr-commenter.yaml` - triggers on `.github/actions/linear-pr-commenter/**`
 
+Each reusable workflow (`workflow_call`) also has a smoke/integration test
+workflow that triggers on PRs when the workflow file changes:
+
+- `test-validate-renovate.yaml` - calls `validate-renovate.yaml` with local ref.
+  **Note:** When triggered by workflow YAML changes alone, the inner `paths-filter`
+  won't match any renovate config files so `npx renovate-config-validator` never runs.
+  The validator only exercises its full path when `renovate.json` is also changed.
+- `test-detect-changes.yaml` - calls `detect-changes.yaml` and asserts outputs (true/false)
+- `test-actionlint-workflow.yaml` - calls `actionlint.yaml` with `github-pr-check` reporter (PR-only).
+  **Note:** `actionlint.yaml` skips fork PRs silently; the verify job emits a warning when this happens.
+- `test-backport.yaml` - calls `backport.yaml` and asserts the result is `skipped`
+- `test-clean-github-cache.yaml` - calls `clean-github-cache.yaml` (PR-only, since the
+  underlying workflow needs `github.event.pull_request.number`)
+- `test-cleanup-backport-branches.yaml` - calls `cleanup-backport-branches.yaml` with `dry-run: true`
+- `test-conflict-check.yaml` - calls `conflict-check.yaml` and asserts success or skipped
+- `test-claude-code-review.yaml` - calls `claude-code-review.yaml` to validate workflow is callable
+- `test-claude.yaml` - calls `claude.yaml` and asserts `skipped` (no `@claude` comment event)
+- `test-notify-release.yaml` - calls `notify-release.yaml` with dummy inputs to validate the contract
+
+Post-merge, `dispatch-integration-tests.yaml` triggers full E2E tests in
+[vClusterLabs-Experiments/github-actions-test](https://github.com/vClusterLabs-Experiments/github-actions-test).
+
 ### Writing tests for new actions
 
 1. Node.js actions - add a `test/` directory with Jest tests. See

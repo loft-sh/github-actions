@@ -1,0 +1,37 @@
+name: Test conflict-check
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/conflict-check.yaml'
+
+permissions: {}
+
+jobs:
+  conflict-check:
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: ./.github/workflows/conflict-check.yaml
+    secrets:
+      gh-access-token: ${{ secrets.GITHUB_TOKEN }}
+
+  verify:
+    needs: [conflict-check]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check conflict-check result
+        env:
+          RESULT: ${{ needs.conflict-check.result }}
+        # conflict-check uses concurrency keyed on PR number, which is empty
+        # on push events (concurrency key becomes "conflict-check-"), so
+        # concurrent pushes may cancel each other. The workflow still runs
+        # and scans for markers.
+        run: |
+          echo "conflict-check result=$RESULT"
+          if [ "$RESULT" != "success" ] && [ "$RESULT" != "skipped" ]; then
+            echo "::error::Expected conflict-check result=success or skipped, got '$RESULT'"
+            exit 1
+          fi
+          echo "conflict-check workflow completed with result: $RESULT"

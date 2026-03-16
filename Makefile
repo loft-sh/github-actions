@@ -19,3 +19,6 @@ test-release-notification: ## run release-notification detect-branch tests
 lint: ## run actionlint and zizmor on workflows
 	actionlint .github/workflows/*.yaml
 	zizmor .github/
+
+# Reusable workflow tests (test-*.yaml for workflow_call workflows) run in CI only.
+# They require GitHub event context and cannot be executed locally.

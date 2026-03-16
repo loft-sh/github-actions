@@ -1,0 +1,38 @@
+name: Dispatch integration tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/validate-renovate.yaml'
+      - '.github/workflows/actionlint.yaml'
+      - '.github/workflows/detect-changes.yaml'
+      - '.github/workflows/backport.yaml'
+      - '.github/workflows/clean-github-cache.yaml'
+      - '.github/workflows/cleanup-backport-branches.yaml'
+      - '.github/workflows/claude-code-review.yaml'
+      - '.github/workflows/claude.yaml'
+      - '.github/workflows/conflict-check.yaml'
+      - '.github/workflows/notify-release.yaml'
+
+permissions:
+  contents: read
+
+env:
+  E2E_REPO: vClusterLabs-Experiments/github-actions-test
+
+jobs:
+  dispatch: # zizmor: ignore[secrets-outside-env] -- cross-org dispatch PAT, no dedicated environment needed
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger integration tests
+        env:
+          GH_TOKEN: ${{ secrets.VCLUSTERLABS_DISPATCH_TOKEN }}
+        run: |
+          if ! gh api "repos/$E2E_REPO/dispatches" \
+            -f event_type=integration-test \
+            -f "client_payload[sha]=$GITHUB_SHA" \
+            -f "client_payload[ref]=$GITHUB_REF"; then
+            echo "::error::Failed to dispatch integration tests to $E2E_REPO"
+            exit 1
+          fi

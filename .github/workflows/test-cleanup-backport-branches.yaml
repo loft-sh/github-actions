@@ -1,0 +1,34 @@
+name: Test cleanup-backport-branches
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/cleanup-backport-branches.yaml'
+
+permissions: {}
+
+jobs:
+  cleanup:
+    permissions:
+      contents: write
+    uses: ./.github/workflows/cleanup-backport-branches.yaml
+    with:
+      dry-run: true
+    secrets:
+      gh-access-token: ${{ secrets.GITHUB_TOKEN }}
+
+  verify:
+    needs: [cleanup]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check cleanup result
+        env:
+          RESULT: ${{ needs.cleanup.result }}
+        run: |
+          echo "cleanup result=$RESULT"
+          if [ "$RESULT" != "success" ]; then
+            echo "::error::Expected cleanup result=success (dry-run), got '$RESULT'"
+            exit 1
+          fi
+          echo "cleanup-backport-branches workflow completed with result: $RESULT"

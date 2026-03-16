@@ -1,0 +1,35 @@
+name: Test backport
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/backport.yaml'
+
+permissions:
+  contents: read
+
+jobs:
+  backport:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/backport.yaml
+    secrets:
+      # GITHUB_TOKEN is sufficient here because the test expects skipped.
+      # Real backport callers need a PAT with cross-repo branch/PR permissions.
+      gh-access-token: ${{ secrets.GITHUB_TOKEN }}
+
+  verify:
+    needs: [backport]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check backport result
+        env:
+          RESULT: ${{ needs.backport.result }}
+        run: |
+          echo "backport result=$RESULT"
+          if [ "$RESULT" != "skipped" ]; then
+            echo "::error::Expected backport result=skipped, got '$RESULT'"
+            exit 1
+          fi
+          echo "Backport workflow completed with result: $RESULT"

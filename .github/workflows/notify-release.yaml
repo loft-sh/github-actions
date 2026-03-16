@@ -24,6 +24,11 @@ on:
         required: false
         type: string
         default: ''
+      dry-run:
+        description: 'Validate inputs and workflow structure without sending notifications'
+        required: false
+        type: boolean
+        default: false
     secrets:
       SLACK_WEBHOOK_URL_PRODUCT_RELEASES:
         description: 'Slack incoming webhook URL for #product-releases'
@@ -36,7 +41,28 @@ jobs:
   notify_release:
     runs-on: ubuntu-latest
     steps:
+      - name: Validate required inputs are non-empty (dry-run)
+        if: inputs.dry-run
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
+          PREVIOUS_TAG: ${{ inputs.previous_tag }}
+          TARGET_REPO: ${{ inputs.target_repo }}
+          PRODUCT: ${{ inputs.product }}
+        run: |
+          echo "dry-run: validating notify-release inputs"
+          echo "  release_version=$RELEASE_VERSION"
+          echo "  previous_tag=$PREVIOUS_TAG"
+          echo "  target_repo=$TARGET_REPO"
+          echo "  product=$PRODUCT"
+          for var in RELEASE_VERSION PREVIOUS_TAG TARGET_REPO PRODUCT; do
+            if [ -z "${!var}" ]; then
+              echo "::error::Required input $var is empty"
+              exit 1
+            fi
+          done
+          echo "All required inputs are valid"
       - name: Checkout repository
+        if: ${{ !inputs.dry-run }}
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: ${{ inputs.target_repo }}
@@ -45,6 +71,7 @@ jobs:
           fetch-tags: true
           persist-credentials: false
       - name: Notify #product-releases Slack channel
+        if: ${{ !inputs.dry-run }}
         uses: loft-sh/github-actions/.github/actions/release-notification@378c7a375539f31f0b67565e8d959d8ea222ae3f # release-notification/v1
         with:
           version: ${{ inputs.release_version }}
