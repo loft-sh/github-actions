@@ -2,14 +2,15 @@
   "name": "semver-validation-action",
   "version": "1.0.0",
   "description": "GitHub Action for semantic version validation",
+  "type": "module",
   "main": "index.js",
   "scripts": {
     "build": "ncc build index.js",
-    "test": "jest",
-    "test:ci": "jest --ci --coverage --watchAll=false"
+    "test": "NODE_OPTIONS=--experimental-vm-modules jest",
+    "test:ci": "NODE_OPTIONS=--experimental-vm-modules jest --ci --coverage --watchAll=false"
   },
   "dependencies": {
-    "@actions/core": "^1.10.1",
+    "@actions/core": "^3.0.0",
     "semver": "^7.5.4"
   },
   "keywords": [
@@ -21,6 +22,7 @@
   "license": "Apache-2.0",
   "jest": {
     "testEnvironment": "node",
+    "transform": {},
     "clearMocks": true,
     "collectCoverage": true,
     "coverageDirectory": "coverage",
