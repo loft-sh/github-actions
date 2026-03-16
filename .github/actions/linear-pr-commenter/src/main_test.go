@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/google/go-github/v53/github"
+	"github.com/google/go-github/v84/github"
 )
 
 func TestExtractIssueIDs(t *testing.T) {
@@ -24,9 +24,9 @@ func TestExtractIssueIDs(t *testing.T) {
 		{
 			name: "Extract issue ID from PR body",
 			pr: &github.PullRequest{
-				Body: github.String("This PR fixes ENG-1234"),
+				Body: github.Ptr("This PR fixes ENG-1234"),
 				Head: &github.PullRequestBranch{
-					Ref: github.String("feature/new-feature"),
+					Ref: github.Ptr("feature/new-feature"),
 				},
 			},
 			expected: []string{"ENG-1234"},
@@ -34,9 +34,9 @@ func TestExtractIssueIDs(t *testing.T) {
 		{
 			name: "Extract issue ID from branch name",
 			pr: &github.PullRequest{
-				Body: github.String("This PR adds new features"),
+				Body: github.Ptr("This PR adds new features"),
 				Head: &github.PullRequestBranch{
-					Ref: github.String("feature/OPS-5678-new-feature"),
+					Ref: github.Ptr("feature/OPS-5678-new-feature"),
 				},
 			},
 			expected: []string{"OPS-5678"},
@@ -44,9 +44,9 @@ func TestExtractIssueIDs(t *testing.T) {
 		{
 			name: "Extract multiple issue IDs",
 			pr: &github.PullRequest{
-				Body: github.String("This PR fixes ENG-1234 and DOC-5678"),
+				Body: github.Ptr("This PR fixes ENG-1234 and DOC-5678"),
 				Head: &github.PullRequestBranch{
-					Ref: github.String("feature/fix-multiple"),
+					Ref: github.Ptr("feature/fix-multiple"),
 				},
 			},
 			expected: []string{"ENG-1234", "DOC-5678"},
@@ -54,9 +54,9 @@ func TestExtractIssueIDs(t *testing.T) {
 		{
 			name: "No issue IDs",
 			pr: &github.PullRequest{
-				Body: github.String("This PR adds new features"),
+				Body: github.Ptr("This PR adds new features"),
 				Head: &github.PullRequestBranch{
-					Ref: github.String("feature/new-feature"),
+					Ref: github.Ptr("feature/new-feature"),
 				},
 			},
 			expected: nil,
@@ -64,9 +64,9 @@ func TestExtractIssueIDs(t *testing.T) {
 		{
 			name: "Exclude CVE IDs",
 			pr: &github.PullRequest{
-				Body: github.String("This PR fixes CVE-1234"),
+				Body: github.Ptr("This PR fixes CVE-1234"),
 				Head: &github.PullRequestBranch{
-					Ref: github.String("feature/security-fix"),
+					Ref: github.Ptr("feature/security-fix"),
 				},
 			},
 			expected: nil,
@@ -74,9 +74,9 @@ func TestExtractIssueIDs(t *testing.T) {
 		{
 			name: "Deduplicate issue IDs",
 			pr: &github.PullRequest{
-				Body: github.String("This PR fixes ENG-1234 and ENG-1234"),
+				Body: github.Ptr("This PR fixes ENG-1234 and ENG-1234"),
 				Head: &github.PullRequestBranch{
-					Ref: github.String("feature/ENG-1234-fix"),
+					Ref: github.Ptr("feature/ENG-1234-fix"),
 				},
 			},
 			expected: []string{"ENG-1234"},
@@ -84,9 +84,9 @@ func TestExtractIssueIDs(t *testing.T) {
 		{
 			name: "Case insensitive matching",
 			pr: &github.PullRequest{
-				Body: github.String("This PR fixes eng-1234"),
+				Body: github.Ptr("This PR fixes eng-1234"),
 				Head: &github.PullRequestBranch{
-					Ref: github.String("feature/new-feature"),
+					Ref: github.Ptr("feature/new-feature"),
 				},
 			},
 			expected: []string{"ENG-1234"},
@@ -94,9 +94,9 @@ func TestExtractIssueIDs(t *testing.T) {
 		{
 			name: "Short team keys (2 letters)",
 			pr: &github.PullRequest{
-				Body: github.String("This PR fixes QA-42"),
+				Body: github.Ptr("This PR fixes QA-42"),
 				Head: &github.PullRequestBranch{
-					Ref: github.String("feature/qa-fix"),
+					Ref: github.Ptr("feature/qa-fix"),
 				},
 			},
 			expected: []string{"QA-42"},
@@ -104,9 +104,9 @@ func TestExtractIssueIDs(t *testing.T) {
 		{
 			name: "References format",
 			pr: &github.PullRequest{
-				Body: github.String("References OPS-160"),
+				Body: github.Ptr("References OPS-160"),
 				Head: &github.PullRequestBranch{
-					Ref: github.String("feature/some-fix"),
+					Ref: github.Ptr("feature/some-fix"),
 				},
 			},
 			expected: []string{"OPS-160"},
@@ -114,9 +114,9 @@ func TestExtractIssueIDs(t *testing.T) {
 		{
 			name: "Ignore unknown team keys",
 			pr: &github.PullRequest{
-				Body: github.String("This PR fixes ABC-1234"),
+				Body: github.Ptr("This PR fixes ABC-1234"),
 				Head: &github.PullRequestBranch{
-					Ref: github.String("feature/new-feature"),
+					Ref: github.Ptr("feature/new-feature"),
 				},
 			},
 			expected: nil,
@@ -126,8 +126,8 @@ func TestExtractIssueIDs(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := extractIssueIDs(tt.pr, mockTeams)
-			if (tt.expected == nil && len(result) != 0) || 
-			   (tt.expected != nil && !reflect.DeepEqual(result, tt.expected)) {
+			if (tt.expected == nil && len(result) != 0) ||
+				(tt.expected != nil && !reflect.DeepEqual(result, tt.expected)) {
 				t.Errorf("extractIssueIDs() = %v, want %v", result, tt.expected)
 			}
 		})
@@ -144,7 +144,7 @@ func TestHasLinearComment(t *testing.T) {
 		{
 			name: "Comment exists - current format",
 			comments: []*github.IssueComment{
-				{Body: github.String("[ENG-1234: Implement new feature](https://linear.app/team/issue/ENG-1234)")},
+				{Body: github.Ptr("[ENG-1234: Implement new feature](https://linear.app/team/issue/ENG-1234)")},
 			},
 			issueID:  "ENG-1234",
 			expected: true,
@@ -152,7 +152,7 @@ func TestHasLinearComment(t *testing.T) {
 		{
 			name: "Comment doesn't exist",
 			comments: []*github.IssueComment{
-				{Body: github.String("[DOC-5678: Document new API](https://linear.app/team/issue/DOC-5678)")},
+				{Body: github.Ptr("[DOC-5678: Document new API](https://linear.app/team/issue/DOC-5678)")},
 			},
 			issueID:  "ENG-1234",
 			expected: false,
@@ -166,7 +166,7 @@ func TestHasLinearComment(t *testing.T) {
 		{
 			name: "Old format with status - should still detect",
 			comments: []*github.IssueComment{
-				{Body: github.String("[ENG-1234: Implement new feature](https://linear.app/team/issue/ENG-1234) (In Progress)")},
+				{Body: github.Ptr("[ENG-1234: Implement new feature](https://linear.app/team/issue/ENG-1234) (In Progress)")},
 			},
 			issueID:  "ENG-1234",
 			expected: true,
@@ -174,7 +174,7 @@ func TestHasLinearComment(t *testing.T) {
 		{
 			name: "Very old format - should still detect",
 			comments: []*github.IssueComment{
-				{Body: github.String("Linear issue: [ENG-1234](https://linear.app/team/issue/ENG-1234) - Implement new feature (In Progress)")},
+				{Body: github.Ptr("Linear issue: [ENG-1234](https://linear.app/team/issue/ENG-1234) - Implement new feature (In Progress)")},
 			},
 			issueID:  "ENG-1234",
 			expected: true,
@@ -190,3 +190,4 @@ func TestHasLinearComment(t *testing.T) {
 		})
 	}
 }
+

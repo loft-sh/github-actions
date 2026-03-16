@@ -5,14 +5,14 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"net/http"
 	"os"
 	"regexp"
 	"strings"
 
-	"github.com/google/go-github/v53/github"
+	"github.com/google/go-github/v84/github"
 	"golang.org/x/oauth2"
 )
 
@@ -91,7 +91,7 @@ func main() {
 	} else {
 		log.Printf("PR Body is nil")
 	}
-	
+
 	if pr.Head != nil && pr.Head.Ref != nil {
 		log.Printf("Branch name: %s", *pr.Head.Ref)
 	} else {
@@ -138,7 +138,7 @@ func main() {
 		}
 
 		// Create comment with issue details - entire title and ID as one link, without the status
-		comment := fmt.Sprintf("[%s: %s](%s)", 
+		comment := fmt.Sprintf("[%s: %s](%s)",
 			issueID, issue.Title, issue.URL)
 		_, _, err = client.Issues.CreateComment(ctx, *repoOwner, *repoName, *prNumber, &github.IssueComment{
 			Body: &comment,
@@ -175,7 +175,7 @@ func getLinearTeams(token string) ([]linearTeam, error) {
 	defer resp.Body.Close()
 
 	// Read response
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
@@ -202,28 +202,28 @@ func extractIssueIDs(pr *github.PullRequest, teams []linearTeam) []string {
 	// Build a regex pattern for each team key
 	teamPatterns := make([]string, 0, len(teams))
 	teamKeysMap := make(map[string]bool)
-	
+
 	for _, team := range teams {
 		if team.Key != "" {
 			teamPatterns = append(teamPatterns, regexp.QuoteMeta(team.Key))
 			teamKeysMap[strings.ToUpper(team.Key)] = true
 		}
 	}
-	
+
 	if len(teamPatterns) == 0 {
 		log.Println("No valid team keys found to build regex patterns")
 		return issueIDs
 	}
-	
+
 	// Create a regex that matches any team key followed by a dash and digits
 	teamKeysPattern := strings.Join(teamPatterns, "|")
 	issueRegex := regexp.MustCompile(fmt.Sprintf(`(?i)(%s)-(\d+)`, teamKeysPattern))
-	
+
 	bodies := []string{}
 	if pr.Body != nil && *pr.Body != "" {
 		bodies = append(bodies, *pr.Body)
 	}
-	
+
 	if pr.Head != nil && pr.Head.Ref != nil && *pr.Head.Ref != "" {
 		bodies = append(bodies, *pr.Head.Ref)
 	}
@@ -235,12 +235,12 @@ func extractIssueIDs(pr *github.PullRequest, teams []linearTeam) []string {
 				teamKey := strings.ToUpper(match[1])
 				issueNumber := match[2]
 				issueID := fmt.Sprintf("%s-%s", teamKey, issueNumber)
-				
+
 				// Skip CVE IDs
 				if strings.HasPrefix(teamKey, "CVE") {
 					continue
 				}
-				
+
 				// Validate that this is an actual team key
 				if teamKeysMap[teamKey] {
 					issueIDs = append(issueIDs, issueID)
@@ -267,12 +267,12 @@ func hasLinearComment(comments []*github.IssueComment, issueID string) bool {
 	for _, comment := range comments {
 		if comment.Body != nil {
 			commentBody := *comment.Body
-			
+
 			// Check for new format: [ENG-1234: Title](URL)
 			if strings.Contains(commentBody, fmt.Sprintf("[%s:", issueID)) {
 				return true
 			}
-			
+
 			// Check for old format: Linear issue: [ENG-1234](URL)
 			if strings.Contains(commentBody, fmt.Sprintf("Linear issue: [%s]", issueID)) {
 				return true
@@ -307,7 +307,7 @@ func getLinearIssue(token, issueID string) (*linearIssue, error) {
 	defer resp.Body.Close()
 
 	// Read response
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
@@ -326,3 +326,4 @@ func getLinearIssue(token, issueID string) (*linearIssue, error) {
 
 	return &response.Data.Issue, nil
 }
+
