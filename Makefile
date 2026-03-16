@@ -8,7 +8,7 @@ help: ## show this help
 test: test-semver-validation test-linear-pr-commenter ## run all action tests
 
 test-semver-validation: ## run semver-validation unit tests
-	cd $(ACTIONS_DIR)/semver-validation && npm ci --silent && npx jest --ci --coverage --watchAll=false
+	cd $(ACTIONS_DIR)/semver-validation && npm ci --silent && NODE_OPTIONS=--experimental-vm-modules npx jest --ci --coverage --watchAll=false
 
 test-linear-pr-commenter: ## run linear-pr-commenter unit tests
 	cd $(ACTIONS_DIR)/linear-pr-commenter/src && go test -v ./...

@@ -1,5 +1,5 @@
-const core = require('@actions/core');
-const semver = require('semver');
+import * as core from '@actions/core';
+import semver from 'semver';
 
 try {
   // Get the version input
