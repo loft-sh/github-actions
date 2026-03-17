@@ -1,0 +1,135 @@
+name: 'Check Homebrew Tap Version Drift'
+description: 'Compares homebrew-tap formula versions against latest GitHub release and alerts Slack on drift'
+inputs:
+  repo:
+    description: 'GitHub repository to check releases for (e.g. loft-sh/vcluster)'
+    required: true
+  tap_repo:
+    description: 'Homebrew tap repository (e.g. loft-sh/homebrew-tap)'
+    required: false
+    default: 'loft-sh/homebrew-tap'
+  formulas:
+    description: 'Comma-separated formula names to check (e.g. vcluster,vcluster-experimental)'
+    required: true
+  webhook_url:
+    description: 'Slack incoming webhook URL for drift alerts'
+    required: true
+  github_token:
+    description: 'GitHub token for release listing'
+    required: false
+    default: ${{ github.token }}
+outputs:
+  drifted:
+    description: 'Whether any formula version drifted from the latest release (true/false)'
+    value: ${{ steps.compare.outputs.drifted }}
+  release_tag:
+    description: 'Latest stable release tag'
+    value: ${{ steps.release.outputs.tag }}
+  details:
+    description: 'Drift details (empty when no drift)'
+    value: ${{ steps.compare.outputs.details }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Get latest stable release tag
+      id: release
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+        REPO: ${{ inputs.repo }}
+      run: |
+        TAG=$(gh release list --repo "$REPO" --limit 20 --json tagName,isPrerelease \
+          --jq '[.[] | select(.isPrerelease == false)][0].tagName')
+
+        if [[ -z "$TAG" ]]; then
+          echo "::error::Could not determine latest stable release for $REPO"
+          exit 1
+        fi
+
+        echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+        echo "Latest stable release: $TAG"
+
+    - name: Fetch tap formula versions and compare
+      id: compare
+      shell: bash
+      env:
+        TAP_REPO: ${{ inputs.tap_repo }}
+        FORMULAS: ${{ inputs.formulas }}
+        RELEASE_TAG: ${{ steps.release.outputs.tag }}
+      run: |
+        fetch_formula_version() {
+          local formula="$1"
+          local version=""
+          for attempt in 1 2 3; do
+            version=$(curl -sfL --max-time 10 \
+              "https://raw.githubusercontent.com/${TAP_REPO}/main/Formula/${formula}.rb" \
+              | grep -oP 'version "\K[^"]+') && break
+            version=""
+            delay=$((1 << attempt))
+            echo "::warning::Attempt $attempt/3 to fetch ${formula} version failed, retrying in ${delay}s..."
+            sleep "$delay"
+          done
+          echo "$version"
+        }
+
+        drift=""
+        IFS=',' read -ra formula_list <<< "$FORMULAS"
+        for formula in "${formula_list[@]}"; do
+          formula=$(echo "$formula" | xargs)  # trim whitespace
+          version=$(fetch_formula_version "$formula")
+
+          if [[ -z "$version" ]]; then
+            echo "::warning::Could not fetch version for ${formula}, skipping"
+            continue
+          fi
+
+          tap_tag="v${version}"
+          if [[ "$RELEASE_TAG" != "$tap_tag" ]]; then
+            echo "::warning::${formula} tap drift: release=$RELEASE_TAG tap=$tap_tag"
+            entry="${formula}: release=$RELEASE_TAG tap=$tap_tag"
+            drift="${drift:+${drift}\n}${entry}"
+          fi
+        done
+
+        if [[ -z "$drift" ]]; then
+          echo "No drift detected. release=$RELEASE_TAG"
+          echo "drifted=false" >> "$GITHUB_OUTPUT"
+        else
+          echo "drifted=true" >> "$GITHUB_OUTPUT"
+          {
+            echo "details<<EOF"
+            echo -e "$drift"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Notify Slack
+      if: steps.compare.outputs.drifted == 'true'
+      uses: slackapi/slack-github-action@v2.0.0
+      with:
+        errors: true
+        webhook-type: incoming-webhook
+        webhook: ${{ inputs.webhook_url }}
+        payload: |
+          text: "⚠️ Homebrew tap version drift detected for ${{ inputs.repo }}"
+          blocks:
+            - type: header
+              text:
+                type: plain_text
+                text: "⚠️ Homebrew Tap Version Drift"
+                emoji: false
+            - type: section
+              text:
+                type: mrkdwn
+                text: "${{ steps.compare.outputs.details }}"
+            - type: section
+              fields:
+                - type: mrkdwn
+                  text: "*Latest stable release:*\n`${{ steps.release.outputs.tag }}`"
+                - type: mrkdwn
+                  text: "*Repository:*\n${{ inputs.repo }}"
+            - type: context
+              elements:
+                - type: mrkdwn
+                  text: "<https://github.com/${{ inputs.tap_repo }}/blob/main/Formula|View tap formulas> · <https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}|View run>"
