@@ -26,6 +26,14 @@
       "matchStrings": ["pip install zizmor==(?<currentValue>[^\\s&]+)"],
       "depNameTemplate": "zizmor",
       "datasourceTemplate": "pypi"
+    },
+    {
+      "customType": "regex",
+      "description": "Update renovate version pinned in validate-renovate workflow",
+      "managerFilePatterns": ["/^\\.github/workflows/validate-renovate\\.yaml$/"],
+      "matchStrings": ["renovate@(?<currentValue>[^\\s]+)"],
+      "depNameTemplate": "renovate",
+      "datasourceTemplate": "npm"
     }
   ]
 }
