@@ -9,6 +9,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Lint workflows: `make lint` (requires actionlint and zizmor)
 
 ## Code Style Guidelines
+- See [docs/CONVENTIONS.md](docs/CONVENTIONS.md) for pipeline constraints and conventions
 - Follow GitHub Actions YAML best practices
 - Use descriptive names for action inputs, outputs, and steps
 - Document each action with clear descriptions and examples

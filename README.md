@@ -2,6 +2,9 @@
 
 Reusable GitHub Actions
 
+See [Pipeline Conventions](docs/CONVENTIONS.md) for constraints on how actions
+are written, tested, and structured.
+
 ## Available Actions
 
 ### Semver Validation Action
