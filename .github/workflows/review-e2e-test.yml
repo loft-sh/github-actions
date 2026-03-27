@@ -1,0 +1,47 @@
+name: Review E2E Tests (reusable)
+
+on:
+  workflow_call:
+    secrets:
+      anthropic_api_key:
+        description: 'Anthropic API key for Claude'
+        required: true
+  workflow_dispatch:  
+
+jobs:
+  review:
+    name: E2E Quality Review
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+      actions: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 1
+
+      - name: Install review-e2e-test skill
+        run: |
+          mkdir -p ~/.claude/skills/review-e2e-test
+          curl -sSfL \
+            "https://raw.githubusercontent.com/loft-sh/github-actions/main/skills/review-e2e-test/SKILL.md" \
+            -o ~/.claude/skills/review-e2e-test/SKILL.md
+
+      - name: Run Claude E2E Test Review
+        uses: anthropics/claude-code-action@v1
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        with:
+          anthropic_api_key: ${{ secrets.anthropic_api_key }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          additional_permissions: |
+            actions: read
+          prompt: |
+            Run /review-e2e-test
+          claude_args: >-
+            --allowedTools "Read,Glob,Grep,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr review:*),Bash(gh api:*)"
