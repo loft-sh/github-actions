@@ -23,6 +23,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 1
+          persist-credentials: false
 
       - name: Install review-e2e-test skill
         run: |
@@ -32,12 +33,12 @@ jobs:
             -o ~/.claude/skills/review-e2e-test/SKILL.md
 
       - name: Run Claude E2E Test Review
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@970cf56ff574f7f75cfb3b2394c8b723c3410247 # v1
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
         with:
-          anthropic_api_key: ${{ secrets.anthropic_api_key }}
+          anthropic_api_key: ${{ secrets.anthropic_api_key }} # zizmor: ignore[secrets-outside-env] -- API key passed via workflow_call, not a repo secret
           github_token: ${{ secrets.GITHUB_TOKEN }}
           additional_permissions: |
             actions: read
