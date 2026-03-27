@@ -119,6 +119,19 @@ the action's files change:
 - `test-semver-validation.yaml` - triggers on `.github/actions/semver-validation/**`
 - `test-linear-pr-commenter.yaml` - triggers on `.github/actions/linear-pr-commenter/**`
 
+Each reusable workflow (`workflow_call`) also has a smoke/integration test
+workflow that triggers on PRs when the workflow file changes:
+
+- `test-validate-renovate.yaml` - calls `validate-renovate.yaml` with local ref
+- `test-detect-changes.yaml` - calls `detect-changes.yaml` and asserts outputs (true/false)
+- `test-actionlint-workflow.yaml` - calls `actionlint.yaml` with `github-pr-check` reporter
+- `test-backport-parse.yaml` - calls `backport.yaml` and verifies it doesn't fail (expects skipped)
+- `test-clean-github-cache-parse.yaml` - calls `clean-github-cache.yaml` as smoke test
+- `test-cleanup-backport-branches.yaml` - calls `cleanup-backport-branches.yaml` with `dry-run: true`
+
+Post-merge, `dispatch-integration-tests.yaml` triggers full E2E tests in
+[vClusterLabs-Experiments/github-actions-test](https://github.com/vClusterLabs-Experiments/github-actions-test).
+
 ### Writing tests for new actions
 
 1. Node.js actions - add a `test/` directory with Jest tests. See

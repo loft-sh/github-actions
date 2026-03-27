@@ -1,0 +1,16 @@
+name: Test clean-github-cache (parse)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/clean-github-cache.yaml'
+  pull_request:
+    paths:
+      - '.github/workflows/clean-github-cache.yaml'
+
+jobs:
+  clean-cache:
+    permissions:
+      actions: write
+    uses: ./.github/workflows/clean-github-cache.yaml

@@ -1,0 +1,19 @@
+name: Test validate-renovate
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/validate-renovate.yaml'
+      - 'renovate.json'
+  pull_request:
+    paths:
+      - '.github/workflows/validate-renovate.yaml'
+      - 'renovate.json'
+
+jobs:
+  validate-renovate:
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: ./.github/workflows/validate-renovate.yaml

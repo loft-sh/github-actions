@@ -1,0 +1,19 @@
+name: Test actionlint workflow
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/actionlint.yaml'
+  pull_request:
+    paths:
+      - '.github/workflows/actionlint.yaml'
+
+jobs:
+  actionlint:
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: ./.github/workflows/actionlint.yaml
+    with:
+      reporter: github-pr-check

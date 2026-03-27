@@ -1,0 +1,23 @@
+name: Test cleanup-backport-branches
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/cleanup-backport-branches.yaml'
+  pull_request:
+    paths:
+      - '.github/workflows/cleanup-backport-branches.yaml'
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    permissions:
+      contents: write
+    uses: ./.github/workflows/cleanup-backport-branches.yaml
+    with:
+      dry-run: ${{ format('{0}', true) }} # zizmor: ignore[obfuscation] -- workaround for actionlint treating 'true' as bool
+    secrets:
+      gh-access-token: ${{ secrets.GITHUB_TOKEN }}
