@@ -38,6 +38,26 @@ Validates whether a given version string follows semantic versioning (semver) fo
 
 See [semver-validation README](./.github/actions/semver-validation/README.md) for detailed documentation.
 
+### Linear Release Sync Action
+
+Syncs Linear issues to the "Released" state when a GitHub release is published. Finds PRs between releases, extracts Linear issue IDs, and moves matching issues from "Ready for Release" to "Released".
+
+**Location:** `.github/actions/linear-release-sync`
+
+**Usage:**
+
+```yaml
+- name: Sync Linear issues
+  uses: loft-sh/github-actions/.github/actions/linear-release-sync@linear-release-sync/v1
+  with:
+    release-tag: ${{ needs.publish.outputs.release_version }}
+    repo-name: my-repo
+    github-token: ${{ secrets.GH_ACCESS_TOKEN }}
+    linear-token: ${{ secrets.LINEAR_TOKEN }}
+```
+
+See [linear-release-sync README](./.github/actions/linear-release-sync/README.md) for detailed documentation.
+
 ## Available Reusable Workflows
 
 ### Validate Renovate Config
@@ -97,6 +117,7 @@ Run tests for a specific action:
 ```bash
 make test-semver-validation
 make test-linear-pr-commenter
+make test-linear-release-sync
 ```
 
 Run linters (actionlint + zizmor):
@@ -118,6 +139,8 @@ the action's files change:
 
 - `test-semver-validation.yaml` - triggers on `.github/actions/semver-validation/**`
 - `test-linear-pr-commenter.yaml` - triggers on `.github/actions/linear-pr-commenter/**`
+- `test-linear-release-sync.yaml` - triggers on `.github/actions/linear-release-sync/**`
+- `release-linear-release-sync.yaml` - builds and publishes the binary on tag push or `workflow_dispatch`
 
 Each reusable workflow (`workflow_call`) also has a smoke/integration test
 workflow that triggers on PRs when the workflow file changes:

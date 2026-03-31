@@ -1,0 +1,139 @@
+name: 'Linear Release Sync'
+description: 'Syncs Linear issues to Released state when a GitHub release is published. Finds PRs between releases, extracts Linear issue IDs, and moves matching issues from Ready for Release to Released.'
+
+inputs:
+  release-tag:
+    description: 'The tag of the new release (e.g. v1.2.0)'
+    required: true
+  repo-owner:
+    description: 'The GitHub owner of the repository'
+    required: false
+    default: 'loft-sh'
+  repo-name:
+    description: 'The GitHub repository name'
+    required: true
+  github-token:
+    description: 'GitHub token with read access to the repository'
+    required: true
+  linear-token:
+    description: 'Linear API token for updating issues'
+    required: true
+  previous-tag:
+    description: 'The previous release tag (auto-detected if not set)'
+    required: false
+    default: ''
+  released-state-name:
+    description: 'The Linear workflow state name for released issues'
+    required: false
+    default: 'Released'
+  ready-for-release-state-name:
+    description: 'The Linear workflow state name for issues ready to release'
+    required: false
+    default: 'Ready for Release'
+  strict-filtering:
+    description: 'Only include PRs merged before the release was published (recommended)'
+    required: false
+    default: 'true'
+  linear-teams:
+    description: 'Comma-separated list of Linear team names to process (optional, default: all)'
+    required: false
+    default: ''
+  linear-projects:
+    description: 'Comma-separated list of Linear project names to process (optional, default: all)'
+    required: false
+    default: ''
+  dry-run:
+    description: 'Preview changes without modifying Linear'
+    required: false
+    default: 'false'
+  debug:
+    description: 'Enable debug logging'
+    required: false
+    default: 'false'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Download linear-release-sync binary
+      id: download
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: |
+        BINARY_DIR="$(mktemp -d)"
+        echo "binary_dir=$BINARY_DIR" >> "$GITHUB_OUTPUT"
+
+        RELEASE_URL="https://github.com/loft-sh/github-actions/releases/download/linear-release-sync%2Fv1"
+
+        for asset in linear-release-sync-linux-amd64 linear-release-sync-linux-amd64.sha256; do
+          curl -fsSL \
+            -H "Authorization: token ${GH_TOKEN}" \
+            -H "Accept: application/octet-stream" \
+            -o "$BINARY_DIR/$asset" \
+            "$RELEASE_URL/$asset"
+        done
+
+        # Verify SHA-256 checksum
+        (cd "$BINARY_DIR" && sha256sum -c linear-release-sync-linux-amd64.sha256)
+
+        chmod +x "$BINARY_DIR/linear-release-sync-linux-amd64"
+
+        # Verify the binary is a valid ELF executable, not an HTML error page
+        if ! file "$BINARY_DIR/linear-release-sync-linux-amd64" | grep -q "ELF"; then
+          echo "::error::Downloaded file is not a valid ELF binary"
+          file "$BINARY_DIR/linear-release-sync-linux-amd64"
+          exit 1
+        fi
+
+    - name: Run Linear Release Sync
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        LINEAR_TOKEN: ${{ inputs.linear-token }}
+        INPUT_RELEASE_TAG: ${{ inputs.release-tag }}
+        INPUT_REPO_OWNER: ${{ inputs.repo-owner }}
+        INPUT_REPO_NAME: ${{ inputs.repo-name }}
+        INPUT_PREVIOUS_TAG: ${{ inputs.previous-tag }}
+        INPUT_RELEASED_STATE: ${{ inputs.released-state-name }}
+        INPUT_READY_STATE: ${{ inputs.ready-for-release-state-name }}
+        INPUT_STRICT_FILTERING: ${{ inputs.strict-filtering }}
+        INPUT_DRY_RUN: ${{ inputs.dry-run }}
+        INPUT_DEBUG: ${{ inputs.debug }}
+        INPUT_LINEAR_TEAMS: ${{ inputs.linear-teams }}
+        INPUT_LINEAR_PROJECTS: ${{ inputs.linear-projects }}
+        BINARY_DIR: ${{ steps.download.outputs.binary_dir }}
+      run: |
+        ARGS=(
+          -release-tag="$INPUT_RELEASE_TAG"
+          -owner="$INPUT_REPO_OWNER"
+          -repo="$INPUT_REPO_NAME"
+          -released-state-name="$INPUT_RELEASED_STATE"
+          -ready-for-release-state-name="$INPUT_READY_STATE"
+          -strict-filtering="$INPUT_STRICT_FILTERING"
+        )
+
+        if [ -n "$INPUT_PREVIOUS_TAG" ]; then
+          ARGS+=(-previous-tag="$INPUT_PREVIOUS_TAG")
+        fi
+
+        if [ -n "$INPUT_LINEAR_TEAMS" ]; then
+          ARGS+=(-linear-teams="$INPUT_LINEAR_TEAMS")
+        fi
+
+        if [ -n "$INPUT_LINEAR_PROJECTS" ]; then
+          ARGS+=(-linear-projects="$INPUT_LINEAR_PROJECTS")
+        fi
+
+        if [ "$INPUT_DRY_RUN" = "true" ]; then
+          ARGS+=(-dry-run)
+        fi
+
+        if [ "$INPUT_DEBUG" = "true" ]; then
+          ARGS+=(-debug)
+        fi
+
+        "$BINARY_DIR/linear-release-sync-linux-amd64" "${ARGS[@]}"
+
+branding:
+  icon: 'check-circle'
+  color: 'purple'
