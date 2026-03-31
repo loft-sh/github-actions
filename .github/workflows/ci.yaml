@@ -13,7 +13,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
-    uses: loft-sh/github-actions/.github/workflows/validate-renovate.yaml@e1593a4ab119917348fdc8cf743b3da9bea7dd58 # validate-renovate/v1
+    uses: loft-sh/github-actions/.github/workflows/validate-renovate.yaml@49ccb80c233a2ae5317fd726a183f74761a84b1f # validate-renovate/v1
 
   actionlint:
     runs-on: ubuntu-latest
