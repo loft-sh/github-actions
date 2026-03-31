@@ -33,7 +33,7 @@ jobs:
         if: steps.changed-files.outputs.renovate == 'true'
         env:
           LOG_LEVEL: warn
-        run: npx --yes --package renovate@43.100.0 -- renovate-config-validator
+        run: npx --yes --package renovate@43.101.2 -- renovate-config-validator
 
       - name: No Renovate config files changed
         if: steps.changed-files.outputs.renovate != 'true'
