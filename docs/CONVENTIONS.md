@@ -54,7 +54,20 @@ requirements. The table below captures current status and guidance:
 - Tests must not require real API tokens or network access.
 - YAML-only composites are validated by actionlint + zizmor (no unit tests needed for now).
 - Testing frameworks: **vitest** for TypeScript, **uv + pytest** for Python,
-  standard `go test` for Go.
+  standard `go test` for Go, **[bats](https://github.com/bats-core/bats-core)**
+  for Bash scripts. CI uses
+  [`bats-core/bats-action`](https://github.com/bats-core/bats-action); locally
+  install bats with your package manager:
+  ```bash
+  # macOS
+  brew install bats-core
+
+  # Ubuntu / Debian
+  sudo apt-get install bats
+
+  # Arch Linux
+  sudo pacman -S bats
+  ```
 
 ### Integration tests
 
