@@ -1,0 +1,59 @@
+name: 'Slack AI Conformance Notification'
+description: 'Sends a Slack notification with CNCF K8s AI Conformance pipeline results'
+branding:
+  icon: "bell"
+  color: "orange"
+inputs:
+  status:
+    description: 'Pipeline status (success, failure)'
+    required: true
+  k8s_version:
+    description: 'Target Kubernetes version (e.g., v1.34)'
+    required: true
+  vcluster_version:
+    description: 'vCluster OSS CLI version (e.g., v0.32.0)'
+    required: true
+  tenancy_model:
+    description: 'vCluster tenancy model (private-nodes, shared, standalone)'
+    required: true
+  artifact_url:
+    description: 'URL to the uploaded artifacts (optional)'
+    required: false
+    default: ''
+  webhook_url:
+    description: 'Slack Webhook URL'
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Post AI conformance notification
+      uses: slackapi/slack-github-action@af78098f536edbc4de71162a307590698245be95  # v3.0.1
+      with:
+        errors: true
+        webhook-type: incoming-webhook
+        webhook: ${{ inputs.webhook_url }}
+        payload: |
+          text: "${{ inputs.status == 'success' && '✅' || '❌' }} vCluster AI Conformance (${{ inputs.tenancy_model }}): ${{ inputs.status == 'success' && 'Success' || 'Failed' }}"
+          blocks:
+            - type: header
+              text:
+                type: plain_text
+                text: "${{ inputs.status == 'success' && '✅' || '❌' }} vCluster AI Conformance (${{ inputs.tenancy_model }})"
+                emoji: false
+            - type: section
+              fields:
+                - type: mrkdwn
+                  text: "*K8s version:*\n`${{ inputs.k8s_version }}`"
+                - type: mrkdwn
+                  text: "*vCluster version:*\n`${{ inputs.vcluster_version }}`"
+            - type: section
+              fields:
+                - type: mrkdwn
+                  text: "*Tenancy model:*\n`${{ inputs.tenancy_model }}`"
+                - type: mrkdwn
+                  text: "*Status:*\n${{ inputs.status == 'success' && '✅ Success' || '❌ Failed' }}"
+            - type: context
+              elements:
+                - type: mrkdwn
+                  text: "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Run Details>${{ inputs.artifact_url != '' && format(' · <{0}|Download Artifacts>', inputs.artifact_url) || '' }}"
