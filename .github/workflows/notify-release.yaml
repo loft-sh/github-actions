@@ -72,7 +72,7 @@ jobs:
           persist-credentials: false
       - name: Notify #product-releases Slack channel
         if: ${{ !inputs.dry-run }}
-        uses: loft-sh/github-actions/.github/actions/release-notification@378c7a375539f31f0b67565e8d959d8ea222ae3f # release-notification/v1
+        uses: loft-sh/github-actions/.github/actions/release-notification@4207288daf055fa396f57e248dd3c5657c32c65b # release-notification/v1
         with:
           version: ${{ inputs.release_version }}
           previous_tag: ${{ inputs.previous_tag }}
