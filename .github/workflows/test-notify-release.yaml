@@ -1,0 +1,40 @@
+name: Test notify-release
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/notify-release.yaml'
+
+permissions: {}
+
+jobs:
+  notify-release:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/notify-release.yaml
+    with:
+      release_version: 'v0.0.0-smoke-test'
+      previous_tag: 'v0.0.0'
+      target_repo: ${{ github.repository }}
+      product: 'smoke-test'
+      dry-run: true
+    secrets:
+      # Required: this secret must exist in the repo even though dry-run
+      # never uses it — notify-release.yaml declares it as required.
+      SLACK_WEBHOOK_URL_PRODUCT_RELEASES: ${{ secrets.SLACK_WEBHOOK_URL_PRODUCT_RELEASES }}
+
+  verify:
+    needs: [notify-release]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check notify-release result
+        env:
+          RESULT: ${{ needs.notify-release.result }}
+        run: |
+          echo "notify-release result=$RESULT"
+          if [ "$RESULT" != "success" ]; then
+            echo "::error::Expected notify-release result=success (dry-run), got '$RESULT'"
+            exit 1
+          fi
+          echo "notify-release workflow completed with result: $RESULT"

@@ -1,0 +1,37 @@
+name: Test validate-renovate
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/validate-renovate.yaml'
+      - 'renovate.json'
+  pull_request:
+    paths:
+      - '.github/workflows/validate-renovate.yaml'
+      - 'renovate.json'
+
+permissions: {}
+
+jobs:
+  validate-renovate:
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: ./.github/workflows/validate-renovate.yaml
+
+  verify:
+    needs: [validate-renovate]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check validate-renovate result
+        env:
+          RESULT: ${{ needs.validate-renovate.result }}
+        run: |
+          echo "validate-renovate result=$RESULT"
+          if [ "$RESULT" = "failure" ]; then
+            echo "::error::validate-renovate workflow failed unexpectedly"
+            exit 1
+          fi
+          echo "validate-renovate workflow completed with result: $RESULT"

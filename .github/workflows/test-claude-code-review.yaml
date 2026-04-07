@@ -1,0 +1,36 @@
+name: Test claude-code-review
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/claude-code-review.yaml'
+
+permissions: {}
+
+jobs:
+  claude-review:
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: ./.github/workflows/claude-code-review.yaml
+    secrets:
+      anthropic-api-key: ${{ secrets.ANTHROPIC_SMOKE_TEST_KEY }}
+
+  verify:
+    needs: [claude-review]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check claude-code-review result
+        env:
+          RESULT: ${{ needs.claude-review.result }}
+        # The workflow checks github.repository_owner == 'loft-sh' so it runs
+        # in this repo, but skips in forks. Accept success or skipped — failure
+        # indicates a genuine workflow bug.
+        run: |
+          echo "claude-code-review result=$RESULT"
+          if [ "$RESULT" != "success" ] && [ "$RESULT" != "skipped" ]; then
+            echo "::error::Expected claude-code-review result=success or skipped, got '$RESULT'"
+            exit 1
+          fi
+          echo "claude-code-review workflow completed with result: $RESULT"

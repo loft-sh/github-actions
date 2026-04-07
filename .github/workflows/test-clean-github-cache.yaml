@@ -1,0 +1,30 @@
+name: Test clean-github-cache
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/clean-github-cache.yaml'
+
+permissions: {}
+
+jobs:
+  clean-cache:
+    permissions:
+      actions: write
+    uses: ./.github/workflows/clean-github-cache.yaml
+
+  verify:
+    needs: [clean-cache]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check clean-cache result
+        env:
+          RESULT: ${{ needs.clean-cache.result }}
+        run: |
+          echo "clean-cache result=$RESULT"
+          if [ "$RESULT" = "failure" ]; then
+            echo "::error::clean-github-cache workflow failed unexpectedly"
+            exit 1
+          fi
+          echo "clean-github-cache workflow completed with result: $RESULT"

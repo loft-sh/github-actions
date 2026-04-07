@@ -4,10 +4,10 @@ on:
   workflow_call:
     inputs:
       dry-run:
-        description: 'Dry run mode (true or false)'
-        type: string
+        description: 'Dry run mode'
+        type: boolean
         required: false
-        default: 'false'
+        default: false
     secrets:
       gh-access-token:
         description: 'GitHub PAT with repo scope for branch deletion'

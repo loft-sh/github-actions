@@ -1,0 +1,36 @@
+name: Test claude
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/claude.yaml'
+
+permissions: {}
+
+jobs:
+  claude:
+    permissions:
+      contents: read
+      pull-requests: write
+      actions: read
+    uses: ./.github/workflows/claude.yaml
+    secrets:
+      anthropic-api-key: ${{ secrets.ANTHROPIC_SMOKE_TEST_KEY }}
+
+  verify:
+    needs: [claude]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check claude result
+        env:
+          RESULT: ${{ needs.claude.result }}
+        # claude.yaml requires an @claude mention in a comment event.
+        # On pull_request/push events the if-condition is false, so it skips.
+        run: |
+          echo "claude result=$RESULT"
+          if [ "$RESULT" != "skipped" ]; then
+            echo "::error::Expected claude result=skipped (no @claude comment event), got '$RESULT'"
+            exit 1
+          fi
+          echo "claude workflow completed with result: $RESULT"
