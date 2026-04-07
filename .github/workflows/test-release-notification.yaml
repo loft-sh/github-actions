@@ -1,0 +1,27 @@
+name: Test release-notification
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/actions/release-notification/**']
+  pull_request:
+    paths: ['.github/actions/release-notification/**']
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: bats-core/bats-action@5b1e60c2ee94cb1b44a616ea4b1f466f9d6e38ef # 4.0.0
+        with:
+          support-install: false
+          assert-install: false
+          detik-install: false
+          file-install: false
+      - name: Run detect-branch tests
+        run: bats .github/actions/release-notification/test/detect-branch.bats

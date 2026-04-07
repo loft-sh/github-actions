@@ -1,0 +1,55 @@
+name: Notify release
+
+on:
+  workflow_call:
+    inputs:
+      release_version:
+        description: 'The release version tag (e.g. v1.2.3)'
+        required: true
+        type: string
+      previous_tag:
+        description: 'The previous tag for changelog comparison'
+        required: true
+        type: string
+      target_repo:
+        description: 'Target repository (e.g. loft-sh/vcluster)'
+        required: true
+        type: string
+      product:
+        description: 'Product name (e.g. vCluster, vCluster Platform)'
+        required: true
+        type: string
+      ref:
+        description: 'The git ref to checkout (defaults to github.ref)'
+        required: false
+        type: string
+        default: ''
+    secrets:
+      SLACK_WEBHOOK_URL_PRODUCT_RELEASES:
+        description: 'Slack incoming webhook URL for #product-releases'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  notify_release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ inputs.target_repo }}
+          ref: ${{ inputs.ref || github.ref }}
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - name: Notify #product-releases Slack channel
+        uses: loft-sh/github-actions/.github/actions/release-notification@378c7a375539f31f0b67565e8d959d8ea222ae3f # release-notification/v1
+        with:
+          version: ${{ inputs.release_version }}
+          previous_tag: ${{ inputs.previous_tag }}
+          changes: "See changelog link below"
+          target_repo: ${{ inputs.target_repo }}
+          product: ${{ inputs.product }}
+          webhook_url: ${{ secrets.SLACK_WEBHOOK_URL_PRODUCT_RELEASES }} # zizmor: ignore[secrets-outside-env] -- webhook URL passed via workflow_call

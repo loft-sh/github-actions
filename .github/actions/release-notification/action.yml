@@ -30,8 +30,9 @@ inputs:
     description: 'Product name (vCluster or vCluster Platform)'
     required: true
   base_branch:
-    description: 'Source branch from which the release was cut'
+    description: 'Source branch from which the release was cut (auto-detected from git history when omitted)'
     required: false
+    default: ''
   webhook_url:
     description: 'Slack Webhook URL'
     required: true
@@ -39,6 +40,15 @@ inputs:
 runs:
   using: "composite"
   steps:
+    - name: Detect base branch
+      id: detect_branch
+      if: inputs.base_branch == ''
+      shell: bash
+      env:
+        RELEASE_VERSION: ${{ inputs.version }}
+      run: |
+        BRANCH=$("${{ github.action_path }}/detect-branch.sh")
+        echo "base_branch=$BRANCH" >> "$GITHUB_OUTPUT"
     - name: Post release notification
       uses: slackapi/slack-github-action@af78098f536edbc4de71162a307590698245be95  # v3.0.1
       with:
@@ -66,7 +76,7 @@ runs:
             - type: section
               fields:
                 - type: mrkdwn
-                  text: "*Source Branch:*\n${{ inputs.base_branch || 'main' }}"
+                  text: "*Source Branch:*\n${{ inputs.base_branch || steps.detect_branch.outputs.base_branch || 'main' }}"
             - type: section
               text:
                 type: mrkdwn

@@ -1,3 +1,5 @@
+node_modules/
+
 # override global gitignore to track claude config
 !.claude/
 !CLAUDE.md
