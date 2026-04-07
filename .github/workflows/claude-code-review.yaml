@@ -1,0 +1,68 @@
+name: Claude Code Review
+
+on:
+  workflow_call:
+    secrets:
+      anthropic-api-key:
+        description: 'Anthropic API key for Claude Code Review'
+        required: true
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  claude-review:
+    # Guards against running in forked orgs. Does NOT gate on fork PRs — callers
+    # use pull_request_target so secrets are available for fork PRs by design.
+    # Do not add run/build steps that source checked-out repo files here.
+    if: github.repository_owner == 'loft-sh'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Restore CLAUDE.md from base branch
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          # Prevent prompt injection via CLAUDE.md in PR head.
+          # Restore the base-branch version; delete if it doesn't exist there.
+          git show "origin/${BASE_REF}:CLAUDE.md" > CLAUDE.md 2>/dev/null || rm -f CLAUDE.md
+
+      - name: Setup fork as origin for Claude
+        if: ${{ github.event.pull_request.head.repo.fork == true }}
+        env:
+          PR_HEAD_CLONE_URL: ${{ github.event.pull_request.head.repo.clone_url }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          git remote rename origin upstream
+          git remote add origin "${PR_HEAD_CLONE_URL}"
+          git fetch origin "${PR_HEAD_REF}"
+          git checkout -B "${PR_HEAD_REF}" "origin/${PR_HEAD_REF}"
+
+      - name: Claude Code Review
+        uses: anthropics/claude-code-action@88c168b39e7e64da0286d812b6e9fbebb6708185 # v1
+        with:
+          anthropic_api_key: ${{ secrets.anthropic-api-key }} # zizmor: ignore[secrets-outside-env] -- API key passed via workflow_call, not a repo secret
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          track_progress: true
+          prompt: |
+            Review PR #${{ github.event.pull_request.number }} in ${{ github.repository }}.
+
+            Focus on: bugs, security issues, performance problems.
+            Skip: style nitpicks, minor suggestions, praise.
+
+            Only comment on issues worth fixing. Be concise.
+
+          claude_args: |
+            --allowedTools "Read,Glob,Grep,LS,Bash(git diff:*),Bash(git log:*),mcp__github_inline_comment__create_inline_comment"
