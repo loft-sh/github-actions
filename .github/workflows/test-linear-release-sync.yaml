@@ -1,0 +1,29 @@
+name: Test linear-release-sync
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/actions/linear-release-sync/**'
+  pull_request:
+    paths:
+      - '.github/actions/linear-release-sync/**'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417  # v6.3.0
+        with:
+          go-version-file: .github/actions/linear-release-sync/src/go.mod
+      - name: Run tests
+        run: go test ./...
+        working-directory: .github/actions/linear-release-sync/src
+      - name: Verify binary builds
+        working-directory: .github/actions/linear-release-sync/src
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /dev/null .

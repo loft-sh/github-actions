@@ -15,7 +15,14 @@
     {
       "description": "Group linear-pr-commenter Go dependencies",
       "matchManagers": ["gomod"],
+      "matchFileNames": [".github/actions/linear-pr-commenter/**"],
       "groupName": "linear-pr-commenter"
+    },
+    {
+      "description": "Group linear-release-sync Go dependencies",
+      "matchManagers": ["gomod"],
+      "matchFileNames": [".github/actions/linear-release-sync/**"],
+      "groupName": "linear-release-sync"
     }
   ],
   "customManagers": [

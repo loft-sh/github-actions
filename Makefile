@@ -1,11 +1,11 @@
-.PHONY: test test-semver-validation test-linear-pr-commenter test-release-notification lint help
+.PHONY: test test-semver-validation test-linear-pr-commenter test-release-notification test-linear-release-sync build-linear-release-sync lint help
 
 ACTIONS_DIR := .github/actions
 
 help: ## show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-30s %s\n", $$1, $$2}'
 
-test: test-semver-validation test-linear-pr-commenter test-release-notification ## run all action tests
+test: test-semver-validation test-linear-pr-commenter test-release-notification test-linear-release-sync ## run all action tests
 
 test-semver-validation: ## run semver-validation unit tests
 	cd $(ACTIONS_DIR)/semver-validation && npm ci --silent && NODE_OPTIONS=--experimental-vm-modules npx jest --ci --coverage --watchAll=false
@@ -15,6 +15,12 @@ test-linear-pr-commenter: ## run linear-pr-commenter unit tests
 
 test-release-notification: ## run release-notification detect-branch tests
 	bats $(ACTIONS_DIR)/release-notification/test/detect-branch.bats
+
+test-linear-release-sync: ## run linear-release-sync unit tests
+	cd $(ACTIONS_DIR)/linear-release-sync/src && go test -v ./...
+
+build-linear-release-sync: ## build linear-release-sync binary (linux/amd64)
+	cd $(ACTIONS_DIR)/linear-release-sync/src && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o ../linear-release-sync-linux-amd64 .
 
 lint: ## run actionlint and zizmor on workflows
 	actionlint .github/workflows/*.yaml

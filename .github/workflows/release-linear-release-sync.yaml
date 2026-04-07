@@ -1,0 +1,62 @@
+name: Release linear-release-sync
+
+on:
+  push:
+    tags:
+      - 'linear-release-sync/v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. linear-release-sync/v1)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417  # v6.3.0
+        with:
+          go-version-file: .github/actions/linear-release-sync/src/go.mod
+          cache: false
+
+      - name: Run tests
+        run: go test ./...
+        working-directory: .github/actions/linear-release-sync/src
+
+      - name: Build binary
+        working-directory: .github/actions/linear-release-sync/src
+        run: >-
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64
+          go build -trimpath -ldflags="-s -w"
+          -o ../linear-release-sync-linux-amd64 .
+
+      - name: Generate checksum
+        working-directory: .github/actions/linear-release-sync
+        run: sha256sum linear-release-sync-linux-amd64 > linear-release-sync-linux-amd64.sha256
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          BINARY: .github/actions/linear-release-sync/linear-release-sync-linux-amd64
+          CHECKSUM: .github/actions/linear-release-sync/linear-release-sync-linux-amd64.sha256
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" \
+              "$BINARY" "$CHECKSUM" \
+              --repo "$GITHUB_REPOSITORY" \
+              --clobber
+          else
+            gh release create "$TAG" \
+              "$BINARY" "$CHECKSUM" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$TAG" \
+              --notes "Automated release for linear-release-sync action."
+          fi
