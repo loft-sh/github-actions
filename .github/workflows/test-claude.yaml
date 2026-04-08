@@ -15,7 +15,7 @@ jobs:
       actions: read
     uses: ./.github/workflows/claude.yaml
     secrets:
-      anthropic-api-key: ${{ secrets.ANTHROPIC_SMOKE_TEST_KEY }}
+      anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
 
   verify:
     needs: [claude]

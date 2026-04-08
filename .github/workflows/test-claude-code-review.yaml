@@ -14,7 +14,7 @@ jobs:
       pull-requests: write
     uses: ./.github/workflows/claude-code-review.yaml
     secrets:
-      anthropic-api-key: ${{ secrets.ANTHROPIC_SMOKE_TEST_KEY }}
+      anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
 
   verify:
     needs: [claude-review]
