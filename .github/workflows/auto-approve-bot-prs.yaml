@@ -69,10 +69,11 @@ jobs:
         if: steps.check.outputs.eligible == 'true'
         id: conflicts
         env:
-          GH_TOKEN: ${{ secrets.gh-access-token }}
+          GH_TOKEN: ${{ secrets.gh-access-token }} # zizmor: ignore[secrets-outside-env] -- PAT passed via workflow_call, not a repo secret
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           for i in 1 2 3; do
-            MERGEABLE=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${{ github.event.pull_request.number }}" --jq '.mergeable // "null"')
+            MERGEABLE=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.mergeable // "null"')
             if [ "${MERGEABLE}" != "null" ]; then break; fi
             sleep 3
           done
@@ -87,19 +88,27 @@ jobs:
       - name: Approve PR
         if: steps.check.outputs.eligible == 'true' && steps.conflicts.outputs.clean == 'true'
         env:
-          GH_TOKEN: ${{ secrets.gh-access-token }}
+          GH_TOKEN: ${{ secrets.gh-access-token }} # zizmor: ignore[secrets-outside-env] -- PAT passed via workflow_call, not a repo secret
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REASON: ${{ steps.check.outputs.reason }}
         run: |
-          gh pr review "${{ github.event.pull_request.number }}" \
+          gh pr review "${PR_NUMBER}" \
             --repo "${GITHUB_REPOSITORY}" \
             --approve \
-            --body "Auto-approved: ${{ steps.check.outputs.reason }} from trusted bot with no merge conflicts. CI must pass before merge."
+            --body "Auto-approved: ${REASON} from trusted bot with no merge conflicts. CI must pass before merge."
 
       - name: Enable auto-merge
         if: steps.check.outputs.eligible == 'true' && steps.conflicts.outputs.clean == 'true' && inputs.auto-merge
         env:
-          GH_TOKEN: ${{ secrets.gh-access-token }}
+          GH_TOKEN: ${{ secrets.gh-access-token }} # zizmor: ignore[secrets-outside-env] -- PAT passed via workflow_call, not a repo secret
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          MERGE_METHOD: ${{ inputs.merge-method }}
         run: |
-          gh pr merge "${{ github.event.pull_request.number }}" \
+          case "${MERGE_METHOD}" in
+            squash|merge|rebase) ;;
+            *) echo "::error::Invalid merge method: ${MERGE_METHOD}"; exit 1 ;;
+          esac
+          gh pr merge "${PR_NUMBER}" \
             --repo "${GITHUB_REPOSITORY}" \
             --auto \
-            --${{ inputs.merge-method }}
+            --"${MERGE_METHOD}"
