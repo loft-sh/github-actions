@@ -1,0 +1,53 @@
+name: Cleanup ChartMuseum head charts
+
+on:
+  workflow_call:
+    inputs:
+      chart-name:
+        description: 'Chart name to clean up (e.g. vcluster-head, vcluster-platform-head)'
+        type: string
+        required: true
+      max-versions:
+        description: 'Maximum number of versions to keep'
+        type: number
+        required: false
+        default: 50
+      chart-museum-url:
+        description: 'ChartMuseum base URL (e.g. https://charts.loft.sh)'
+        type: string
+        required: true
+      dry-run:
+        description: 'List versions that would be deleted without actually deleting them'
+        type: boolean
+        required: false
+        default: false
+    secrets:
+      chart-museum-user:
+        description: 'ChartMuseum username'
+        required: true
+      chart-museum-password:
+        description: 'ChartMuseum password'
+        required: true
+
+jobs:
+  cleanup:
+    name: Cleanup old head chart versions
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: loft-sh/github-actions
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts/cleanup-head-charts
+      - name: Cleanup old head chart versions
+        env:
+          CHART_MUSEUM_URL: ${{ inputs.chart-museum-url }}
+          CHART_MUSEUM_USER: ${{ secrets.chart-museum-user }} # zizmor: ignore[secrets-outside-env] -- passed via workflow_call, not a repo secret
+          CHART_MUSEUM_PASSWORD: ${{ secrets.chart-museum-password }} # zizmor: ignore[secrets-outside-env] -- passed via workflow_call, not a repo secret
+          CHART_NAME: ${{ inputs.chart-name }}
+          MAX_VERSIONS: ${{ inputs.max-versions }}
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: .github/scripts/cleanup-head-charts/cleanup-head-charts.sh "$CHART_NAME" "$MAX_VERSIONS" "$DRY_RUN"

@@ -1,11 +1,11 @@
-.PHONY: test test-semver-validation test-linear-pr-commenter test-release-notification test-linear-release-sync build-linear-release-sync lint help
+.PHONY: test test-semver-validation test-linear-pr-commenter test-release-notification test-linear-release-sync test-cleanup-head-charts build-linear-release-sync lint help
 
 ACTIONS_DIR := .github/actions
 
 help: ## show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-30s %s\n", $$1, $$2}'
 
-test: test-semver-validation test-linear-pr-commenter test-release-notification test-linear-release-sync ## run all action tests
+test: test-semver-validation test-linear-pr-commenter test-release-notification test-linear-release-sync test-cleanup-head-charts ## run all action tests
 
 test-semver-validation: ## run semver-validation unit tests
 	cd $(ACTIONS_DIR)/semver-validation && npm ci --silent && NODE_OPTIONS=--experimental-vm-modules npx jest --ci --coverage --watchAll=false
@@ -18,6 +18,9 @@ test-release-notification: ## run release-notification detect-branch tests
 
 test-linear-release-sync: ## run linear-release-sync unit tests
 	cd $(ACTIONS_DIR)/linear-release-sync/src && go test -v ./...
+
+test-cleanup-head-charts: ## run cleanup-head-charts bats tests
+	bats .github/scripts/cleanup-head-charts/test/cleanup-head-charts.bats
 
 build-linear-release-sync: ## build linear-release-sync binary (linux/amd64)
 	cd $(ACTIONS_DIR)/linear-release-sync/src && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o ../linear-release-sync-linux-amd64 .
