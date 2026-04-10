@@ -72,7 +72,7 @@ jobs:
           GH_TOKEN: ${{ secrets.gh-access-token }} # zizmor: ignore[secrets-outside-env] -- PAT passed via workflow_call, not a repo secret
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          for i in 1 2 3; do
+          for _ in 1 2 3; do
             MERGEABLE=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.mergeable // "null"')
             if [ "${MERGEABLE}" != "null" ]; then break; fi
             sleep 3
