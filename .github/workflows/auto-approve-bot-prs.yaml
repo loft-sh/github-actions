@@ -23,6 +23,8 @@ on:
 jobs:
   auto-approve:
     runs-on: ubuntu-latest
+    # Skip fork PRs — secrets are not available
+    if: github.event.pull_request.head.repo.full_name == github.repository
     permissions:
       contents: read
     steps:
@@ -52,11 +54,12 @@ jobs:
 
           eligible=false
           reason=""
-          if [[ "${PR_TITLE}" =~ ^chore(\(|:) ]]; then eligible=true; reason="chore PR"; fi
-          if [[ "${PR_TITLE}" =~ ^fix\(deps\) ]]; then eligible=true; reason="dependency fix PR"; fi
-          if [[ "${PR_BRANCH}" =~ ^backport/ ]]; then eligible=true; reason="backport PR"; fi
-          if [[ "${PR_BRANCH}" =~ ^renovate/ ]]; then eligible=true; reason="renovate PR"; fi
-          if [[ "${PR_BRANCH}" =~ ^update-platform-version- ]]; then eligible=true; reason="platform version update PR"; fi
+          if [[ "${PR_TITLE}" =~ ^chore(\(|:) ]]; then eligible=true; reason="chore PR"
+          elif [[ "${PR_TITLE}" =~ ^fix\(deps\) ]]; then eligible=true; reason="dependency fix PR"
+          elif [[ "${PR_BRANCH}" =~ ^backport/ ]]; then eligible=true; reason="backport PR"
+          elif [[ "${PR_BRANCH}" =~ ^renovate/ ]]; then eligible=true; reason="renovate PR"
+          elif [[ "${PR_BRANCH}" =~ ^update-platform-version- ]]; then eligible=true; reason="platform version update PR"
+          fi
 
           echo "eligible=${eligible}" >> "${GITHUB_OUTPUT}"
           echo "reason=${reason}" >> "${GITHUB_OUTPUT}"
@@ -78,11 +81,11 @@ jobs:
             sleep 3
           done
 
-          if [ "${MERGEABLE}" = "false" ]; then
-            echo "::warning::PR has merge conflicts, skipping auto-approve"
-            echo "clean=false" >> "${GITHUB_OUTPUT}"
-          else
+          if [ "${MERGEABLE}" = "true" ]; then
             echo "clean=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "::warning::PR mergeability is '${MERGEABLE}', skipping auto-approve"
+            echo "clean=false" >> "${GITHUB_OUTPUT}"
           fi
 
       - name: Approve PR
