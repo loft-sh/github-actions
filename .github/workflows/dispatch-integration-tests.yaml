@@ -14,6 +14,7 @@ on:
       - '.github/workflows/claude.yaml'
       - '.github/workflows/conflict-check.yaml'
       - '.github/workflows/notify-release.yaml'
+      - '.github/workflows/cleanup-head-charts.yaml'
 
 permissions:
   contents: read
