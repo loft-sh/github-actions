@@ -1,0 +1,105 @@
+name: Auto-approve bot PRs
+
+on:
+  workflow_call:
+    inputs:
+      trusted-authors:
+        description: 'Comma-separated list of trusted bot logins'
+        type: string
+        default: 'renovate[bot],loft-bot,github-actions[bot]'
+      merge-method:
+        description: 'Merge method for auto-merge (squash, merge, rebase)'
+        type: string
+        default: 'squash'
+      auto-merge:
+        description: 'Enable auto-merge after approval'
+        type: boolean
+        default: true
+    secrets:
+      gh-access-token:
+        description: 'GitHub PAT for approving PRs (must be different identity from PR author)'
+        required: true
+
+jobs:
+  auto-approve:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check eligibility
+        id: check
+        env:
+          TRUSTED_AUTHORS: ${{ inputs.trusted-authors }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          # Exact-match author against trusted list
+          IFS=',' read -ra AUTHORS <<< "${TRUSTED_AUTHORS}"
+          author_trusted=false
+          for author in "${AUTHORS[@]}"; do
+            if [ "${author}" = "${PR_AUTHOR}" ]; then
+              author_trusted=true
+              break
+            fi
+          done
+
+          if [ "${author_trusted}" != "true" ]; then
+            echo "Author '${PR_AUTHOR}' not in trusted list, skipping"
+            echo "eligible=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          eligible=false
+          reason=""
+          if [[ "${PR_TITLE}" =~ ^chore(\(|:) ]]; then eligible=true; reason="chore PR"; fi
+          if [[ "${PR_TITLE}" =~ ^fix\(deps\) ]]; then eligible=true; reason="dependency fix PR"; fi
+          if [[ "${PR_BRANCH}" =~ ^backport/ ]]; then eligible=true; reason="backport PR"; fi
+          if [[ "${PR_BRANCH}" =~ ^renovate/ ]]; then eligible=true; reason="renovate PR"; fi
+          if [[ "${PR_BRANCH}" =~ ^update-platform-version- ]]; then eligible=true; reason="platform version update PR"; fi
+
+          echo "eligible=${eligible}" >> "${GITHUB_OUTPUT}"
+          echo "reason=${reason}" >> "${GITHUB_OUTPUT}"
+
+          if [ "${eligible}" != "true" ]; then
+            echo "PR does not match auto-approve patterns (title: ${PR_TITLE}, branch: ${PR_BRANCH})"
+          fi
+
+      - name: Check for merge conflicts
+        if: steps.check.outputs.eligible == 'true'
+        id: conflicts
+        env:
+          GH_TOKEN: ${{ secrets.gh-access-token }}
+        run: |
+          for i in 1 2 3; do
+            MERGEABLE=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${{ github.event.pull_request.number }}" --jq '.mergeable // "null"')
+            if [ "${MERGEABLE}" != "null" ]; then break; fi
+            sleep 3
+          done
+
+          if [ "${MERGEABLE}" = "false" ]; then
+            echo "::warning::PR has merge conflicts, skipping auto-approve"
+            echo "clean=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "clean=true" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Approve PR
+        if: steps.check.outputs.eligible == 'true' && steps.conflicts.outputs.clean == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.gh-access-token }}
+        run: |
+          gh pr review "${{ github.event.pull_request.number }}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --approve \
+            --body "Auto-approved: ${{ steps.check.outputs.reason }} from trusted bot with no merge conflicts. CI must pass before merge."
+
+      - name: Enable auto-merge
+        if: steps.check.outputs.eligible == 'true' && steps.conflicts.outputs.clean == 'true' && inputs.auto-merge
+        env:
+          GH_TOKEN: ${{ secrets.gh-access-token }}
+        run: |
+          gh pr merge "${{ github.event.pull_request.number }}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --auto \
+            --${{ inputs.merge-method }}

@@ -1,0 +1,33 @@
+name: Test auto-approve-bot-prs
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/auto-approve-bot-prs.yaml'
+
+permissions:
+  contents: read
+
+jobs:
+  auto-approve:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/auto-approve-bot-prs.yaml
+    secrets:
+      gh-access-token: ${{ secrets.GITHUB_TOKEN }}
+
+  verify:
+    needs: [auto-approve]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check result
+        env:
+          RESULT: ${{ needs.auto-approve.result }}
+        run: |
+          echo "auto-approve result=$RESULT"
+          # Human-authored test PRs should succeed (steps skip on author check)
+          if [ "$RESULT" != "success" ]; then
+            echo "::error::Expected result=success (steps skip for non-bot authors), got '$RESULT'"
+            exit 1
+          fi
