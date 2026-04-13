@@ -20,96 +20,28 @@ on:
         description: 'GitHub PAT for approving PRs (must be different identity from PR author)'
         required: true
 
-# Policy: this reusable workflow must never block caller CI. Every step
-# catches its own errors and exits 0; `continue-on-error: true` on the job
-# is a final safety net so the check reports soft-fail (orange) at worst,
-# never red.
 jobs:
   auto-approve:
     runs-on: ubuntu-latest
+    # Skip fork PRs — secrets are not available.
     if: github.event.pull_request.head.repo.full_name == github.repository
     permissions:
       pull-requests: write
       contents: read
+    # Safety net — internal steps already guard every failure mode, but if
+    # anything unforeseen slips through this still prevents the job from
+    # reporting a hard red check on caller CI.
     continue-on-error: true
     steps:
-      - name: Check eligibility
-        id: check
-        env:
-          TRUSTED_AUTHORS: ${{ inputs.trusted-authors }}
-          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_BRANCH: ${{ github.event.pull_request.head.ref }}
-        run: |
-          IFS=',' read -ra AUTHORS <<< "${TRUSTED_AUTHORS}"
-          for author in "${AUTHORS[@]}"; do
-            [ "${author}" = "${PR_AUTHOR}" ] && trusted=true && break
-          done
-          if [ -z "${trusted:-}" ]; then
-            echo "::notice::Author '${PR_AUTHOR}' not in trusted list"
-            echo "eligible=false" >> "${GITHUB_OUTPUT}"
-            exit 0
-          fi
-
-          if   [[ "${PR_TITLE}"  =~ ^chore(\(|:)              ]]; then eligible=true
-          elif [[ "${PR_TITLE}"  =~ ^fix\(deps\)              ]]; then eligible=true
-          elif [[ "${PR_BRANCH}" =~ ^backport/                ]]; then eligible=true
-          elif [[ "${PR_BRANCH}" =~ ^renovate/                ]]; then eligible=true
-          elif [[ "${PR_BRANCH}" =~ ^update-platform-version- ]]; then eligible=true
-          else eligible=false
-          fi
-          echo "eligible=${eligible}" >> "${GITHUB_OUTPUT}"
-          [ "${eligible}" = "true" ] || echo "::notice::PR not in auto-approve patterns (title: ${PR_TITLE}, branch: ${PR_BRANCH})"
-
-      - name: Check merge conflicts and approver identity
-        if: steps.check.outputs.eligible == 'true'
-        id: gate
-        env:
-          GH_TOKEN: ${{ secrets.gh-access-token }} # zizmor: ignore[secrets-outside-env] -- PAT passed via workflow_call, not a repo secret
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
-        run: |
-          # mergeable can be null briefly while GitHub computes metadata.
-          MERGEABLE="null"
-          for _ in 1 2 3; do
-            MERGEABLE=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.mergeable // "null"' 2>/dev/null || echo "null")
-            [ "${MERGEABLE}" != "null" ] && break
-            sleep 3
-          done
-          if [ "${MERGEABLE}" != "true" ]; then
-            echo "::notice::PR mergeability is '${MERGEABLE}', skipping"
-            echo "proceed=false" >> "${GITHUB_OUTPUT}"
-            exit 0
-          fi
-
-          # Pre-empt hmarr/auto-approve-action's 422 "approve your own PR"
-          # failure — it calls core.setFailed on that error.
-          APPROVER=$(gh api user --jq '.login' 2>/dev/null || echo "")
-          if [ -z "${APPROVER}" ] || [ "${APPROVER}" = "${PR_AUTHOR}" ]; then
-            echo "::notice::Skipping approval (approver='${APPROVER}', author='${PR_AUTHOR}')"
-            echo "proceed=false" >> "${GITHUB_OUTPUT}"
-            exit 0
-          fi
-          echo "proceed=true" >> "${GITHUB_OUTPUT}"
-
-      - name: Approve PR
-        if: steps.gate.outputs.proceed == 'true'
-        continue-on-error: true
-        uses: hmarr/auto-approve-action@f0939ea97e9205ef24d872e76833fa908a770363 # v4.0.0
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          github-token: ${{ secrets.gh-access-token }} # zizmor: ignore[secrets-outside-env] -- PAT passed via workflow_call, not a repo secret
-          review-message: 'Auto-approved: trusted bot, no merge conflicts. CI must pass before merge.'
-
-      - name: Enable auto-merge
-        if: steps.gate.outputs.proceed == 'true' && inputs.auto-merge
-        env:
-          GH_TOKEN: ${{ secrets.gh-access-token }} # zizmor: ignore[secrets-outside-env] -- PAT passed via workflow_call, not a repo secret
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          MERGE_METHOD: ${{ inputs.merge-method }}
-        run: |
-          case "${MERGE_METHOD}" in
-            squash|merge|rebase) ;;
-            *) echo "::notice::Invalid merge method '${MERGE_METHOD}'"; exit 0 ;;
-          esac
-          gh pr merge "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" --auto --"${MERGE_METHOD}" 2>&1 || \
-            echo "::notice::gh pr merge failed; auto-merge not enabled"
+          repository: loft-sh/github-actions
+          ref: main
+          persist-credentials: false
+          sparse-checkout: .github/actions/auto-approve-bot-prs
+      - uses: ./.github/actions/auto-approve-bot-prs
+        with:
+          trusted-authors: ${{ inputs.trusted-authors }}
+          merge-method: ${{ inputs.merge-method }}
+          auto-merge: ${{ inputs.auto-merge }}
+          github-token: ${{ secrets.gh-access-token }}
