@@ -97,7 +97,7 @@ jobs:
         continue-on-error: true
         uses: hmarr/auto-approve-action@f0939ea97e9205ef24d872e76833fa908a770363 # v4.0.0
         with:
-          github-token: ${{ secrets.gh-access-token }}
+          github-token: ${{ secrets.gh-access-token }} # zizmor: ignore[secrets-outside-env] -- PAT passed via workflow_call, not a repo secret
           review-message: 'Auto-approved: trusted bot, no merge conflicts. CI must pass before merge.'
 
       - name: Enable auto-merge
