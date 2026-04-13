@@ -28,6 +28,12 @@ jobs:
     permissions:
       contents: read
     steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: loft-sh/github-actions
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts/auto-approve-bot-prs
       - name: Check eligibility
         id: check
         env:
@@ -35,38 +41,7 @@ jobs:
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BRANCH: ${{ github.event.pull_request.head.ref }}
-        run: |
-          # Exact-match author against trusted list
-          IFS=',' read -ra AUTHORS <<< "${TRUSTED_AUTHORS}"
-          author_trusted=false
-          for author in "${AUTHORS[@]}"; do
-            if [ "${author}" = "${PR_AUTHOR}" ]; then
-              author_trusted=true
-              break
-            fi
-          done
-
-          if [ "${author_trusted}" != "true" ]; then
-            echo "Author '${PR_AUTHOR}' not in trusted list, skipping"
-            echo "eligible=false" >> "${GITHUB_OUTPUT}"
-            exit 0
-          fi
-
-          eligible=false
-          reason=""
-          if [[ "${PR_TITLE}" =~ ^chore(\(|:) ]]; then eligible=true; reason="chore PR"
-          elif [[ "${PR_TITLE}" =~ ^fix\(deps\) ]]; then eligible=true; reason="dependency fix PR"
-          elif [[ "${PR_BRANCH}" =~ ^backport/ ]]; then eligible=true; reason="backport PR"
-          elif [[ "${PR_BRANCH}" =~ ^renovate/ ]]; then eligible=true; reason="renovate PR"
-          elif [[ "${PR_BRANCH}" =~ ^update-platform-version- ]]; then eligible=true; reason="platform version update PR"
-          fi
-
-          echo "eligible=${eligible}" >> "${GITHUB_OUTPUT}"
-          echo "reason=${reason}" >> "${GITHUB_OUTPUT}"
-
-          if [ "${eligible}" != "true" ]; then
-            echo "PR does not match auto-approve patterns (title: ${PR_TITLE}, branch: ${PR_BRANCH})"
-          fi
+        run: .github/scripts/auto-approve-bot-prs/check-eligibility.sh
 
       - name: Check for merge conflicts
         if: steps.check.outputs.eligible == 'true'

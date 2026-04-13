@@ -4,11 +4,23 @@ on:
   pull_request:
     paths:
       - '.github/workflows/auto-approve-bot-prs.yaml'
+      - '.github/scripts/auto-approve-bot-prs/**'
 
 permissions:
   contents: read
 
 jobs:
+  bats:
+    name: Run bats tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: bats-core/bats-action@2104b40bb7b6c2d5110b23a26b0bf265ab8027db # v3.0.0
+        with:
+          tests: .github/scripts/auto-approve-bot-prs/test
+
   auto-approve:
     permissions:
       contents: read
