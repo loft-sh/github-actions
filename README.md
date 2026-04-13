@@ -81,6 +81,49 @@ jobs:
 
 Detected config files: `renovate.json`, `renovate.json5`, `.renovaterc`, `.renovaterc.json`, `.github/renovate.json`, `.github/renovate.json5`.
 
+### Auto-approve bot PRs
+
+Approves (and optionally enables auto-merge on) PRs from trusted bot accounts
+whose title or branch matches a known safe pattern (`chore:` / `fix(deps):` /
+`backport/` / `renovate/` / `update-platform-version-`). Hardened to **never
+block caller CI**: `continue-on-error: true` on the job, every shell step
+catches its own errors and exits 0, self-approval is pre-empted before calling
+the external approve action.
+
+**Location:** `.github/workflows/auto-approve-bot-prs.yaml`
+
+**Usage:**
+
+```yaml
+name: Auto-approve bot PRs
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  auto-approve:
+    permissions:
+      pull-requests: write
+      contents: read
+    uses: loft-sh/github-actions/.github/workflows/auto-approve-bot-prs.yaml@main
+    with:
+      trusted-authors: 'renovate[bot],loft-bot,github-actions[bot],dependabot[bot]'
+      auto-merge: false
+    secrets:
+      gh-access-token: ${{ secrets.GH_ACCESS_TOKEN }}
+```
+
+`gh-access-token` must be a PAT whose identity differs from PR authors you want
+to auto-approve (GitHub forbids self-review). When identity matches, the job
+skips gracefully instead of failing.
+
+**End-to-end coverage:** scenario-level e2e lives in
+[vClusterLabs-Experiments/auto-approve-e2e](https://github.com/vClusterLabs-Experiments/auto-approve-e2e).
+Runs weekly and on demand. Creates real PRs exercising every decision-table
+branch (chore/fix(deps) titles, backport/renovate/update-platform-version
+branches, ineligible titles) and asserts the never-hard-fail invariant.
+
 ### Actionlint
 
 Lints GitHub Actions workflow files using actionlint with reviewdog integration.
