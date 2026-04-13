@@ -20,33 +20,19 @@ on:
         description: 'GitHub PAT for approving PRs (must be different identity from PR author)'
         required: true
 
+# Policy: this reusable workflow must never block caller CI. Every step
+# catches its own errors and exits 0; `continue-on-error: true` on the job
+# is a final safety net so the check reports soft-fail (orange) at worst,
+# never red.
 jobs:
   auto-approve:
     runs-on: ubuntu-latest
-    # Skip fork PRs — secrets are not available
     if: github.event.pull_request.head.repo.full_name == github.repository
     permissions:
+      pull-requests: write
       contents: read
+    continue-on-error: true
     steps:
-      - name: Resolve reusable workflow ref
-        id: wref
-        env:
-          WORKFLOW_REF: ${{ github.workflow_ref }}
-        run: |
-          # `github.workflow_sha` in workflow_call resolves to the caller's
-          # triggering commit (e.g. the merge-simulation commit in a caller
-          # repo like loft-prod), not to the reusable workflow's commit, so
-          # checkout against loft-sh/github-actions with that SHA fails with
-          # `upload-pack: not our ref`. `github.workflow_ref` has the form
-          # `owner/repo/path/to.yml@ref` — the portion after `@` is the ref
-          # actions/checkout can resolve against loft-sh/github-actions.
-          echo "ref=${WORKFLOW_REF##*@}" >> "${GITHUB_OUTPUT}"
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          repository: loft-sh/github-actions
-          ref: ${{ steps.wref.outputs.ref }}
-          persist-credentials: false
-          sparse-checkout: .github/scripts/auto-approve-bot-prs
       - name: Check eligibility
         id: check
         env:
@@ -54,61 +40,68 @@ jobs:
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BRANCH: ${{ github.event.pull_request.head.ref }}
-        run: .github/scripts/auto-approve-bot-prs/check-eligibility.sh
+        run: |
+          IFS=',' read -ra AUTHORS <<< "${TRUSTED_AUTHORS}"
+          for author in "${AUTHORS[@]}"; do
+            [ "${author}" = "${PR_AUTHOR}" ] && trusted=true && break
+          done
+          if [ -z "${trusted:-}" ]; then
+            echo "::notice::Author '${PR_AUTHOR}' not in trusted list"
+            echo "eligible=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
 
-      - name: Check for merge conflicts
+          if   [[ "${PR_TITLE}"  =~ ^chore(\(|:)              ]]; then eligible=true
+          elif [[ "${PR_TITLE}"  =~ ^fix\(deps\)              ]]; then eligible=true
+          elif [[ "${PR_BRANCH}" =~ ^backport/                ]]; then eligible=true
+          elif [[ "${PR_BRANCH}" =~ ^renovate/                ]]; then eligible=true
+          elif [[ "${PR_BRANCH}" =~ ^update-platform-version- ]]; then eligible=true
+          else eligible=false
+          fi
+          echo "eligible=${eligible}" >> "${GITHUB_OUTPUT}"
+          [ "${eligible}" = "true" ] || echo "::notice::PR not in auto-approve patterns (title: ${PR_TITLE}, branch: ${PR_BRANCH})"
+
+      - name: Check merge conflicts and approver identity
         if: steps.check.outputs.eligible == 'true'
-        id: conflicts
+        id: gate
         env:
           GH_TOKEN: ${{ secrets.gh-access-token }} # zizmor: ignore[secrets-outside-env] -- PAT passed via workflow_call, not a repo secret
           PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          for _ in 1 2 3; do
-            MERGEABLE=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.mergeable // "null"')
-            if [ "${MERGEABLE}" != "null" ]; then break; fi
-            sleep 3
-          done
-
-          if [ "${MERGEABLE}" = "true" ]; then
-            echo "clean=true" >> "${GITHUB_OUTPUT}"
-          else
-            echo "::warning::PR mergeability is '${MERGEABLE}', skipping auto-approve"
-            echo "clean=false" >> "${GITHUB_OUTPUT}"
-          fi
-
-      - name: Check approver identity
-        if: steps.check.outputs.eligible == 'true' && steps.conflicts.outputs.clean == 'true'
-        id: approver
-        env:
-          GH_TOKEN: ${{ secrets.gh-access-token }} # zizmor: ignore[secrets-outside-env] -- PAT passed via workflow_call, not a repo secret
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         run: |
-          # GitHub forbids approving your own PR. When the gh-access-token
-          # identity matches the PR author (e.g. loft-bot opening a backport
-          # PR in a repo whose GH_ACCESS_TOKEN is also loft-bot), skip the
-          # approve/merge steps rather than failing the workflow.
-          APPROVER=$(gh api user --jq '.login')
-          if [ "${APPROVER}" = "${PR_AUTHOR}" ]; then
-            echo "::notice::Approver '${APPROVER}' is the PR author; skipping approval (GitHub forbids self-review)"
-            echo "can_approve=false" >> "${GITHUB_OUTPUT}"
-          else
-            echo "can_approve=true" >> "${GITHUB_OUTPUT}"
+          # mergeable can be null briefly while GitHub computes metadata.
+          MERGEABLE="null"
+          for _ in 1 2 3; do
+            MERGEABLE=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.mergeable // "null"' 2>/dev/null || echo "null")
+            [ "${MERGEABLE}" != "null" ] && break
+            sleep 3
+          done
+          if [ "${MERGEABLE}" != "true" ]; then
+            echo "::notice::PR mergeability is '${MERGEABLE}', skipping"
+            echo "proceed=false" >> "${GITHUB_OUTPUT}"
+            exit 0
           fi
 
+          # Pre-empt hmarr/auto-approve-action's 422 "approve your own PR"
+          # failure — it calls core.setFailed on that error.
+          APPROVER=$(gh api user --jq '.login' 2>/dev/null || echo "")
+          if [ -z "${APPROVER}" ] || [ "${APPROVER}" = "${PR_AUTHOR}" ]; then
+            echo "::notice::Skipping approval (approver='${APPROVER}', author='${PR_AUTHOR}')"
+            echo "proceed=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          echo "proceed=true" >> "${GITHUB_OUTPUT}"
+
       - name: Approve PR
-        if: steps.check.outputs.eligible == 'true' && steps.conflicts.outputs.clean == 'true' && steps.approver.outputs.can_approve == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.gh-access-token }} # zizmor: ignore[secrets-outside-env] -- PAT passed via workflow_call, not a repo secret
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          REASON: ${{ steps.check.outputs.reason }}
-        run: |
-          gh pr review "${PR_NUMBER}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --approve \
-            --body "Auto-approved: ${REASON} from trusted bot with no merge conflicts. CI must pass before merge."
+        if: steps.gate.outputs.proceed == 'true'
+        continue-on-error: true
+        uses: hmarr/auto-approve-action@f0939ea97e9205ef24d872e76833fa908a770363 # v4.0.0
+        with:
+          github-token: ${{ secrets.gh-access-token }} # zizmor: ignore[secrets-outside-env] -- PAT passed via workflow_call, not a repo secret
+          review-message: 'Auto-approved: trusted bot, no merge conflicts. CI must pass before merge.'
 
       - name: Enable auto-merge
-        if: steps.check.outputs.eligible == 'true' && steps.conflicts.outputs.clean == 'true' && steps.approver.outputs.can_approve == 'true' && inputs.auto-merge
+        if: steps.gate.outputs.proceed == 'true' && inputs.auto-merge
         env:
           GH_TOKEN: ${{ secrets.gh-access-token }} # zizmor: ignore[secrets-outside-env] -- PAT passed via workflow_call, not a repo secret
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -116,9 +109,7 @@ jobs:
         run: |
           case "${MERGE_METHOD}" in
             squash|merge|rebase) ;;
-            *) echo "::error::Invalid merge method: ${MERGE_METHOD}"; exit 1 ;;
+            *) echo "::notice::Invalid merge method '${MERGE_METHOD}'"; exit 0 ;;
           esac
-          gh pr merge "${PR_NUMBER}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --auto \
-            --"${MERGE_METHOD}"
+          gh pr merge "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" --auto --"${MERGE_METHOD}" 2>&1 || \
+            echo "::notice::gh pr merge failed; auto-merge not enabled"
