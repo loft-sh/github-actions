@@ -21,24 +21,19 @@ jobs:
         with:
           tests: .github/actions/auto-approve-bot-prs/test
 
-  auto-approve:
+  # Smoke test the composite action on the PR branch (the reusable workflow
+  # pins ref: main, which wouldn't yet contain the composite during this
+  # PR's CI). Human-authored PRs skip on the trusted-author check, so the
+  # job always reports success.
+  composite-smoke:
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       pull-requests: write
-    uses: ./.github/workflows/auto-approve-bot-prs.yaml
-    secrets:
-      gh-access-token: ${{ secrets.GITHUB_TOKEN }}
-
-  verify:
-    needs: [auto-approve]
-    if: always()
-    runs-on: ubuntu-latest
     steps:
-      - name: Check result
-        env:
-          RESULT: ${{ needs.auto-approve.result }}
-        run: |
-          if [ "$RESULT" != "success" ]; then
-            echo "::error::Expected result=success, got '$RESULT'"
-            exit 1
-          fi
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/auto-approve-bot-prs
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
