@@ -28,10 +28,23 @@ jobs:
     permissions:
       contents: read
     steps:
+      - name: Resolve reusable workflow ref
+        id: wref
+        env:
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: |
+          # `github.workflow_sha` in workflow_call resolves to the caller's
+          # triggering commit (e.g. the merge-simulation commit in a caller
+          # repo like loft-prod), not to the reusable workflow's commit, so
+          # checkout against loft-sh/github-actions with that SHA fails with
+          # `upload-pack: not our ref`. `github.workflow_ref` has the form
+          # `owner/repo/path/to.yml@ref` — the portion after `@` is the ref
+          # actions/checkout can resolve against loft-sh/github-actions.
+          echo "ref=${WORKFLOW_REF##*@}" >> "${GITHUB_OUTPUT}"
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: loft-sh/github-actions
-          ref: ${{ github.workflow_sha }}
+          ref: ${{ steps.wref.outputs.ref }}
           persist-credentials: false
           sparse-checkout: .github/scripts/auto-approve-bot-prs
       - name: Check eligibility
