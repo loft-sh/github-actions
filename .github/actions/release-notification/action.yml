@@ -33,6 +33,10 @@ inputs:
     description: 'Source branch from which the release was cut (auto-detected from git history when omitted)'
     required: false
     default: ''
+  status:
+    description: 'Release status: success, failure, cancelled, or skipped'
+    required: false
+    default: 'success'
   webhook_url:
     description: 'Slack Webhook URL'
     required: true
@@ -40,9 +44,18 @@ inputs:
 runs:
   using: "composite"
   steps:
+    - name: Validate status input
+      shell: bash
+      env:
+        STATUS: ${{ inputs.status }}
+      run: |
+        case "$STATUS" in
+          success|failure|cancelled|skipped) ;;
+          *) echo "::error::Invalid status '$STATUS'. Must be one of: success, failure, cancelled, skipped."; exit 1 ;;
+        esac
     - name: Detect base branch
       id: detect_branch
-      if: inputs.base_branch == ''
+      if: inputs.status == 'success' && inputs.base_branch == ''
       shell: bash
       env:
         RELEASE_VERSION: ${{ inputs.version }}
@@ -50,6 +63,7 @@ runs:
         BRANCH=$("${{ github.action_path }}/detect-branch.sh")
         echo "base_branch=$BRANCH" >> "$GITHUB_OUTPUT"
     - name: Post release notification
+      if: inputs.status == 'success'
       uses: slackapi/slack-github-action@af78098f536edbc4de71162a307590698245be95  # v3.0.1
       with:
         errors: true
@@ -85,3 +99,42 @@ runs:
               elements:
                 - type: mrkdwn
                   text: "<https://github.com/${{ inputs.target_repo }}/releases/tag/${{ inputs.version }}|View Release>"
+    - name: Resolve status text
+      id: status_text
+      if: inputs.status != 'success'
+      shell: bash
+      env:
+        STATUS: ${{ inputs.status }}
+      run: |
+        case "$STATUS" in
+          failure)   echo "emoji=:rotating_light:" >> "$GITHUB_OUTPUT"; echo "label=Failed" >> "$GITHUB_OUTPUT" ;;
+          cancelled) echo "emoji=:warning:" >> "$GITHUB_OUTPUT"; echo "label=Cancelled" >> "$GITHUB_OUTPUT" ;;
+          skipped)   echo "emoji=:fast_forward:" >> "$GITHUB_OUTPUT"; echo "label=Skipped" >> "$GITHUB_OUTPUT" ;;
+        esac
+    - name: Post release failure notification
+      if: inputs.status != 'success'
+      uses: slackapi/slack-github-action@af78098f536edbc4de71162a307590698245be95  # v3.0.1
+      with:
+        errors: true
+        webhook-type: incoming-webhook
+        webhook: ${{ inputs.webhook_url }}
+        payload: |
+          text: "${{ steps.status_text.outputs.emoji }} ${{ inputs.product }} release pipeline ${{ steps.status_text.outputs.label }} for ${{ inputs.version }}"
+          blocks:
+            - type: header
+              text:
+                type: plain_text
+                text: "${{ steps.status_text.outputs.emoji }} Release Pipeline ${{ steps.status_text.outputs.label }}"
+                emoji: false
+            - type: section
+              fields:
+                - type: mrkdwn
+                  text: "*Product:*\n${{ inputs.product }}"
+                - type: mrkdwn
+                  text: "*Version:*\n${{ inputs.version }}"
+            - type: section
+              fields:
+                - type: mrkdwn
+                  text: "*Triggered by:*\n${{ github.actor }}"
+                - type: mrkdwn
+                  text: "*Run:*\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View details>"

@@ -8,9 +8,10 @@ on:
         required: true
         type: string
       previous_tag:
-        description: 'The previous tag for changelog comparison'
-        required: true
+        description: 'The previous tag for changelog comparison (required when status=success)'
+        required: false
         type: string
+        default: ''
       target_repo:
         description: 'Target repository (e.g. loft-sh/vcluster)'
         required: true
@@ -19,6 +20,11 @@ on:
         description: 'Product name (e.g. vCluster, vCluster Platform)'
         required: true
         type: string
+      status:
+        description: 'Release status: success, failure, cancelled, or skipped (default: success)'
+        required: false
+        type: string
+        default: 'success'
       ref:
         description: 'The git ref to checkout (defaults to github.ref)'
         required: false
@@ -48,13 +54,19 @@ jobs:
           PREVIOUS_TAG: ${{ inputs.previous_tag }}
           TARGET_REPO: ${{ inputs.target_repo }}
           PRODUCT: ${{ inputs.product }}
+          STATUS: ${{ inputs.status }}
         run: |
           echo "dry-run: validating notify-release inputs"
           echo "  release_version=$RELEASE_VERSION"
           echo "  previous_tag=$PREVIOUS_TAG"
           echo "  target_repo=$TARGET_REPO"
           echo "  product=$PRODUCT"
-          for var in RELEASE_VERSION PREVIOUS_TAG TARGET_REPO PRODUCT; do
+          echo "  status=$STATUS"
+          REQUIRED_VARS="RELEASE_VERSION TARGET_REPO PRODUCT"
+          if [ "$STATUS" = "success" ]; then
+            REQUIRED_VARS="$REQUIRED_VARS PREVIOUS_TAG"
+          fi
+          for var in $REQUIRED_VARS; do
             if [ -z "${!var}" ]; then
               echo "::error::Required input $var is empty"
               exit 1
@@ -62,7 +74,7 @@ jobs:
           done
           echo "All required inputs are valid"
       - name: Checkout repository
-        if: ${{ !inputs.dry-run }}
+        if: ${{ !inputs.dry-run && inputs.status == 'success' }}
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: ${{ inputs.target_repo }}
@@ -79,4 +91,5 @@ jobs:
           changes: "See changelog link below"
           target_repo: ${{ inputs.target_repo }}
           product: ${{ inputs.product }}
+          status: ${{ inputs.status }}
           webhook_url: ${{ secrets.SLACK_WEBHOOK_URL_PRODUCT_RELEASES }} # zizmor: ignore[secrets-outside-env] -- webhook URL passed via workflow_call
