@@ -15,12 +15,13 @@ on:
         description: 'Enable auto-merge after approval'
         type: boolean
         default: true
+      app-id:
+        description: 'GitHub App ID for minting installation tokens (preferred over PAT)'
+        type: string
+        default: ''
     secrets:
       gh-access-token:
         description: 'GitHub PAT for approving PRs (legacy — use app-id + app-private-key instead)'
-        required: false
-      app-id:
-        description: 'GitHub App ID for minting installation tokens (preferred over PAT)'
         required: false
       app-private-key:
         description: 'GitHub App private key (PEM) for minting installation tokens'
@@ -41,11 +42,11 @@ jobs:
     steps:
       - name: Mint GitHub App token
         id: app-token
-        if: secrets.app-id != '' && secrets.app-private-key != ''
+        if: inputs.app-id != ''
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
         with:
-          app-id: ${{ secrets.app-id }}
-          private-key: ${{ secrets.app-private-key }}
+          app-id: ${{ inputs.app-id }}
+          private-key: ${{ secrets.app-private-key }} # zizmor: ignore[secrets-outside-env] -- PEM key passed via workflow_call, not a repo secret
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: loft-sh/github-actions
