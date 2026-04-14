@@ -33,6 +33,16 @@ if [ "$author_trusted" != "true" ]; then
   exit 0
 fi
 
+# Prerelease platform versions must never be auto-approved — the title
+# (chore: update platform version to vX.Y.Z-alpha.N) would otherwise
+# match the chore pattern below, bypassing the branch-level check.
+if [[ "$PR_BRANCH" =~ ^update-platform-version-.*-(alpha|beta|rc)\. ]]; then
+  echo "::warning::Platform version update contains prerelease tag, skipping (branch: $PR_BRANCH)"
+  emit eligible false
+  emit reason ""
+  exit 0
+fi
+
 eligible=false
 reason=""
 if   [[ "$PR_TITLE"  =~ ^chore(\(|:)              ]]; then eligible=true; reason="chore PR"

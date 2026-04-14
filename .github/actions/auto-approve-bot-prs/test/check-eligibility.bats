@@ -45,8 +45,23 @@ assert_kv() {
   run_script "$DEFAULT" 'renovate[bot]' 'anything' 'renovate/pkg'; assert_kv eligible true
 }
 
-@test "update-platform-version- branch → eligible" {
+@test "update-platform-version- branch (stable) → eligible" {
   run_script "$DEFAULT" 'loft-bot' 'anything' 'update-platform-version-4.6.0'; assert_kv eligible true
+}
+
+@test "update-platform-version- branch (alpha) → not eligible" {
+  run_script "$DEFAULT" 'loft-bot' 'chore: update platform version to v4.9.0-alpha.2' 'update-platform-version-v4.9.0-alpha.2'
+  [ "$status" -eq 0 ]; assert_kv eligible false
+}
+
+@test "update-platform-version- branch (beta) → not eligible" {
+  run_script "$DEFAULT" 'loft-bot' 'chore: update platform version to v4.9.0-beta.1' 'update-platform-version-v4.9.0-beta.1'
+  [ "$status" -eq 0 ]; assert_kv eligible false
+}
+
+@test "update-platform-version- branch (rc) → not eligible" {
+  run_script "$DEFAULT" 'loft-bot' 'chore: update platform version to v4.9.0-rc.1' 'update-platform-version-v4.9.0-rc.1'
+  [ "$status" -eq 0 ]; assert_kv eligible false
 }
 
 @test "feat: title on trusted author → not eligible" {
