@@ -58,6 +58,56 @@ Syncs Linear issues to the "Released" state when a GitHub release is published. 
 
 See [linear-release-sync README](./.github/actions/linear-release-sync/README.md) for detailed documentation.
 
+### Run Ginkgo Tests
+
+Runs Ginkgo tests with directory or label-based filtering and generates a
+JSON failure summary. Runtime-agnostic — callers handle their own cluster and
+image setup (vind, Kind, bare Docker).
+
+**Location:** `.github/actions/run-ginkgo`
+
+**Usage:**
+
+```yaml
+- name: Run E2E tests
+  id: e2e
+  uses: loft-sh/github-actions/.github/actions/run-ginkgo@run-ginkgo/v1
+  with:
+    ginkgo-label: "my-suite && !non-default"
+    test-image: ghcr.io/loft-sh/vcluster:dev
+    # test-image-flag: "--platform-image"  # default: --vcluster-image
+    # additional-ginkgo-flags: "-v --skip-package=linters"
+    # additional-args: "--use-license-server=false"
+
+- name: Notify on failure
+  if: failure()
+  uses: loft-sh/github-actions/.github/actions/ci-test-notify@ci-test-notify/v1
+  with:
+    test-name: "E2E Tests"
+    status: failure
+    details: ${{ steps.e2e.outputs.failure-summary }}
+    webhook-url: ${{ secrets.SLACK_WEBHOOK }}
+```
+
+**Inputs:**
+
+| Input | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `test-image` | yes | | Image passed to the test binary |
+| `test-image-flag` | no | `--vcluster-image` | CLI flag name for the image |
+| `timeout` | no | `60m` | Ginkgo test timeout |
+| `procs` | no | `8` | Parallel Ginkgo processes |
+| `test-dir` | no | | Directory-based test selection (mutually exclusive with `ginkgo-label`) |
+| `ginkgo-label` | no | | Label-based test selection (mutually exclusive with `test-dir`) |
+| `append-pr-label` | no | `true` | Append `\|\| pr` to the label filter |
+| `e2e-dir` | no | `e2e-next` | Root test directory |
+| `additional-args` | no | | Extra args for the test binary (after `--`) |
+| `additional-ginkgo-flags` | no | | Extra ginkgo CLI flags |
+
+**Outputs:**
+
+- `failure-summary`: Markdown-formatted test results summary
+
 ## Available Reusable Workflows
 
 ### Validate Renovate Config
