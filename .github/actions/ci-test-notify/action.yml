@@ -1,0 +1,50 @@
+name: 'CI Test Notification'
+description: 'Send a Slack notification for CI test results (nightly E2E, conformance, etc.)'
+branding:
+  icon: "bell"
+  color: "orange"
+inputs:
+  test-name:
+    description: 'Test suite name for the header (e.g. "E2E Ginkgo Nightly Tests"). Keep under ~130 chars — Slack header blocks have a 150-char limit and the status suffix takes ~15 chars.'
+    required: true
+  status:
+    description: 'Test status: success, failure, cancelled, or skipped'
+    required: true
+  details:
+    description: 'Markdown text appended after the build URL (test results, versions, artifact links, etc.)'
+    required: false
+    default: ''
+  webhook-url:
+    description: 'Slack incoming webhook URL'
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Check webhook URL
+      if: inputs.webhook-url == ''
+      shell: bash
+      run: |
+        echo "::warning::webhook-url is empty (expected on fork PRs where secrets are unavailable), skipping notification"
+
+    - name: Build Slack payload
+      if: inputs.webhook-url != ''
+      shell: bash
+      env:
+        TEST_NAME: ${{ inputs.test-name }}
+        STATUS: ${{ inputs.status }}
+        DETAILS: ${{ inputs.details }}
+        PAYLOAD_FILE: ${{ runner.temp }}/ci-test-notify-payload.json
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        REPO: ${{ github.repository }}
+        RUN_NUMBER: ${{ github.run_number }}
+      run: ${{ github.action_path }}/build-payload.sh
+
+    - name: Send Slack notification
+      if: inputs.webhook-url != ''
+      uses: slackapi/slack-github-action@af78098f536edbc4de71162a307590698245be95 # v3.0.1
+      with:
+        errors: true
+        webhook-type: incoming-webhook
+        webhook: ${{ inputs.webhook-url }}
+        payload-file-path: ${{ runner.temp }}/ci-test-notify-payload.json
