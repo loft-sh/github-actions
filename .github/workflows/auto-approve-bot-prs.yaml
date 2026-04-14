@@ -52,6 +52,15 @@ jobs:
             exit 0
           fi
 
+          # Early exit: prerelease platform versions must never be auto-approved.
+          # The title (chore: update platform version to vX.Y.Z-alpha.N) would
+          # otherwise match the chore pattern below, bypassing the branch check.
+          if [[ "${PR_BRANCH}" =~ ^update-platform-version-.*-(alpha|beta|rc)\. ]]; then
+            echo "::warning::Platform version update contains prerelease tag, skipping auto-approve (branch: ${PR_BRANCH})"
+            echo "eligible=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
           eligible=false
           reason=""
           if [[ "${PR_TITLE}" =~ ^chore(\(|:) ]]; then eligible=true; reason="chore PR"
