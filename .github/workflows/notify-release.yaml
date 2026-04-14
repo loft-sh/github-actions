@@ -40,9 +40,6 @@ on:
         description: 'Slack incoming webhook URL for #product-releases'
         required: true
 
-permissions:
-  contents: read
-
 jobs:
   notify_release:
     runs-on: ubuntu-latest
