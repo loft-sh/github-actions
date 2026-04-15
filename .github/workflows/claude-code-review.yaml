@@ -51,7 +51,7 @@ jobs:
           git checkout -B "${PR_HEAD_REF}" "origin/${PR_HEAD_REF}"
 
       - name: Claude Code Review
-        uses: anthropics/claude-code-action@1c8b699d43e9bfed42b48ef15da85d89bab70960 # v1
+        uses: anthropics/claude-code-action@5fb899572b81d2bb648d4d187173a2f423a9677c # v1
         with:
           anthropic_api_key: ${{ secrets.anthropic-api-key }} # zizmor: ignore[secrets-outside-env] -- API key passed via workflow_call, not a repo secret
           github_token: ${{ secrets.GITHUB_TOKEN }}
