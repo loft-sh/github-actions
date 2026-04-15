@@ -15,17 +15,10 @@ on:
         description: 'Enable auto-merge after approval'
         type: boolean
         default: true
-      app-id:
-        description: 'GitHub App ID for minting installation tokens (preferred over PAT)'
-        type: string
-        default: ''
     secrets:
       gh-access-token:
-        description: 'GitHub PAT for approving PRs (legacy — use app-id + app-private-key instead)'
-        required: false
-      app-private-key:
-        description: 'GitHub App private key (PEM) for minting installation tokens'
-        required: false
+        description: 'GitHub PAT for approving PRs (must be different identity from PR author)'
+        required: true
 
 jobs:
   auto-approve:
@@ -40,13 +33,6 @@ jobs:
     # reporting a hard red check on caller CI.
     continue-on-error: true
     steps:
-      - name: Mint GitHub App token
-        id: app-token
-        if: inputs.app-id != ''
-        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3
-        with:
-          app-id: ${{ inputs.app-id }}
-          private-key: ${{ secrets.app-private-key }} # zizmor: ignore[secrets-outside-env] -- PEM key passed via workflow_call, not a repo secret
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: loft-sh/github-actions
@@ -58,4 +44,4 @@ jobs:
           trusted-authors: ${{ inputs.trusted-authors }}
           merge-method: ${{ inputs.merge-method }}
           auto-merge: ${{ inputs.auto-merge }}
-          github-token: ${{ steps.app-token.outputs.token || secrets.gh-access-token }} # zizmor: ignore[secrets-outside-env]
+          github-token: ${{ secrets.gh-access-token }} # zizmor: ignore[secrets-outside-env] -- PAT passed via workflow_call, not a repo secret
