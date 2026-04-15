@@ -1,0 +1,122 @@
+name: Publish Helm chart (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      chart-name:
+        description: "Helm chart name. Written to .name in Chart.yaml; also determines the packaged tarball filename."
+        type: string
+        required: true
+      chart-description:
+        description: "Optional value written to .description in Chart.yaml. When empty, the existing description is preserved."
+        type: string
+        required: false
+        default: ""
+      app-version:
+        description: "Optional value passed as --app-version to `helm package`. When empty, the chart's existing appVersion is used."
+        type: string
+        required: false
+        default: ""
+      chart-versions:
+        description: "JSON array of chart versions to publish. Each entry is packaged and pushed as <chart-name>-<version>.tgz. Examples: '[\"1.2.3\"]' or '[\"0.0.0-latest\",\"0.0.0-abc1234\"]'."
+        type: string
+        required: true
+      chart-directory:
+        description: "Path to the Helm chart source directory."
+        type: string
+        required: false
+        default: chart
+      values-edits:
+        description: "Optional newline-separated `jsonpath=value` pairs applied via yq to <chart-directory>/values.yaml. Values are written as strings."
+        type: string
+        required: false
+        default: ""
+      helm-version:
+        description: "Helm CLI version to install."
+        type: string
+        required: false
+        # renovate: datasource=github-releases depName=helm/helm
+        default: v3.20.0
+      ref:
+        description: "Optional git ref to checkout before publishing (e.g. a release tag). Defaults to the caller's GITHUB_REF."
+        type: string
+        required: false
+        default: ""
+      republish-latest:
+        description: "When true, after pushing, query ChartMuseum for the highest semver of <chart-name> and re-push it so it becomes the most recently uploaded entry. Use for stable release publishing into a multi-line release stream."
+        type: boolean
+        required: false
+        default: false
+      chart-museum-url:
+        description: "ChartMuseum base URL."
+        type: string
+        required: false
+        default: https://charts.loft.sh/
+    secrets:
+      chart-museum-user:
+        description: "ChartMuseum username."
+        required: true
+      chart-museum-password:
+        description: "ChartMuseum password."
+        required: true
+
+jobs:
+  publish:
+    name: Publish ${{ inputs.chart-name }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Resolve reusable workflow ref
+        id: wref
+        env:
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: |
+          # `github.workflow_sha` resolves to the caller's commit in
+          # workflow_call, so we parse `owner/repo/path@ref` from
+          # workflow_ref to get the ref of the reusable workflow itself.
+          echo "ref=${WORKFLOW_REF##*@}" >> "${GITHUB_OUTPUT}"
+
+      - name: Check out caller repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Check out reusable workflow scripts
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: loft-sh/github-actions
+          ref: ${{ steps.wref.outputs.ref }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts/publish-helm-chart
+          path: .github-actions-scripts
+
+      - name: Set up Helm
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+        with:
+          version: ${{ inputs.helm-version }}
+
+      - name: Install helm-push plugin
+        run: helm plugin install https://github.com/chartmuseum/helm-push.git
+
+      - name: Set up yq
+        uses: dcarbone/install-yq-action@4075b4dca348d74bd83f2bf82d30f25d7c54539b # v1.3.1
+        with:
+          # renovate: datasource=github-releases depName=mikefarah/yq
+          version: v4.45.1
+
+      - name: Publish chart
+        env:
+          CHART_DIRECTORY: ${{ inputs.chart-directory }}
+          CHART_NAME: ${{ inputs.chart-name }}
+          CHART_DESCRIPTION: ${{ inputs.chart-description }}
+          APP_VERSION: ${{ inputs.app-version }}
+          CHART_VERSIONS_JSON: ${{ inputs.chart-versions }}
+          VALUES_EDITS: ${{ inputs.values-edits }}
+          REPUBLISH_LATEST: ${{ inputs.republish-latest }}
+          CHART_MUSEUM_URL: ${{ inputs.chart-museum-url }}
+          CHART_MUSEUM_USER: ${{ secrets.chart-museum-user }} # zizmor: ignore[secrets-outside-env] -- passed via workflow_call, not a repo secret
+          CHART_MUSEUM_PASSWORD: ${{ secrets.chart-museum-password }} # zizmor: ignore[secrets-outside-env] -- passed via workflow_call, not a repo secret
+        run: .github-actions-scripts/.github/scripts/publish-helm-chart/run.sh

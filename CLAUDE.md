@@ -7,6 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Test semver-validation: `make test-semver-validation`
 - Test linear-pr-commenter: `make test-linear-pr-commenter`
 - Test linear-release-sync: `make test-linear-release-sync`
+- Test publish-helm-chart: `make test-publish-helm-chart` (requires mikefarah/yq on PATH)
 - Build linear-release-sync binary: `make build-linear-release-sync`
 - Lint workflows: `make lint` (requires actionlint and zizmor)
 
