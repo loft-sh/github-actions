@@ -208,6 +208,73 @@ jobs:
 
 **Secrets:** `chart-museum-user`, `chart-museum-password`.
 
+### Govulncheck
+
+Runs [govulncheck](https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck)
+against a Go module and, on scheduled runs, posts a Slack notification
+(via `ci-test-notify`) when vulnerabilities are found. The scan always
+marks the job failed on vulnerabilities — notification is the side
+channel, not the gate.
+
+**Location:** `.github/workflows/govulncheck.yaml`
+
+**Usage (public repo, weekly schedule):**
+
+```yaml
+name: govulncheck
+
+on:
+  schedule:
+    - cron: "0 12 * * 1" # Mon 12:00 UTC
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/govulncheck.yaml"
+
+jobs:
+  scan:
+    permissions:
+      contents: read
+    uses: loft-sh/github-actions/.github/workflows/govulncheck.yaml@govulncheck/v1
+    secrets:
+      slack-webhook-url: ${{ secrets.SLACK_WEBHOOK_URL_CI_TESTS_ALERTS }}
+```
+
+**Usage (private repo that depends on `github.com/loft-sh/*`):**
+
+```yaml
+jobs:
+  scan:
+    permissions:
+      contents: read
+    uses: loft-sh/github-actions/.github/workflows/govulncheck.yaml@govulncheck/v1
+    with:
+      scan-paths: "./... ./cmd/..."
+      runs-on: large-8_32
+      private-repo: true
+    secrets:
+      gh-access-token: ${{ secrets.GH_ACCESS_TOKEN }}
+      slack-webhook-url: ${{ secrets.SLACK_WEBHOOK_URL_CI_TESTS_ALERTS }}
+```
+
+**Inputs:**
+
+- `scan-paths` (optional, default: `./...`): space-separated Go package patterns
+- `test-flag` (optional, default: `true`): pass `-test` to govulncheck
+- `go-version-file` (optional, default: `go.mod`): passed to `actions/setup-go`
+- `runs-on` (optional, default: `ubuntu-latest`)
+- `private-repo` (optional, default: `false`): enable git url rewrite + `GOPRIVATE`
+- `goprivate` (optional, default: `github.com/loft-sh/*`)
+- `govulncheck-version` (optional, default: `latest`)
+- `timeout-minutes` (optional, default: `10`)
+- `test-name` (optional, default: `govulncheck`): Slack header
+- `notify` (optional, default: `true`): send Slack on vulnerabilities; fires on `schedule` events only
+
+**Secrets:**
+
+- `gh-access-token` (required when `private-repo: true`)
+- `slack-webhook-url` (required when `notify: true` and the run is on `schedule`)
+
 ## Testing
 
 Run all action tests locally:

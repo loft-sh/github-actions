@@ -1,0 +1,139 @@
+name: govulncheck (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      scan-paths:
+        description: "Space-separated Go package patterns to scan. Example: `./... ./cmd/...`."
+        type: string
+        required: false
+        default: "./..."
+      test-flag:
+        description: "Pass `-test` to govulncheck (include test files in the scan)."
+        type: boolean
+        required: false
+        default: true
+      go-version-file:
+        description: "Path to go.mod (or go.work) passed to actions/setup-go."
+        type: string
+        required: false
+        default: go.mod
+      runs-on:
+        description: "Runner label. Use `ubuntu-latest` for most repos; larger self-hosted labels (e.g. `large-8_32`) for big modules."
+        type: string
+        required: false
+        default: ubuntu-latest
+      private-repo:
+        description: "When true, configures `git` url rewriting with `gh-access-token` and sets `GOPRIVATE=github.com/loft-sh/*` so the scan can resolve private modules."
+        type: boolean
+        required: false
+        default: false
+      goprivate:
+        description: "Value of the GOPRIVATE env var when `private-repo` is true."
+        type: string
+        required: false
+        default: "github.com/loft-sh/*"
+      govulncheck-version:
+        description: "Version of golang.org/x/vuln/cmd/govulncheck to install."
+        type: string
+        required: false
+        # renovate: datasource=go depName=golang.org/x/vuln
+        default: latest
+      timeout-minutes:
+        description: "Timeout for the scan step."
+        type: number
+        required: false
+        default: 10
+      test-name:
+        description: "Slack notification header (passed to ci-test-notify)."
+        type: string
+        required: false
+        default: govulncheck
+      notify:
+        description: "Send a Slack notification on vulnerabilities. Only fires on `schedule` events — PR/manual runs never notify."
+        type: boolean
+        required: false
+        default: true
+    secrets:
+      gh-access-token:
+        description: "PAT with access to private loft-sh repos. Required when `private-repo: true`."
+        required: false
+      slack-webhook-url:
+        description: "Slack incoming webhook URL for the ci-test-notify action. Required when `notify: true` and the workflow runs on `schedule`."
+        required: false
+
+jobs:
+  scan:
+    runs-on: ${{ inputs.runs-on }}
+    if: github.repository_owner == 'loft-sh' # do not run on forks
+    permissions:
+      contents: read
+    steps:
+      - name: Resolve reusable workflow ref
+        id: wref
+        env:
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: |
+          # Caller context leaks into github.workflow_sha under workflow_call,
+          # so we parse owner/repo/path@ref to get the reusable workflow's ref.
+          echo "ref=${WORKFLOW_REF##*@}" >> "${GITHUB_OUTPUT}"
+
+      - name: Check out caller repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Check out reusable workflow scripts
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: loft-sh/github-actions
+          ref: ${{ steps.wref.outputs.ref }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts/govulncheck
+          path: .github-actions-scripts
+
+      - name: Configure git for private modules
+        if: inputs.private-repo
+        env:
+          GH_ACCESS_TOKEN: ${{ secrets.gh-access-token }} # zizmor: ignore[secrets-outside-env] -- passed via workflow_call, not a repo secret
+        run: |
+          if [ -z "${GH_ACCESS_TOKEN}" ]; then
+            echo "::error::private-repo=true requires gh-access-token secret"
+            exit 1
+          fi
+          git config --global url."https://${GH_ACCESS_TOKEN}@github.com/".insteadOf "https://github.com/"
+
+      - name: Set up Go
+        uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version-file: ${{ inputs.go-version-file }}
+
+      - name: Install govulncheck
+        env:
+          GOVULNCHECK_VERSION: ${{ inputs.govulncheck-version }}
+        run: go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
+
+      - name: Scan source code for known vulnerabilities
+        id: govulncheck
+        timeout-minutes: ${{ fromJSON(inputs.timeout-minutes) }}
+        env:
+          SCAN_PATHS: ${{ inputs.scan-paths }}
+          TEST_FLAG: ${{ inputs.test-flag }}
+          GOPRIVATE: ${{ inputs.private-repo && inputs.goprivate || '' }}
+        run: .github-actions-scripts/.github/scripts/govulncheck/run.sh
+
+      - name: Send Slack notification on vulnerabilities found
+        if: >-
+          always() &&
+          steps.govulncheck.conclusion == 'failure' &&
+          inputs.notify &&
+          github.event_name == 'schedule'
+        uses: loft-sh/github-actions/.github/actions/ci-test-notify@85d7023c5749421d369f59430c7849f2d00ad694 # ci-test-notify/v1
+        with:
+          test-name: ${{ inputs.test-name }}
+          status: failure
+          details: |
+            ```
+            ${{ steps.govulncheck.outputs.report }}
+            ```
+          webhook-url: ${{ secrets.slack-webhook-url }} # zizmor: ignore[secrets-outside-env] -- passed via workflow_call, not a repo secret
