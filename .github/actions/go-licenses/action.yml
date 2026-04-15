@@ -1,0 +1,143 @@
+name: 'go-licenses'
+description: "Run `go-licenses check` or `go-licenses report` against a Go module, with private-module auth and optional PR creation for report mode."
+branding:
+  icon: "file-text"
+  color: "blue"
+
+inputs:
+  mode:
+    description: "`check` — run `go-licenses check` against the module. `report` — render a license report with a template and open a PR with the output."
+    required: true
+  go-licenses-version:
+    description: "Version of go-licenses to install (e.g. v1.6.0, v1.0.0). v1.0.0 does not support `--ignore` — set `package-mode: go-work` when using it."
+    required: false
+    # renovate: datasource=go depName=github.com/google/go-licenses
+    default: v1.6.0
+  go-version-file:
+    description: "Path to go.mod or go.work for setup-go."
+    required: false
+    default: go.mod
+  ignored-packages:
+    description: "Comma-separated package path prefixes to skip. In `all` mode these become `--ignore` flags; in `go-work` mode they are substring-matched against go.work DiskPaths."
+    required: false
+    default: github.com/loft-sh
+  package-mode:
+    description: "Package selection strategy: `all` (pass `./...` with `--ignore` flags) or `go-work` (enumerate modules via `go work edit` and filter at the package list — required for go-licenses < v1.6.0)."
+    required: false
+    default: all
+  fail-on-error:
+    description: "[check mode] When `false`, non-zero exit codes from go-licenses are surfaced as a workflow warning instead of a failure. Use only as a temporary escape hatch when upstream go-licenses is broken."
+    required: false
+    default: "true"
+  template-path:
+    description: "[report mode] Path to the go-licenses .tmpl template used to render the report."
+    required: false
+    default: .github/licenses.tmpl
+  output-path:
+    description: "[report mode, required] File path in the caller repo to write the rendered report to, e.g. `docs/pages/licenses/vcluster.mdx`."
+    required: false
+    default: ""
+  pr-branch:
+    description: "[report mode, required] Branch name to push the rendered report onto."
+    required: false
+    default: ""
+  pr-title:
+    description: "[report mode, required] PR title for the generated pull request."
+    required: false
+    default: ""
+  pr-commit-message:
+    description: "[report mode] Commit message for the generated pull request. Defaults to `pr-title`."
+    required: false
+    default: ""
+  gh-access-token:
+    description: "GitHub PAT used to fetch private loft-sh modules (both modes) and to open the generated pull request (report mode, required)."
+    required: false
+    default: ""
+
+runs:
+  using: "composite"
+  steps:
+    - name: Validate inputs
+      shell: bash
+      env:
+        MODE: ${{ inputs.mode }}
+        OUTPUT_PATH: ${{ inputs.output-path }}
+        PR_BRANCH: ${{ inputs.pr-branch }}
+        PR_TITLE: ${{ inputs.pr-title }}
+        GH_ACCESS_TOKEN: ${{ inputs.gh-access-token }}
+      run: |
+        case "${MODE}" in
+          check|report) ;;
+          *) echo "::error::mode must be 'check' or 'report' (got '${MODE}')"; exit 1 ;;
+        esac
+        if [ "${MODE}" = "report" ]; then
+          missing=()
+          [ -z "${OUTPUT_PATH}" ] && missing+=("output-path")
+          [ -z "${PR_BRANCH}" ] && missing+=("pr-branch")
+          [ -z "${PR_TITLE}" ] && missing+=("pr-title")
+          [ -z "${GH_ACCESS_TOKEN}" ] && missing+=("gh-access-token")
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::mode=report requires: ${missing[*]}"
+            exit 1
+          fi
+        fi
+
+    - name: Configure git for private repos
+      if: inputs.gh-access-token != ''
+      shell: bash
+      env:
+        GH_ACCESS_TOKEN: ${{ inputs.gh-access-token }}
+      run: git config --global "url.https://${GH_ACCESS_TOKEN}@github.com/.insteadOf" https://github.com/
+
+    - name: Set up Go
+      uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+      with:
+        go-version-file: ${{ inputs.go-version-file }}
+
+    - name: Install go-licenses
+      shell: bash
+      env:
+        GO_LICENSES_VERSION: ${{ inputs.go-licenses-version }}
+      run: go install "github.com/google/go-licenses@${GO_LICENSES_VERSION}"
+
+    - name: Run go-licenses
+      shell: bash
+      env:
+        MODE: ${{ inputs.mode }}
+        GOPRIVATE: github.com/loft-sh/*
+        PACKAGE_MODE: ${{ inputs.package-mode }}
+        IGNORED_PACKAGES: ${{ inputs.ignored-packages }}
+        FAIL_ON_ERROR: ${{ inputs.fail-on-error }}
+        TEMPLATE_PATH: ${{ inputs.template-path }}
+        OUTPUT_PATH: ${{ inputs.output-path }}
+      run: ${{ github.action_path }}/run.sh "${MODE}"
+
+    - name: Resolve PR commit message
+      if: inputs.mode == 'report'
+      id: commit
+      shell: bash
+      env:
+        COMMIT_MESSAGE: ${{ inputs.pr-commit-message }}
+        PR_TITLE: ${{ inputs.pr-title }}
+      run: |
+        if [ -z "${COMMIT_MESSAGE}" ]; then
+          COMMIT_MESSAGE="${PR_TITLE}"
+        fi
+        {
+          echo "message<<EOF"
+          echo "${COMMIT_MESSAGE}"
+          echo "EOF"
+        } >> "${GITHUB_OUTPUT}"
+
+    - name: Create pull request
+      if: inputs.mode == 'report'
+      uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+      with:
+        token: ${{ inputs.gh-access-token }}
+        committer: Loft Bot <loft-bot@users.noreply.github.com>
+        branch: ${{ inputs.pr-branch }}
+        commit-message: ${{ steps.commit.outputs.message }}
+        title: ${{ inputs.pr-title }}
+        body: Triggered by ${{ github.repository }}@${{ github.sha }}
+        signoff: true
+        delete-branch: true
