@@ -41,6 +41,12 @@
       "matchStrings": ["renovate@(?<currentValue>[^\\s]+)"],
       "depNameTemplate": "renovate",
       "datasourceTemplate": "npm"
+    },
+    {
+      "customType": "regex",
+      "description": "Update versions annotated with `# renovate: datasource=X depName=Y` in workflow inputs",
+      "managerFilePatterns": ["/^\\.github/workflows/.+\\.ya?ml$/"],
+      "matchStrings": ["# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\s+(?:default|version): (?<currentValue>\\S+)"]
     }
   ]
 }

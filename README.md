@@ -147,6 +147,67 @@ jobs:
 
 - `reporter` (optional, default: `github-pr-review`): reviewdog reporter type
 
+### Publish Helm Chart
+
+Packages a Helm chart and pushes one tarball per version to ChartMuseum.
+Handles release pushes (single semver, optional `--app-version`) and head
+pushes (multiple `0.0.0-*` versions) under the same contract. Optionally
+re-pushes the repo's highest semver afterwards so it stays first in the
+upload-ordered ChartMuseum index.
+
+**Location:** `.github/workflows/publish-helm-chart.yaml`
+
+**Usage (release push):**
+
+```yaml
+jobs:
+  publish-chart:
+    permissions:
+      contents: read
+    uses: loft-sh/github-actions/.github/workflows/publish-helm-chart.yaml@publish-helm-chart/v1
+    with:
+      chart-name: vcluster
+      app-version: 1.2.3
+      chart-versions: '["1.2.3"]'
+      ref: v1.2.3
+    secrets:
+      chart-museum-user: ${{ secrets.CHART_MUSEUM_USER }}
+      chart-museum-password: ${{ secrets.CHART_MUSEUM_PASSWORD }}
+```
+
+**Usage (head/dev push):**
+
+```yaml
+jobs:
+  push-head-chart:
+    permissions:
+      contents: read
+    uses: loft-sh/github-actions/.github/workflows/publish-helm-chart.yaml@publish-helm-chart/v1
+    with:
+      chart-name: vcluster-head
+      chart-description: "vCluster HEAD - Development builds from main branch"
+      app-version: head-${{ github.sha }}
+      chart-versions: '["0.0.0-latest","0.0.0-${{ github.sha }}"]'
+    secrets:
+      chart-museum-user: ${{ secrets.CHART_MUSEUM_USER }}
+      chart-museum-password: ${{ secrets.CHART_MUSEUM_PASSWORD }}
+```
+
+**Inputs:**
+
+- `chart-name` (required): chart name written to `Chart.yaml` and used in the tarball filename
+- `chart-description` (optional): value written to `.description` in `Chart.yaml`
+- `app-version` (optional): passed as `--app-version` to `helm package`
+- `chart-versions` (required): JSON array of versions, e.g. `'["1.2.3"]'`
+- `chart-directory` (optional, default: `chart`): chart source path
+- `values-edits` (optional): newline-separated `jsonpath=value` pairs applied via yq to `<chart-directory>/values.yaml`
+- `helm-version` (optional, default: `v3.20.0`)
+- `ref` (optional): git ref to checkout (e.g. release tag)
+- `republish-latest` (optional, default: `false`): re-push highest semver to keep it first in the ChartMuseum index
+- `chart-museum-url` (optional, default: `https://charts.loft.sh/`)
+
+**Secrets:** `chart-museum-user`, `chart-museum-password`.
+
 ## Testing
 
 Run all action tests locally:
