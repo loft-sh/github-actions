@@ -155,24 +155,29 @@ pushes (multiple `0.0.0-*` versions) under the same contract. Optionally
 re-pushes the repo's highest semver afterwards so it stays first in the
 upload-ordered ChartMuseum index.
 
-**Location:** `.github/workflows/publish-helm-chart.yaml`
+**Location:** `.github/actions/publish-helm-chart`
 
 **Usage (release push):**
 
 ```yaml
 jobs:
   publish-chart:
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
-    uses: loft-sh/github-actions/.github/workflows/publish-helm-chart.yaml@publish-helm-chart/v1
-    with:
-      chart-name: vcluster
-      app-version: 1.2.3
-      chart-versions: '["1.2.3"]'
-      ref: v1.2.3
-    secrets:
-      chart-museum-user: ${{ secrets.CHART_MUSEUM_USER }}
-      chart-museum-password: ${{ secrets.CHART_MUSEUM_PASSWORD }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: v1.2.3
+          persist-credentials: false
+      - uses: loft-sh/github-actions/.github/actions/publish-helm-chart@publish-helm-chart/v2
+        with:
+          chart-name: vcluster
+          app-version: 1.2.3
+          chart-versions: '["1.2.3"]'
+          chart-museum-user: ${{ secrets.CHART_MUSEUM_USER }}
+          chart-museum-password: ${{ secrets.CHART_MUSEUM_PASSWORD }}
 ```
 
 **Usage (head/dev push):**
@@ -180,17 +185,22 @@ jobs:
 ```yaml
 jobs:
   push-head-chart:
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
-    uses: loft-sh/github-actions/.github/workflows/publish-helm-chart.yaml@publish-helm-chart/v1
-    with:
-      chart-name: vcluster-head
-      chart-description: "vCluster HEAD - Development builds from main branch"
-      app-version: head-${{ github.sha }}
-      chart-versions: '["0.0.0-latest","0.0.0-${{ github.sha }}"]'
-    secrets:
-      chart-museum-user: ${{ secrets.CHART_MUSEUM_USER }}
-      chart-museum-password: ${{ secrets.CHART_MUSEUM_PASSWORD }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: loft-sh/github-actions/.github/actions/publish-helm-chart@publish-helm-chart/v2
+        with:
+          chart-name: vcluster-head
+          chart-description: "vCluster HEAD - Development builds from main branch"
+          app-version: head-${{ github.sha }}
+          chart-versions: '["0.0.0-latest","0.0.0-${{ github.sha }}"]'
+          chart-museum-user: ${{ secrets.CHART_MUSEUM_USER }}
+          chart-museum-password: ${{ secrets.CHART_MUSEUM_PASSWORD }}
 ```
 
 **Inputs:**
@@ -201,12 +211,13 @@ jobs:
 - `chart-versions` (required): JSON array of versions, e.g. `'["1.2.3"]'`
 - `chart-directory` (optional, default: `chart`): chart source path
 - `values-edits` (optional): newline-separated `jsonpath=value` pairs applied via yq to `<chart-directory>/values.yaml`
-- `helm-version` (optional, default: `v3.20.0`)
-- `ref` (optional): git ref to checkout (e.g. release tag)
-- `republish-latest` (optional, default: `false`): re-push highest semver to keep it first in the ChartMuseum index
+- `helm-version` (optional, default: `v4.1.4`)
+- `republish-latest` (optional, default: `"false"`): re-push highest semver to keep it first in the ChartMuseum index
 - `chart-museum-url` (optional, default: `https://charts.loft.sh/`)
+- `chart-museum-user` (required)
+- `chart-museum-password` (required)
 
-**Secrets:** `chart-museum-user`, `chart-museum-password`.
+**Note:** The `ref` input was removed — the caller owns `actions/checkout` and checks out the desired ref directly.
 
 ### Govulncheck
 

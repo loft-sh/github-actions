@@ -30,7 +30,7 @@ test-ci-test-notify: ## run ci-test-notify bats tests
 	bats $(ACTIONS_DIR)/ci-test-notify/test/build-payload.bats
 
 test-publish-helm-chart: ## run publish-helm-chart bats tests (requires mikefarah/yq on PATH)
-	bats $(SCRIPTS_DIR)/publish-helm-chart/test/run.bats
+	bats $(ACTIONS_DIR)/publish-helm-chart/test/run.bats
 
 test-govulncheck: ## run govulncheck bats tests
 	bats $(ACTIONS_DIR)/govulncheck/test/run.bats
