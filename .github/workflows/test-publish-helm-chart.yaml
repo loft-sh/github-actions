@@ -19,7 +19,7 @@ jobs:
       - uses: dcarbone/install-yq-action@4075b4dca348d74bd83f2bf82d30f25d7c54539b # v1.3.1
         with:
           # renovate: datasource=github-releases depName=mikefarah/yq
-          version: v4.45.1
+          version: v4.52.5
       - uses: bats-core/bats-action@77d6fb60505b4d0d1d73e48bd035b55074bbfb43 # 4.0.0
         with:
           tests: .github/scripts/publish-helm-chart/test
