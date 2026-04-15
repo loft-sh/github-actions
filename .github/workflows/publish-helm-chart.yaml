@@ -36,7 +36,7 @@ on:
         type: string
         required: false
         # renovate: datasource=github-releases depName=helm/helm
-        default: v3.20.0
+        default: v4.1.4
       ref:
         description: "Optional git ref to checkout before publishing (e.g. a release tag). Defaults to the caller's GITHUB_REF."
         type: string
