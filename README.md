@@ -216,7 +216,7 @@ against a Go module and, on scheduled runs, posts a Slack notification
 marks the job failed on vulnerabilities — notification is the side
 channel, not the gate.
 
-**Location:** `.github/workflows/govulncheck.yaml`
+**Location:** `.github/actions/govulncheck`
 
 **Usage (public repo, weekly schedule):**
 
@@ -233,11 +233,18 @@ on:
 
 jobs:
   scan:
+    runs-on: ubuntu-latest
+    if: github.repository_owner == 'loft-sh'
     permissions:
       contents: read
-    uses: loft-sh/github-actions/.github/workflows/govulncheck.yaml@govulncheck/v1
-    secrets:
-      slack-webhook-url: ${{ secrets.SLACK_WEBHOOK_URL_CI_TESTS_ALERTS }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: loft-sh/github-actions/.github/actions/govulncheck@govulncheck/v1
+        with:
+          slack-webhook-url: ${{ secrets.SLACK_WEBHOOK_URL_CI_TESTS_ALERTS }}
 ```
 
 **Usage (private repo that depends on `github.com/loft-sh/*`):**
@@ -245,16 +252,21 @@ jobs:
 ```yaml
 jobs:
   scan:
+    runs-on: ubuntu-latest
+    if: github.repository_owner == 'loft-sh'
     permissions:
       contents: read
-    uses: loft-sh/github-actions/.github/workflows/govulncheck.yaml@govulncheck/v1
-    with:
-      scan-paths: "./... ./cmd/..."
-      runs-on: large-8_32
-      private-repo: true
-    secrets:
-      gh-access-token: ${{ secrets.GH_ACCESS_TOKEN }}
-      slack-webhook-url: ${{ secrets.SLACK_WEBHOOK_URL_CI_TESTS_ALERTS }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: loft-sh/github-actions/.github/actions/govulncheck@govulncheck/v1
+        with:
+          scan-paths: "./... ./cmd/..."
+          private-repo: "true"
+          gh-access-token: ${{ secrets.GH_ACCESS_TOKEN }}
+          slack-webhook-url: ${{ secrets.SLACK_WEBHOOK_URL_CI_TESTS_ALERTS }}
 ```
 
 **Inputs:**
@@ -262,18 +274,18 @@ jobs:
 - `scan-paths` (optional, default: `./...`): space-separated Go package patterns
 - `test-flag` (optional, default: `true`): pass `-test` to govulncheck
 - `go-version-file` (optional, default: `go.mod`): passed to `actions/setup-go`
-- `runs-on` (optional, default: `ubuntu-latest`)
 - `private-repo` (optional, default: `false`): enable git url rewrite + `GOPRIVATE`
 - `goprivate` (optional, default: `github.com/loft-sh/*`)
 - `govulncheck-version` (optional, default: `latest`)
-- `timeout-minutes` (optional, default: `10`)
 - `test-name` (optional, default: `govulncheck`): Slack header
 - `notify` (optional, default: `true`): send Slack on vulnerabilities; fires on `schedule` events only
-
-**Secrets:**
-
 - `gh-access-token` (required when `private-repo: true`)
 - `slack-webhook-url` (required when `notify: true` and the run is on `schedule`)
+
+**Notes:**
+
+- The caller checks out its own source and controls `runs-on`/`timeout-minutes`/fork guarding at the job level.
+- A composite action cannot declare `timeout-minutes` on its steps; set `timeout-minutes` on the caller job (default ~10m is reasonable for most modules).
 
 ## Testing
 

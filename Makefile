@@ -33,7 +33,7 @@ test-publish-helm-chart: ## run publish-helm-chart bats tests (requires mikefara
 	bats $(SCRIPTS_DIR)/publish-helm-chart/test/run.bats
 
 test-govulncheck: ## run govulncheck bats tests
-	bats $(SCRIPTS_DIR)/govulncheck/test/run.bats
+	bats $(ACTIONS_DIR)/govulncheck/test/run.bats
 
 build-linear-release-sync: ## build linear-release-sync binary (linux/amd64)
 	cd $(ACTIONS_DIR)/linear-release-sync/src && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o ../linear-release-sync-linux-amd64 .
