@@ -1,0 +1,84 @@
+name: 'Publish Helm chart'
+description: "Package a Helm chart and push it to ChartMuseum. Supports multi-version publishes, values.yaml edits, and latest-semver re-push for stable release streams."
+branding:
+  icon: "package"
+  color: "blue"
+
+inputs:
+  chart-name:
+    description: "Helm chart name. Written to .name in Chart.yaml; also determines the packaged tarball filename."
+    required: true
+  chart-description:
+    description: "Optional value written to .description in Chart.yaml. When empty, the existing description is preserved."
+    required: false
+    default: ""
+  app-version:
+    description: "Optional value passed as --app-version to `helm package`. When empty, the chart's existing appVersion is used."
+    required: false
+    default: ""
+  chart-versions:
+    description: "JSON array of chart versions to publish. Each entry is packaged and pushed as <chart-name>-<version>.tgz. Examples: '[\"1.2.3\"]' or '[\"0.0.0-latest\",\"0.0.0-abc1234\"]'."
+    required: true
+  chart-directory:
+    description: "Path to the Helm chart source directory."
+    required: false
+    default: chart
+  values-edits:
+    description: "Optional newline-separated `jsonpath=value` pairs applied via yq to <chart-directory>/values.yaml. Values are written as strings."
+    required: false
+    default: ""
+  helm-version:
+    description: "Helm CLI version to install."
+    required: false
+    # renovate: datasource=github-releases depName=helm/helm
+    default: v4.1.4
+  republish-latest:
+    description: "When true, after pushing, query ChartMuseum for the highest semver of <chart-name> and re-push it so it becomes the most recently uploaded entry. Use for stable release publishing into a multi-line release stream."
+    required: false
+    default: "false"
+  chart-museum-url:
+    description: "ChartMuseum base URL."
+    required: false
+    default: https://charts.loft.sh/
+  chart-museum-user:
+    description: "ChartMuseum username."
+    required: true
+  chart-museum-password:
+    description: "ChartMuseum password."
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Helm
+      uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+      with:
+        version: ${{ inputs.helm-version }}
+
+    - name: Install helm-push plugin
+      # --verify=false: Helm v4 verifies plugin sources by default; the
+      # chartmuseum/helm-push plugin does not ship a verification manifest,
+      # so the install fails without this flag. The flag is a no-op on v3.
+      shell: bash
+      run: helm plugin install --verify=false https://github.com/chartmuseum/helm-push.git
+
+    - name: Set up yq
+      uses: dcarbone/install-yq-action@4075b4dca348d74bd83f2bf82d30f25d7c54539b # v1.3.1
+      with:
+        # renovate: datasource=github-releases depName=mikefarah/yq
+        version: v4.52.5
+
+    - name: Publish chart
+      shell: bash
+      env:
+        CHART_DIRECTORY: ${{ inputs.chart-directory }}
+        CHART_NAME: ${{ inputs.chart-name }}
+        CHART_DESCRIPTION: ${{ inputs.chart-description }}
+        APP_VERSION: ${{ inputs.app-version }}
+        CHART_VERSIONS_JSON: ${{ inputs.chart-versions }}
+        VALUES_EDITS: ${{ inputs.values-edits }}
+        REPUBLISH_LATEST: ${{ inputs.republish-latest }}
+        CHART_MUSEUM_URL: ${{ inputs.chart-museum-url }}
+        CHART_MUSEUM_USER: ${{ inputs.chart-museum-user }}
+        CHART_MUSEUM_PASSWORD: ${{ inputs.chart-museum-password }}
+      run: ${{ github.action_path }}/run.sh
