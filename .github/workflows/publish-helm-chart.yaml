@@ -99,7 +99,10 @@ jobs:
           version: ${{ inputs.helm-version }}
 
       - name: Install helm-push plugin
-        run: helm plugin install https://github.com/chartmuseum/helm-push.git
+        # --verify=false: Helm v4 verifies plugin sources by default; the
+        # chartmuseum/helm-push plugin does not ship a verification manifest,
+        # so the install fails without this flag. The flag is a no-op on v3.
+        run: helm plugin install --verify=false https://github.com/chartmuseum/helm-push.git
 
       - name: Set up yq
         uses: dcarbone/install-yq-action@4075b4dca348d74bd83f2bf82d30f25d7c54539b # v1.3.1
