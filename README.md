@@ -377,6 +377,62 @@ Post-merge, `dispatch-integration-tests.yaml` triggers full E2E tests in
 5. Add a CI workflow at `.github/workflows/test-<action-name>.yaml` with a
    `paths` filter scoped to the action's directory.
 
+6. Add `AUTO-DOC-INPUT`/`AUTO-DOC-OUTPUT` markers to the action's `README.md`
+   and run `make generate-docs` (see [Documentation](#documentation)).
+
+## Documentation
+
+Action and reusable workflow documentation is auto-generated from
+`action.yml` / workflow YAML using [tj-actions/auto-doc](https://github.com/tj-actions/auto-doc).
+Each action README and each workflow doc in `docs/workflows/` contains
+`AUTO-DOC-INPUT`, `AUTO-DOC-OUTPUT`, and `AUTO-DOC-SECRETS` marker comments
+that are filled in by the tool.
+
+Regenerate all docs locally:
+
+```bash
+make generate-docs
+```
+
+Verify docs are up to date (CI runs this on every PR):
+
+```bash
+make check-docs
+```
+
+Install the auto-doc binary only (downloaded to `.bin/`):
+
+```bash
+make install-auto-doc
+```
+
+### Workflow docs
+
+Reusable workflow documentation lives in `docs/workflows/<workflow-name>.md`.
+Each file maps 1:1 to a `workflow_call` workflow in `.github/workflows/`.
+
+### Adding docs for a new action or workflow
+
+1. **Action** -- add `## Inputs` and `## Outputs` sections with marker comments
+   to the action's `README.md`:
+
+   ```markdown
+   ## Inputs
+
+   <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
+   <!-- AUTO-DOC-INPUT:END -->
+
+   ## Outputs
+
+   <!-- AUTO-DOC-OUTPUT:START - Do not remove or modify this section -->
+   <!-- AUTO-DOC-OUTPUT:END -->
+   ```
+
+2. **Reusable workflow** -- create `docs/workflows/<name>.md` with `## Inputs`,
+   `## Outputs` (if applicable), and `## Secrets` marker sections.
+
+3. Run `make generate-docs` and commit the result.
+
 ## Versioning Actions
 
 ### Release-notification Action

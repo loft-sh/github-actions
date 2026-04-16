@@ -34,17 +34,19 @@ jobs:
           linear-token: ${{ secrets.LINEAR_TOKEN }}
 ```
 
-## Configuration
+## Inputs
 
-### Required Inputs
+<!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-| Input         | Description                                     |
-|---------------|-------------------------------------------------|
-| pr-number     | The pull request number                         |
-| repo-owner    | The owner of the repository                     |
-| repo-name     | The name of the repository                      |
-| github-token  | GitHub token with permissions to comment on PRs |
-| linear-token  | Linear API token for retrieving issue details   |
+|    INPUT     |  TYPE  | REQUIRED | DEFAULT |                     DESCRIPTION                      |
+|--------------|--------|----------|---------|------------------------------------------------------|
+| github-token | string |   true   |         | GitHub token with permissions to comment <br>on PRs  |
+| linear-token | string |   true   |         |  Linear API token for retrieving issue <br>details   |
+|  pr-number   | string |   true   |         |               The pull request number                |
+|  repo-name   | string |   true   |         |              The name of the repository              |
+|  repo-owner  | string |   true   |         |             The owner of the repository              |
+
+<!-- AUTO-DOC-INPUT:END -->
 
 ## Example
 

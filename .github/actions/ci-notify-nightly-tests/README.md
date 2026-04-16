@@ -4,15 +4,19 @@ Sends a Slack notification with E2E nightly test results, including a summary, r
 
 ## Inputs
 
-| Name | Description | Required | Default |
-|------|-------------|----------|---------|
-| `test_results` | Test results summary text | yes | |
-| `run_id` | GitHub Actions run ID | yes | |
-| `run_number` | GitHub Actions run number | yes | |
-| `status` | Test status: `success` or `failure` | yes | |
-| `source_repo` | Source repository (e.g. `loft-sh/vcluster`) | yes | |
-| `failed_tests` | List of failed test suites, if any | yes | `''` |
-| `webhook_url` | Slack incoming webhook URL | yes | |
+<!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
+
+|    INPUT     |  TYPE  | REQUIRED | DEFAULT |               DESCRIPTION               |
+|--------------|--------|----------|---------|-----------------------------------------|
+| failed_tests | string |   true   |         | List of failed test suites, if <br>any  |
+|    run_id    | string |   true   |         |          GitHub Actions run ID          |
+|  run_number  | string |   true   |         |        GitHub Actions run number        |
+| source_repo  | string |   true   |         |            Source repository            |
+|    status    | string |   true   |         |     Test status (success, failure)      |
+| test_results | string |   true   |         |          Test results summary           |
+| webhook_url  | string |   true   |         |            Slack Webhook URL            |
+
+<!-- AUTO-DOC-INPUT:END -->
 
 ## Usage
 

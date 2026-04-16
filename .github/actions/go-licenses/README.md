@@ -9,20 +9,24 @@ Both modes share the same setup (setup-go, install go-licenses, optional private
 
 ## Inputs
 
-| Name | Description | Required | Default |
-|------|-------------|----------|---------|
-| `mode` | `check` or `report` | yes | — |
-| `go-licenses-version` | go-licenses version to install. `v1.0.0` lacks `--ignore`; use `package-mode: go-work` with it | no | `v1.6.0` |
-| `go-version-file` | Passed to `actions/setup-go` | no | `go.mod` |
-| `ignored-packages` | Comma-separated package path prefixes to skip. In `all` mode → `--ignore` flags; in `go-work` mode → substring-matched against `go.work` DiskPaths | no | `github.com/loft-sh` |
-| `package-mode` | `all` (pass `./...` + `--ignore`) or `go-work` (enumerate workspace modules — required for go-licenses < v1.6.0) | no | `all` |
-| `fail-on-error` | [check] When `"false"`, non-zero go-licenses exit is surfaced as a warning; the step still succeeds | no | `"true"` |
-| `template-path` | [report] Path to the go-licenses .tmpl template | no | `.github/licenses.tmpl` |
-| `output-path` | [report] File path to write the rendered report to | required for `report` | `""` |
-| `pr-branch` | [report] Branch name for the generated PR | required for `report` | `""` |
-| `pr-title` | [report] PR title | required for `report` | `""` |
-| `pr-commit-message` | [report] Commit message; defaults to `pr-title` | no | `""` |
-| `gh-access-token` | GitHub PAT — fetches private loft-sh modules (both modes) and opens the PR (report mode) | required for `report`, optional for private-module `check` | `""` |
+<!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
+
+|        INPUT        |  TYPE  | REQUIRED |          DEFAULT          |                                                                                                       DESCRIPTION                                                                                                       |
+|---------------------|--------|----------|---------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|    fail-on-error    | string |  false   |         `"true"`          | [check mode] When `false`, non-zero exit <br>codes from go-licenses are surfaced as <br>a workflow warning instead of a <br>failure. Use only as a temporary <br>escape hatch when upstream go-licenses is <br>broken.  |
+|   gh-access-token   | string |  false   |                           |                                         GitHub PAT used to fetch private <br>loft-sh modules (both modes) and to open <br>the generated pull request (report mode, required).                                           |
+| go-licenses-version | string |  false   |        `"v1.6.0"`         |                                    Version of go-licenses to install (e.g. v1.6.0, v1.0.0). <br>v1.0.0 does not support `--ignore` — <br>set `package-mode: go-work` when using it.                                     |
+|   go-version-file   | string |  false   |        `"go.mod"`         |                                                                                      Path to go.mod or go.work for <br>setup-go.                                                                                        |
+|  ignored-packages   | string |  false   |  `"github.com/loft-sh"`   |                    Comma-separated package path prefixes to skip. <br>In `all` mode these become `--ignore` <br>flags; in `go-work` mode they are <br>substring-matched against go.work DiskPaths.                      |
+|        mode         | string |   true   |                           |                                  `check` — run `go-licenses check` against the module. <br>`report` — render a license report with <br>a template and open a PR <br>with the output.                                    |
+|     output-path     | string |  false   |                           |                                         [report mode, required] File path in <br>the caller repo to write the <br>rendered report to, e.g. `docs/pages/licenses/vcluster.mdx`.                                          |
+|    package-mode     | string |  false   |          `"all"`          |           Package selection strategy: `all` (pass `./...` with `--ignore` flags) or <br>`go-work` (enumerate modules via `go work edit` and filter at the package list — required for go-licenses < v1.6.0).            |
+|      pr-branch      | string |  false   |                           |                                                                       [report mode, required] Branch name to <br>push the rendered report onto.                                                                         |
+|  pr-commit-message  | string |  false   |                           |                                                                [report mode] Commit message for the <br>generated pull request. Defaults to `pr-title`.                                                                 |
+|      pr-title       | string |  false   |                           |                                                                          [report mode, required] PR title for <br>the generated pull request.                                                                           |
+|    template-path    | string |  false   | `".github/licenses.tmpl"` |                                                                [report mode] Path to the go-licenses <br>.tmpl template used to render the <br>report.                                                                  |
+
+<!-- AUTO-DOC-INPUT:END -->
 
 ## Usage
 

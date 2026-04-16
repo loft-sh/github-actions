@@ -6,12 +6,16 @@ Replaces the nightly-specific `ci-notify-nightly-tests` action with a generic in
 
 ## Inputs
 
-| Name | Description | Required | Default |
-|------|-------------|----------|---------|
-| `test-name` | Test suite name for the header (e.g. "E2E Ginkgo Nightly Tests"). Keep under ~130 chars (Slack header limit is 150 chars; status suffix uses ~15). | yes | |
-| `status` | Test status: `success`, `failure`, `cancelled`, or `skipped` | yes | |
-| `details` | Markdown text appended after the build URL | no | `''` |
-| `webhook-url` | Slack incoming webhook URL | yes | |
+<!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
+
+|    INPUT    |  TYPE  | REQUIRED | DEFAULT |                                                                                         DESCRIPTION                                                                                         |
+|-------------|--------|----------|---------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|   details   | string |  false   |         |                                               Markdown text appended after the build <br>URL (test results, versions, artifact links, etc.)                                                 |
+|   status    | string |   true   |         |                                                                  Test status: success, failure, cancelled, or <br>skipped                                                                   |
+|  test-name  | string |   true   |         | Test suite name for the header <br>(e.g. "E2E Ginkgo Nightly Tests"). Keep under ~130 chars — <br>Slack header blocks have a 150-char <br>limit and the status suffix takes <br>~15 chars.  |
+| webhook-url | string |   true   |         |                                                                                 Slack incoming webhook URL                                                                                  |
+
+<!-- AUTO-DOC-INPUT:END -->
 
 ## Message format
 

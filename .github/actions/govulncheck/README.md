@@ -6,18 +6,22 @@ On scheduled runs, posts a Slack notification via `ci-test-notify` when vulnerab
 
 ## Inputs
 
-| Name | Description | Required | Default |
-|------|-------------|----------|---------|
-| `scan-paths` | Space-separated Go package patterns to scan, e.g. `./... ./cmd/...` | no | `./...` |
-| `test-flag` | Pass `-test` to govulncheck (include test files in the scan) | no | `"true"` |
-| `go-version-file` | Path to `go.mod` or `go.work`, passed to `actions/setup-go` | no | `go.mod` |
-| `private-repo` | When `"true"`, rewrites git URLs with `gh-access-token` and sets `GOPRIVATE` for private-module resolution | no | `"false"` |
-| `goprivate` | Value of `GOPRIVATE` when `private-repo: "true"` | no | `github.com/loft-sh/*` |
-| `govulncheck-version` | Version of `golang.org/x/vuln/cmd/govulncheck` to install | no | `latest` |
-| `test-name` | Slack notification header (passed to `ci-test-notify`) | no | `govulncheck` |
-| `notify` | Send a Slack notification on vulnerabilities. Only fires on `schedule` events — PR/manual runs never notify | no | `"true"` |
-| `gh-access-token` | PAT with access to private loft-sh repos. Required when `private-repo: "true"` | no | `""` |
-| `slack-webhook-url` | Slack incoming webhook URL. Required when `notify: "true"` and the run is on `schedule` | no | `""` |
+<!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
+
+|        INPUT        |  TYPE  | REQUIRED |         DEFAULT          |                                                                         DESCRIPTION                                                                          |
+|---------------------|--------|----------|--------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|   gh-access-token   | string |  false   |                          |                                      PAT with access to private loft-sh <br>repos. Required when `private-repo: true`.                                       |
+|   go-version-file   | string |  false   |        `"go.mod"`        |                                                 Path to go.mod (or go.work) passed to <br>actions/setup-go.                                                  |
+|      goprivate      | string |  false   | `"github.com/loft-sh/*"` |                                               Value of the GOPRIVATE env var <br>when `private-repo` is true.                                                |
+| govulncheck-version | string |  false   |        `"latest"`        |                                                   Version of golang.org/x/vuln/cmd/govulncheck to install.                                                   |
+|       notify        | string |  false   |         `"true"`         |                    Send a Slack notification on vulnerabilities. <br>Only fires on `schedule` events — <br>PR/manual runs never notify.                      |
+|    private-repo     | string |  false   |        `"false"`         | When true, configures `git` url rewriting <br>with `gh-access-token` and sets `GOPRIVATE=github.com/loft-sh/*` so <br>the scan can resolve private modules.  |
+|     scan-paths      | string |  false   |        `"./..."`         |                                        Space-separated Go package patterns to scan. <br>Example: `./... ./cmd/...`.                                          |
+|  slack-webhook-url  | string |  false   |                          |             Slack incoming webhook URL for the <br>ci-test-notify action. Required when `notify: true` and <br>the workflow runs on `schedule`.              |
+|      test-flag      | string |  false   |         `"true"`         |                                                Pass `-test` to govulncheck (include test files in the scan).                                                 |
+|      test-name      | string |  false   |     `"govulncheck"`      |                                                    Slack notification header (passed to ci-test-notify).                                                     |
+
+<!-- AUTO-DOC-INPUT:END -->
 
 ## Usage
 

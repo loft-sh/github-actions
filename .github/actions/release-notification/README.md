@@ -4,17 +4,22 @@ Sends a Slack notification when a new release is published.
 
 ## Inputs
 
-| Name | Description | Required | Default |
-|------|-------------|----------|---------|
-| `version` | Release version | yes | |
-| `previous_tag` | Previous release tag for changelog comparison | no | `''` |
-| `changes` | Release changes | no | `'See changelog link below'` |
-| `is_draft` | Is this a draft release? | no | `'false'` |
-| `is_prerelease` | Is this a pre-release? | no | `'false'` |
-| `target_repo` | Target repository (e.g. `loft-sh/vcluster`) | yes | |
-| `product` | Product name (e.g. `vCluster` or `vCluster Platform`) | yes | |
-| `base_branch` | Source branch from which the release was cut | no | |
-| `webhook_url` | Slack incoming webhook URL | yes | |
+<!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
+
+|     INPUT     |  TYPE  | REQUIRED |           DEFAULT            |                                           DESCRIPTION                                           |
+|---------------|--------|----------|------------------------------|-------------------------------------------------------------------------------------------------|
+|  base_branch  | string |  false   |                              | Source branch from which the release <br>was cut (auto-detected from git history when omitted)  |
+|    changes    | string |  false   | `"See changelog link below"` |                                         Release changes                                         |
+|   is_draft    | string |  false   |          `"false"`           |                                    Is this a draft release?                                     |
+| is_prerelease | string |  false   |          `"false"`           |                                     Is this a pre-release?                                      |
+| previous_tag  | string |  false   |                              |                          Previous release tag for changelog comparison                          |
+|    product    | string |   true   |                              |                          Product name (vCluster or vCluster Platform)                           |
+|    status     | string |  false   |         `"success"`          |                  Release status: success, failure, cancelled, or <br>skipped                    |
+|  target_repo  | string |   true   |                              |                                        Target repository                                        |
+|    version    | string |   true   |                              |                                         Release version                                         |
+|  webhook_url  | string |   true   |                              |                                        Slack Webhook URL                                        |
+
+<!-- AUTO-DOC-INPUT:END -->
 
 ## Usage
 
