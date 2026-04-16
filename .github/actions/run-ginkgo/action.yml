@@ -1,0 +1,61 @@
+name: "Run Ginkgo Tests"
+description: "Execute Ginkgo tests with directory or label-based filtering and JSON failure reporting"
+
+inputs:
+  timeout:
+    description: "Ginkgo test timeout"
+    required: false
+    default: "60m"
+  procs:
+    description: "Number of parallel Ginkgo processes"
+    required: false
+    default: "8"
+  ginkgo-label:
+    description: "Ginkgo label filter expression. When set, adds --label-filter and -r (recursive)."
+    required: false
+    default: ""
+  test-dir:
+    description: "Directory containing test suites"
+    required: false
+    default: "e2e-next"
+  additional-args:
+    description: "Extra arguments passed to the test binary (after --)"
+    required: false
+    default: ""
+  additional-ginkgo-flags:
+    description: "Extra ginkgo CLI flags (e.g. -v, --skip-package=linters, --show-node-events)"
+    required: false
+    default: ""
+
+outputs:
+  failure-summary:
+    description: "Markdown-formatted test results summary"
+    value: ${{ steps.generate-summary.outputs.failure-summary }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install Ginkgo CLI
+      shell: bash
+      run: |
+        cd "$TEST_DIR"
+        go install github.com/onsi/ginkgo/v2/ginkgo
+      env:
+        TEST_DIR: ${{ inputs.test-dir }}
+
+    - name: Execute Ginkgo tests
+      shell: bash
+      env:
+        GINKGO_LABEL: ${{ inputs.ginkgo-label }}
+        TEST_DIR: ${{ inputs.test-dir }}
+        TIMEOUT: ${{ inputs.timeout }}
+        PROCS: ${{ inputs.procs }}
+        ADDITIONAL_ARGS: ${{ inputs.additional-args }}
+        ADDITIONAL_GINKGO_FLAGS: ${{ inputs.additional-ginkgo-flags }}
+      run: ${{ github.action_path }}/src/execute-tests.sh
+
+    - name: Generate failure summary
+      id: generate-summary
+      if: always()
+      shell: bash
+      run: ${{ github.action_path }}/src/generate-summary.sh

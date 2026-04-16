@@ -1,0 +1,13 @@
+[
+  {
+    "PreRunStats": { "TotalSpecs": 5, "SpecsThatWillRun": 5 },
+    "RunTime": 180000000000,
+    "SpecReports": [
+      { "State": "passed", "LeafNodeType": "It", "LeafNodeText": "creates a vcluster", "ContainerHierarchyTexts": ["VCluster", "Lifecycle"], "LeafNodeLocation": { "FileName": "lifecycle_test.go", "LineNumber": 10 } },
+      { "State": "failed", "LeafNodeType": "It", "LeafNodeText": "syncs pods", "ContainerHierarchyTexts": ["VCluster", "Sync"], "LeafNodeLocation": { "FileName": "sync_test.go", "LineNumber": 20 } },
+      { "State": "passed", "LeafNodeType": "It", "LeafNodeText": "connects to vcluster", "ContainerHierarchyTexts": ["VCluster", "Lifecycle"], "LeafNodeLocation": { "FileName": "lifecycle_test.go", "LineNumber": 30 } },
+      { "State": "skipped", "LeafNodeType": "It", "LeafNodeText": "deletes a vcluster", "ContainerHierarchyTexts": ["VCluster", "Lifecycle"], "LeafNodeLocation": { "FileName": "lifecycle_test.go", "LineNumber": 40 } },
+      { "State": "panicked", "LeafNodeType": "It", "LeafNodeText": "handles network policies", "ContainerHierarchyTexts": ["VCluster", "Networking"], "LeafNodeLocation": { "FileName": "network_test.go", "LineNumber": 50 } }
+    ]
+  }
+]
