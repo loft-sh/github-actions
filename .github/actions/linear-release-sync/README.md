@@ -32,30 +32,27 @@ sync_linear:
         linear-token: ${{ secrets.LINEAR_TOKEN }}
 ```
 
-## Configuration
+## Inputs
 
-### Required Inputs
+<!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-| Input         | Description                                     |
-|---------------|-------------------------------------------------|
-| release-tag   | The tag of the new release (e.g. `v1.2.0`)     |
-| repo-name     | The GitHub repository name                      |
-| github-token  | GitHub token with read access to the repository |
-| linear-token  | Linear API token for updating issues            |
+|            INPUT             |  TYPE  | REQUIRED |        DEFAULT        |                                      DESCRIPTION                                      |
+|------------------------------|--------|----------|-----------------------|---------------------------------------------------------------------------------------|
+|            debug             | string |  false   |       `"false"`       |                                 Enable debug logging                                  |
+|           dry-run            | string |  false   |       `"false"`       |                       Preview changes without modifying Linear                        |
+|         github-token         | string |   true   |                       |                 GitHub token with read access to <br>the repository                   |
+|       linear-projects        | string |  false   |                       | Comma-separated list of Linear project names <br>to process (optional, default: all)  |
+|         linear-teams         | string |  false   |                       |  Comma-separated list of Linear team names <br>to process (optional, default: all)    |
+|         linear-token         | string |   true   |                       |                         Linear API token for updating issues                          |
+|         previous-tag         | string |  false   |                       |                 The previous release tag (auto-detected if not set)                   |
+| ready-for-release-state-name | string |  false   | `"Ready for Release"` |            The Linear workflow state name for <br>issues ready to release             |
+|         release-tag          | string |   true   |                       |                     The tag of the new release <br>(e.g. v1.2.0)                      |
+|     released-state-name      | string |  false   |     `"Released"`      |                The Linear workflow state name for <br>released issues                 |
+|          repo-name           | string |   true   |                       |                              The GitHub repository name                               |
+|          repo-owner          | string |  false   |      `"loft-sh"`      |                          The GitHub owner of the repository                           |
+|       strict-filtering       | string |  false   |       `"true"`        |      Only include PRs merged before the <br>release was published (recommended)       |
 
-### Optional Inputs
-
-| Input                        | Default              | Description                                                |
-|------------------------------|----------------------|------------------------------------------------------------|
-| repo-owner                   | `loft-sh`            | The GitHub owner of the repository                         |
-| previous-tag                 | *(auto-detected)*    | The previous release tag                                   |
-| released-state-name          | `Released`           | The Linear workflow state name for released issues         |
-| ready-for-release-state-name | `Ready for Release`  | The Linear workflow state name for issues ready to release |
-| linear-teams                 | *(all teams)*        | Comma-separated list of Linear team names to process       |
-| linear-projects              | *(all projects)*     | Comma-separated list of Linear project names to process    |
-| strict-filtering             | `true`               | Only include PRs merged before the release was published   |
-| dry-run                      | `false`              | Preview changes without modifying Linear                   |
-| debug                        | `false`              | Enable debug logging                                       |
+<!-- AUTO-DOC-INPUT:END -->
 
 ## Development
 

@@ -11,17 +11,25 @@ This GitHub Action validates whether a given version string follows the [Semanti
 
 ## Inputs
 
-| Name | Description | Required | Default |
-|------|-------------|----------|---------|
-| `version` | Version string to validate against semver format | Yes | - |
+<!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
+
+|  INPUT  |  TYPE  | REQUIRED | DEFAULT |                      DESCRIPTION                      |
+|---------|--------|----------|---------|-------------------------------------------------------|
+| version | string |   true   |         | Version string to validate against semver <br>format  |
+
+<!-- AUTO-DOC-INPUT:END -->
 
 ## Outputs
 
-| Name | Description | Example |
-|------|-------------|---------|
-| `is_valid` | Whether the version is valid semver (`true`/`false`) | `true` |
-| `parsed_version` | JSON object with parsed version components | `{"major":1,"minor":2,"patch":3,...}` |
-| `error_message` | Error message if validation fails | `Invalid semver format: 'v1.2'` |
+<!-- AUTO-DOC-OUTPUT:START - Do not remove or modify this section -->
+
+|     OUTPUT     |  TYPE  |                                     DESCRIPTION                                     |
+|----------------|--------|-------------------------------------------------------------------------------------|
+| error_message  | string |                          Error message if validation fails                          |
+|    is_valid    | string |               Whether the version is a valid <br>semver (true/false)                |
+| parsed_version | string | Parsed version object with major, minor, <br>patch, prerelease, and build metadata  |
+
+<!-- AUTO-DOC-OUTPUT:END -->
 
 ## Usage
 

@@ -1,7 +1,92 @@
-.PHONY: test test-semver-validation test-linear-pr-commenter test-release-notification test-linear-release-sync test-cleanup-head-charts test-ci-test-notify test-auto-approve-bot-prs test-publish-helm-chart test-govulncheck test-go-licenses build-linear-release-sync lint help
+.PHONY: test test-semver-validation test-linear-pr-commenter test-release-notification test-linear-release-sync test-cleanup-head-charts test-ci-test-notify test-auto-approve-bot-prs test-publish-helm-chart test-govulncheck test-go-licenses build-linear-release-sync lint install-auto-doc generate-docs check-docs help
 
 ACTIONS_DIR := .github/actions
+WORKFLOWS_DIR := .github/workflows
 SCRIPTS_DIR := .github/scripts
+
+# --- auto-doc -----------------------------------------------------------
+AUTO_DOC_VERSION := 3.6.0
+
+# Detect OS and arch for binary download
+UNAME_S := $(shell uname -s)
+UNAME_M := $(shell uname -m)
+ifeq ($(UNAME_S),Darwin)
+  AUTO_DOC_OS := Darwin
+else
+  AUTO_DOC_OS := Linux
+endif
+ifeq ($(UNAME_M),arm64)
+  AUTO_DOC_ARCH := arm64
+else ifeq ($(UNAME_M),aarch64)
+  AUTO_DOC_ARCH := arm64
+else
+  AUTO_DOC_ARCH := x86_64
+endif
+
+AUTO_DOC_BIN := .bin/auto-doc
+
+$(AUTO_DOC_BIN):
+	@mkdir -p .bin
+	curl -sSfL "https://github.com/tj-actions/auto-doc/releases/download/v$(AUTO_DOC_VERSION)/auto-doc_$(AUTO_DOC_VERSION)_$(AUTO_DOC_OS)_$(AUTO_DOC_ARCH).tar.gz" \
+	  | tar xz -C .bin auto-doc
+
+install-auto-doc: $(AUTO_DOC_BIN) ## install auto-doc CLI
+
+generate-docs: $(AUTO_DOC_BIN) ## regenerate docs from action.yml / workflow YAML
+	@# Composite actions
+	@for action_yml in $(ACTIONS_DIR)/*/action.yml; do \
+	  dir=$$(dirname "$$action_yml"); \
+	  readme="$$dir/README.md"; \
+	  if [ -f "$$readme" ]; then \
+	    $(AUTO_DOC_BIN) -f "$$action_yml" -o "$$readme" && \
+	    echo "  updated $$readme"; \
+	  fi; \
+	done
+	@# Reusable workflows
+	@for doc in docs/workflows/*.md; do \
+	  name=$$(basename "$$doc" .md); \
+	  wf="$(WORKFLOWS_DIR)/$$name.yaml"; \
+	  if [ -f "$$wf" ]; then \
+	    $(AUTO_DOC_BIN) -f "$$wf" -r -o "$$doc" && \
+	    echo "  updated $$doc"; \
+	  fi; \
+	done
+
+check-docs: generate-docs ## verify docs are up to date (fails if drift detected)
+	@# Check that every action has a README with auto-doc markers
+	@fail=0; \
+	for action_yml in $(ACTIONS_DIR)/*/action.yml; do \
+	  dir=$$(dirname "$$action_yml"); \
+	  name=$$(basename "$$dir"); \
+	  readme="$$dir/README.md"; \
+	  if [ ! -f "$$readme" ]; then \
+	    echo "ERROR: $$dir has action.yml but no README.md"; \
+	    fail=1; \
+	  elif ! grep -q 'AUTO-DOC-INPUT:START' "$$readme"; then \
+	    echo "ERROR: $$readme is missing AUTO-DOC-INPUT markers"; \
+	    fail=1; \
+	  fi; \
+	done; \
+	for wf in $(WORKFLOWS_DIR)/*.yaml; do \
+	  if grep -q 'workflow_call' "$$wf"; then \
+	    name=$$(basename "$$wf" .yaml); \
+	    doc="docs/workflows/$$name.md"; \
+	    if [ ! -f "$$doc" ]; then \
+	      echo "ERROR: reusable workflow $$wf has no doc at $$doc"; \
+	      fail=1; \
+	    fi; \
+	  fi; \
+	done; \
+	if [ "$$fail" -eq 1 ]; then exit 1; fi
+	@# Check that generated content matches committed content
+	@if ! git diff --quiet -- '*.md'; then \
+	  echo ""; \
+	  echo "ERROR: Generated docs are out of date. Run 'make generate-docs' and commit the changes."; \
+	  echo ""; \
+	  git diff --stat -- '*.md'; \
+	  exit 1; \
+	fi
+	@echo "Docs are up to date."
 
 help: ## show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-30s %s\n", $$1, $$2}'

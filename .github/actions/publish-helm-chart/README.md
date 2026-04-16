@@ -4,19 +4,23 @@ Packages a Helm chart and pushes it to ChartMuseum. Handles multi-version publis
 
 ## Inputs
 
-| Name | Description | Required | Default |
-|------|-------------|----------|---------|
-| `chart-name` | Written to `.name` in `Chart.yaml`; also determines the packaged tarball filename | yes | — |
-| `chart-description` | Optional value written to `.description` in `Chart.yaml`. Preserved when empty | no | `""` |
-| `app-version` | Passed as `--app-version` to `helm package`. When empty, the chart's existing `appVersion` is used | no | `""` |
-| `chart-versions` | JSON array of chart versions. Each entry is packaged and pushed as `<chart-name>-<version>.tgz`. Examples: `'["1.2.3"]'`, `'["0.0.0-latest","0.0.0-abc1234"]'` | yes | — |
-| `chart-directory` | Path to the Helm chart source directory | no | `chart` |
-| `values-edits` | Newline-separated `jsonpath=value` pairs applied via yq to `<chart-directory>/values.yaml`. Values are written as strings | no | `""` |
-| `helm-version` | Helm CLI version to install | no | `v4.1.4` |
-| `republish-latest` | When `"true"`, after pushing, re-push the highest semver so it becomes the most recently uploaded entry (for stable release streams) | no | `"false"` |
-| `chart-museum-url` | ChartMuseum base URL | no | `https://charts.loft.sh/` |
-| `chart-museum-user` | ChartMuseum username | yes | — |
-| `chart-museum-password` | ChartMuseum password | yes | — |
+<!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
+
+|         INPUT         |  TYPE  | REQUIRED |           DEFAULT           |                                                                                                                DESCRIPTION                                                                                                                 |
+|-----------------------|--------|----------|-----------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|      app-version      | string |  false   |                             |                                                          Optional value passed as --app-version to <br>`helm package`. When empty, the chart's existing <br>appVersion is used.                                                            |
+|   chart-description   | string |  false   |                             |                                                             Optional value written to .description in <br>Chart.yaml. When empty, the existing description <br>is preserved.                                                               |
+|    chart-directory    | string |  false   |          `"chart"`          |                                                                                               Path to the Helm chart source <br>directory.                                                                                                 |
+| chart-museum-password | string |   true   |                             |                                                                                                           ChartMuseum password.                                                                                                            |
+|   chart-museum-url    | string |  false   | `"https://charts.loft.sh/"` |                                                                                                           ChartMuseum base URL.                                                                                                            |
+|   chart-museum-user   | string |   true   |                             |                                                                                                           ChartMuseum username.                                                                                                            |
+|      chart-name       | string |   true   |                             |                                                                  Helm chart name. Written to .name <br>in Chart.yaml; also determines the packaged <br>tarball filename.                                                                   |
+|    chart-versions     | string |   true   |                             |                            JSON array of chart versions to <br>publish. Each entry is packaged and <br>pushed as <chart-name>-<version>.tgz. Examples: '["1.2.3"]' or <br>'["0.0.0-latest","0.0.0-abc1234"]'.                              |
+|     helm-version      | string |  false   |         `"v4.1.4"`          |                                                                                                        Helm CLI version to install.                                                                                                        |
+|   republish-latest    | string |  false   |          `"false"`          | When true, after pushing, query ChartMuseum <br>for the highest semver of <chart-name> <br>and re-push it so it becomes <br>the most recently uploaded entry. Use <br>for stable release publishing into a <br>multi-line release stream.  |
+|     values-edits      | string |  false   |                             |                                                 Optional newline-separated `jsonpath=value` pairs applied via <br>yq to <chart-directory>/values.yaml. Values are written <br>as strings.                                                  |
+
+<!-- AUTO-DOC-INPUT:END -->
 
 ## Usage
 

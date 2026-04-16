@@ -1,0 +1,26 @@
+name: Check docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/actions/**/action.yml'
+      - '.github/workflows/*.yaml'
+      - 'docs/workflows/*.md'
+  pull_request:
+    paths:
+      - '.github/actions/**/action.yml'
+      - '.github/actions/**/README.md'
+      - '.github/workflows/*.yaml'
+      - 'docs/workflows/*.md'
+
+jobs:
+  check-docs:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - run: make check-docs
