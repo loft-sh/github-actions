@@ -14,7 +14,7 @@ on:
       auto-merge:
         description: 'Enable auto-merge after approval'
         type: boolean
-        default: true
+        default: false
     secrets:
       gh-access-token:
         description: 'GitHub PAT for approving PRs (must be different identity from PR author)'

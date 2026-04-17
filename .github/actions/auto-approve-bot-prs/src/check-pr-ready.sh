@@ -17,12 +17,16 @@ emit() {
   printf '%s=%s\n' "$k" "$v"
 }
 
-# mergeable can be null briefly while GitHub computes metadata.
+# mergeable can be null briefly while GitHub computes metadata. Rerun context
+# makes this worse — observed runs where the first ~9s window returned null
+# even though the PR had been mergeable for hours. Budget ~30s before giving up.
 mergeable="null"
-for _ in 1 2 3; do
+mergeable_attempts="${MERGEABLE_MAX_ATTEMPTS:-10}"
+mergeable_sleep="${MERGEABLE_SLEEP_SECONDS:-3}"
+for _ in $(seq 1 "$mergeable_attempts"); do
   mergeable=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.mergeable // "null"' 2>/dev/null || echo "null")
   [ "$mergeable" != "null" ] && break
-  sleep 3
+  sleep "$mergeable_sleep"
 done
 
 if [ "$mergeable" != "true" ]; then

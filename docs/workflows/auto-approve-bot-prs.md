@@ -8,12 +8,11 @@ of the same name with GitHub App token minting and sparse checkout.
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-|      INPUT      |  TYPE   | REQUIRED |                    DEFAULT                     |                               DESCRIPTION                               |
-|-----------------|---------|----------|------------------------------------------------|-------------------------------------------------------------------------|
-|     app-id      | string  |  false   |                                                | GitHub App ID for minting installation <br>tokens (preferred over PAT)  |
-|   auto-merge    | boolean |  false   |                     `true`                     |                    Enable auto-merge after approval                     |
-|  merge-method   | string  |  false   |                   `"squash"`                   |          Merge method for auto-merge (squash, merge, rebase)            |
-| trusted-authors | string  |  false   | `"renovate[bot],loft-bot,github-actions[bot]"` |               Comma-separated list of trusted bot logins                |
+|      INPUT      |  TYPE   | REQUIRED |                    DEFAULT                     |                     DESCRIPTION                      |
+|-----------------|---------|----------|------------------------------------------------|------------------------------------------------------|
+|   auto-merge    | boolean |  false   |                    `false`                     |           Enable auto-merge after approval           |
+|  merge-method   | string  |  false   |                   `"squash"`                   | Merge method for auto-merge (squash, merge, rebase)  |
+| trusted-authors | string  |  false   | `"renovate[bot],loft-bot,github-actions[bot]"` |      Comma-separated list of trusted bot logins      |
 
 <!-- AUTO-DOC-INPUT:END -->
 
@@ -21,9 +20,8 @@ of the same name with GitHub App token minting and sparse checkout.
 
 <!-- AUTO-DOC-SECRETS:START - Do not remove or modify this section -->
 
-|     SECRET      | REQUIRED |                                  DESCRIPTION                                  |
-|-----------------|----------|-------------------------------------------------------------------------------|
-| app-private-key |  false   |       GitHub App private key (PEM) for <br>minting installation tokens        |
-| gh-access-token |  false   | GitHub PAT for approving PRs (legacy — use app-id + app-private-key instead)  |
+|     SECRET      | REQUIRED |                                DESCRIPTION                                |
+|-----------------|----------|---------------------------------------------------------------------------|
+| gh-access-token |   true   | GitHub PAT for approving PRs (must be different identity from PR author)  |
 
 <!-- AUTO-DOC-SECRETS:END -->
