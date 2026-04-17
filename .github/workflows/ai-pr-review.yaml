@@ -1,0 +1,74 @@
+name: AI PR review
+
+on:
+  workflow_call:
+    inputs:
+      provider:
+        description: 'AI provider: `anthropic` (implemented) or `openai` (reserved stub).'
+        type: string
+        required: true
+      effort:
+        description: 'Effort level (low | medium | high) — maps to a provider-specific model.'
+        type: string
+        required: false
+        default: 'medium'
+      prompt:
+        description: 'Review instructions passed verbatim as the AI prompt.'
+        type: string
+        required: true
+      outcome:
+        description: 'What the AI produces: `pr-comment` or `inline-review`.'
+        type: string
+        required: true
+      allowed-bots:
+        description: 'Comma-separated bot logins this review runs for. `*` allows all bots.'
+        type: string
+        required: false
+        default: 'renovate,dependabot,loft-bot,github-actions'
+      timeout-minutes:
+        description: 'Job timeout in minutes.'
+        type: number
+        required: false
+        default: 15
+    secrets:
+      anthropic-api-key:
+        description: 'Anthropic API key. Required when provider=anthropic.'
+        required: false
+      openai-api-key:
+        description: 'OpenAI API key. Reserved for provider=openai.'
+        required: false
+
+concurrency:
+  group: ai-pr-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  ai-review:
+    # Guard against running in forked orgs and fork PRs (no secrets available).
+    if: github.repository_owner == 'loft-sh' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    # Advisory — never hard-fail the caller's CI.
+    continue-on-error: true
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: loft-sh/github-actions
+          ref: main
+          persist-credentials: false
+          sparse-checkout: .github/actions/ai-pr-review
+      - uses: ./.github/actions/ai-pr-review
+        with:
+          provider: ${{ inputs.provider }}
+          effort: ${{ inputs.effort }}
+          prompt: ${{ inputs.prompt }}
+          outcome: ${{ inputs.outcome }}
+          allowed-bots: ${{ inputs.allowed-bots }}
+          anthropic-api-key: ${{ secrets.anthropic-api-key }} # zizmor: ignore[secrets-outside-env] -- API key passed via workflow_call, not a repo secret
+          openai-api-key: ${{ secrets.openai-api-key }} # zizmor: ignore[secrets-outside-env] -- API key passed via workflow_call, not a repo secret
+          github-token: ${{ secrets.GITHUB_TOKEN }}

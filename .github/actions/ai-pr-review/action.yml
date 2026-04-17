@@ -1,0 +1,99 @@
+name: AI PR review
+description: |
+  Runs an AI-powered PR review with a caller-provided prompt. The caller
+  picks provider, effort, outcome, and the review instructions; the action
+  owns model selection, MCP servers, and write-tool access. Advisory only —
+  every failure mode degrades to a notice-level skip.
+inputs:
+  provider:
+    description: 'AI provider. `anthropic` is implemented; `openai` is reserved (stub).'
+    required: true
+  effort:
+    description: 'Effort level (low | medium | high) — maps to a provider-specific model.'
+    required: false
+    default: 'medium'
+  prompt:
+    description: 'Review instructions passed verbatim as the AI prompt.'
+    required: true
+  outcome:
+    description: 'What the AI produces: `pr-comment` (single sticky comment) or `inline-review` (inline comments on specific lines).'
+    required: true
+  allowed-bots:
+    description: 'Comma-separated bot logins this review runs for (passed to claude-code-action `allowed_bots`). `*` allows all bots.'
+    required: false
+    default: 'renovate,dependabot,loft-bot,github-actions'
+  anthropic-api-key:
+    description: 'Anthropic API key. Required when provider=anthropic.'
+    required: false
+  openai-api-key:
+    description: 'OpenAI API key. Reserved for provider=openai.'
+    required: false
+  github-token:
+    description: 'Token used by claude-code-action to post comments and read PR state.'
+    required: true
+
+outputs:
+  conclusion:
+    description: '`success` when the AI review ran; `skipped` when stubbed or invalid input.'
+    value: ${{ steps.conclusion.outputs.conclusion }}
+  reason:
+    description: 'One-line explanation when conclusion=skipped.'
+    value: ${{ steps.cfg.outputs.reason }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve config
+      id: cfg
+      shell: bash
+      env:
+        INPUT_PROVIDER: ${{ inputs.provider }}
+        INPUT_EFFORT: ${{ inputs.effort }}
+        INPUT_OUTCOME: ${{ inputs.outcome }}
+      run: ${{ github.action_path }}/src/resolve-config.sh
+
+    - name: Checkout PR head
+      if: steps.cfg.outputs.proceed == 'true' && inputs.provider == 'anthropic'
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        ref: ${{ github.event.pull_request.head.sha }}
+        fetch-depth: 1
+        persist-credentials: false
+
+    - name: Restore CLAUDE.md from base branch
+      if: steps.cfg.outputs.proceed == 'true' && inputs.provider == 'anthropic'
+      shell: bash
+      env:
+        BASE_REF: ${{ github.event.pull_request.base.ref }}
+      run: ${{ github.action_path }}/src/restore-claude-md.sh
+
+    - name: Claude PR review
+      if: steps.cfg.outputs.proceed == 'true' && inputs.provider == 'anthropic'
+      uses: anthropics/claude-code-action@5fb899572b81d2bb648d4d187173a2f423a9677c # v1
+      with:
+        anthropic_api_key: ${{ inputs.anthropic-api-key }} # zizmor: ignore[secrets-outside-env] -- API key passed via composite input, not a repo secret
+        github_token: ${{ inputs.github-token }}
+        allowed_bots: ${{ inputs.allowed-bots }}
+        track_progress: true
+        use_sticky_comment: true
+        prompt: |
+          ${{ inputs.prompt }}
+
+          ${{ steps.cfg.outputs.guidance }}
+        claude_args: |
+          --model ${{ steps.cfg.outputs.model }}
+          --mcp-config '{"mcpServers":{"context7":{"command":"npx","args":["-y","@upstash/context7-mcp"]},"sequential-thinking":{"command":"npx","args":["-y","@modelcontextprotocol/server-sequential-thinking"]}}}'
+          --allowedTools "Read,Glob,Grep,LS,Bash(git diff:*),Bash(git log:*),Bash(gh pr view:*),Bash(gh pr diff:*),mcp__context7__*,mcp__sequential-thinking__*${{ steps.cfg.outputs.tools_suffix }}"
+
+    - name: Emit conclusion
+      id: conclusion
+      if: always()
+      shell: bash
+      env:
+        PROCEED: ${{ steps.cfg.outputs.proceed }}
+      run: |
+        if [ "$PROCEED" = "true" ]; then
+          echo "conclusion=success" >> "$GITHUB_OUTPUT"
+        else
+          echo "conclusion=skipped" >> "$GITHUB_OUTPUT"
+        fi
