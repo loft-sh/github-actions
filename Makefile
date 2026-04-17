@@ -1,4 +1,4 @@
-.PHONY: test test-semver-validation test-linear-pr-commenter test-release-notification test-linear-release-sync test-cleanup-head-charts test-ci-test-notify test-auto-approve-bot-prs test-publish-helm-chart test-govulncheck test-go-licenses test-run-ginkgo build-linear-release-sync lint install-auto-doc generate-docs check-docs help
+.PHONY: test test-semver-validation test-linear-pr-commenter test-release-notification test-linear-release-sync test-cleanup-head-charts test-ci-test-notify test-auto-approve-bot-prs test-ai-pr-review test-publish-helm-chart test-govulncheck test-go-licenses test-run-ginkgo build-linear-release-sync lint install-auto-doc generate-docs check-docs help
 
 ACTIONS_DIR := .github/actions
 WORKFLOWS_DIR := .github/workflows
@@ -84,6 +84,8 @@ check-docs: generate-docs ## verify docs are up to date (fails if drift detected
 	  echo "ERROR: Generated docs are out of date. Run 'make generate-docs' and commit the changes."; \
 	  echo ""; \
 	  git diff --stat -- '*.md'; \
+	  echo ""; \
+	  git diff -- '*.md'; \
 	  exit 1; \
 	fi
 	@echo "Docs are up to date."
@@ -91,7 +93,7 @@ check-docs: generate-docs ## verify docs are up to date (fails if drift detected
 help: ## show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-30s %s\n", $$1, $$2}'
 
-test: test-semver-validation test-linear-pr-commenter test-release-notification test-linear-release-sync test-cleanup-head-charts test-auto-approve-bot-prs test-ci-test-notify test-go-licenses test-publish-helm-chart test-govulncheck test-run-ginkgo ## run all action tests
+test: test-semver-validation test-linear-pr-commenter test-release-notification test-linear-release-sync test-cleanup-head-charts test-auto-approve-bot-prs test-ai-pr-review test-ci-test-notify test-go-licenses test-publish-helm-chart test-govulncheck test-run-ginkgo ## run all action tests
 
 test-semver-validation: ## run semver-validation unit tests
 	cd $(ACTIONS_DIR)/semver-validation && npm ci --silent && NODE_OPTIONS=--experimental-vm-modules npx jest --ci --coverage --watchAll=false
@@ -110,6 +112,9 @@ test-cleanup-head-charts: ## run cleanup-head-charts bats tests
 
 test-auto-approve-bot-prs: ## run auto-approve-bot-prs bats tests
 	bats $(ACTIONS_DIR)/auto-approve-bot-prs/test/*.bats
+
+test-ai-pr-review: ## run ai-pr-review bats tests
+	bats $(ACTIONS_DIR)/ai-pr-review/test/*.bats
 
 test-ci-test-notify: ## run ci-test-notify bats tests
 	bats $(ACTIONS_DIR)/ci-test-notify/test/build-payload.bats
