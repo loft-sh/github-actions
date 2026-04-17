@@ -10,7 +10,7 @@ of the same name with GitHub App token minting and sparse checkout.
 
 |      INPUT      |  TYPE   | REQUIRED |                    DEFAULT                     |                     DESCRIPTION                      |
 |-----------------|---------|----------|------------------------------------------------|------------------------------------------------------|
-|   auto-merge    | boolean |  false   |                    `false`                     |           Enable auto-merge after approval           |
+|   auto-merge    | boolean |  false   |                     `true`                     |           Enable auto-merge after approval           |
 |  merge-method   | string  |  false   |                   `"squash"`                   | Merge method for auto-merge (squash, merge, rebase)  |
 | trusted-authors | string  |  false   | `"renovate[bot],loft-bot,github-actions[bot]"` |      Comma-separated list of trusted bot logins      |
 
