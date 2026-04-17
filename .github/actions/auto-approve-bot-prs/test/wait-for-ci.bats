@@ -69,3 +69,27 @@ kv() { grep "^$1=" "$GITHUB_OUTPUT" | tail -n1; }
   run env -u PR_HEAD_SHA GITHUB_OUTPUT="$GITHUB_OUTPUT" GITHUB_REPOSITORY=o/r SELF_RUN_ID=1 "$SCRIPT"
   [ "$status" -ne 0 ]
 }
+
+@test "superseded cancelled attempt does not block when latest attempt is green" {
+  # Same check name ('integration-test/chrome') appears twice: an older
+  # attempt that was cancelled (e.g. by a rerun), and a newer attempt that
+  # landed on skipped. Dedupe-by-name must pick the latest, otherwise a
+  # stale cancelled from a superseded run silently blocks approval.
+  GH_MOCK_CHECK_RUNS_JSON='{"check_runs":[
+    {"name":"integration-test/chrome","status":"completed","conclusion":"cancelled","started_at":"2026-04-17T05:00:00Z","details_url":"https://github.com/o/r/actions/runs/220/job/1"},
+    {"name":"integration-test/chrome","status":"completed","conclusion":"skipped","started_at":"2026-04-17T06:00:00Z","details_url":"https://github.com/o/r/actions/runs/221/job/1"}
+  ]}' run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv ci_green)" = "ci_green=true" ]
+}
+
+@test "cancelled as latest attempt still blocks (not a stale artifact)" {
+  # Opposite of the superseded case: when cancelled IS the latest attempt,
+  # it is a real signal that CI was aborted and approval should not proceed.
+  GH_MOCK_CHECK_RUNS_JSON='{"check_runs":[
+    {"name":"integration-test/chrome","status":"completed","conclusion":"skipped","started_at":"2026-04-17T05:00:00Z","details_url":"https://github.com/o/r/actions/runs/220/job/1"},
+    {"name":"integration-test/chrome","status":"completed","conclusion":"cancelled","started_at":"2026-04-17T06:00:00Z","details_url":"https://github.com/o/r/actions/runs/221/job/1"}
+  ]}' run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv ci_green)" = "ci_green=false" ]
+}

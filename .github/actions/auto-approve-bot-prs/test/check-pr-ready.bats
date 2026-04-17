@@ -9,6 +9,9 @@ setup() {
   export GITHUB_REPOSITORY="owner/repo"
   export PR_NUMBER=42
   export PR_AUTHOR="dependabot[bot]"
+  # Keep retry budget bounded so tests don't stall the suite.
+  export MERGEABLE_MAX_ATTEMPTS=2
+  export MERGEABLE_SLEEP_SECONDS=0
 }
 teardown() { rm -f "$GITHUB_OUTPUT"; teardown_gh_mock; }
 
