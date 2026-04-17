@@ -126,14 +126,6 @@ has_arg() {
   grep -q "\-\-json-report=" "$MOCK_ARGS_FILE"
 }
 
-@test "always includes --poll-progress-after" {
-  cd "$WORK_DIR"
-  export GINKGO_LABEL="suite"
-  run bash "$SCRIPT"
-  [ "$status" -eq 0 ]
-  has_arg "--poll-progress-after=20s"
-}
-
 # --- Additional flags ---
 
 @test "additional-ginkgo-flags are appended" {

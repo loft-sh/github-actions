@@ -13,8 +13,6 @@ GINKGO_ARGS=(
   "run"
   "--timeout=${TIMEOUT}"
   "--procs=${PROCS}"
-  "--poll-progress-after=20s"
-  "--poll-progress-interval=10s"
   "--github-output"
   "--json-report=${REPORTS_DIR}/report.json"
 )
