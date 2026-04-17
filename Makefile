@@ -84,6 +84,8 @@ check-docs: generate-docs ## verify docs are up to date (fails if drift detected
 	  echo "ERROR: Generated docs are out of date. Run 'make generate-docs' and commit the changes."; \
 	  echo ""; \
 	  git diff --stat -- '*.md'; \
+	  echo ""; \
+	  git diff -- '*.md'; \
 	  exit 1; \
 	fi
 	@echo "Docs are up to date."
