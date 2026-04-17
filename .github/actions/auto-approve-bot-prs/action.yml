@@ -69,7 +69,10 @@ runs:
       uses: hmarr/auto-approve-action@f0939ea97e9205ef24d872e76833fa908a770363 # v4.0.0
       with:
         github-token: ${{ inputs.github-token }}
-        review-message: 'Auto-approved: trusted bot, CI green, no merge conflicts.'
+        review-message: |
+          Approved by the shared auto-approve workflow because this PR matched the approval criteria.
+
+          For more information, see https://github.com/loft-sh/github-actions?tab=readme-ov-file#auto-approve-bot-prs.
 
     - name: Enable auto-merge
       if: steps.ci.outputs.ci_green == 'true' && inputs.auto-merge == 'true'
