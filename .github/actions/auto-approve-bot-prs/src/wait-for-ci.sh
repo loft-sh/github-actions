@@ -28,7 +28,16 @@ EXCLUDE_PATTERN="/runs/${SELF_RUN_ID}/"
 
 for attempt in $(seq 1 "$max_attempts"); do
   runs=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${PR_HEAD_SHA}/check-runs" --paginate --jq '.check_runs // []' 2>/dev/null || echo '[]')
-  other=$(echo "$runs" | jq --arg p "$EXCLUDE_PATTERN" '[.[] | select((.details_url // "") | contains($p) | not)]')
+  # Dedupe by name: GitHub keeps historical attempts (including cancelled ones
+  # superseded by reruns) in the check-runs list, and the current state is the
+  # one with the latest started_at. Treating every past attempt as live is what
+  # makes a superseded `cancelled` from an older run silently block approval
+  # even though the same check's latest attempt is green.
+  other=$(echo "$runs" | jq --arg p "$EXCLUDE_PATTERN" '
+    [.[] | select((.details_url // "") | contains($p) | not)]
+    | group_by(.name // "")
+    | map(sort_by(.started_at // "") | last)
+  ')
   pending=$(echo "$other" | jq '[.[] | select(.status != "completed")] | length')
   failed=$(echo  "$other" | jq '[.[] | select(.conclusion != null and ([.conclusion] | inside(["success","skipped","neutral"]) | not))] | length')
   echo "attempt ${attempt}/${max_attempts}: pending=${pending} failed=${failed}"
