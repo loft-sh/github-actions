@@ -16,7 +16,7 @@ inputs:
     description: 'Review instructions passed verbatim as the AI prompt.'
     required: true
   outcome:
-    description: 'What the AI produces: `pr-comment` (single sticky comment) or `inline-review` (inline comments on specific lines).'
+    description: 'What the AI produces: `pr-comment` (a summary PR comment — sticky on anthropic, new per run on openai) or `inline-review` (inline comments on specific lines, anthropic only).'
     required: true
   allowed-bots:
     description: 'Comma-separated bot logins this review runs for (passed to claude-code-action `allowed_bots`). `*` allows all bots.'
@@ -38,7 +38,7 @@ outputs:
     value: ${{ steps.conclusion.outputs.conclusion }}
   reason:
     description: 'One-line explanation when conclusion=skipped.'
-    value: ${{ steps.cfg.outputs.reason }}
+    value: ${{ steps.cfg.outputs.reason != '' && steps.cfg.outputs.reason || steps.author.outputs.reason }}
 
 runs:
   using: composite
@@ -114,27 +114,26 @@ runs:
         fi
         if [ "$allowed" = "true" ]; then
           echo "run=true" >> "$GITHUB_OUTPUT"
+          echo "reason=" >> "$GITHUB_OUTPUT"
           echo "::notice::ai-pr-review: author '$PR_AUTHOR' allowed — running codex review"
         else
+          skip_reason="author '$PR_AUTHOR' not in allowed-bots"
           echo "run=false" >> "$GITHUB_OUTPUT"
-          echo "::notice::ai-pr-review: author '$PR_AUTHOR' not in allowed-bots — skipping"
+          echo "reason=$skip_reason" >> "$GITHUB_OUTPUT"
+          echo "::notice::ai-pr-review: $skip_reason — skipping"
         fi
 
-    - name: Checkout PR merge ref (openai)
+    # head.sha is used (not refs/pull/N/merge) because merge refs are absent on
+    # conflicted PRs — common for the renovate/dependabot audience this targets.
+    # fetch-depth: 0 + default persist-credentials=true means the base branch is
+    # available for `git diff base...head` and no follow-up authenticated fetch
+    # is needed (would break on private caller repos with persist-credentials=false).
+    - name: Checkout PR head (openai)
       if: steps.cfg.outputs.proceed == 'true' && inputs.provider == 'openai' && steps.author.outputs.run == 'true'
       uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       with:
-        ref: refs/pull/${{ github.event.pull_request.number }}/merge
-        persist-credentials: false
-
-    - name: Pre-fetch base and head refs (openai)
-      if: steps.cfg.outputs.proceed == 'true' && inputs.provider == 'openai' && steps.author.outputs.run == 'true'
-      shell: bash
-      env:
-        BASE_REF: ${{ github.event.pull_request.base.ref }}
-        PR_NUMBER: ${{ github.event.pull_request.number }}
-      run: |
-        git fetch --no-tags origin "$BASE_REF" "+refs/pull/${PR_NUMBER}/head"
+        ref: ${{ github.event.pull_request.head.sha }}
+        fetch-depth: 0
 
     - name: Codex PR review
       id: codex
@@ -169,9 +168,13 @@ runs:
       shell: bash
       env:
         PROCEED: ${{ steps.cfg.outputs.proceed }}
+        PROVIDER: ${{ inputs.provider }}
+        AUTHOR_RUN: ${{ steps.author.outputs.run }}
       run: |
-        if [ "$PROCEED" = "true" ]; then
-          echo "conclusion=success" >> "$GITHUB_OUTPUT"
-        else
+        if [ "$PROCEED" != "true" ]; then
           echo "conclusion=skipped" >> "$GITHUB_OUTPUT"
+        elif [ "$PROVIDER" = "openai" ] && [ "$AUTHOR_RUN" != "true" ]; then
+          echo "conclusion=skipped" >> "$GITHUB_OUTPUT"
+        else
+          echo "conclusion=success" >> "$GITHUB_OUTPUT"
         fi
