@@ -11,7 +11,6 @@ handles checkout, permissions, and secret plumbing for a job-level call.
 jobs:
   risk-review:
     uses: loft-sh/github-actions/.github/workflows/ai-pr-review.yaml@main
-    secrets: inherit
     with:
       provider: anthropic
       effort: medium
@@ -20,11 +19,14 @@ jobs:
         Review this PR for risk CI cannot catch: major version bumps
         where the diff is more than a version number, removed public
         exports, breaking API changes, changed defaults.
+    secrets:
+      anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+      # openai-api-key: ${{ secrets.OPENAI_API_KEY }}   # when provider=openai
 ```
 
-`secrets: inherit` lets the reusable workflow read the org-level
-`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` secrets directly — callers don't
-need to plumb them through `with:` or `secrets:`.
+Pass only the provider-specific key your job needs. This repo is
+public — do **not** use `secrets: inherit`, which would forward every
+org-level secret into the reusable workflow.
 
 Compose with `auto-approve-bot-prs.yaml` as a sibling job to get an AI
 review alongside auto-approve on bot PRs.
@@ -63,5 +65,10 @@ review alongside auto-approve on bot PRs.
 ## Secrets
 
 <!-- AUTO-DOC-SECRETS:START - Do not remove or modify this section -->
-No secrets.
+
+|      SECRET       | REQUIRED |                     DESCRIPTION                      |
+|-------------------|----------|------------------------------------------------------|
+| anthropic-api-key |  false   | Anthropic API key. Required when provider=anthropic. |
+|  openai-api-key   |  false   |    OpenAI API key. Required when provider=openai.    |
+
 <!-- AUTO-DOC-SECRETS:END -->
