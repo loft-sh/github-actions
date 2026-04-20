@@ -53,8 +53,9 @@ case "$INPUT_PROVIDER:$INPUT_EFFORT" in
   anthropic:medium) model='claude-sonnet-4-6' ;;
   anthropic:high)   model='claude-opus-4-7' ;;
   anthropic:*)      skip "invalid effort '$INPUT_EFFORT' — valid: low, medium, high" ;;
-  openai:low|openai:medium|openai:high)
-                    skip "provider=openai not yet implemented — use provider=anthropic" ;;
+  openai:low)       model='gpt-5.4-mini' ;;
+  openai:medium)    model='gpt-5.3-codex' ;;
+  openai:high)      model='gpt-5.4' ;;
   openai:*)         skip "invalid effort '$INPUT_EFFORT' — valid: low, medium, high" ;;
   *)                skip "invalid provider '$INPUT_PROVIDER' — valid: anthropic, openai" ;;
 esac
@@ -66,6 +67,12 @@ case "$INPUT_OUTCOME" in
     tools_suffix=''
     ;;
   inline-review)
+    # Inline comments require the github-inline-comment MCP surface that
+    # only claude-code-action wires up. codex-action has no equivalent,
+    # so openai+inline-review degrades to a skip (contract: never hard-fail).
+    if [ "$INPUT_PROVIDER" = "openai" ]; then
+      skip "outcome=inline-review not supported for provider=openai — use outcome=pr-comment"
+    fi
     guidance='Outcome policy: post inline comments on specific lines for concrete, actionable findings. A short summary comment is optional.'
     tools_suffix=',mcp__github_inline_comment__create_inline_comment'
     ;;

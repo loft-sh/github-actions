@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       provider:
-        description: 'AI provider: `anthropic` (implemented) or `openai` (reserved stub).'
+        description: 'AI provider: `anthropic` or `openai`.'
         type: string
         required: true
       effort:
@@ -30,13 +30,10 @@ on:
         type: number
         required: false
         default: 15
-    secrets:
-      anthropic-api-key:
-        description: 'Anthropic API key. Required when provider=anthropic.'
-        required: false
-      openai-api-key:
-        description: 'OpenAI API key. Reserved for provider=openai.'
-        required: false
+    # API keys are not declared here — callers must use `secrets: inherit`
+    # so the reusable workflow can read the org-level ANTHROPIC_API_KEY /
+    # OPENAI_API_KEY secrets directly. This avoids every caller having to
+    # plumb the key through their own `secrets:` block.
 
 concurrency:
   group: ai-pr-review-${{ github.event.pull_request.number }}
@@ -69,6 +66,6 @@ jobs:
           prompt: ${{ inputs.prompt }}
           outcome: ${{ inputs.outcome }}
           allowed-bots: ${{ inputs.allowed-bots }}
-          anthropic-api-key: ${{ secrets.anthropic-api-key }} # zizmor: ignore[secrets-outside-env] -- API key passed via workflow_call, not a repo secret
-          openai-api-key: ${{ secrets.openai-api-key }} # zizmor: ignore[secrets-outside-env] -- API key passed via workflow_call, not a repo secret
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }} # zizmor: ignore[secrets-outside-env] -- inherited org secret, not a workflow_call input
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }} # zizmor: ignore[secrets-outside-env] -- inherited org secret, not a workflow_call input
           github-token: ${{ secrets.GITHUB_TOKEN }}

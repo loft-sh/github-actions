@@ -6,7 +6,7 @@ description: |
   every failure mode degrades to a notice-level skip.
 inputs:
   provider:
-    description: 'AI provider. `anthropic` is implemented; `openai` is reserved (stub).'
+    description: 'AI provider: `anthropic` or `openai`.'
     required: true
   effort:
     description: 'Effort level (low | medium | high) — maps to a provider-specific model.'
@@ -26,7 +26,7 @@ inputs:
     description: 'Anthropic API key. Required when provider=anthropic.'
     required: false
   openai-api-key:
-    description: 'OpenAI API key. Reserved for provider=openai.'
+    description: 'OpenAI API key. Required when provider=openai.'
     required: false
   github-token:
     description: 'Token used by claude-code-action to post comments and read PR state.'
@@ -34,7 +34,7 @@ inputs:
 
 outputs:
   conclusion:
-    description: '`success` when the AI review ran; `skipped` when stubbed or invalid input.'
+    description: '`success` when the AI review ran; `skipped` when the resolver vetoed the run (invalid input, unsupported combo, or non-allowlisted author).'
     value: ${{ steps.conclusion.outputs.conclusion }}
   reason:
     description: 'One-line explanation when conclusion=skipped.'
@@ -84,6 +84,84 @@ runs:
           --model ${{ steps.cfg.outputs.model }}
           --mcp-config '{"mcpServers":{"context7":{"command":"npx","args":["-y","@upstash/context7-mcp"]},"sequential-thinking":{"command":"npx","args":["-y","@modelcontextprotocol/server-sequential-thinking"]}}}'
           --allowedTools "Read,Glob,Grep,LS,Bash(git diff:*),Bash(git log:*),Bash(gh pr view:*),Bash(gh pr diff:*),mcp__context7__*,mcp__sequential-thinking__*${{ steps.cfg.outputs.tools_suffix }}"
+
+    # --- openai branch ----------------------------------------------------
+    # claude-code-action applies `allowed_bots` internally; codex-action
+    # doesn't have an equivalent (its `allow-bots` is boolean), so we
+    # reproduce the bot-author filter here before spending tokens.
+    - name: Check PR author against allowed-bots (openai)
+      id: author
+      if: steps.cfg.outputs.proceed == 'true' && inputs.provider == 'openai'
+      shell: bash
+      env:
+        PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        ALLOWED_BOTS: ${{ inputs.allowed-bots }}
+      run: |
+        set -eo pipefail
+        allowed=false
+        if [ "$ALLOWED_BOTS" = "*" ]; then
+          allowed=true
+        else
+          IFS=',' read -ra bots <<< "$ALLOWED_BOTS"
+          for bot in "${bots[@]}"; do
+            bot="${bot// /}"
+            [ -z "$bot" ] && continue
+            if [ "$PR_AUTHOR" = "$bot" ] || [ "$PR_AUTHOR" = "${bot}[bot]" ]; then
+              allowed=true
+              break
+            fi
+          done
+        fi
+        if [ "$allowed" = "true" ]; then
+          echo "run=true" >> "$GITHUB_OUTPUT"
+          echo "::notice::ai-pr-review: author '$PR_AUTHOR' allowed — running codex review"
+        else
+          echo "run=false" >> "$GITHUB_OUTPUT"
+          echo "::notice::ai-pr-review: author '$PR_AUTHOR' not in allowed-bots — skipping"
+        fi
+
+    - name: Checkout PR merge ref (openai)
+      if: steps.cfg.outputs.proceed == 'true' && inputs.provider == 'openai' && steps.author.outputs.run == 'true'
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        ref: refs/pull/${{ github.event.pull_request.number }}/merge
+        persist-credentials: false
+
+    - name: Pre-fetch base and head refs (openai)
+      if: steps.cfg.outputs.proceed == 'true' && inputs.provider == 'openai' && steps.author.outputs.run == 'true'
+      shell: bash
+      env:
+        BASE_REF: ${{ github.event.pull_request.base.ref }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+      run: |
+        git fetch --no-tags origin "$BASE_REF" "+refs/pull/${PR_NUMBER}/head"
+
+    - name: Codex PR review
+      id: codex
+      if: steps.cfg.outputs.proceed == 'true' && inputs.provider == 'openai' && steps.author.outputs.run == 'true'
+      uses: openai/codex-action@c25d10f3f498316d4b2496cc4c6dd58057a7b031 # v1.6
+      with:
+        openai-api-key: ${{ inputs.openai-api-key }} # zizmor: ignore[secrets-outside-env] -- API key passed via composite input, not a repo secret
+        model: ${{ steps.cfg.outputs.model }}
+        effort: ${{ inputs.effort }}
+        sandbox: read-only
+        safety-strategy: drop-sudo
+        allow-bots: 'true'
+        prompt: |
+          ${{ inputs.prompt }}
+
+          ${{ steps.cfg.outputs.guidance }}
+
+    - name: Post Codex feedback as PR comment
+      if: steps.cfg.outputs.proceed == 'true' && inputs.provider == 'openai' && steps.author.outputs.run == 'true' && steps.codex.outputs.final-message != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        REPO: ${{ github.repository }}
+        BODY: ${{ steps.codex.outputs.final-message }}
+      run: |
+        printf '%s\n' "$BODY" | gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file -
 
     - name: Emit conclusion
       id: conclusion
