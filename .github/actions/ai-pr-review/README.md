@@ -1,18 +1,22 @@
 # AI PR review
 
 Runs an AI-powered PR review. Callers control what the AI looks at
-(`prompt`), how hard it thinks (`effort`), and what it produces
-(`outcome`). The action owns model selection, MCP servers, and the
-write-tool surface.
+(`prompt`) and how hard it thinks (`effort`). The action owns model
+selection, comment shape, MCP servers, and the write-tool surface.
+
+The model decides how to post findings — inline comments on specific
+lines, a sticky summary comment, or both — based on the shape of the
+review. Callers who want a specific shape can ask for it inside
+`prompt`. Provider asymmetry: `openai` (via `codex-action`) has no
+inline-comment surface, so the openai path is always summary-only.
+
+Every posted comment ends with a provenance footer:
+
+> _🤖 ai-pr-review — provider: anthropic · model: claude-opus-4-7 · effort: high_
 
 Advisory only — every failure mode (invalid input, stubbed provider,
 API error inside claude-code-action) degrades to a notice-level skip.
 Callers should set `continue-on-error: true` on the job.
-
-## Outcomes
-
-- `pr-comment` — one sticky summary PR comment. No inline comments.
-- `inline-review` — inline comments on specific lines (summary optional).
 
 ## Effort → model
 
@@ -21,10 +25,6 @@ Callers should set `continue-on-error: true` on the job.
 | low    | `claude-haiku-4-5`   | `gpt-5.4-mini`  |
 | medium | `claude-sonnet-4-6`  | `gpt-5.3-codex` |
 | high   | `claude-opus-4-7`    | `gpt-5.4`       |
-
-`openai` + `inline-review` is unsupported (codex-action has no
-inline-comment surface) and degrades to a notice-level skip. Use
-`openai` + `pr-comment` or switch to `anthropic` for inline reviews.
 
 ## Usage
 
@@ -49,7 +49,6 @@ jobs:
         with:
           provider: anthropic
           effort: medium
-          outcome: pr-comment
           prompt: |
             Review this PR for risk CI cannot catch: major version bumps
             where the diff is more than a version number, removed public
@@ -72,7 +71,6 @@ use the companion reusable workflow at
 |      effort       | string |  false   | `"medium"` |                                                    Effort level (low | medium | high) — maps to <br>a provider-specific model.                                                      |
 |   github-token    | string |   true   |            |                                                      Token used by claude-code-action to post <br>comments and read PR state.                                                       |
 |  openai-api-key   | string |  false   |            |                                                                   OpenAI API key. Required when provider=openai.                                                                    |
-|      outcome      | string |   true   |            | What the AI produces: `pr-comment` (a summary PR comment — sticky on anthropic, new per run on openai) or <br>`inline-review` (inline comments on specific lines, anthropic only).  |
 |      prompt       | string |   true   |            |                                                             Review instructions passed verbatim as the <br>AI prompt.                                                               |
 |     provider      | string |   true   |            |                                                                        AI provider: `anthropic` or `openai`.                                                                        |
 
@@ -84,7 +82,7 @@ use the companion reusable workflow at
 
 |   OUTPUT   |  TYPE  |                                                         DESCRIPTION                                                         |
 |------------|--------|-----------------------------------------------------------------------------------------------------------------------------|
-| conclusion | string | `success` when the AI review ran; <br>`skipped` when the resolver vetoed the <br>run (invalid input or unsupported combo).  |
+| conclusion | string | `success` when the AI review ran; <br>`skipped` when the resolver vetoed the <br>run (invalid input).  |
 |   reason   | string |                                        One-line explanation when conclusion=skipped.                                        |
 
 <!-- AUTO-DOC-OUTPUT:END -->
