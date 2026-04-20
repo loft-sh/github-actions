@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       provider:
-        description: 'AI provider: `anthropic` (implemented) or `openai` (reserved stub).'
+        description: 'AI provider: `anthropic` or `openai`.'
         type: string
         required: true
       effort:
@@ -30,12 +30,16 @@ on:
         type: number
         required: false
         default: 15
+    # This repo is public — callers must pass the provider API key
+    # explicitly via `secrets:`. Do NOT `secrets: inherit`, and do NOT
+    # access `secrets.*` directly here; both would forward every caller's
+    # org secrets into this workflow.
     secrets:
       anthropic-api-key:
         description: 'Anthropic API key. Required when provider=anthropic.'
         required: false
       openai-api-key:
-        description: 'OpenAI API key. Reserved for provider=openai.'
+        description: 'OpenAI API key. Required when provider=openai.'
         required: false
 
 concurrency:

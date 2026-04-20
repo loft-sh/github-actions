@@ -78,27 +78,36 @@ assert_guidance_contains() {
   assert_guidance_contains "inline comments on specific lines"
 }
 
-# --- openai stub -------------------------------------------------------------
+# --- openai happy path -------------------------------------------------------
 
-@test "openai:low → proceed=false, reason mentions not yet implemented" {
+@test "openai:low → model=gpt-5.4-mini, proceed=true" {
   run_script openai low pr-comment
   [ "$status" -eq 0 ]
-  assert_kv proceed false
-  grep -q 'reason=.*not yet implemented' "$GITHUB_OUTPUT" || {
-    cat "$GITHUB_OUTPUT"; return 1;
-  }
+  assert_kv proceed true
+  assert_kv model gpt-5.4-mini
 }
 
-@test "openai:medium → proceed=false (stubbed)" {
+@test "openai:medium → model=gpt-5.3-codex, proceed=true" {
+  run_script openai medium pr-comment
+  [ "$status" -eq 0 ]
+  assert_kv proceed true
+  assert_kv model gpt-5.3-codex
+}
+
+@test "openai:high → model=gpt-5.4, proceed=true" {
+  run_script openai high pr-comment
+  [ "$status" -eq 0 ]
+  assert_kv proceed true
+  assert_kv model gpt-5.4
+}
+
+@test "openai + inline-review → proceed=false, reason mentions unsupported outcome" {
   run_script openai medium inline-review
   [ "$status" -eq 0 ]
   assert_kv proceed false
-}
-
-@test "openai:high → proceed=false (stubbed)" {
-  run_script openai high pr-comment
-  [ "$status" -eq 0 ]
-  assert_kv proceed false
+  grep -q 'reason=.*inline-review not supported for provider=openai' "$GITHUB_OUTPUT" || {
+    cat "$GITHUB_OUTPUT"; return 1;
+  }
 }
 
 # --- input validation --------------------------------------------------------
