@@ -47,32 +47,32 @@ RUNTIME=$(echo "$STATS" | jq -r '.runtime')
   echo "failure-summary<<EOF"
 
   echo "*Test Results Summary:*"
-  echo "Executed: ${SPECS_TO_RUN}/${TOTAL_SPECS} tests"
+  echo "📊 Executed: ${SPECS_TO_RUN}/${TOTAL_SPECS} tests"
 
   if [[ "$FAILED_COUNT" -gt 0 ]]; then
-    echo "Failed: ${FAILED_COUNT}"
-    echo "Passed: ${PASSED_COUNT}"
+    echo "❌ Failed: ${FAILED_COUNT}"
+    echo "✅ Passed: ${PASSED_COUNT}"
   else
-    echo "All tests passed! (${PASSED_COUNT}/${SPECS_TO_RUN})"
+    echo "✅ All tests passed! (${PASSED_COUNT}/${SPECS_TO_RUN})"
   fi
 
   if [[ "$SKIPPED_COUNT" -gt 0 ]]; then
-    echo "Skipped: ${SKIPPED_COUNT}"
+    echo "⏭️ Skipped: ${SKIPPED_COUNT}"
   fi
   if [[ "$PENDING_COUNT" -gt 0 ]]; then
-    echo "Pending: ${PENDING_COUNT}"
+    echo "⏸️ Pending: ${PENDING_COUNT}"
   fi
-  echo "Duration: ${RUNTIME}s"
+  echo "⏱️ Duration: ${RUNTIME}s"
 
   if [[ "$FAILED_COUNT" -gt 0 ]]; then
     echo ""
     echo "*Failed Tests:*"
     jq -r '[.[].SpecReports[] | select(.State | IN("passed", "skipped", "pending") | not)] |
       .[] |
-      "[" + (.State | ascii_upcase) + "] [" + .LeafNodeType + "]" +
+      "❌ [" + (.State | ascii_upcase) + "] [" + .LeafNodeType + "]" +
       (if .ContainerHierarchyTexts then " " + (.ContainerHierarchyTexts | join(" ")) else "" end) +
       (if .LeafNodeText != "" then " " + .LeafNodeText else "" end) +
-      "\n  " + .LeafNodeLocation.FileName + ":" + (.LeafNodeLocation.LineNumber | tostring)' \
+      "\n   📍 " + .LeafNodeLocation.FileName + ":" + (.LeafNodeLocation.LineNumber | tostring)' \
       "$REPORT_FILE"
   fi
 
