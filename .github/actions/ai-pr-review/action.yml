@@ -125,15 +125,16 @@ runs:
 
     # head.sha is used (not refs/pull/N/merge) because merge refs are absent on
     # conflicted PRs — common for the renovate/dependabot audience this targets.
-    # fetch-depth: 0 + default persist-credentials=true means the base branch is
-    # available for `git diff base...head` and no follow-up authenticated fetch
-    # is needed (would break on private caller repos with persist-credentials=false).
+    # fetch-depth: 0 pulls the base branch during the authenticated checkout
+    # itself (for `git diff base...head`), so no follow-up fetch is needed and
+    # persist-credentials: false is safe (zizmor: avoid artipacked).
     - name: Checkout PR head (openai)
       if: steps.cfg.outputs.proceed == 'true' && inputs.provider == 'openai' && steps.author.outputs.run == 'true'
       uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       with:
         ref: ${{ github.event.pull_request.head.sha }}
         fetch-depth: 0
+        persist-credentials: false
 
     - name: Codex PR review
       id: codex
