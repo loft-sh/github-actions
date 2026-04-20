@@ -16,10 +16,6 @@ on:
         description: 'Review instructions passed verbatim as the AI prompt.'
         type: string
         required: true
-      outcome:
-        description: 'What the AI produces: `pr-comment` or `inline-review`.'
-        type: string
-        required: true
       timeout-minutes:
         description: 'Job timeout in minutes.'
         type: number
@@ -66,7 +62,6 @@ jobs:
           provider: ${{ inputs.provider }}
           effort: ${{ inputs.effort }}
           prompt: ${{ inputs.prompt }}
-          outcome: ${{ inputs.outcome }}
           anthropic-api-key: ${{ secrets.anthropic-api-key }} # zizmor: ignore[secrets-outside-env] -- API key passed via workflow_call, not a repo secret
           openai-api-key: ${{ secrets.openai-api-key }} # zizmor: ignore[secrets-outside-env] -- API key passed via workflow_call, not a repo secret
           github-token: ${{ secrets.GITHUB_TOKEN }}

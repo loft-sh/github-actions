@@ -1,10 +1,12 @@
 name: AI PR review
 description: |
   Runs an AI-powered PR review with a caller-provided prompt. The caller
-  picks provider, effort, outcome, and the review instructions; the action
-  owns model selection, MCP servers, and write-tool access. Advisory only —
-  every failure mode degrades to a notice-level skip. The caller decides
-  which PRs to review via workflow triggers and job-level `if:` conditions.
+  picks provider, effort, and the review instructions; the action owns
+  model selection, comment shape, MCP servers, and write-tool access.
+  The LLM decides whether findings are best expressed as inline comments,
+  a sticky summary, or both. Advisory only — every failure mode degrades
+  to a notice-level skip. The caller decides which PRs to review via
+  workflow triggers and job-level `if:` conditions.
 inputs:
   provider:
     description: 'AI provider: `anthropic` or `openai`.'
@@ -15,9 +17,6 @@ inputs:
     default: 'medium'
   prompt:
     description: 'Review instructions passed verbatim as the AI prompt.'
-    required: true
-  outcome:
-    description: 'What the AI produces: `pr-comment` (a summary PR comment — sticky on anthropic, new per run on openai) or `inline-review` (inline comments on specific lines, anthropic only).'
     required: true
   anthropic-api-key:
     description: 'Anthropic API key. Required when provider=anthropic.'
@@ -31,7 +30,7 @@ inputs:
 
 outputs:
   conclusion:
-    description: '`success` when the AI review ran; `skipped` when the resolver vetoed the run (invalid input or unsupported combo).'
+    description: '`success` when the AI review ran; `skipped` when the resolver vetoed the run (invalid input).'
     value: ${{ steps.conclusion.outputs.conclusion }}
   reason:
     description: 'One-line explanation when conclusion=skipped.'
@@ -46,7 +45,6 @@ runs:
       env:
         INPUT_PROVIDER: ${{ inputs.provider }}
         INPUT_EFFORT: ${{ inputs.effort }}
-        INPUT_OUTCOME: ${{ inputs.outcome }}
       run: ${{ github.action_path }}/src/resolve-config.sh
 
     # The anthropic branch needs the PR tree at the workspace ROOT because
@@ -107,11 +105,20 @@ runs:
         prompt: |
           ${{ inputs.prompt }}
 
-          ${{ steps.cfg.outputs.guidance }}
+          Comment shape is your choice. Post inline comments on specific
+          lines for localized findings; post a summary PR comment for
+          repo-wide or cross-cutting findings; use both when useful. Do
+          not post a summary comment that only restates findings already
+          posted inline — prefer a short synthesis or skip it.
+
+          Provenance: the very last line of every comment you post MUST
+          be this line verbatim (keep the leading `> ` and underscores so
+          it renders as an italic blockquote):
+          > _🤖 ai-pr-review — provider: anthropic · model: ${{ steps.cfg.outputs.model }} · effort: ${{ inputs.effort }}_
         claude_args: |
           --model ${{ steps.cfg.outputs.model }}
           --mcp-config '{"mcpServers":{"context7":{"command":"npx","args":["-y","@upstash/context7-mcp"]},"sequential-thinking":{"command":"npx","args":["-y","@modelcontextprotocol/server-sequential-thinking"]}}}'
-          --allowedTools "Read,Glob,Grep,LS,Bash(git diff:*),Bash(git log:*),Bash(gh pr view:*),Bash(gh pr diff:*),mcp__context7__*,mcp__sequential-thinking__*${{ steps.cfg.outputs.tools_suffix }}"
+          --allowedTools "Read,Glob,Grep,LS,Bash(git diff:*),Bash(git log:*),Bash(gh pr view:*),Bash(gh pr diff:*),mcp__context7__*,mcp__sequential-thinking__*,mcp__github_inline_comment__create_inline_comment"
 
     # --- openai branch ----------------------------------------------------
     # head.sha is used (not refs/pull/N/merge) because merge refs are absent on
@@ -131,6 +138,9 @@ runs:
         persist-credentials: false
         path: _pr
 
+    # codex-action has no inline-comment surface, so the openai path is
+    # always summary-comment-only. Documented as an honest provider
+    # asymmetry in the README rather than hidden behind an input.
     - name: Codex PR review
       id: codex
       if: steps.cfg.outputs.proceed == 'true' && inputs.provider == 'openai'
@@ -146,7 +156,8 @@ runs:
         prompt: |
           ${{ inputs.prompt }}
 
-          ${{ steps.cfg.outputs.guidance }}
+          Report all findings as a single PR comment (codex-action has no
+          inline-comment surface).
 
     - name: Post Codex feedback as PR comment
       if: steps.cfg.outputs.proceed == 'true' && inputs.provider == 'openai' && steps.codex.outputs.final-message != ''
@@ -156,8 +167,17 @@ runs:
         PR_NUMBER: ${{ github.event.pull_request.number }}
         REPO: ${{ github.repository }}
         BODY: ${{ steps.codex.outputs.final-message }}
+        MODEL: ${{ steps.cfg.outputs.model }}
+        EFFORT: ${{ inputs.effort }}
       run: |
-        printf '%s\n' "$BODY" | gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file -
+        # Provenance footer is emitted deterministically here (unlike the
+        # anthropic path which relies on prompt compliance) so every
+        # openai PR comment carries attribution even if the model's body
+        # text doesn't.
+        {
+          printf '%s\n\n' "$BODY"
+          printf '> _🤖 ai-pr-review — provider: openai · model: %s · effort: %s_\n' "$MODEL" "$EFFORT"
+        } | gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file -
 
     - name: Emit conclusion
       id: conclusion
