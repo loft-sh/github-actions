@@ -128,6 +128,9 @@ runs:
     # fetch-depth: 0 pulls the base branch during the authenticated checkout
     # itself (for `git diff base...head`), so no follow-up fetch is needed and
     # persist-credentials: false is safe (zizmor: avoid artipacked).
+    # path: _pr checks out into a subdirectory — the reusable workflow wrapper
+    # sparse-checked-out this composite's own action.yml into the workspace
+    # root, and clobbering it breaks GitHub's late-stage action resolution.
     - name: Checkout PR head (openai)
       if: steps.cfg.outputs.proceed == 'true' && inputs.provider == 'openai' && steps.author.outputs.run == 'true'
       uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -135,6 +138,7 @@ runs:
         ref: ${{ github.event.pull_request.head.sha }}
         fetch-depth: 0
         persist-credentials: false
+        path: _pr
 
     - name: Codex PR review
       id: codex
@@ -147,6 +151,7 @@ runs:
         sandbox: read-only
         safety-strategy: drop-sudo
         allow-bots: 'true'
+        working-directory: _pr
         prompt: |
           ${{ inputs.prompt }}
 
