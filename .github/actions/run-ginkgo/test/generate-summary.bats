@@ -203,3 +203,49 @@ get_summary_line() {
   [[ "$summary" == *"VCluster Sync"* ]]
   [[ "$summary" == *"VCluster Networking"* ]]
 }
+
+# --- Emoji prefixes ---
+
+@test "all-passed summary uses emoji prefixes" {
+  REPORT_FILE="$FIXTURES/all-passed.json" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+
+  local summary
+  summary="$(get_summary)"
+  [[ "$summary" == *"📊 Executed:"* ]]
+  [[ "$summary" == *"✅ All tests passed!"* ]]
+  [[ "$summary" == *"⏱️ Duration:"* ]]
+}
+
+@test "failure summary uses emoji prefixes on counts" {
+  REPORT_FILE="$FIXTURES/with-failures.json" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+
+  local summary
+  summary="$(get_summary)"
+  [[ "$summary" == *"📊 Executed:"* ]]
+  [[ "$summary" == *"❌ Failed:"* ]]
+  [[ "$summary" == *"✅ Passed:"* ]]
+  [[ "$summary" == *"⏭️ Skipped:"* ]]
+  [[ "$summary" == *"⏱️ Duration:"* ]]
+}
+
+@test "failed test lines are prefixed with ❌ and location with 📍" {
+  REPORT_FILE="$FIXTURES/with-failures.json" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+
+  local summary
+  summary="$(get_summary)"
+  [[ "$summary" == *"❌ [FAILED]"* ]]
+  [[ "$summary" == *"❌ [PANICKED]"* ]]
+  [[ "$summary" == *"📍 "* ]]
+}
+
+@test "pending summary uses ⏸️ prefix" {
+  REPORT_FILE="$FIXTURES/with-pending.json" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+
+  local summary
+  summary="$(get_summary)"
+  [[ "$summary" == *"⏸️ Pending:"* ]]
+}
