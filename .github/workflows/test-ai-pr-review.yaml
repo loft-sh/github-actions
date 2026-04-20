@@ -21,52 +21,9 @@ jobs:
         with:
           tests: .github/actions/ai-pr-review/test
 
-  # Smoke test the composite on the PR branch. The reusable workflow's
-  # sparse-checkout pins ref: main, which wouldn't yet contain the composite
-  # during this PR's CI. Human-authored PRs hit claude-code-action's
-  # allowed_bots filter and short-circuit before the API call, so the job
-  # reports success without spending tokens.
-  composite-smoke-anthropic:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
-      issues: write
-      id-token: write
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/ai-pr-review
-        with:
-          provider: anthropic
-          effort: low
-          outcome: pr-comment
-          prompt: |
-            Smoke test. Do not post any review comments.
-          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-
-  # Smoke test the openai branch. The composite's own bot-author filter
-  # short-circuits before calling codex-action on human-authored PRs,
-  # so this reports success without spending tokens.
-  composite-smoke-openai:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
-      issues: write
-      id-token: write
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/ai-pr-review
-        with:
-          provider: openai
-          effort: low
-          outcome: pr-comment
-          prompt: |
-            Smoke test. Do not post any review comments.
-          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+  # Composite smoke tests used to rely on the allowed-bots filter to
+  # short-circuit before spending API tokens on human-authored PRs. With
+  # allowed-bots removed, invoking the composite would spend real tokens
+  # on every PR touching these files. End-to-end coverage lives in an
+  # external caller (e.g. loft-sh/vcluster-docs) per the pattern documented
+  # in CLAUDE.md; the bats suite above covers the resolver decision table.

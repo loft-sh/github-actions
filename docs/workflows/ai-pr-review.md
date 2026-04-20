@@ -51,14 +51,13 @@ review alongside auto-approve on bot PRs.
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-|      INPUT      |  TYPE  | REQUIRED |                     DEFAULT                     |                                 DESCRIPTION                                  |
-|-----------------|--------|----------|-------------------------------------------------|------------------------------------------------------------------------------|
-|  allowed-bots   | string |  false   | `"renovate,dependabot,loft-bot,github-actions"` |  Comma-separated bot logins this review runs <br>for. `*` allows all bots.   |
-|     effort      | string |  false   |                   `"medium"`                    | Effort level (low | medium | high) — maps to <br>a provider-specific model.  |
-|     outcome     | string |   true   |                                                 |         What the AI produces: `pr-comment` or <br>`inline-review`.           |
-|     prompt      | string |   true   |                                                 |          Review instructions passed verbatim as the <br>AI prompt.           |
-|    provider     | string |   true   |                                                 |                    AI provider: `anthropic` or `openai`.                     |
-| timeout-minutes | number |  false   |                      `15`                       |                           Job timeout in minutes.                            |
+|      INPUT      |  TYPE  | REQUIRED |  DEFAULT   |                                 DESCRIPTION                                  |
+|-----------------|--------|----------|------------|------------------------------------------------------------------------------|
+|     effort      | string |  false   | `"medium"` | Effort level (low | medium | high) — maps to <br>a provider-specific model.  |
+|     outcome     | string |   true   |            |         What the AI produces: `pr-comment` or <br>`inline-review`.           |
+|     prompt      | string |   true   |            |          Review instructions passed verbatim as the <br>AI prompt.           |
+|    provider     | string |   true   |            |                    AI provider: `anthropic` or `openai`.                     |
+| timeout-minutes | number |  false   |    `15`    |                           Job timeout in minutes.                            |
 
 <!-- AUTO-DOC-INPUT:END -->
 

@@ -3,7 +3,8 @@ description: |
   Runs an AI-powered PR review with a caller-provided prompt. The caller
   picks provider, effort, outcome, and the review instructions; the action
   owns model selection, MCP servers, and write-tool access. Advisory only —
-  every failure mode degrades to a notice-level skip.
+  every failure mode degrades to a notice-level skip. The caller decides
+  which PRs to review via workflow triggers and job-level `if:` conditions.
 inputs:
   provider:
     description: 'AI provider: `anthropic` or `openai`.'
@@ -18,10 +19,6 @@ inputs:
   outcome:
     description: 'What the AI produces: `pr-comment` (a summary PR comment — sticky on anthropic, new per run on openai) or `inline-review` (inline comments on specific lines, anthropic only).'
     required: true
-  allowed-bots:
-    description: 'Comma-separated bot logins this review runs for (passed to claude-code-action `allowed_bots`). `*` allows all bots.'
-    required: false
-    default: 'renovate,dependabot,loft-bot,github-actions'
   anthropic-api-key:
     description: 'Anthropic API key. Required when provider=anthropic.'
     required: false
@@ -34,11 +31,11 @@ inputs:
 
 outputs:
   conclusion:
-    description: '`success` when the AI review ran; `skipped` when the resolver vetoed the run (invalid input, unsupported combo, or non-allowlisted author).'
+    description: '`success` when the AI review ran; `skipped` when the resolver vetoed the run (invalid input or unsupported combo).'
     value: ${{ steps.conclusion.outputs.conclusion }}
   reason:
     description: 'One-line explanation when conclusion=skipped.'
-    value: ${{ steps.cfg.outputs.reason != '' && steps.cfg.outputs.reason || steps.author.outputs.reason }}
+    value: ${{ steps.cfg.outputs.reason }}
 
 runs:
   using: composite
@@ -73,7 +70,7 @@ runs:
       with:
         anthropic_api_key: ${{ inputs.anthropic-api-key }} # zizmor: ignore[secrets-outside-env] -- API key passed via composite input, not a repo secret
         github_token: ${{ inputs.github-token }}
-        allowed_bots: ${{ inputs.allowed-bots }}
+        allowed_bots: '*'
         track_progress: true
         use_sticky_comment: true
         prompt: |
@@ -86,45 +83,8 @@ runs:
           --allowedTools "Read,Glob,Grep,LS,Bash(git diff:*),Bash(git log:*),Bash(gh pr view:*),Bash(gh pr diff:*),mcp__context7__*,mcp__sequential-thinking__*${{ steps.cfg.outputs.tools_suffix }}"
 
     # --- openai branch ----------------------------------------------------
-    # claude-code-action applies `allowed_bots` internally; codex-action
-    # doesn't have an equivalent (its `allow-bots` is boolean), so we
-    # reproduce the bot-author filter here before spending tokens.
-    - name: Check PR author against allowed-bots (openai)
-      id: author
-      if: steps.cfg.outputs.proceed == 'true' && inputs.provider == 'openai'
-      shell: bash
-      env:
-        PR_AUTHOR: ${{ github.event.pull_request.user.login }}
-        ALLOWED_BOTS: ${{ inputs.allowed-bots }}
-      run: |
-        set -eo pipefail
-        allowed=false
-        if [ "$ALLOWED_BOTS" = "*" ]; then
-          allowed=true
-        else
-          IFS=',' read -ra bots <<< "$ALLOWED_BOTS"
-          for bot in "${bots[@]}"; do
-            bot="${bot// /}"
-            [ -z "$bot" ] && continue
-            if [ "$PR_AUTHOR" = "$bot" ] || [ "$PR_AUTHOR" = "${bot}[bot]" ]; then
-              allowed=true
-              break
-            fi
-          done
-        fi
-        if [ "$allowed" = "true" ]; then
-          echo "run=true" >> "$GITHUB_OUTPUT"
-          echo "reason=" >> "$GITHUB_OUTPUT"
-          echo "::notice::ai-pr-review: author '$PR_AUTHOR' allowed — running codex review"
-        else
-          skip_reason="author '$PR_AUTHOR' not in allowed-bots"
-          echo "run=false" >> "$GITHUB_OUTPUT"
-          echo "reason=$skip_reason" >> "$GITHUB_OUTPUT"
-          echo "::notice::ai-pr-review: $skip_reason — skipping"
-        fi
-
     # head.sha is used (not refs/pull/N/merge) because merge refs are absent on
-    # conflicted PRs — common for the renovate/dependabot audience this targets.
+    # conflicted PRs — hard-failure would violate the never-hard-fail contract.
     # fetch-depth: 0 pulls the base branch during the authenticated checkout
     # itself (for `git diff base...head`), so no follow-up fetch is needed and
     # persist-credentials: false is safe (zizmor: avoid artipacked).
@@ -132,7 +92,7 @@ runs:
     # sparse-checked-out this composite's own action.yml into the workspace
     # root, and clobbering it breaks GitHub's late-stage action resolution.
     - name: Checkout PR head (openai)
-      if: steps.cfg.outputs.proceed == 'true' && inputs.provider == 'openai' && steps.author.outputs.run == 'true'
+      if: steps.cfg.outputs.proceed == 'true' && inputs.provider == 'openai'
       uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       with:
         ref: ${{ github.event.pull_request.head.sha }}
@@ -142,7 +102,7 @@ runs:
 
     - name: Codex PR review
       id: codex
-      if: steps.cfg.outputs.proceed == 'true' && inputs.provider == 'openai' && steps.author.outputs.run == 'true'
+      if: steps.cfg.outputs.proceed == 'true' && inputs.provider == 'openai'
       uses: openai/codex-action@c25d10f3f498316d4b2496cc4c6dd58057a7b031 # v1.6
       with:
         openai-api-key: ${{ inputs.openai-api-key }} # zizmor: ignore[secrets-outside-env] -- API key passed via composite input, not a repo secret
@@ -158,7 +118,7 @@ runs:
           ${{ steps.cfg.outputs.guidance }}
 
     - name: Post Codex feedback as PR comment
-      if: steps.cfg.outputs.proceed == 'true' && inputs.provider == 'openai' && steps.author.outputs.run == 'true' && steps.codex.outputs.final-message != ''
+      if: steps.cfg.outputs.proceed == 'true' && inputs.provider == 'openai' && steps.codex.outputs.final-message != ''
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
@@ -174,13 +134,9 @@ runs:
       shell: bash
       env:
         PROCEED: ${{ steps.cfg.outputs.proceed }}
-        PROVIDER: ${{ inputs.provider }}
-        AUTHOR_RUN: ${{ steps.author.outputs.run }}
       run: |
-        if [ "$PROCEED" != "true" ]; then
-          echo "conclusion=skipped" >> "$GITHUB_OUTPUT"
-        elif [ "$PROVIDER" = "openai" ] && [ "$AUTHOR_RUN" != "true" ]; then
-          echo "conclusion=skipped" >> "$GITHUB_OUTPUT"
-        else
+        if [ "$PROCEED" = "true" ]; then
           echo "conclusion=success" >> "$GITHUB_OUTPUT"
+        else
+          echo "conclusion=skipped" >> "$GITHUB_OUTPUT"
         fi
