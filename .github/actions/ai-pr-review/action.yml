@@ -97,7 +97,7 @@ runs:
 
     - name: Claude PR review
       if: steps.cfg.outputs.proceed == 'true' && inputs.provider == 'anthropic'
-      uses: anthropics/claude-code-action@5fb899572b81d2bb648d4d187173a2f423a9677c # v1
+      uses: anthropics/claude-code-action@38ec876110f9fbf8b950c79f534430740c3ac009 # v1.0.101
       with:
         anthropic_api_key: ${{ inputs.anthropic-api-key }} # zizmor: ignore[secrets-outside-env] -- API key passed via composite input, not a repo secret
         github_token: ${{ inputs.github-token }}
