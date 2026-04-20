@@ -49,13 +49,44 @@ runs:
         INPUT_OUTCOME: ${{ inputs.outcome }}
       run: ${{ github.action_path }}/src/resolve-config.sh
 
+    # The anthropic branch needs the PR tree at the workspace ROOT because
+    # claude-code-action has no working-directory input — Read/Glob/Grep and
+    # the git CLI invoked by the Claude session all resolve paths against
+    # $GITHUB_WORKSPACE. But the reusable workflow wrapper sparse-checked-out
+    # this composite action's own src/ and action.yml into the same root, and
+    # `actions/checkout` wipes untracked files (`git clean -ffdx`) during
+    # checkout of the PR head — deleting the scripts we're about to invoke
+    # and the action.yml the Post step needs. Stash the composite dir to
+    # $RUNNER_TEMP before checkout and restore it afterward. `path: _pr`
+    # (the openai-branch fix) isn't viable here because claude-code-action
+    # has no equivalent `working-directory` input.
+    - name: Stash composite action files before PR checkout
+      if: steps.cfg.outputs.proceed == 'true' && inputs.provider == 'anthropic'
+      shell: bash
+      run: |
+        stash_dir="$RUNNER_TEMP/ai-pr-review-stash"
+        rm -rf "$stash_dir"
+        mkdir -p "$stash_dir"
+        cp -R .github/actions/ai-pr-review/. "$stash_dir/"
+
+    # fetch-depth: 0 so restore-claude-md.sh can resolve origin/$BASE_REF.
+    # Previously fetch-depth was 1, which silently no-oped the restore
+    # (script 2>/dev/null || rm -f CLAUDE.md) on every run.
     - name: Checkout PR head
       if: steps.cfg.outputs.proceed == 'true' && inputs.provider == 'anthropic'
       uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       with:
         ref: ${{ github.event.pull_request.head.sha }}
-        fetch-depth: 1
+        fetch-depth: 0
         persist-credentials: false
+
+    - name: Restore composite action files after PR checkout
+      if: steps.cfg.outputs.proceed == 'true' && inputs.provider == 'anthropic'
+      shell: bash
+      run: |
+        stash_dir="$RUNNER_TEMP/ai-pr-review-stash"
+        mkdir -p .github/actions/ai-pr-review
+        cp -R "$stash_dir/." .github/actions/ai-pr-review/
 
     - name: Restore CLAUDE.md from base branch
       if: steps.cfg.outputs.proceed == 'true' && inputs.provider == 'anthropic'
