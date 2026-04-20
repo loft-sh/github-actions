@@ -65,14 +65,14 @@ use the companion reusable workflow at
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-|       INPUT       |  TYPE  | REQUIRED |  DEFAULT   |                                                                                     DESCRIPTION                                                                                     |
-|-------------------|--------|----------|------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| anthropic-api-key | string |  false   |            |                                                                Anthropic API key. Required when provider=anthropic.                                                                 |
-|      effort       | string |  false   | `"medium"` |                                                    Effort level (low | medium | high) — maps to <br>a provider-specific model.                                                      |
-|   github-token    | string |   true   |            |                                                      Token used by claude-code-action to post <br>comments and read PR state.                                                       |
-|  openai-api-key   | string |  false   |            |                                                                   OpenAI API key. Required when provider=openai.                                                                    |
-|      prompt       | string |   true   |            |                                                             Review instructions passed verbatim as the <br>AI prompt.                                                               |
-|     provider      | string |   true   |            |                                                                        AI provider: `anthropic` or `openai`.                                                                        |
+|       INPUT       |  TYPE  | REQUIRED |  DEFAULT   |                                 DESCRIPTION                                  |
+|-------------------|--------|----------|------------|------------------------------------------------------------------------------|
+| anthropic-api-key | string |  false   |            |             Anthropic API key. Required when provider=anthropic.             |
+|      effort       | string |  false   | `"medium"` | Effort level (low | medium | high) — maps to <br>a provider-specific model.  |
+|   github-token    | string |   true   |            |  Token used by claude-code-action to post <br>comments and read PR state.    |
+|  openai-api-key   | string |  false   |            |                OpenAI API key. Required when provider=openai.                |
+|      prompt       | string |   true   |            |          Review instructions passed verbatim as the <br>AI prompt.           |
+|     provider      | string |   true   |            |                    AI provider: `anthropic` or `openai`.                     |
 
 <!-- AUTO-DOC-INPUT:END -->
 
@@ -80,10 +80,10 @@ use the companion reusable workflow at
 
 <!-- AUTO-DOC-OUTPUT:START - Do not remove or modify this section -->
 
-|   OUTPUT   |  TYPE  |                                                         DESCRIPTION                                                         |
-|------------|--------|-----------------------------------------------------------------------------------------------------------------------------|
+|   OUTPUT   |  TYPE  |                                              DESCRIPTION                                               |
+|------------|--------|--------------------------------------------------------------------------------------------------------|
 | conclusion | string | `success` when the AI review ran; <br>`skipped` when the resolver vetoed the <br>run (invalid input).  |
-|   reason   | string |                                        One-line explanation when conclusion=skipped.                                        |
+|   reason   | string |                             One-line explanation when conclusion=skipped.                              |
 
 <!-- AUTO-DOC-OUTPUT:END -->
 

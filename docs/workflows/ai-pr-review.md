@@ -54,7 +54,6 @@ review alongside auto-approve on bot PRs.
 |      INPUT      |  TYPE  | REQUIRED |  DEFAULT   |                                 DESCRIPTION                                  |
 |-----------------|--------|----------|------------|------------------------------------------------------------------------------|
 |     effort      | string |  false   | `"medium"` | Effort level (low | medium | high) — maps to <br>a provider-specific model.  |
-|     outcome     | string |   true   |            |         What the AI produces: `pr-comment` or <br>`inline-review`.           |
 |     prompt      | string |   true   |            |          Review instructions passed verbatim as the <br>AI prompt.           |
 |    provider     | string |   true   |            |                    AI provider: `anthropic` or `openai`.                     |
 | timeout-minutes | number |  false   |    `15`    |                           Job timeout in minutes.                            |
