@@ -108,6 +108,9 @@ runs:
           ${{ inputs.prompt }}
 
           ${{ steps.cfg.outputs.guidance }}
+
+          Provenance: the very last line of the comment you post MUST be this line verbatim (keep the leading `> ` and underscores so it renders as an italic blockquote):
+          > _🤖 ai-pr-review — provider: anthropic · model: ${{ steps.cfg.outputs.model }} · effort: ${{ inputs.effort }}_
         claude_args: |
           --model ${{ steps.cfg.outputs.model }}
           --mcp-config '{"mcpServers":{"context7":{"command":"npx","args":["-y","@upstash/context7-mcp"]},"sequential-thinking":{"command":"npx","args":["-y","@modelcontextprotocol/server-sequential-thinking"]}}}'
@@ -156,8 +159,17 @@ runs:
         PR_NUMBER: ${{ github.event.pull_request.number }}
         REPO: ${{ github.repository }}
         BODY: ${{ steps.codex.outputs.final-message }}
+        MODEL: ${{ steps.cfg.outputs.model }}
+        EFFORT: ${{ inputs.effort }}
       run: |
-        printf '%s\n' "$BODY" | gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file -
+        # Provenance footer is emitted deterministically here (unlike the
+        # anthropic path which has to rely on prompt compliance) so every
+        # openai PR comment carries attribution even if the model's body
+        # text doesn't.
+        {
+          printf '%s\n\n' "$BODY"
+          printf '> _🤖 ai-pr-review — provider: openai · model: %s · effort: %s_\n' "$MODEL" "$EFFORT"
+        } | gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file -
 
     - name: Emit conclusion
       id: conclusion
