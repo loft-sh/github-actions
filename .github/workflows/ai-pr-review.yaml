@@ -20,11 +20,6 @@ on:
         description: 'What the AI produces: `pr-comment` or `inline-review`.'
         type: string
         required: true
-      allowed-bots:
-        description: 'Comma-separated bot logins this review runs for. `*` allows all bots.'
-        type: string
-        required: false
-        default: 'renovate,dependabot,loft-bot,github-actions'
       timeout-minutes:
         description: 'Job timeout in minutes.'
         type: number
@@ -72,7 +67,6 @@ jobs:
           effort: ${{ inputs.effort }}
           prompt: ${{ inputs.prompt }}
           outcome: ${{ inputs.outcome }}
-          allowed-bots: ${{ inputs.allowed-bots }}
           anthropic-api-key: ${{ secrets.anthropic-api-key }} # zizmor: ignore[secrets-outside-env] -- API key passed via workflow_call, not a repo secret
           openai-api-key: ${{ secrets.openai-api-key }} # zizmor: ignore[secrets-outside-env] -- API key passed via workflow_call, not a repo secret
           github-token: ${{ secrets.GITHUB_TOKEN }}
