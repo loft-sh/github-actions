@@ -87,6 +87,13 @@ runs:
       uses: anthropics/claude-code-action@38ec876110f9fbf8b950c79f534430740c3ac009 # v1.0.101
       with:
         anthropic_api_key: ${{ inputs.anthropic-api-key }} # zizmor: ignore[secrets-outside-env] -- API key passed via composite input, not a repo secret
+        # Pass the default runner token so claude-code-action doesn't
+        # try to exchange an OIDC token for a GitHub App token. Callers
+        # of ai-step shouldn't need `id-token: write` in their workflow
+        # permissions just to run a text-to-JSON call — the token is
+        # unused by the schema-output path, but the upstream action
+        # resolves one unconditionally on startup.
+        github_token: ${{ github.token }}
         prompt: |
           ${{ inputs.prompt }}
 
