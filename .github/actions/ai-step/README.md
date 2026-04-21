@@ -74,32 +74,58 @@ jobs:
         run: echo "needs human review"
 ```
 
-## Provider asymmetries
+## How it works
 
-- `allowed-tools` and `mcp-config` are anthropic-only. On `openai` they
-  are silently ignored — `codex-action` sandboxes tool access at the
-  process level instead of exposing an allow-list.
-- `openai`'s schema is forwarded verbatim to `codex exec --output-schema`;
-  `anthropic`'s schema is forwarded via `--json-schema` in `claude_args`.
-  Both paths accept the same JSON Schema draft syntax.
+The action installs the `anthropic` or `openai` Python SDK on the
+runner, then calls the provider's chat API directly with its native
+structured-output binding:
+
+- **Anthropic** → Messages API with `output_config.format.schema`
+- **OpenAI** → Chat Completions with `response_format.json_schema.schema`
+
+No `claude-code-action`, no `codex-action`, no bun install. End-to-end
+call is ~15s including SDK install; the LLM call itself is 2–4s. The
+action never hard-fails: API errors, empty responses, and non-JSON
+content all degrade to `conclusion=failed` with the upstream body
+preserved in the CI log. Caller decides how to react.
+
+### Schema compatibility
+
+Strict structured-output modes on both providers reject some JSON
+Schema features:
+
+- `minimum`, `maximum`, `minLength`, `maxLength`, `pattern` — rejected
+- recursive schemas, `$ref` across documents — rejected
+- objects: `additionalProperties` must be `false` (the action sets this
+  automatically on any object node where it's missing, so you don't
+  have to repeat it in every nested schema)
+
+Structured output guarantees the **shape** of the result (fields
+present, types match, enums respected). It does NOT guarantee semantic
+correctness of the values — that's the model's reasoning. Validate
+ranges and business rules in your downstream step, not in the schema.
+
+### Tool use / MCP
+
+Not supported in v1. If you need Claude Code tools, MCP servers, or
+filesystem access during the reasoning step, reach for
+`anthropics/claude-code-action` directly — `ai-step` is the minimal
+text-to-JSON primitive.
 
 ## Inputs
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-|       INPUT       |  TYPE  | REQUIRED |  DEFAULT   |                                                                                                                                          DESCRIPTION                                                                                                                                           |
-|-------------------|--------|----------|------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-|   allowed-tools   | string |  false   |            |                                                 Comma-separated allow-list forwarded to `--allowedTools` on <br>the anthropic path. Ignored on `openai` <br>(codex sandboxes tool access at the <br>process level instead of an allow-list).                                                   |
-| anthropic-api-key | string |  false   |            |                                                                                                                      Anthropic API key. Required when provider=anthropic.                                                                                                                      |
-|      effort       | string |  false   | `"medium"` |                                                                                                          Effort level (low | medium | high) — maps to <br>a provider-specific model.                                                                                                           |
-|       input       | string |  false   |            |                                                                          Optional data the model should act <br>on, appended to the prompt. Caller <br>sources it — a literal string, <br>`${{ steps.X.outputs.Y }}`,                                                                          |
-|                   |        |          |            |                                                                                                                      or the contents of a file <br>read in a prior step.                                                                                                                       |
-|    mcp-config     | string |  false   |            |                                                                                                    Optional JSON passed to `--mcp-config` on <br>the anthropic path. Ignored on `openai`.                                                                                                      |
-|  openai-api-key   | string |  false   |            |                                                                                                                         OpenAI API key. Required when provider=openai.                                                                                                                         |
-|   output-schema   | string |   true   |            | JSON Schema (string) the model output <br>must conform to. Required. Structured output <br>is the contract — without a <br>schema the action skips. For `anthropic` this <br>is forwarded via `--json-schema` in `claude_args`; for `openai` it <br>becomes `output-schema` on `codex-action`. |
-|                   |        |          |            |                                                                                                                                                                                                                                                                                                |
-|      prompt       | string |   true   |            |                                                                                                                          Instructions for the model. Passed verbatim.                                                                                                                          |
-|     provider      | string |   true   |            |                                                                                                                             AI provider: `anthropic` or `openai`.                                                                                                                              |
+|       INPUT       |  TYPE  | REQUIRED |  DEFAULT   |                                                                                                                                            DESCRIPTION                                                                                                                                            |
+|-------------------|--------|----------|------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| anthropic-api-key | string |  false   |            |                                                                                                                       Anthropic API key. Required when provider=anthropic.                                                                                                                        |
+|      effort       | string |  false   | `"medium"` |                                                                                                           Effort level (low | medium | high) — maps to <br>a provider-specific model.                                                                                                             |
+|       input       | string |  false   |            |                                                  Optional data the model should act <br>on, appended to the prompt. Caller <br>sources it — a literal string, <br>a prior step output, or the <br>contents of a file read in <br>a prior step.                                                    |
+|  openai-api-key   | string |  false   |            |                                                                                                                          OpenAI API key. Required when provider=openai.                                                                                                                           |
+|   output-schema   | string |   true   |            | JSON Schema (string) the model output <br>must conform to. Required. Structured output <br>is the contract — without a <br>schema the action skips. For `anthropic` this <br>becomes `output_format.schema` on the Messages API; for <br>`openai` it becomes `response_format.json_schema.schema` |
+|                   |        |          |            |                                                                                                                                 on the Chat Completions <br>API.                                                                                                                                  |
+|      prompt       | string |   true   |            |                                                                                                                           Instructions for the model. Passed verbatim.                                                                                                                            |
+|     provider      | string |   true   |            |                                                                                                                               AI provider: `anthropic` or `openai`.                                                                                                                               |
 
 <!-- AUTO-DOC-INPUT:END -->
 
@@ -107,11 +133,11 @@ jobs:
 
 <!-- AUTO-DOC-OUTPUT:START - Do not remove or modify this section -->
 
-|   OUTPUT   |  TYPE  |                                                             DESCRIPTION                                                             |
-|------------|--------|-------------------------------------------------------------------------------------------------------------------------------------|
-| conclusion | string |                `success` when the AI step ran; <br>`skipped` when the resolver vetoed the <br>run (invalid input).                  |
-|   reason   | string |                                            One-line explanation when conclusion=skipped.                                            |
-|   result   | string | Schema-conforming JSON string. Parse with `fromJSON(...)` <br>in downstream `if:` conditions. Empty when <br>`conclusion=skipped`.  |
+|   OUTPUT   |  TYPE  |                                                                              DESCRIPTION                                                                              |
+|------------|--------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| conclusion | string | `success` when the AI step ran <br>and returned JSON; `skipped` when the <br>resolver vetoed the input; `failed` when <br>the provider errored or returned non-JSON.  |
+|   reason   | string |                                                             One-line explanation when conclusion=skipped.                                                             |
+|   result   | string |             Schema-conforming JSON string. Parse with `fromJSON(...)` <br>in downstream `if:` conditions. Empty when <br>`conclusion` is not `success`.               |
 
 <!-- AUTO-DOC-OUTPUT:END -->
 

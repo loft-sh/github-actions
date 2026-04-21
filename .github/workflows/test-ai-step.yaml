@@ -57,13 +57,17 @@ jobs:
             Do not include any prose — only the JSON object.
           input: |
             The release shipped on time and the rollback runbook worked cleanly.
+          # Keep the schema constraint-free — Anthropic's strict
+          # structured-output rejects numeric min/max and a handful of
+          # other JSON Schema features. The smoke test targets the
+          # intersection of what all supported providers accept.
           output-schema: |
             {
               "type": "object",
               "required": ["sentiment", "confidence"],
               "properties": {
                 "sentiment":  { "type": "string", "enum": ["positive", "neutral", "negative"] },
-                "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+                "confidence": { "type": "number" }
               }
             }
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}

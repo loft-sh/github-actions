@@ -71,21 +71,40 @@ Flat inputs, no arrays. Conflict rules are trivial enough that shell validation 
 | `conclusion` | `success` / `skipped` / `failed`. Mirrors `ai-pr-review`'s shape. |
 | `reason`     | One-line explanation when not `success`. |
 
-### Internals (MVP)
+### Internals
 
-Wrap `anthropics/claude-code-action` with `--json-schema` in
-`claude_args`. The action surfaces the model's schema-conforming
-output as `steps.<id>.outputs.structured_output` (string); `ai-step`
-re-exposes it as `result`.
+Direct API calls via the official Python SDKs:
 
-Known upstream quirk: the first `--json-schema` call in a fresh
-runner can return an empty string ([anthropics/claude-code#23265]).
-`ai-step` wraps the call in a single retry on empty output.
+- `anthropic` SDK → Messages API with `output_config.format.schema`
+- `openai` SDK → Chat Completions with `response_format.json_schema.schema`
 
-[anthropics/claude-code#23265]: https://github.com/anthropics/claude-code/issues/23265
+The action installs the needed SDK on the runner, calls the provider,
+extracts the model's text content, and validates it parses as JSON
+before emitting `result`. Any failure (API error, empty content,
+non-JSON response) degrades to `conclusion=failed` with the upstream
+body preserved in the CI log. End-to-end ~15s including SDK install.
+
+The earlier draft of this design wrapped `anthropics/claude-code-action`
+and `openai/codex-action`, relying on their `--json-schema` /
+`output-schema` flags. Smoke testing surfaced a ~90s cold-start cost
+plus a directory-mismatch hang unrelated to schema binding — both
+rooted in the wrappers' PR-review machinery we didn't need. Direct
+SDK calls dropped that for a simpler, faster primitive.
 
 No checkout. No `GITHUB_TOKEN`. No write permissions. The caller
 provides data and decides what to do with the JSON.
+
+### Schema compatibility
+
+Both providers' strict structured-output modes reject some JSON
+Schema features. The action enforces one implicitly and documents
+the rest:
+
+- `additionalProperties: false` is set automatically on any object
+  node where it's missing (both providers require it in strict mode)
+- `minimum` / `maximum` / `minLength` / `maxLength` / `pattern` are
+  rejected by Anthropic — callers validate ranges in a downstream step
+- Recursive schemas and `$ref` across documents are rejected
 
 ## Usage
 
