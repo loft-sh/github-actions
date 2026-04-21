@@ -1,0 +1,85 @@
+name: Test ai-step
+
+on:
+  pull_request:
+    paths:
+      - '.github/actions/ai-step/**'
+      - '.github/workflows/test-ai-step.yaml'
+  workflow_dispatch:
+    inputs:
+      provider:
+        description: 'Provider to smoke-test (anthropic | openai)'
+        type: choice
+        options: [anthropic, openai]
+        default: anthropic
+      effort:
+        description: 'Effort level'
+        type: choice
+        options: [low, medium, high]
+        default: low
+
+permissions:
+  contents: read
+
+jobs:
+  bats:
+    name: Run bats tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: bats-core/bats-action@77d6fb60505b4d0d1d73e48bd035b55074bbfb43 # 4.0.0
+        with:
+          tests: .github/actions/ai-step/test
+
+  # Live smoke test. Spends real tokens, so gated behind workflow_dispatch
+  # only — never runs on PR events. Proves the whole pipeline: schema is
+  # forwarded to the provider, model returns JSON conforming to it, the
+  # action re-exposes it on `result`, and `fromJSON(...)` parses cleanly
+  # downstream.
+  smoke:
+    if: github.event_name == 'workflow_dispatch'
+    name: Live smoke (${{ inputs.provider }}, ${{ inputs.effort }})
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - id: classify
+        uses: ./.github/actions/ai-step
+        with:
+          provider: ${{ inputs.provider }}
+          effort: ${{ inputs.effort }}
+          prompt: |
+            Classify the sentiment of the input. Respond with JSON matching the schema.
+            Do not include any prose — only the JSON object.
+          input: |
+            The release shipped on time and the rollback runbook worked cleanly.
+          output-schema: |
+            {
+              "type": "object",
+              "required": ["sentiment", "confidence"],
+              "properties": {
+                "sentiment":  { "type": "string", "enum": ["positive", "neutral", "negative"] },
+                "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+              }
+            }
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+
+      - name: Assert structured output
+        env:
+          RESULT: ${{ steps.classify.outputs.result }}
+          CONCLUSION: ${{ steps.classify.outputs.conclusion }}
+        run: |
+          echo "conclusion=$CONCLUSION"
+          echo "result=$RESULT"
+          [ "$CONCLUSION" = "success" ] || { echo "::error::expected conclusion=success, got '$CONCLUSION'"; exit 1; }
+          [ -n "$RESULT" ] || { echo "::error::empty result"; exit 1; }
+          echo "$RESULT" | jq -e '.sentiment | IN("positive","neutral","negative")' >/dev/null \
+            || { echo "::error::sentiment field missing or not in enum"; exit 1; }
+          echo "$RESULT" | jq -e '.confidence | type == "number"' >/dev/null \
+            || { echo "::error::confidence field missing or not a number"; exit 1; }
+          echo "ai-step returned schema-conforming JSON"

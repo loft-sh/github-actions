@@ -1,0 +1,152 @@
+name: AI step
+description: |
+  Small reusable building block: run an AI call with a caller-supplied
+  prompt and input, bind the output to a JSON Schema, expose the
+  schema-conforming JSON as a step output. Downstream steps parse with
+  `fromJSON(steps.<id>.outputs.result)` and branch on typed fields.
+  The action never hard-fails on model errors — it always returns what
+  the model produced (empty on failure). The caller decides how to react.
+inputs:
+  provider:
+    description: 'AI provider: `anthropic` or `openai`.'
+    required: true
+  effort:
+    description: 'Effort level (low | medium | high) — maps to a provider-specific model.'
+    required: false
+    default: 'medium'
+  prompt:
+    description: 'Instructions for the model. Passed verbatim.'
+    required: true
+  input:
+    description: |
+      Optional data the model should act on, appended to the prompt.
+      Caller sources it — a literal string, `${{ steps.X.outputs.Y }}`,
+      or the contents of a file read in a prior step.
+    required: false
+    default: ''
+  output-schema:
+    description: |
+      JSON Schema (string) the model output must conform to. Required.
+      Structured output is the contract — without a schema the action
+      skips. For `anthropic` this is forwarded via `--json-schema` in
+      `claude_args`; for `openai` it becomes `output-schema` on
+      `codex-action`.
+    required: true
+  allowed-tools:
+    description: |
+      Comma-separated allow-list forwarded to `--allowedTools` on the
+      anthropic path. Ignored on `openai` (codex sandboxes tool access
+      at the process level instead of an allow-list).
+    required: false
+    default: ''
+  mcp-config:
+    description: |
+      Optional JSON passed to `--mcp-config` on the anthropic path.
+      Ignored on `openai`.
+    required: false
+    default: ''
+  anthropic-api-key:
+    description: 'Anthropic API key. Required when provider=anthropic.'
+    required: false
+  openai-api-key:
+    description: 'OpenAI API key. Required when provider=openai.'
+    required: false
+
+outputs:
+  result:
+    description: |
+      Schema-conforming JSON string. Parse with `fromJSON(...)` in
+      downstream `if:` conditions. Empty when `conclusion=skipped`.
+    value: ${{ steps.result.outputs.result }}
+  conclusion:
+    description: '`success` when the AI step ran; `skipped` when the resolver vetoed the run (invalid input).'
+    value: ${{ steps.result.outputs.conclusion }}
+  reason:
+    description: 'One-line explanation when conclusion=skipped.'
+    value: ${{ steps.cfg.outputs.reason }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve config
+      id: cfg
+      shell: bash
+      env:
+        INPUT_PROVIDER: ${{ inputs.provider }}
+        INPUT_EFFORT: ${{ inputs.effort }}
+        INPUT_OUTPUT_SCHEMA: ${{ inputs.output-schema }}
+      run: ${{ github.action_path }}/src/resolve-config.sh
+
+    # --- anthropic branch -----------------------------------------------
+    # Schema is forwarded via `--json-schema` in claude_args. The action
+    # then exposes schema-conforming JSON on `outputs.structured_output`.
+    # allowed-tools / mcp-config are appended as extra CLI flags.
+    - name: Claude AI step
+      id: claude
+      if: steps.cfg.outputs.proceed == 'true' && inputs.provider == 'anthropic'
+      uses: anthropics/claude-code-action@38ec876110f9fbf8b950c79f534430740c3ac009 # v1.0.101
+      with:
+        anthropic_api_key: ${{ inputs.anthropic-api-key }} # zizmor: ignore[secrets-outside-env] -- API key passed via composite input, not a repo secret
+        prompt: |
+          ${{ inputs.prompt }}
+
+          ${{ inputs.input }}
+        claude_args: |
+          --model ${{ steps.cfg.outputs.model }}
+          --json-schema ${{ toJSON(inputs.output-schema) }}
+          ${{ inputs.allowed-tools != '' && format('--allowedTools "{0}"', inputs.allowed-tools) || '' }}
+          ${{ inputs.mcp-config != '' && format('--mcp-config {0}', toJSON(inputs.mcp-config)) || '' }}
+
+    # --- openai branch --------------------------------------------------
+    # codex-action exposes `output-schema` as a native input and returns
+    # the schema-conforming JSON on `outputs.final-message`.
+    - name: Codex AI step
+      id: codex
+      if: steps.cfg.outputs.proceed == 'true' && inputs.provider == 'openai'
+      uses: openai/codex-action@c25d10f3f498316d4b2496cc4c6dd58057a7b031 # v1.6
+      with:
+        openai-api-key: ${{ inputs.openai-api-key }} # zizmor: ignore[secrets-outside-env] -- API key passed via composite input, not a repo secret
+        model: ${{ steps.cfg.outputs.model }}
+        effort: ${{ inputs.effort }}
+        sandbox: read-only
+        safety-strategy: drop-sudo
+        allow-bots: 'true'
+        output-schema: ${{ inputs.output-schema }}
+        prompt: |
+          ${{ inputs.prompt }}
+
+          ${{ inputs.input }}
+
+    # --- unify outputs --------------------------------------------------
+    # Both provider paths feed one `result` output so callers don't care
+    # which branch ran. `conclusion=success` even when the AI returned
+    # an empty body — caller inspects `result` and decides. The action
+    # never emits `failed`: structured output is the whole contract, and
+    # the caller is the one who knows what empty means for their pipeline.
+    - name: Emit result
+      id: result
+      if: always()
+      shell: bash
+      env:
+        PROCEED: ${{ steps.cfg.outputs.proceed }}
+        CLAUDE_OUT: ${{ steps.claude.outputs.structured_output }}
+        CODEX_OUT: ${{ steps.codex.outputs.final-message }}
+        PROVIDER: ${{ inputs.provider }}
+      run: |
+        if [ "$PROCEED" != "true" ]; then
+          {
+            echo 'result<<AISTEP_EOF'
+            echo 'AISTEP_EOF'
+            echo 'conclusion=skipped'
+          } >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        case "$PROVIDER" in
+          anthropic) body="$CLAUDE_OUT" ;;
+          openai)    body="$CODEX_OUT" ;;
+          *)         body="" ;;
+        esac
+        {
+          printf 'result<<AISTEP_EOF\n%s\nAISTEP_EOF\n' "$body"
+          echo 'conclusion=success'
+        } >> "$GITHUB_OUTPUT"
