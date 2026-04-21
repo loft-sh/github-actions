@@ -1,0 +1,110 @@
+name: AI step
+description: |
+  Small reusable building block: run an AI call with a caller-supplied
+  prompt and input, bind the output to a JSON Schema, expose the
+  schema-conforming JSON as a step output. Downstream steps parse with
+  fromJSON(steps.<id>.outputs.result) and branch on typed fields.
+
+  Calls the provider's chat API directly (Anthropic Messages API or
+  OpenAI Chat Completions API) with native structured-output binding.
+  No bun, no claude-code-action wrapper, no PR-review machinery.
+inputs:
+  provider:
+    description: 'AI provider: `anthropic` or `openai`.'
+    required: true
+  effort:
+    description: 'Effort level (low | medium | high) — maps to a provider-specific model.'
+    required: false
+    default: 'medium'
+  prompt:
+    description: 'Instructions for the model. Passed verbatim.'
+    required: true
+  input:
+    description: |
+      Optional data the model should act on, appended to the prompt.
+      Caller sources it — a literal string, a prior step output, or
+      the contents of a file read in a prior step.
+    required: false
+    default: ''
+  output-schema:
+    description: |
+      JSON Schema (string) the model output must conform to. Required.
+      Structured output is the contract — without a schema the action
+      skips. For `anthropic` this becomes `output_format.schema` on the
+      Messages API; for `openai` it becomes `response_format.json_schema.schema`
+      on the Chat Completions API.
+    required: true
+  anthropic-api-key:
+    description: 'Anthropic API key. Required when provider=anthropic.'
+    required: false
+  openai-api-key:
+    description: 'OpenAI API key. Required when provider=openai.'
+    required: false
+
+outputs:
+  result:
+    description: |
+      Schema-conforming JSON string. Parse with `fromJSON(...)` in
+      downstream `if:` conditions. Empty when `conclusion` is not `success`.
+    value: ${{ steps.run.outputs.result }}
+  conclusion:
+    description: '`success` when the AI step ran and returned JSON; `skipped` when the resolver vetoed the input; `failed` when the provider errored or returned non-JSON.'
+    value: ${{ steps.conclusion.outputs.conclusion }}
+  reason:
+    description: 'One-line explanation when conclusion=skipped.'
+    value: ${{ steps.cfg.outputs.reason }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve config
+      id: cfg
+      shell: bash
+      env:
+        INPUT_PROVIDER: ${{ inputs.provider }}
+        INPUT_EFFORT: ${{ inputs.effort }}
+        INPUT_OUTPUT_SCHEMA: ${{ inputs.output-schema }}
+      run: ${{ github.action_path }}/src/resolve-config.sh
+
+    - name: Install provider SDK
+      if: steps.cfg.outputs.proceed == 'true'
+      shell: bash
+      env:
+        PROVIDER: ${{ inputs.provider }}
+      run: |
+        set -euo pipefail
+        case "$PROVIDER" in
+          anthropic) python3 -m pip install --quiet --disable-pip-version-check anthropic ;;
+          openai)    python3 -m pip install --quiet --disable-pip-version-check openai ;;
+          *) echo "::error::unknown provider '$PROVIDER'"; exit 1 ;;
+        esac
+
+    - name: Call provider
+      id: run
+      if: steps.cfg.outputs.proceed == 'true'
+      shell: bash
+      env:
+        INPUT_PROVIDER: ${{ inputs.provider }}
+        INPUT_MODEL: ${{ steps.cfg.outputs.model }}
+        INPUT_PROMPT: ${{ inputs.prompt }}
+        INPUT_INPUT: ${{ inputs.input }}
+        INPUT_OUTPUT_SCHEMA: ${{ inputs.output-schema }}
+        INPUT_ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
+        INPUT_OPENAI_API_KEY: ${{ inputs.openai-api-key }}
+      run: python3 ${{ github.action_path }}/src/run.py
+
+    - name: Emit conclusion
+      id: conclusion
+      if: always()
+      shell: bash
+      env:
+        PROCEED: ${{ steps.cfg.outputs.proceed }}
+        RUN_CONCLUSION: ${{ steps.run.outputs.conclusion }}
+      run: |
+        if [ "$PROCEED" != "true" ]; then
+          echo "conclusion=skipped" >> "$GITHUB_OUTPUT"
+        elif [ -n "$RUN_CONCLUSION" ]; then
+          echo "conclusion=$RUN_CONCLUSION" >> "$GITHUB_OUTPUT"
+        else
+          echo "conclusion=failed" >> "$GITHUB_OUTPUT"
+        fi

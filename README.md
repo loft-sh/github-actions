@@ -174,6 +174,53 @@ Runs weekly and on demand. Creates real PRs exercising every decision-table
 branch (chore/fix(deps) titles, backport/renovate/update-platform-version
 branches, ineligible titles) and asserts the never-hard-fail invariant.
 
+### AI step
+
+Small reusable building block: run an AI call with a caller-supplied prompt
+and input, bind the output to a JSON Schema, expose the schema-conforming
+JSON as a step output. Downstream steps parse with `fromJSON(...)` and
+branch on typed fields.
+
+Structured output is the contract. Whatever the model returns is exposed
+on `result` and `conclusion=success`. The action never emits `failed` — the
+caller knows what empty output means for their pipeline.
+
+**Location:** `.github/actions/ai-step`
+
+**Usage:**
+
+```yaml
+- uses: actions/checkout@v4
+  with:
+    repository: loft-sh/github-actions
+    ref: ai-step/v1
+    sparse-checkout: .github/actions/ai-step
+
+- id: classify
+  uses: ./.github/actions/ai-step
+  with:
+    provider: anthropic
+    effort: low
+    prompt: 'Classify this diff. Return JSON matching the schema.'
+    input: ${{ steps.diff.outputs.text }}
+    output-schema: |
+      {
+        "type": "object",
+        "required": ["severity", "areas"],
+        "properties": {
+          "severity": { "type": "string", "enum": ["low","medium","high"] },
+          "areas":    { "type": "array",  "items": { "type": "string" } }
+        }
+      }
+    anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+
+- if: fromJSON(steps.classify.outputs.result).severity == 'high'
+  run: echo "needs human review"
+```
+
+See [ai-step README](./.github/actions/ai-step/README.md) for inputs,
+outputs, and provider asymmetries.
+
 ### Actionlint
 
 Lints GitHub Actions workflow files using actionlint with reviewdog integration.
