@@ -26,6 +26,23 @@ import os
 import sys
 
 
+def enforce_strict(node):
+    """Walk the schema and set `additionalProperties: false` on every
+    object node that doesn't already specify it. Both Anthropic and
+    OpenAI strict structured-output modes require this; making it
+    implicit means callers don't have to repeat it on every nested
+    object in their schema."""
+    if isinstance(node, dict):
+        if node.get("type") == "object" and "additionalProperties" not in node:
+            node["additionalProperties"] = False
+        for v in node.values():
+            enforce_strict(v)
+    elif isinstance(node, list):
+        for item in node:
+            enforce_strict(item)
+    return node
+
+
 def emit_block(key: str, value: str) -> None:
     path = os.environ.get("GITHUB_OUTPUT")
     if not path:
@@ -129,6 +146,8 @@ def main() -> None:
         schema = json.loads(schema_raw)
     except json.JSONDecodeError as e:
         fail_soft(f"output-schema is not valid JSON: {e}")
+
+    enforce_strict(schema)
 
     user_content = f"{prompt}\n\n{input_text}" if input_text else prompt
 
