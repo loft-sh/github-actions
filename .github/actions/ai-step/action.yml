@@ -20,8 +20,8 @@ inputs:
   input:
     description: |
       Optional data the model should act on, appended to the prompt.
-      Caller sources it — a literal string, `${{ steps.X.outputs.Y }}`,
-      or the contents of a file read in a prior step.
+      Caller sources it — a literal string, a prior step output, or
+      the contents of a file read in a prior step.
     required: false
     default: ''
   output-schema:
