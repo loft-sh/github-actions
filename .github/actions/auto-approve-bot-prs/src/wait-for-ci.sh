@@ -33,10 +33,15 @@ for attempt in $(seq 1 "$max_attempts"); do
   # one with the latest started_at. Treating every past attempt as live is what
   # makes a superseded `cancelled` from an older run silently block approval
   # even though the same check's latest attempt is green.
+  #
+  # `.id` is the tiebreaker when two attempts share an identical started_at —
+  # a common case when concurrency-group cancellation and the winning run
+  # start within the same second. GitHub allocates check-run IDs
+  # monotonically, so the larger id is always the newer attempt.
   other=$(echo "$runs" | jq --arg p "$EXCLUDE_PATTERN" '
     [.[] | select((.details_url // "") | contains($p) | not)]
     | group_by(.name // "")
-    | map(sort_by(.started_at // "") | last)
+    | map(sort_by(.started_at // "", .id // 0) | last)
   ')
   pending=$(echo "$other" | jq '[.[] | select(.status != "completed")] | length')
   failed=$(echo  "$other" | jq '[.[] | select(.conclusion != null and ([.conclusion] | inside(["success","skipped","neutral"]) | not))] | length')

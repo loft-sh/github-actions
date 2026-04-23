@@ -93,3 +93,29 @@ kv() { grep "^$1=" "$GITHUB_OUTPUT" | tail -n1; }
   [ "$status" -eq 0 ]
   [ "$(kv ci_green)" = "ci_green=false" ]
 }
+
+@test "identical started_at with differing ids → id tiebreak picks newer (higher id)" {
+  # Real-world case observed on loft-sh/vcluster-docs PR #1992: the Integration
+  # Tests workflow ran twice for the same PR head; concurrency cancellation
+  # and the winning run both started within the same second, so started_at
+  # alone is ambiguous. GitHub allocates check-run ids monotonically, so id
+  # tiebreaks unambiguously toward the newer attempt.
+  GH_MOCK_CHECK_RUNS_JSON='{"check_runs":[
+    {"name":"Safari (macOS)","id":100,"status":"completed","conclusion":"cancelled","started_at":"2026-04-23T06:35:09Z","details_url":"https://github.com/o/r/actions/runs/220/job/1"},
+    {"name":"Safari (macOS)","id":200,"status":"completed","conclusion":"skipped","started_at":"2026-04-23T06:35:09Z","details_url":"https://github.com/o/r/actions/runs/221/job/1"}
+  ]}' run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv ci_green)" = "ci_green=true" ]
+}
+
+@test "identical started_at tiebreak is deterministic regardless of api order" {
+  # Same as above but the API returned the attempts in the opposite order.
+  # A stable sort on started_at alone would let input order decide the winner
+  # and silently flip the verdict between runs.
+  GH_MOCK_CHECK_RUNS_JSON='{"check_runs":[
+    {"name":"Safari (macOS)","id":200,"status":"completed","conclusion":"skipped","started_at":"2026-04-23T06:35:09Z","details_url":"https://github.com/o/r/actions/runs/221/job/1"},
+    {"name":"Safari (macOS)","id":100,"status":"completed","conclusion":"cancelled","started_at":"2026-04-23T06:35:09Z","details_url":"https://github.com/o/r/actions/runs/220/job/1"}
+  ]}' run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv ci_green)" = "ci_green=true" ]
+}
