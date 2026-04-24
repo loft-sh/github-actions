@@ -10,6 +10,7 @@ setup() {
   export PR_HEAD_SHA="deadbeef"
   export SELF_RUN_ID="111111"
   export WAIT_MAX_ATTEMPTS=2
+  export WAIT_MIN_ATTEMPTS=1
   export WAIT_SLEEP_SECONDS=1
 }
 teardown() { rm -f "$GITHUB_OUTPUT"; teardown_gh_mock; }
@@ -118,4 +119,75 @@ kv() { grep "^$1=" "$GITHUB_OUTPUT" | tail -n1; }
   ]}' run "$SCRIPT"
   [ "$status" -eq 0 ]
   [ "$(kv ci_green)" = "ci_green=true" ]
+}
+
+# ---------------------------------------------------------------------------
+# Commit-status polling (catches Netlify and other legacy-CI signals)
+
+@test "commit status failure blocks approval even when check-runs are clean" {
+  # Real-world case observed on loft-sh/vcluster-docs PR #2009: Netlify's
+  # "deploy/netlify" commit status was failing while every GitHub-native
+  # check-run passed. Ignoring the statuses API let the bot approve broken CI.
+  GH_MOCK_CHECK_RUNS_JSON='{"check_runs":[
+    {"name":"lint","status":"completed","conclusion":"success","details_url":"https://github.com/o/r/actions/runs/222/job/1"}
+  ]}' \
+  GH_MOCK_STATUSES_JSON='{"state":"failure","statuses":[
+    {"context":"deploy/netlify","state":"failure","target_url":"https://app.netlify.com/projects/x/deploys/abc"}
+  ]}' \
+    run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv ci_green)" = "ci_green=false" ]
+  [[ "$output" == *"deploy/netlify"* ]]
+}
+
+@test "commit status error also blocks approval" {
+  GH_MOCK_STATUSES_JSON='{"state":"error","statuses":[
+    {"context":"ci/circleci","state":"error","target_url":"https://circleci.com/x/1"}
+  ]}' run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv ci_green)" = "ci_green=false" ]
+  [[ "$output" == *"ci/circleci"* ]]
+}
+
+@test "pending commit status keeps the job waiting past first poll" {
+  # With MIN_ATTEMPTS=1 we'd otherwise declare green immediately. A pending
+  # commit status must behave just like a pending check-run: keep polling.
+  GH_MOCK_STATUSES_JSON='{"state":"pending","statuses":[
+    {"context":"deploy/netlify","state":"pending","target_url":"https://app.netlify.com/x/1"}
+  ]}' run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv ci_green)" = "ci_green=false" ]
+}
+
+@test "successful commit status combined with clean check-runs → ci_green=true" {
+  GH_MOCK_STATUSES_JSON='{"state":"success","statuses":[
+    {"context":"deploy/netlify","state":"success","target_url":"https://app.netlify.com/x/1"}
+  ]}' run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv ci_green)" = "ci_green=true" ]
+}
+
+# ---------------------------------------------------------------------------
+# Minimum-attempt settle period (keeps slow external checks from being missed)
+
+@test "min_attempts floor forces extra polls before declaring green" {
+  # With MAX=2 and MIN=2 we should never short-circuit on the first poll;
+  # the run must poll at least twice before green. If min_attempts is not
+  # honored the loop would exit at attempt 1 because pending=0.
+  export WAIT_MIN_ATTEMPTS=2
+  GH_MOCK_CHECK_RUNS_JSON='{"check_runs":[]}' run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv ci_green)" = "ci_green=true" ]
+  # Two check-runs calls + two statuses calls = 4 api calls total.
+  [ "$(grep -c '^api' "$GH_MOCK_CALLS")" -eq 4 ]
+}
+
+@test "min_attempts cannot exceed max_attempts (timeout wins)" {
+  # If min > max, the loop exhausts attempts before ever being eligible to
+  # declare green, so the timeout branch emits ci_green=false. This models
+  # the caller-misconfiguration case (min=99, max=2) defensively.
+  export WAIT_MIN_ATTEMPTS=99
+  GH_MOCK_CHECK_RUNS_JSON='{"check_runs":[]}' run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv ci_green)" = "ci_green=false" ]
 }

@@ -23,6 +23,10 @@ inputs:
     description: 'Max polling attempts waiting for other CI checks'
     required: false
     default: '90'
+  wait-min-attempts:
+    description: 'Minimum polls before ci_green=true is allowed. Prevents early approval while slow external checks (e.g. Netlify) have not yet registered.'
+    required: false
+    default: '12'
   wait-sleep-seconds:
     description: 'Seconds between polling attempts'
     required: false
@@ -60,6 +64,7 @@ runs:
         PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         SELF_RUN_ID: ${{ github.run_id }}
         WAIT_MAX_ATTEMPTS: ${{ inputs.wait-max-attempts }}
+        WAIT_MIN_ATTEMPTS: ${{ inputs.wait-min-attempts }}
         WAIT_SLEEP_SECONDS: ${{ inputs.wait-sleep-seconds }}
       run: ${{ github.action_path }}/src/wait-for-ci.sh
 
