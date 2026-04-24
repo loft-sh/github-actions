@@ -191,3 +191,99 @@ kv() { grep "^$1=" "$GITHUB_OUTPUT" | tail -n1; }
   [ "$status" -eq 0 ]
   [ "$(kv ci_green)" = "ci_green=false" ]
 }
+
+# ---------------------------------------------------------------------------
+# Regression tests — these are the tests that SHOULD have existed before
+# loft-sh/vcluster-docs#2009 shipped a false-green approval. Each one fails
+# against the pre-fix script (either because commit statuses were ignored or
+# because an empty first poll short-circuited to ci_green=true).
+
+@test "regression: pr #2009 — failing check-runs arrive after initial empty polls" {
+  # Reproduces the #2009 timeline: at T+3s auto-approve observed zero signals
+  # on the PR head because external CI had not yet registered. The failing
+  # check-runs arrived 114s later. Old code exited green on the first poll;
+  # the settle floor must keep the loop alive long enough for the failure
+  # to be observed.
+  #
+  # Not Netlify-specific — this is the generic 'any CI posts a failure while
+  # we were in our settle window' contract. Name values are illustrative.
+  export WAIT_MIN_ATTEMPTS=5
+  export WAIT_MAX_ATTEMPTS=6
+
+  # Sequence file: one compact JSON response per line. Polls 1-4 observe an
+  # empty head (external CI silent); polls 5-6 observe the failures that
+  # finally landed. Matches #2009's 'bot approved before checks registered'.
+  export GH_MOCK_CHECK_RUNS_SEQ="$MOCK_DIR/cr_seq"
+  {
+    echo '{"check_runs":[]}'
+    echo '{"check_runs":[]}'
+    echo '{"check_runs":[]}'
+    echo '{"check_runs":[]}'
+    echo '{"check_runs":[{"name":"Redirect rules","status":"completed","conclusion":"failure","details_url":"https://external-ci/x/1"},{"name":"Header rules","status":"completed","conclusion":"failure","details_url":"https://external-ci/x/2"},{"name":"Pages changed","status":"completed","conclusion":"failure","details_url":"https://external-ci/x/3"}]}'
+    echo '{"check_runs":[{"name":"Redirect rules","status":"completed","conclusion":"failure","details_url":"https://external-ci/x/1"},{"name":"Header rules","status":"completed","conclusion":"failure","details_url":"https://external-ci/x/2"},{"name":"Pages changed","status":"completed","conclusion":"failure","details_url":"https://external-ci/x/3"}]}'
+  } > "$GH_MOCK_CHECK_RUNS_SEQ"
+
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv ci_green)" = "ci_green=false" ]
+  # Every failing check name must appear in the log so audits can find
+  # which integration blocked the approval.
+  [[ "$output" == *"Redirect rules"* ]]
+  [[ "$output" == *"Header rules"* ]]
+  [[ "$output" == *"Pages changed"* ]]
+}
+
+@test "regression: pr #2009 — commit-status failure arrives during settle window" {
+  # Same race as above, different API surface. Pre-fix code polled only
+  # /check-runs, so any CI that reports exclusively via /status (Netlify,
+  # legacy CI integrations) was completely invisible to the waiter.
+  export WAIT_MIN_ATTEMPTS=4
+  export WAIT_MAX_ATTEMPTS=5
+
+  export GH_MOCK_STATUSES_SEQ="$MOCK_DIR/st_seq"
+  {
+    echo '{"state":"success","statuses":[]}'
+    echo '{"state":"success","statuses":[]}'
+    echo '{"state":"success","statuses":[]}'
+    echo '{"state":"failure","statuses":[{"context":"deploy/netlify","state":"failure","target_url":"https://external-ci/deploys/abc"}]}'
+    echo '{"state":"failure","statuses":[{"context":"deploy/netlify","state":"failure","target_url":"https://external-ci/deploys/abc"}]}'
+  } > "$GH_MOCK_STATUSES_SEQ"
+
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv ci_green)" = "ci_green=false" ]
+  [[ "$output" == *"deploy/netlify"* ]]
+}
+
+@test "regression: empty first poll must not short-circuit to green at default settle" {
+  # The core defect: treating 'nothing visible' as 'all checks passed'.
+  # With the default min_attempts (12) and a tight max_attempts budget, an
+  # initially-empty PR must NOT get instant approval. The pre-fix script
+  # returned ci_green=true on attempt 1 with no external checks visible.
+  unset WAIT_MIN_ATTEMPTS  # exercise the in-script default (12)
+  export WAIT_MAX_ATTEMPTS=3
+  GH_MOCK_CHECK_RUNS_JSON='{"check_runs":[]}' \
+  GH_MOCK_STATUSES_JSON='{"state":"success","statuses":[]}' \
+    run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  # With max(3) < default-min(12) the run must time out, not approve. This
+  # is a direct regression guard: if anyone lowers the default, this test
+  # flips to ci_green=true and the CI job fails.
+  [ "$(kv ci_green)" = "ci_green=false" ]
+}
+
+@test "regression: mixed signal — check-run green + commit status failure blocks" {
+  # Defensive case: all GitHub-native check-runs are clean, but a single
+  # commit-status context is failing. Pre-fix code saw only the check-runs
+  # side and approved. The gate must be a logical AND across both surfaces.
+  GH_MOCK_CHECK_RUNS_JSON='{"check_runs":[
+    {"name":"lint","status":"completed","conclusion":"success","details_url":"https://github.com/o/r/actions/runs/222/job/1"},
+    {"name":"tests","status":"completed","conclusion":"success","details_url":"https://github.com/o/r/actions/runs/333/job/1"}
+  ]}' \
+  GH_MOCK_STATUSES_JSON='{"state":"failure","statuses":[
+    {"context":"deploy/netlify","state":"failure","target_url":"https://app.netlify.com/x/1"}
+  ]}' run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv ci_green)" = "ci_green=false" ]
+  [[ "$output" == *"deploy/netlify"* ]]
+}
