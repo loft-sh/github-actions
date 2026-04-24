@@ -272,6 +272,61 @@ kv() { grep "^$1=" "$GITHUB_OUTPUT" | tail -n1; }
   [ "$(kv ci_green)" = "ci_green=false" ]
 }
 
+@test "default-deny: check-runs API failure must never emit ci_green=true" {
+  # Silent API errors are the same defect class as #2009: absence of signal
+  # treated as absence of problem. If gh can't reach the API, we cannot prove
+  # CI is clean — we must refuse to approve rather than default to green.
+  export WAIT_MAX_ATTEMPTS=3
+  export WAIT_MIN_ATTEMPTS=1
+  GH_MOCK_CHECK_RUNS_FAIL=always run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv ci_green)" = "ci_green=false" ]
+}
+
+@test "default-deny: statuses API failure must never emit ci_green=true" {
+  export WAIT_MAX_ATTEMPTS=3
+  export WAIT_MIN_ATTEMPTS=1
+  GH_MOCK_STATUSES_FAIL=always run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv ci_green)" = "ci_green=false" ]
+}
+
+@test "default-deny: transient API errors do not count toward the settle floor" {
+  # On the pre-TDD script an errored poll silently fell back to '[]' and still
+  # counted as a settle attempt — with min_attempts=2 it would approve after
+  # two failed polls because attempt>=min and 'pending=0'. The new contract:
+  # errored polls do NOT advance the settle counter.
+  export WAIT_MAX_ATTEMPTS=2
+  export WAIT_MIN_ATTEMPTS=2
+  GH_MOCK_CHECK_RUNS_FAIL=always run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv ci_green)" = "ci_green=false" ]
+}
+
+@test "pending check-run name is logged so operators can see what we are waiting on" {
+  export WAIT_MAX_ATTEMPTS=1
+  export WAIT_MIN_ATTEMPTS=1
+  GH_MOCK_CHECK_RUNS_JSON='{"check_runs":[
+    {"name":"integration-tests","status":"in_progress","conclusion":null,"details_url":"https://github.com/o/r/actions/runs/222/job/1"}
+  ]}' run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  # We expect the pending check name to appear somewhere in the output.
+  [[ "$output" == *"integration-tests"* ]]
+}
+
+@test "failed check-run output includes the conclusion, not just the name" {
+  # cancelled vs failure vs timed_out carry different debugging meaning. The
+  # audit log should surface which kind of unsuccessful conclusion blocked
+  # approval, so operators can tell a rerun-candidate from a real failure.
+  GH_MOCK_CHECK_RUNS_JSON='{"check_runs":[
+    {"name":"e2e","status":"completed","conclusion":"timed_out","details_url":"https://github.com/o/r/actions/runs/222/job/1"}
+  ]}' run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv ci_green)" = "ci_green=false" ]
+  [[ "$output" == *"e2e"* ]]
+  [[ "$output" == *"timed_out"* ]]
+}
+
 @test "regression: mixed signal — check-run green + commit status failure blocks" {
   # Defensive case: all GitHub-native check-runs are clean, but a single
   # commit-status context is failing. Pre-fix code saw only the check-runs

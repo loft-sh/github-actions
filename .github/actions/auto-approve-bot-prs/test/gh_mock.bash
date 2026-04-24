@@ -11,6 +11,7 @@ setup_gh_mock() {
   cat > "$MOCK_DIR/gh" <<'EOF'
 #!/usr/bin/env bash
 # Mock `gh`. Only covers the subset used by auto-approve scripts.
+set -o pipefail
 #
 # GH_MOCK_MERGEABLE          → response for `gh api ...pulls/N`
 # GH_MOCK_APPROVER           → response for `gh api user`
@@ -20,7 +21,10 @@ setup_gh_mock() {
 #                              line N (falls through to GH_MOCK_CHECK_RUNS_JSON
 #                              when exhausted). Lets a test model "signal
 #                              arrived between polls" without wiring a real clock.
+#                              Special line value 'ERROR' → exit non-zero (API fail).
 # GH_MOCK_STATUSES_SEQ       → same, for the commit-statuses endpoint.
+# GH_MOCK_CHECK_RUNS_FAIL    → if 'always', /check-runs exits 1 every call.
+# GH_MOCK_STATUSES_FAIL      → if 'always', /status exits 1 every call.
 # GH_MOCK_PR_MERGE_EXIT      → exit code for `gh pr merge`
 # GH_MOCK_PR_MERGE_OUT       → stdout for `gh pr merge`
 # GH_MOCK_CALLS              → path; each invocation appends one line of args
@@ -54,8 +58,16 @@ emit_api_response() {
       printf '{"mergeable":%s}\n' "$m"
       ;;
     *"/check-runs"*)
+      if [ "${GH_MOCK_CHECK_RUNS_FAIL:-}" = "always" ]; then
+        echo "mock: check-runs forced failure" >&2
+        exit 22
+      fi
       local seq
       seq="$(read_sequenced "${GH_MOCK_CHECK_RUNS_SEQ:-}" "${MOCK_DIR:-/tmp}/cr_n")"
+      if [ "$seq" = "ERROR" ]; then
+        echo "mock: sequenced check-runs error" >&2
+        exit 22
+      fi
       if [ -n "$seq" ]; then
         printf '%s\n' "$seq"
       else
@@ -65,8 +77,16 @@ emit_api_response() {
     *"/status"*)
       # Trailing /status (combined) — must come after /check-runs because
       # /check-runs also happens to contain "/runs/" but not "/status".
+      if [ "${GH_MOCK_STATUSES_FAIL:-}" = "always" ]; then
+        echo "mock: statuses forced failure" >&2
+        exit 22
+      fi
       local seq
       seq="$(read_sequenced "${GH_MOCK_STATUSES_SEQ:-}" "${MOCK_DIR:-/tmp}/st_n")"
+      if [ "$seq" = "ERROR" ]; then
+        echo "mock: sequenced statuses error" >&2
+        exit 22
+      fi
       if [ -n "$seq" ]; then
         printf '%s\n' "$seq"
       else
