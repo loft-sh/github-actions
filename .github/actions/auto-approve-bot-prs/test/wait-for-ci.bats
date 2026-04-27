@@ -84,9 +84,12 @@ kv() { grep "^$1=" "$GITHUB_OUTPUT" | tail -n1; }
   [ "$(kv ci_green)" = "ci_green=true" ]
 }
 
-@test "cancelled as latest attempt still blocks (not a stale artifact)" {
+@test "cancelled as latest attempt still blocks once settle period elapses" {
   # Opposite of the superseded case: when cancelled IS the latest attempt,
   # it is a real signal that CI was aborted and approval should not proceed.
+  # The script holds the cancelled state across the settle floor in case a
+  # concurrency-triggered replacement is en route (see #2019/#2020 race);
+  # past the floor (here min=1) it bails.
   GH_MOCK_CHECK_RUNS_JSON='{"check_runs":[
     {"name":"integration-test/chrome","status":"completed","conclusion":"skipped","started_at":"2026-04-17T05:00:00Z","details_url":"https://github.com/o/r/actions/runs/220/job/1"},
     {"name":"integration-test/chrome","status":"completed","conclusion":"cancelled","started_at":"2026-04-17T06:00:00Z","details_url":"https://github.com/o/r/actions/runs/221/job/1"}
@@ -325,6 +328,125 @@ kv() { grep "^$1=" "$GITHUB_OUTPUT" | tail -n1; }
   [ "$(kv ci_green)" = "ci_green=false" ]
   [[ "$output" == *"e2e"* ]]
   [[ "$output" == *"timed_out"* ]]
+}
+
+@test "regression: prs #2019/#2020 — cancelled at attempt 1 must wait for concurrency replacement" {
+  # Reproduces the docs backport storm of 2026-04-27 where 4 sibling
+  # backport PRs were created in 24s. GitHub's concurrency-group cancellation
+  # marked the prior PR's browser-test workflow as `cancelled` and queued a
+  # replacement, but the replacement took 5–10s to register. Pre-fix
+  # wait-for-ci saw the cancelled check on attempt 1, treated it as a
+  # terminal failure, and bailed before the replacement landed. The fix
+  # holds the cancelled state across the settle floor so dedup can pick the
+  # replacement once it shows up.
+  export WAIT_MIN_ATTEMPTS=4
+  export WAIT_MAX_ATTEMPTS=6
+
+  export GH_MOCK_CHECK_RUNS_SEQ="$MOCK_DIR/cr_seq"
+  {
+    # Polls 1-2: only the cancelled attempt is visible (the failure window).
+    echo '{"check_runs":[{"name":"Mobile Safari (iPhone)","id":100,"status":"completed","conclusion":"cancelled","started_at":"2026-04-27T07:40:05Z","details_url":"https://external/runs/220/job/1"}]}'
+    echo '{"check_runs":[{"name":"Mobile Safari (iPhone)","id":100,"status":"completed","conclusion":"cancelled","started_at":"2026-04-27T07:40:05Z","details_url":"https://external/runs/220/job/1"}]}'
+    # Poll 3+: replacement skipped attempt registers; dedup picks the newer id.
+    echo '{"check_runs":[
+      {"name":"Mobile Safari (iPhone)","id":100,"status":"completed","conclusion":"cancelled","started_at":"2026-04-27T07:40:05Z","details_url":"https://external/runs/220/job/1"},
+      {"name":"Mobile Safari (iPhone)","id":200,"status":"completed","conclusion":"skipped","started_at":"2026-04-27T07:40:15Z","details_url":"https://external/runs/221/job/1"}
+    ]}'
+    echo '{"check_runs":[
+      {"name":"Mobile Safari (iPhone)","id":100,"status":"completed","conclusion":"cancelled","started_at":"2026-04-27T07:40:05Z","details_url":"https://external/runs/220/job/1"},
+      {"name":"Mobile Safari (iPhone)","id":200,"status":"completed","conclusion":"skipped","started_at":"2026-04-27T07:40:15Z","details_url":"https://external/runs/221/job/1"}
+    ]}'
+  } > "$GH_MOCK_CHECK_RUNS_SEQ"
+
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv ci_green)" = "ci_green=true" ]
+}
+
+@test "regression: cancelled replacement that arrives as success also unblocks" {
+  # Same shape as the docs backport storm but the replacement attempt lands
+  # on `success` instead of `skipped` (e.g. when the concurrency group fires
+  # but the rerun actually executes the job). Dedup must still pick the
+  # newer id and the verdict must become green.
+  export WAIT_MIN_ATTEMPTS=3
+  export WAIT_MAX_ATTEMPTS=5
+
+  export GH_MOCK_CHECK_RUNS_SEQ="$MOCK_DIR/cr_seq"
+  {
+    echo '{"check_runs":[{"name":"e2e","id":100,"status":"completed","conclusion":"cancelled","started_at":"2026-04-27T07:40:05Z","details_url":"https://external/runs/220/job/1"}]}'
+    echo '{"check_runs":[{"name":"e2e","id":100,"status":"completed","conclusion":"cancelled","started_at":"2026-04-27T07:40:05Z","details_url":"https://external/runs/220/job/1"}]}'
+    echo '{"check_runs":[
+      {"name":"e2e","id":100,"status":"completed","conclusion":"cancelled","started_at":"2026-04-27T07:40:05Z","details_url":"https://external/runs/220/job/1"},
+      {"name":"e2e","id":200,"status":"completed","conclusion":"success","started_at":"2026-04-27T07:40:15Z","details_url":"https://external/runs/221/job/1"}
+    ]}'
+  } > "$GH_MOCK_CHECK_RUNS_SEQ"
+
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv ci_green)" = "ci_green=true" ]
+}
+
+@test "regression: cancelled-only that never gets replaced bails at settle floor (bounded wait)" {
+  # A real user-cancelled check that is never replaced must not block the
+  # auto-approve job indefinitely. Once the settle floor elapses, treat the
+  # cancellation as final and exit non-green. This bounds the wait by
+  # min_attempts*sleep_seconds, not max_attempts*sleep_seconds.
+  export WAIT_MIN_ATTEMPTS=2
+  export WAIT_MAX_ATTEMPTS=10
+  GH_MOCK_CHECK_RUNS_JSON='{"check_runs":[
+    {"name":"e2e","status":"completed","conclusion":"cancelled","details_url":"https://github.com/o/r/actions/runs/222/job/1"}
+  ]}' run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv ci_green)" = "ci_green=false" ]
+  [[ "$output" == *"e2e"* ]]
+  [[ "$output" == *"Cancelled checks did not get replaced"* ]]
+}
+
+@test "regression: terminal failure during settle window still bails immediately" {
+  # The cancelled-tolerance must NOT extend to terminal conclusions.
+  # `failure`/`timed_out`/`action_required` are not replaced by GitHub
+  # machinery; they must continue to bail on first detection regardless of
+  # the settle floor.
+  export WAIT_MIN_ATTEMPTS=20
+  export WAIT_MAX_ATTEMPTS=30
+  export WAIT_SLEEP_SECONDS=1
+  GH_MOCK_CHECK_RUNS_JSON='{"check_runs":[
+    {"name":"e2e","status":"completed","conclusion":"failure","details_url":"https://github.com/o/r/actions/runs/222/job/1"}
+  ]}' run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv ci_green)" = "ci_green=false" ]
+  # Bailed on attempt 1, not after 20+ polls.
+  [[ "$output" != *"attempt 2/"* ]]
+}
+
+@test "regression: cancelled + terminal failure mix still bails immediately on the failure" {
+  # If a cancelled check coexists with a real failure, the real failure wins
+  # and we exit immediately. The cancelled-tolerance does not override
+  # terminal failures.
+  export WAIT_MIN_ATTEMPTS=10
+  export WAIT_MAX_ATTEMPTS=20
+  GH_MOCK_CHECK_RUNS_JSON='{"check_runs":[
+    {"name":"browser-tests","status":"completed","conclusion":"cancelled","details_url":"https://github.com/o/r/actions/runs/220/job/1"},
+    {"name":"e2e","status":"completed","conclusion":"failure","details_url":"https://github.com/o/r/actions/runs/222/job/1"}
+  ]}' run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv ci_green)" = "ci_green=false" ]
+  [[ "$output" == *"e2e"* ]]
+  [[ "$output" == *"failure"* ]]
+  [[ "$output" != *"attempt 2/"* ]]
+}
+
+@test "regression: cancelled does not short-circuit pre-settle empty poll into green" {
+  # Belt-and-braces: even if min_attempts=1 and the only signal is cancelled,
+  # we never declare ci_green=true. The combination of "cancelled present"
+  # and "post-settle" exits non-green, never green.
+  export WAIT_MIN_ATTEMPTS=1
+  export WAIT_MAX_ATTEMPTS=2
+  GH_MOCK_CHECK_RUNS_JSON='{"check_runs":[
+    {"name":"flaky","status":"completed","conclusion":"cancelled","details_url":"https://github.com/o/r/actions/runs/222/job/1"}
+  ]}' run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv ci_green)" = "ci_green=false" ]
 }
 
 @test "regression: mixed signal — check-run green + commit status failure blocks" {
