@@ -1,0 +1,52 @@
+name: Sticky PR Comment
+description: |
+  Upserts a sticky comment on a pull request, identified by a stable HTML
+  marker. If a comment with the marker already exists it is updated in place,
+  otherwise a new comment is created. Domain-agnostic — the caller composes
+  the body. Uses the GitHub CLI (gh) which is pre-installed on hosted runners.
+inputs:
+  marker:
+    description: 'HTML comment uniquely identifying this comment stream (e.g. "<!-- e2e-status -->"). Must be of the form "<!-- some-id -->".'
+    required: true
+  body:
+    description: 'Markdown body of the comment. The marker is prepended automatically if it is not already the first line.'
+    required: true
+  pr-number:
+    description: 'Pull request number. Defaults to the current pull_request event.'
+    required: false
+    default: ${{ github.event.pull_request.number }}
+  repo:
+    description: 'Repository in owner/name form. Defaults to the current repository.'
+    required: false
+    default: ${{ github.repository }}
+  github-token:
+    description: 'GitHub token. The caller must grant pull-requests: write at the job level.'
+    required: true
+  expected-author:
+    description: 'Login of the comment author to match. Comments with the marker but a different author are ignored, so users cannot squat on the sticky slot. Defaults to "github-actions[bot]" which is the author when secrets.GITHUB_TOKEN is used; override when posting via a PAT or GitHub App.'
+    required: false
+    default: 'github-actions[bot]'
+outputs:
+  comment-id:
+    description: 'Numeric ID of the upserted comment.'
+    value: ${{ steps.upsert.outputs.comment-id }}
+  action-taken:
+    description: 'Either "created" or "updated".'
+    value: ${{ steps.upsert.outputs.action-taken }}
+runs:
+  using: composite
+  steps:
+    - name: Upsert sticky PR comment
+      id: upsert
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        INPUT_MARKER: ${{ inputs.marker }}
+        INPUT_BODY: ${{ inputs.body }}
+        INPUT_PR_NUMBER: ${{ inputs.pr-number }}
+        INPUT_REPO: ${{ inputs.repo }}
+        INPUT_EXPECTED_AUTHOR: ${{ inputs.expected-author }}
+      run: ${{ github.action_path }}/src/upsert-comment.sh
+branding:
+  icon: 'message-square'
+  color: 'blue'
