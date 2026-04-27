@@ -108,6 +108,61 @@ image setup (vind, Kind, bare Docker).
 
 - `failure-summary`: Markdown-formatted test results summary
 
+### Sticky PR Comment
+
+Upserts a sticky comment on a pull request, identified by a stable HTML
+marker. If a comment with the marker already exists it is updated in place,
+otherwise a new comment is created. Domain-agnostic — the caller composes
+the body. Useful for surfacing the last real run of a CI signal that the
+caller skips on some events (e.g. e2e tests skipped when PR description is
+unchanged), so reviewers always see the most recent meaningful result.
+
+**Location:** `.github/actions/sticky-pr-comment`
+
+**Usage:**
+
+```yaml
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Run tests
+        id: tests
+        run: ./run-tests.sh
+
+      - name: Upsert sticky status comment
+        if: always() && github.event_name == 'pull_request'
+        uses: loft-sh/github-actions/.github/actions/sticky-pr-comment@sticky-pr-comment/v1
+        with:
+          marker: '<!-- e2e-status -->'
+          body: |
+            ### E2E Tests
+            Status: ${{ steps.tests.outcome }}
+            Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+**Inputs:**
+
+- `marker` (required): HTML comment uniquely identifying this comment stream (form `<!-- some-id -->`)
+- `body` (required): markdown body (the marker is auto-prepended when missing)
+- `pr-number` (optional, default: current PR)
+- `repo` (optional, default: current repo)
+- `github-token` (required): token with `pull-requests: write`
+
+**Outputs:**
+
+- `comment-id`: numeric ID of the upserted comment
+- `action-taken`: `created` or `updated`
+
+The action is intended to be invoked from inside the job whose status it
+reports — when that job is skipped via `if:`, the upsert never runs and the
+previous comment stays in place, which is the desired "preserve last real
+result" behavior. See the action README for full details.
+
 ## Available Reusable Workflows
 
 ### Validate Renovate Config
@@ -431,6 +486,7 @@ the action's files change:
 - `test-semver-validation.yaml` - triggers on `.github/actions/semver-validation/**`
 - `test-linear-pr-commenter.yaml` - triggers on `.github/actions/linear-pr-commenter/**`
 - `test-linear-release-sync.yaml` - triggers on `.github/actions/linear-release-sync/**`
+- `test-sticky-pr-comment.yaml` - triggers on `.github/actions/sticky-pr-comment/**`
 - `release-linear-release-sync.yaml` - builds and publishes the binary on tag push or `workflow_dispatch`
 
 Each reusable workflow (`workflow_call`) also has a smoke/integration test

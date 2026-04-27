@@ -1,0 +1,83 @@
+name: Test sticky-pr-comment
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/test-sticky-pr-comment.yaml'
+      - '.github/actions/sticky-pr-comment/**'
+
+permissions:
+  contents: read
+
+jobs:
+  bats:
+    name: Run bats tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: bats-core/bats-action@77d6fb60505b4d0d1d73e48bd035b55074bbfb43 # 4.0.0
+        with:
+          tests: .github/actions/sticky-pr-comment/test
+
+  composite-smoke:
+    name: Composite smoke (create + update)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Initial create
+        id: first
+        uses: ./.github/actions/sticky-pr-comment
+        with:
+          marker: '<!-- sticky-pr-comment-smoke -->'
+          body: |
+            ### sticky-pr-comment smoke
+
+            initial body — run ${{ github.run_id }} attempt 1
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify created
+        env:
+          ACTION_TAKEN: ${{ steps.first.outputs.action-taken }}
+          COMMENT_ID: ${{ steps.first.outputs.comment-id }}
+        run: |
+          echo "first action-taken=$ACTION_TAKEN comment-id=$COMMENT_ID"
+          [[ "$ACTION_TAKEN" == "created" ]]
+          [[ -n "$COMMENT_ID" && "$COMMENT_ID" != "0" ]]
+
+      - name: Re-invoke (should update)
+        id: second
+        uses: ./.github/actions/sticky-pr-comment
+        with:
+          marker: '<!-- sticky-pr-comment-smoke -->'
+          body: |
+            ### sticky-pr-comment smoke
+
+            updated body — run ${{ github.run_id }} attempt 2
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify updated and same id
+        env:
+          FIRST_ID: ${{ steps.first.outputs.comment-id }}
+          SECOND_ID: ${{ steps.second.outputs.comment-id }}
+          SECOND_ACTION: ${{ steps.second.outputs.action-taken }}
+        run: |
+          echo "second action-taken=$SECOND_ACTION comment-id=$SECOND_ID"
+          [[ "$SECOND_ACTION" == "updated" ]]
+          [[ "$FIRST_ID" == "$SECOND_ID" ]]
+
+      - name: Cleanup smoke comment
+        if: always() && steps.first.outputs.comment-id != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          COMMENT_ID: ${{ steps.first.outputs.comment-id }}
+        run: |
+          gh api -X DELETE "repos/${GH_REPO}/issues/comments/${COMMENT_ID}" || true
