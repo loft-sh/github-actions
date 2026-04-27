@@ -102,12 +102,24 @@ for attempt in $(seq 1 "$max_attempts"); do
     fi
   fi
 
-  cr_pending=0 cr_failed=0 cr_failed_detail="" cr_pending_names=""
+  # `cancelled` is special: GitHub's concurrency-group cancellation marks the
+  # superseded run cancelled and immediately queues a replacement. There's a
+  # short window (observed: 5–10s) where the cancelled attempt is registered
+  # but the replacement is not yet visible. In that window the dedup-by-latest
+  # logic above has nothing to pick — only the cancelled attempt exists — so
+  # treating cancelled as a hard failure here would defeat the dedup fix and
+  # bail before the rerun lands. Split it out: terminal failures bail
+  # immediately; cancelled-only is held until the settle floor so the
+  # replacement has a chance to register and dedup can pick it.
+  cr_pending=0 cr_real_failed=0 cr_real_failed_detail=""
+  cr_cancelled=0 cr_cancelled_detail="" cr_pending_names=""
   if [ "$poll_errored" -eq 0 ]; then
-    cr_pending=$(       jq_or_fail '[.[] | select(.status != "completed")] | length'                                                                                                  "$other" ) || poll_errored=1
-    cr_failed=$(        jq_or_fail '[.[] | select(.conclusion != null and ([.conclusion] | inside(["success","skipped","neutral"]) | not))] | length'                                 "$other" ) || poll_errored=1
-    cr_failed_detail=$( jq_or_fail -r '[.[] | select(.conclusion != null and ([.conclusion] | inside(["success","skipped","neutral"]) | not)) | "\(.name // "unnamed")=\(.conclusion)"] | join(", ")' "$other" ) || poll_errored=1
-    cr_pending_names=$( jq_or_fail -r '[.[] | select(.status != "completed") | .name // "unnamed"] | join(", ")'                                                                      "$other" ) || poll_errored=1
+    cr_pending=$(           jq_or_fail '[.[] | select(.status != "completed")] | length'                                                                                                          "$other" ) || poll_errored=1
+    cr_real_failed=$(       jq_or_fail '[.[] | select(.conclusion != null and ([.conclusion] | inside(["success","skipped","neutral","cancelled"]) | not))] | length'                             "$other" ) || poll_errored=1
+    cr_real_failed_detail=$(jq_or_fail -r '[.[] | select(.conclusion != null and ([.conclusion] | inside(["success","skipped","neutral","cancelled"]) | not)) | "\(.name // "unnamed")=\(.conclusion)"] | join(", ")' "$other" ) || poll_errored=1
+    cr_cancelled=$(         jq_or_fail '[.[] | select(.conclusion == "cancelled")] | length'                                                                                                      "$other" ) || poll_errored=1
+    cr_cancelled_detail=$(  jq_or_fail -r '[.[] | select(.conclusion == "cancelled") | .name // "unnamed"] | join(", ")'                                                                          "$other" ) || poll_errored=1
+    cr_pending_names=$(     jq_or_fail -r '[.[] | select(.status != "completed") | .name // "unnamed"] | join(", ")'                                                                              "$other" ) || poll_errored=1
   fi
 
   # -- Fetch commit statuses ------------------------------------------------
@@ -154,12 +166,23 @@ for attempt in $(seq 1 "$max_attempts"); do
   consecutive_errors=0
 
   pending=$(( cr_pending + st_pending ))
-  failed=$(( cr_failed + st_failed ))
-  echo "attempt ${attempt}/${max_attempts}: check_runs(pending=${cr_pending} failed=${cr_failed}) statuses(pending=${st_pending} failed=${st_failed})"
+  real_failed=$(( cr_real_failed + st_failed ))
+  echo "attempt ${attempt}/${max_attempts}: check_runs(pending=${cr_pending} failed=${cr_real_failed} cancelled=${cr_cancelled}) statuses(pending=${st_pending} failed=${st_failed})"
 
-  if [ "$failed" -gt 0 ]; then
-    details=$(printf '%s\n%s' "$cr_failed_detail" "$st_failed_detail" | awk 'NF' | paste -sd, - | sed 's/,/, /g')
+  # Terminal failures (failure, timed_out, action_required, etc.) bail
+  # immediately — these are not transient and won't be replaced.
+  if [ "$real_failed" -gt 0 ]; then
+    details=$(printf '%s\n%s' "$cr_real_failed_detail" "$st_failed_detail" | awk 'NF' | paste -sd, - | sed 's/,/, /g')
     echo "::notice::Other CI checks failed; skipping approval. Failing: ${details:-unknown}"
+    emit ci_green false
+    exit 0
+  fi
+
+  # Cancelled checks may be in the middle of a concurrency-triggered rerun.
+  # Past the settle floor we stop waiting and treat them as final — the
+  # replacement should have registered by now if it was ever going to.
+  if [ "$cr_cancelled" -gt 0 ] && [ "$attempt" -ge "$min_attempts" ]; then
+    echo "::notice::Cancelled checks did not get replaced within settle period; skipping approval. Cancelled: ${cr_cancelled_detail:-unknown}"
     emit ci_green false
     exit 0
   fi
@@ -170,12 +193,16 @@ for attempt in $(seq 1 "$max_attempts"); do
     waiting=$(printf '%s\n%s' "$cr_pending_names" "$st_pending_names" | awk 'NF' | paste -sd, - | sed 's/,/, /g')
     echo "  pending: ${waiting:-<unnamed>}"
   fi
+  if [ "$cr_cancelled" -gt 0 ]; then
+    echo "  cancelled (waiting for concurrency replacement): ${cr_cancelled_detail}"
+  fi
 
   # Hold the "green" verdict until the settle floor. A first-poll "pending=0"
   # can simply mean external checks have not registered yet (e.g. Netlify
   # webhook still in flight). Waiting min_attempts polls before the first
-  # green verdict gives slow registrants a chance to show up.
-  if [ "$pending" -eq 0 ] && [ "$attempt" -ge "$min_attempts" ]; then
+  # green verdict gives slow registrants a chance to show up. Cancelled
+  # checks also keep us out of green — handled above by the post-settle bail.
+  if [ "$pending" -eq 0 ] && [ "$cr_cancelled" -eq 0 ] && [ "$attempt" -ge "$min_attempts" ]; then
     emit ci_green true
     exit 0
   fi
