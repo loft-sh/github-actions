@@ -26,6 +26,22 @@ inputs:
     description: "Extra ginkgo CLI flags (e.g. -v, --skip-package=linters, --show-node-events)"
     required: false
     default: ""
+  reports-bucket:
+    description: "GCS bucket name for uploading the Ginkgo JSON report."
+    required: false
+    default: ""
+  workflow-file:
+    description: "Workflow file name (e.g. e2e-ginkgo.yaml) used as the GCS path segment and report metadata field."
+    required: false
+    default: ""
+  github-token:
+    description: "GitHub token for the gh CLI to fetch job details during report upload."
+    required: false
+    default: ${{ github.token }}
+  upload-report:
+    description: "Set to 'true' to upload the Ginkgo JSON report to GCS after the test run. Requires reports-bucket and workflow-file to be set."
+    required: false
+    default: "false"
 
 outputs:
   failure-summary:
@@ -59,3 +75,26 @@ runs:
       if: always()
       shell: bash
       run: ${{ github.action_path }}/src/generate-summary.sh
+
+    - name: Check GCP auth for report upload
+      id: gcp-auth-check
+      if: always() && inputs.upload-report == 'true'
+      continue-on-error: true
+      shell: bash
+      run: |
+        if gcloud auth list --filter=status:ACTIVE --format="value(account)" 2>/dev/null | grep -q .; then
+          echo "has-auth=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "::notice::No active GCP auth — skipping GCS report upload"
+          echo "has-auth=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Upload Ginkgo report to GCS
+      if: always() && inputs.upload-report == 'true' && steps.gcp-auth-check.outputs.has-auth == 'true'
+      continue-on-error: true
+      shell: bash
+      env:
+        REPORTS_BUCKET: ${{ inputs.reports-bucket }}
+        WORKFLOW_FILE: ${{ inputs.workflow-file }}
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: ${{ github.action_path }}/src/upload-report.sh
