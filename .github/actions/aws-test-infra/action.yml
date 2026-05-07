@@ -1,0 +1,317 @@
+name: 'AWS Test Infra'
+description: 'Provision or tear down AWS test infrastructure (VPC + subnet + IGW + route table + security group + EC2 instances) for e2e workflows. Replaces ~150 lines of duplicated Bash + aws-cli with a tested Go binary.'
+
+inputs:
+  command:
+    description: 'Subcommand: provision or cleanup'
+    required: true
+  region:
+    description: 'AWS region'
+    required: true
+  run-id:
+    description: 'Unique run identifier; tagged on every resource as RunID'
+    required: true
+
+  # Provision-only inputs ────────────────────────────────────────────────
+  consumer-tag:
+    description: '(provision) Consumer tag in KEY=VALUE form, e.g. SELinuxE2E=true'
+    required: false
+    default: ''
+  vpc-cidr:
+    description: '(provision) VPC CIDR'
+    required: false
+    default: '10.0.0.0/16'
+  subnet-cidr:
+    description: '(provision) Subnet CIDR'
+    required: false
+    default: '10.0.1.0/24'
+  availability-zone:
+    description: '(provision) AZ for the subnet (defaults to first AZ in region)'
+    required: false
+    default: ''
+  ami-id:
+    description: '(provision) Use this exact AMI ID (skips lookup)'
+    required: false
+    default: ''
+  ami-owner:
+    description: '(provision) AMI owner (account ID or alias) for lookup'
+    required: false
+    default: ''
+  ami-filter:
+    description: '(provision) AMI name filter for lookup (latest CreationDate wins)'
+    required: false
+    default: ''
+  ami-architecture:
+    description: '(provision) Architecture filter for AMI lookup (e.g. x86_64, arm64). Defaults to x86_64 to match the original Bash workflows; pass an empty string to disable the filter.'
+    required: false
+    default: 'x86_64'
+  ami-virtualization-type:
+    description: '(provision) Virtualization-type filter for AMI lookup (e.g. hvm, paravirtual). Defaults to hvm to match the original Bash workflows; pass an empty string to disable the filter.'
+    required: false
+    default: 'hvm'
+  sg-name:
+    description: '(provision) Security group name'
+    required: false
+    default: ''
+  sg-description:
+    description: '(provision) Security group description'
+    required: false
+    default: ''
+  ingress-rules:
+    description: '(provision) Newline-separated ingress rules in protocol:fromPort:toPort:cidr form. Example: "-1:-1:-1:10.0.0.0/16\ntcp:8443:8443:0.0.0.0/0"'
+    required: false
+    default: ''
+  instance-type:
+    description: '(provision) EC2 instance type'
+    required: false
+    default: 'm5.xlarge'
+  instance-profile:
+    description: '(provision) IAM instance profile name'
+    required: false
+    default: ''
+  instance-roles:
+    description: '(provision) Comma-separated role labels (one instance per role)'
+    required: false
+    default: 'primary,worker1,worker2'
+  root-device:
+    description: '(provision) Root block-device name, e.g. /dev/sda1 or /dev/xvda'
+    required: false
+    default: '/dev/sda1'
+  volume-size-gb:
+    description: '(provision) Root volume size in GB'
+    required: false
+    default: '100'
+  user-data:
+    description: '(provision) Raw user-data content; written to a temp file and base64-encoded by the binary'
+    required: false
+    default: ''
+  ssm-wait-timeout:
+    description: '(provision) How long to wait for all SSM agents to register'
+    required: false
+    default: '5m'
+  ssm-wait-interval:
+    description: '(provision) Polling interval for SSM agent registration'
+    required: false
+    default: '10s'
+  skip-ssm-wait:
+    description: '(provision) Skip waiting for SSM agents'
+    required: false
+    default: 'false'
+  instance-running-timeout:
+    description: '(provision) Max wait for all instances to reach running state. Bump for slow-boot edge cases.'
+    required: false
+    default: '30m'
+
+  # Cleanup-only inputs ─────────────────────────────────────────────────
+  vpc-id:
+    description: '(cleanup) VPC ID'
+    required: false
+    default: ''
+  igw-id:
+    description: '(cleanup) Internet gateway ID'
+    required: false
+    default: ''
+  subnet-id:
+    description: '(cleanup) Subnet ID'
+    required: false
+    default: ''
+  route-table-id:
+    description: '(cleanup) Route table ID'
+    required: false
+    default: ''
+  route-assoc-id:
+    description: '(cleanup) Route table association ID'
+    required: false
+    default: ''
+  security-group-id:
+    description: '(cleanup) Security group ID'
+    required: false
+    default: ''
+  instance-ids:
+    description: '(cleanup) Comma-separated list of instance IDs'
+    required: false
+    default: ''
+  skip-direct:
+    description: '(cleanup) Skip direct cleanup; only run the tag-based sweep'
+    required: false
+    default: 'false'
+  skip-sweep:
+    description: '(cleanup) Skip the tag-based sweep; only run direct cleanup with the supplied IDs'
+    required: false
+    default: 'false'
+  strict-sweep:
+    description: '(cleanup) Fail the cleanup step on sweep errors. Default false matches the original Bash teardown (set +e). Set true if you would rather see sweep failures than silently leak resources on AWS API hiccups.'
+    required: false
+    default: 'false'
+
+outputs:
+  vpc-id:
+    description: 'Created VPC ID'
+    value: ${{ steps.run.outputs.vpc_id }}
+  igw-id:
+    description: 'Created internet gateway ID'
+    value: ${{ steps.run.outputs.igw_id }}
+  subnet-id:
+    description: 'Created subnet ID'
+    value: ${{ steps.run.outputs.subnet_id }}
+  route-table-id:
+    description: 'Created route table ID'
+    value: ${{ steps.run.outputs.route_table_id }}
+  route-assoc-id:
+    description: 'Created route table association ID'
+    value: ${{ steps.run.outputs.route_assoc_id }}
+  security-group-id:
+    description: 'Created security group ID'
+    value: ${{ steps.run.outputs.security_group_id }}
+  ami-id:
+    description: 'Resolved AMI ID'
+    value: ${{ steps.run.outputs.ami_id }}
+  primary-public-ip:
+    description: 'Public IP of the primary instance'
+    value: ${{ steps.run.outputs.primary_public_ip }}
+  instance-ids:
+    description: 'Comma-separated list of all instance IDs'
+    value: ${{ steps.run.outputs.instance_ids }}
+  primary-instance-id:
+    description: 'Instance ID of the role labeled "primary" (empty if not present)'
+    value: ${{ steps.run.outputs.instance_id_primary }}
+  worker1-instance-id:
+    description: 'Instance ID of the role labeled "worker1" (empty if not present)'
+    value: ${{ steps.run.outputs.instance_id_worker1 }}
+  worker2-instance-id:
+    description: 'Instance ID of the role labeled "worker2" (empty if not present)'
+    value: ${{ steps.run.outputs.instance_id_worker2 }}
+  instance-id-by-role:
+    description: 'JSON map of role → instance ID. Use for arbitrary role names (anything other than primary/worker1/worker2). Consumer accesses with `fromJSON(steps.<id>.outputs.instance-id-by-role).<role>`.'
+    value: ${{ steps.run.outputs.instance_id_by_role }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Build aws-test-infra
+      id: build
+      shell: bash
+      working-directory: ${{ github.action_path }}/src
+      run: |
+        # The action is build-from-source on every run; we mirror run-ginkgo's
+        # pattern of assuming Go is already installed in the consumer
+        # workflow. Both vcluster-pro consumers (selinux + prerel) call
+        # actions/setup-go before this action, so the toolchain is in place.
+        # If a future consumer doesn't already have Go, they need to add
+        # setup-go before referencing this action.
+        if ! command -v go >/dev/null 2>&1; then
+          echo "::error::Go is not installed in the runner. Add 'uses: actions/setup-go@v5' before this action."
+          exit 1
+        fi
+        BINARY="$(mktemp -d)/aws-test-infra"
+        CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "$BINARY" .
+        echo "binary=$BINARY" >> "$GITHUB_OUTPUT"
+
+    - name: Stage user-data file
+      id: userdata
+      if: inputs.command == 'provision' && inputs.user-data != ''
+      shell: bash
+      env:
+        USER_DATA: ${{ inputs.user-data }}
+      run: |
+        UD_PATH="$(mktemp)"
+        printf '%s' "$USER_DATA" > "$UD_PATH"
+        echo "path=$UD_PATH" >> "$GITHUB_OUTPUT"
+
+    - name: Run aws-test-infra
+      id: run
+      shell: bash
+      env:
+        BINARY: ${{ steps.build.outputs.binary }}
+        INPUT_CMD: ${{ inputs.command }}
+        INPUT_REGION: ${{ inputs.region }}
+        INPUT_RUN_ID: ${{ inputs.run-id }}
+        # Provision
+        INPUT_CONSUMER_TAG: ${{ inputs.consumer-tag }}
+        INPUT_VPC_CIDR: ${{ inputs.vpc-cidr }}
+        INPUT_SUBNET_CIDR: ${{ inputs.subnet-cidr }}
+        INPUT_AVAILABILITY_ZONE: ${{ inputs.availability-zone }}
+        INPUT_AMI_ID: ${{ inputs.ami-id }}
+        INPUT_AMI_OWNER: ${{ inputs.ami-owner }}
+        INPUT_AMI_FILTER: ${{ inputs.ami-filter }}
+        INPUT_AMI_ARCHITECTURE: ${{ inputs.ami-architecture }}
+        INPUT_AMI_VIRTUALIZATION_TYPE: ${{ inputs.ami-virtualization-type }}
+        INPUT_SG_NAME: ${{ inputs.sg-name }}
+        INPUT_SG_DESCRIPTION: ${{ inputs.sg-description }}
+        INPUT_INGRESS_RULES: ${{ inputs.ingress-rules }}
+        INPUT_INSTANCE_TYPE: ${{ inputs.instance-type }}
+        INPUT_INSTANCE_PROFILE: ${{ inputs.instance-profile }}
+        INPUT_INSTANCE_ROLES: ${{ inputs.instance-roles }}
+        INPUT_ROOT_DEVICE: ${{ inputs.root-device }}
+        INPUT_VOLUME_SIZE_GB: ${{ inputs.volume-size-gb }}
+        INPUT_USER_DATA_FILE: ${{ steps.userdata.outputs.path }}
+        INPUT_SSM_WAIT_TIMEOUT: ${{ inputs.ssm-wait-timeout }}
+        INPUT_SSM_WAIT_INTERVAL: ${{ inputs.ssm-wait-interval }}
+        INPUT_SKIP_SSM_WAIT: ${{ inputs.skip-ssm-wait }}
+        INPUT_INSTANCE_RUNNING_TIMEOUT: ${{ inputs.instance-running-timeout }}
+        # Cleanup
+        INPUT_VPC_ID: ${{ inputs.vpc-id }}
+        INPUT_IGW_ID: ${{ inputs.igw-id }}
+        INPUT_SUBNET_ID: ${{ inputs.subnet-id }}
+        INPUT_ROUTE_TABLE_ID: ${{ inputs.route-table-id }}
+        INPUT_ROUTE_ASSOC_ID: ${{ inputs.route-assoc-id }}
+        INPUT_SECURITY_GROUP_ID: ${{ inputs.security-group-id }}
+        INPUT_INSTANCE_IDS: ${{ inputs.instance-ids }}
+        INPUT_SKIP_DIRECT: ${{ inputs.skip-direct }}
+        INPUT_SKIP_SWEEP: ${{ inputs.skip-sweep }}
+        INPUT_STRICT_SWEEP: ${{ inputs.strict-sweep }}
+      run: |
+        set -euo pipefail
+        ARGS=(-region="$INPUT_REGION" -run-id="$INPUT_RUN_ID")
+
+        case "$INPUT_CMD" in
+          provision)
+            [ -n "$INPUT_CONSUMER_TAG" ] && ARGS+=(-consumer-tag="$INPUT_CONSUMER_TAG")
+            ARGS+=(-vpc-cidr="$INPUT_VPC_CIDR" -subnet-cidr="$INPUT_SUBNET_CIDR")
+            [ -n "$INPUT_AVAILABILITY_ZONE" ] && ARGS+=(-availability-zone="$INPUT_AVAILABILITY_ZONE")
+            [ -n "$INPUT_AMI_ID" ] && ARGS+=(-ami-id="$INPUT_AMI_ID")
+            [ -n "$INPUT_AMI_OWNER" ] && ARGS+=(-ami-owner="$INPUT_AMI_OWNER")
+            [ -n "$INPUT_AMI_FILTER" ] && ARGS+=(-ami-filter="$INPUT_AMI_FILTER")
+            [ -n "$INPUT_AMI_ARCHITECTURE" ] && ARGS+=(-ami-architecture="$INPUT_AMI_ARCHITECTURE")
+            [ -n "$INPUT_AMI_VIRTUALIZATION_TYPE" ] && ARGS+=(-ami-virtualization-type="$INPUT_AMI_VIRTUALIZATION_TYPE")
+            [ -n "$INPUT_SG_NAME" ] && ARGS+=(-sg-name="$INPUT_SG_NAME")
+            [ -n "$INPUT_SG_DESCRIPTION" ] && ARGS+=(-sg-description="$INPUT_SG_DESCRIPTION")
+            ARGS+=(-instance-type="$INPUT_INSTANCE_TYPE" -instance-roles="$INPUT_INSTANCE_ROLES" -root-device="$INPUT_ROOT_DEVICE" -volume-size-gb="$INPUT_VOLUME_SIZE_GB")
+            [ -n "$INPUT_INSTANCE_PROFILE" ] && ARGS+=(-instance-profile="$INPUT_INSTANCE_PROFILE")
+            [ -n "$INPUT_USER_DATA_FILE" ] && ARGS+=(-user-data-file="$INPUT_USER_DATA_FILE")
+            ARGS+=(-ssm-wait-timeout="$INPUT_SSM_WAIT_TIMEOUT" -ssm-wait-interval="$INPUT_SSM_WAIT_INTERVAL")
+            [ "$INPUT_SKIP_SSM_WAIT" = "true" ] && ARGS+=(-skip-ssm-wait)
+            [ -n "$INPUT_INSTANCE_RUNNING_TIMEOUT" ] && ARGS+=(-instance-running-timeout="$INPUT_INSTANCE_RUNNING_TIMEOUT")
+            # Each line in INPUT_INGRESS_RULES becomes a -ingress flag.
+            if [ -n "$INPUT_INGRESS_RULES" ]; then
+              while IFS= read -r line; do
+                line="$(echo "$line" | xargs)"  # trim
+                [ -z "$line" ] && continue
+                ARGS+=(-ingress="$line")
+              done <<< "$INPUT_INGRESS_RULES"
+            fi
+            ARGS+=(-output="$GITHUB_OUTPUT" -output-format=github-output)
+            "$BINARY" provision "${ARGS[@]}"
+            ;;
+          cleanup)
+            [ -n "$INPUT_VPC_ID" ] && ARGS+=(-vpc-id="$INPUT_VPC_ID")
+            [ -n "$INPUT_IGW_ID" ] && ARGS+=(-igw-id="$INPUT_IGW_ID")
+            [ -n "$INPUT_SUBNET_ID" ] && ARGS+=(-subnet-id="$INPUT_SUBNET_ID")
+            [ -n "$INPUT_ROUTE_TABLE_ID" ] && ARGS+=(-route-table-id="$INPUT_ROUTE_TABLE_ID")
+            [ -n "$INPUT_ROUTE_ASSOC_ID" ] && ARGS+=(-route-assoc-id="$INPUT_ROUTE_ASSOC_ID")
+            [ -n "$INPUT_SECURITY_GROUP_ID" ] && ARGS+=(-security-group-id="$INPUT_SECURITY_GROUP_ID")
+            [ -n "$INPUT_INSTANCE_IDS" ] && ARGS+=(-instance-ids="$INPUT_INSTANCE_IDS")
+            [ "$INPUT_SKIP_DIRECT" = "true" ] && ARGS+=(-skip-direct)
+            [ "$INPUT_SKIP_SWEEP" = "true" ] && ARGS+=(-skip-sweep)
+            [ "$INPUT_STRICT_SWEEP" = "true" ] && ARGS+=(-strict-sweep)
+            "$BINARY" cleanup "${ARGS[@]}"
+            ;;
+          *)
+            echo "::error::Unknown command: $INPUT_CMD (must be 'provision' or 'cleanup')"
+            exit 1
+            ;;
+        esac
+
+branding:
+  icon: 'cloud'
+  color: 'orange'
