@@ -128,13 +128,19 @@ last_body() { awk 'BEGIN{RS="---END---\n"} END{printf "%s", $0}' "$GH_MOCK_BODY_
   [ "$count" -eq 2 ]
 }
 
-@test "event_type with special characters is preserved verbatim" {
-  export INPUT_EVENT_TYPE='vcluster-rc-released'
+@test "event_type with JSON-escapable characters round-trips through jq" {
+  # Embedded double quote and backslash exercise jq --arg's JSON-escape
+  # path — the script's whole reason for using jq instead of string concat.
+  export INPUT_EVENT_TYPE='release "rc" \foo'
   run "$SCRIPT"
   [ "$status" -eq 0 ]
 
   body="$(last_body)"
-  [ "$(jq -r '.event_type' <<<"$body")" = "vcluster-rc-released" ]
+  # jq -r decodes the escapes, recovering the original verbatim.
+  [ "$(jq -r '.event_type' <<<"$body")" = 'release "rc" \foo' ]
+  # The wire body must contain the JSON-escaped form, not raw quotes.
+  grep -q '\\"rc\\"' "$GH_MOCK_BODY_LOG"
+  grep -q '\\\\foo' "$GH_MOCK_BODY_LOG"
 }
 
 @test "nested payload values survive jq round-trip" {
