@@ -1,0 +1,30 @@
+name: Repository Dispatch
+description: |
+  Sends a repository_dispatch event to a target repository so any source repo
+  can trigger any event type with one mechanical step. Domain-agnostic — the
+  caller chooses the event-type and payload schema, the receiver routes on
+  them. Uses the GitHub CLI (gh) which is pre-installed on hosted runners.
+inputs:
+  target-repo:
+    description: 'Target repository in owner/name form to dispatch to.'
+    required: true
+  event-type:
+    description: 'event_type that the receiver workflow listens for in its on.repository_dispatch.types list.'
+    required: true
+  payload:
+    description: 'JSON object string sent as client_payload. Must be a JSON object (not an array or scalar). Defaults to "{}".'
+    required: false
+    default: '{}'
+runs:
+  using: composite
+  steps:
+    - name: Send repository_dispatch
+      shell: bash
+      env:
+        INPUT_TARGET_REPO: ${{ inputs.target-repo }}
+        INPUT_EVENT_TYPE: ${{ inputs.event-type }}
+        INPUT_PAYLOAD: ${{ inputs.payload }}
+      run: ${{ github.action_path }}/src/dispatch.sh
+branding:
+  icon: 'send'
+  color: 'orange'
