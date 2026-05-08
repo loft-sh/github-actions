@@ -163,6 +163,43 @@ reports — when that job is skipped via `if:`, the upsert never runs and the
 previous comment stays in place, which is the desired "preserve last real
 result" behavior. See the action README for full details.
 
+### Repository Dispatch
+
+Sends a `repository_dispatch` event to a target repository so any source repo
+can trigger any event type with one mechanical step. Domain-agnostic — the
+caller chooses the event-type and payload schema, the receiver routes on
+them. Foundation for cross-repo triggers (release fan-out, downstream test
+runs).
+
+**Location:** `.github/actions/repository-dispatch`
+
+**Usage:**
+
+```yaml
+- name: Notify vcluster-docs of release
+  uses: loft-sh/github-actions/.github/actions/repository-dispatch@repository-dispatch/v1
+  with:
+    target-repo: loft-sh/vcluster-docs
+    event-type: vcluster-released
+    payload: |
+      {
+        "version": "${{ github.ref_name }}",
+        "sha": "${{ github.sha }}"
+      }
+  env:
+    GH_TOKEN: ${{ secrets.CROSS_REPO_DISPATCH_TOKEN }}
+```
+
+**Inputs:**
+
+- `target-repo` (required): `<owner>/<repo>` of the receiver
+- `event-type` (required): matched against the receiver's `on.repository_dispatch.types`
+- `payload` (optional, default `{}`): JSON object sent as `client_payload`
+
+`GH_TOKEN` is read from the step's environment, not from inputs — it must be
+a PAT or GitHub App token with `repo` scope on the target. See the action
+README for full details.
+
 ## Available Reusable Workflows
 
 ### Validate Renovate Config
