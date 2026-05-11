@@ -42,6 +42,16 @@ func LastStableReleaseBeforeTag(ctx context.Context, client *githubv4.Client, ow
 	return LatestStableSemverRange(ctx, client, owner, repo, "< "+tagSemver.String())
 }
 
+// LatestStableSemverRange returns the highest-semver stable release whose tag
+// satisfies tagRangeExpr. Releases are paginated via the GitHub API ordered by
+// CREATED_AT (the only meaningful ordering the API supports), but the winner
+// is picked by semver comparison across all matches, not by creation date.
+//
+// Ordering by creation date is wrong for repositories that maintain multiple
+// stable release lines in parallel: a patch on an older minor (e.g. v4.6.3)
+// can be cut moments before a patch on a newer minor (e.g. v4.8.2), and a
+// creation-date-first match would return v4.6.3 as the predecessor of v4.8.2
+// rather than v4.8.1. See DEVOPS-874.
 func LatestStableSemverRange(ctx context.Context, client *githubv4.Client, owner, repo, tagRangeExpr string) (string, error) {
 	tagRange, err := semver.NewConstraint(tagRangeExpr)
 	if err != nil {
@@ -64,9 +74,12 @@ func LatestStableSemverRange(ctx context.Context, client *githubv4.Client, owner
 		} `graphql:"repository(owner: $owner, name: $repo)"`
 	}
 
-	var cursor *githubv4.String
+	var (
+		cursor  *githubv4.String
+		best    *semver.Version
+		bestTag string
+	)
 
-	// Paginate through the Releases
 	for {
 		if err := client.Query(ctx, &query, map[string]interface{}{
 			"owner":    githubv4.String(owner),
@@ -93,8 +106,13 @@ func LatestStableSemverRange(ctx context.Context, client *githubv4.Client, owner
 				continue
 			}
 
-			if tagRange.Check(releaseSemver) {
-				return release.TagName, nil
+			if !tagRange.Check(releaseSemver) {
+				continue
+			}
+
+			if best == nil || releaseSemver.GreaterThan(best) {
+				best = releaseSemver
+				bestTag = release.TagName
 			}
 		}
 
@@ -103,7 +121,7 @@ func LatestStableSemverRange(ctx context.Context, client *githubv4.Client, owner
 		}
 	}
 
-	return "", nil
+	return bestTag, nil
 }
 
 type Release struct {
