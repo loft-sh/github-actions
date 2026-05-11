@@ -37,7 +37,7 @@ jobs:
               "sha": "${{ github.sha }}"
             }
         env:
-          GH_TOKEN: ${{ secrets.CROSS_REPO_DISPATCH_TOKEN }}
+          GH_TOKEN: ${{ secrets.VCLUSTERLABS_DISPATCH_TOKEN }}
 ```
 
 ### Auth
