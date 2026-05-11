@@ -104,6 +104,111 @@ func TestLastStableReleaseBeforeTag(t *testing.T) {
 	}
 }
 
+func TestLastStableReleaseBeforeTag_PrefersSemverOverCreationDate(t *testing.T) {
+	// Regression test for DEVOPS-874.
+	//
+	// Releases are paginated by GitHub in CREATED_AT DESC order. With multiple
+	// stable release lines maintained in parallel, the most-recently-cut release
+	// on a different line can come before the true semver predecessor in the
+	// response. The lookup must compare by semver, not by creation date.
+	//
+	// Scenario mirrors loft-sh/loft around 2026-04-28: v4.6.3 was cut two
+	// minutes before v4.8.2, putting it ahead of v4.8.1 in CREATED_AT order.
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := map[string]any{
+			"data": map[string]any{
+				"repository": map[string]any{
+					"releases": map[string]any{
+						"pageInfo": map[string]any{
+							"endCursor":   "",
+							"hasNextPage": false,
+						},
+						// Order mirrors a CREATED_AT DESC response with parallel
+						// release lines. v4.6.3 was cut after v4.8.1 in real time
+						// but is a lower semver.
+						"nodes": []any{
+							map[string]any{"tagName": "v4.8.2", "isPrerelease": false},
+							map[string]any{"tagName": "v4.6.3", "isPrerelease": false},
+							map[string]any{"tagName": "v4.8.1", "isPrerelease": false},
+							map[string]any{"tagName": "v4.8.0", "isPrerelease": false},
+						},
+					},
+				},
+			},
+		}
+		json.NewEncoder(w).Encode(resp)
+	})
+
+	client := newTestClient(handler)
+	result, err := LastStableReleaseBeforeTag(context.Background(), client, "owner", "repo", "v4.8.2")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result != "v4.8.1" {
+		t.Errorf("expected v4.8.1 (highest semver < 4.8.2), got %q", result)
+	}
+}
+
+func TestLatestStableSemverRange_HighestSemverAcrossPages(t *testing.T) {
+	// The semver winner can live on a later page than other matches. Verify
+	// pagination continues even after a match is found.
+	callCount := 0
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		var resp map[string]any
+		if callCount == 1 {
+			resp = map[string]any{
+				"data": map[string]any{
+					"repository": map[string]any{
+						"releases": map[string]any{
+							"pageInfo": map[string]any{
+								"endCursor":   "cursor1",
+								"hasNextPage": true,
+							},
+							"nodes": []any{
+								map[string]any{"tagName": "v4.6.3", "isPrerelease": false},
+								map[string]any{"tagName": "v4.7.2", "isPrerelease": false},
+							},
+						},
+					},
+				},
+			}
+		} else {
+			resp = map[string]any{
+				"data": map[string]any{
+					"repository": map[string]any{
+						"releases": map[string]any{
+							"pageInfo": map[string]any{
+								"endCursor":   "",
+								"hasNextPage": false,
+							},
+							"nodes": []any{
+								map[string]any{"tagName": "v4.8.1", "isPrerelease": false},
+								map[string]any{"tagName": "v4.8.0", "isPrerelease": false},
+							},
+						},
+					},
+				},
+			}
+		}
+		json.NewEncoder(w).Encode(resp)
+	})
+
+	client := newTestClient(handler)
+	result, err := LatestStableSemverRange(context.Background(), client, "owner", "repo", "< 4.8.2")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if callCount != 2 {
+		t.Errorf("expected 2 API calls (full pagination), got %d", callCount)
+	}
+	if result != "v4.8.1" {
+		t.Errorf("expected v4.8.1, got %q", result)
+	}
+}
+
 func TestLatestStableSemverRange_Pagination(t *testing.T) {
 	callCount := 0
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
