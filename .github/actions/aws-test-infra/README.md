@@ -37,7 +37,7 @@ credentials through automatically.
 - name: AWS login (OIDC)
   uses: aws-actions/configure-aws-credentials@v5.1.1
   with:
-    role-to-assume: arn:aws:iam::084374023943:role/e2e-test-executor
+    role-to-assume: arn:aws:iam::<YOUR_AWS_ACCOUNT_ID>:role/e2e-test-executor
     aws-region: us-west-2
 
 - name: Provision e2e infra

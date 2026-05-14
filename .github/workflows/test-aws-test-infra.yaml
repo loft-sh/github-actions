@@ -22,7 +22,7 @@ jobs:
         with:
           go-version-file: .github/actions/aws-test-infra/src/go.mod
       - name: Run tests
-        run: go test ./...
+        run: go test -v -race -count=1 ./...
         working-directory: .github/actions/aws-test-infra/src
       - name: Verify binary builds
         working-directory: .github/actions/aws-test-infra/src

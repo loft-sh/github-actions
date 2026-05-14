@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -434,16 +433,6 @@ func requireBefore(actual []string, early, late string) error {
 		}
 	}
 	return nil
-}
-
-func tagPairs(ts []types.TagSpecification) string {
-	parts := []string{}
-	for _, t := range ts {
-		for _, tag := range t.Tags {
-			parts = append(parts, fmt.Sprintf("%s/%s=%s", t.ResourceType, aws.ToString(tag.Key), aws.ToString(tag.Value)))
-		}
-	}
-	return strings.Join(parts, ", ")
 }
 
 var errStaged = errors.New("staged failure")

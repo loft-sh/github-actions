@@ -34,7 +34,7 @@ type CleanupConfig struct {
 }
 
 func runCleanup(ctx context.Context, logger *slog.Logger, name string, args []string) error {
-	fs := flag.NewFlagSet(name, flag.ExitOnError)
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	cfg := CleanupConfig{}
 	var instanceIDsCSV string
 	fs.StringVar(&cfg.Region, "region", "", "AWS region (required)")
@@ -190,6 +190,7 @@ func directCleanup(
 func sweepByTag(ctx context.Context, logger *slog.Logger, c EC2API, waiter EC2Waiter, runID string) error {
 	logger.Info("running tag-based sweep", "run_id", runID)
 	tagFilter := []types.Filter{{Name: aws.String("tag:RunID"), Values: []string{runID}}}
+	var errs []error
 
 	// Instances
 	instOut, err := c.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
@@ -198,123 +199,129 @@ func sweepByTag(ctx context.Context, logger *slog.Logger, c EC2API, waiter EC2Wa
 				Values: []string{"pending", "running", "stopping", "stopped"}}),
 	})
 	if err != nil {
-		return fmt.Errorf("describe-instances (sweep): %w", err)
-	}
-	var sweepInstances []string
-	for _, r := range instOut.Reservations {
-		for _, i := range r.Instances {
-			if id := aws.ToString(i.InstanceId); id != "" {
-				sweepInstances = append(sweepInstances, id)
+		errs = append(errs, fmt.Errorf("describe-instances (sweep): %w", err))
+	} else {
+		var sweepInstances []string
+		for _, r := range instOut.Reservations {
+			for _, i := range r.Instances {
+				if id := aws.ToString(i.InstanceId); id != "" {
+					sweepInstances = append(sweepInstances, id)
+				}
 			}
 		}
-	}
-	if len(sweepInstances) > 0 {
-		logger.Info("sweep: terminating instances", "count", len(sweepInstances), "ids", strings.Join(sweepInstances, ","))
-		if _, err := c.TerminateInstances(ctx, &ec2.TerminateInstancesInput{InstanceIds: sweepInstances}); err != nil {
-			logger.Warn("sweep: terminate-instances failed", "err", err)
-		}
-		if err := waiter.WaitInstanceTerminated(ctx, sweepInstances); err != nil {
-			logger.Warn("sweep: wait-instance-terminated failed", "err", err)
+		if len(sweepInstances) > 0 {
+			logger.Info("sweep: terminating instances", "count", len(sweepInstances), "ids", strings.Join(sweepInstances, ","))
+			if _, err := c.TerminateInstances(ctx, &ec2.TerminateInstancesInput{InstanceIds: sweepInstances}); err != nil {
+				logger.Warn("sweep: terminate-instances failed", "err", err)
+			}
+			if err := waiter.WaitInstanceTerminated(ctx, sweepInstances); err != nil {
+				logger.Warn("sweep: wait-instance-terminated failed", "err", err)
+			}
 		}
 	}
 
 	// Security groups
 	sgOut, err := c.DescribeSecurityGroups(ctx, &ec2.DescribeSecurityGroupsInput{Filters: tagFilter})
 	if err != nil {
-		return fmt.Errorf("describe-security-groups (sweep): %w", err)
-	}
-	for _, sg := range sgOut.SecurityGroups {
-		id := aws.ToString(sg.GroupId)
-		if id == "" {
-			continue
-		}
-		if _, err := c.DeleteSecurityGroup(ctx, &ec2.DeleteSecurityGroupInput{GroupId: aws.String(id)}); err != nil {
-			logger.Warn("sweep: delete-security-group failed", "id", id, "err", err)
+		errs = append(errs, fmt.Errorf("describe-security-groups (sweep): %w", err))
+	} else {
+		for _, sg := range sgOut.SecurityGroups {
+			id := aws.ToString(sg.GroupId)
+			if id == "" {
+				continue
+			}
+			if _, err := c.DeleteSecurityGroup(ctx, &ec2.DeleteSecurityGroupInput{GroupId: aws.String(id)}); err != nil {
+				logger.Warn("sweep: delete-security-group failed", "id", id, "err", err)
+			}
 		}
 	}
 
 	// Route tables — disassociate every association first, then delete.
 	rtOut, err := c.DescribeRouteTables(ctx, &ec2.DescribeRouteTablesInput{Filters: tagFilter})
 	if err != nil {
-		return fmt.Errorf("describe-route-tables (sweep): %w", err)
-	}
-	for _, rt := range rtOut.RouteTables {
-		id := aws.ToString(rt.RouteTableId)
-		if id == "" {
-			continue
-		}
-		for _, a := range rt.Associations {
-			aid := aws.ToString(a.RouteTableAssociationId)
-			if aid == "" {
+		errs = append(errs, fmt.Errorf("describe-route-tables (sweep): %w", err))
+	} else {
+		for _, rt := range rtOut.RouteTables {
+			id := aws.ToString(rt.RouteTableId)
+			if id == "" {
 				continue
 			}
-			if _, err := c.DisassociateRouteTable(ctx, &ec2.DisassociateRouteTableInput{
-				AssociationId: aws.String(aid),
-			}); err != nil {
-				logger.Warn("sweep: disassociate-route-table failed", "id", aid, "err", err)
+			for _, a := range rt.Associations {
+				aid := aws.ToString(a.RouteTableAssociationId)
+				if aid == "" {
+					continue
+				}
+				if _, err := c.DisassociateRouteTable(ctx, &ec2.DisassociateRouteTableInput{
+					AssociationId: aws.String(aid),
+				}); err != nil {
+					logger.Warn("sweep: disassociate-route-table failed", "id", aid, "err", err)
+				}
 			}
-		}
-		if _, err := c.DeleteRouteTable(ctx, &ec2.DeleteRouteTableInput{RouteTableId: aws.String(id)}); err != nil {
-			logger.Warn("sweep: delete-route-table failed", "id", id, "err", err)
+			if _, err := c.DeleteRouteTable(ctx, &ec2.DeleteRouteTableInput{RouteTableId: aws.String(id)}); err != nil {
+				logger.Warn("sweep: delete-route-table failed", "id", id, "err", err)
+			}
 		}
 	}
 
 	// Subnets
 	subOut, err := c.DescribeSubnets(ctx, &ec2.DescribeSubnetsInput{Filters: tagFilter})
 	if err != nil {
-		return fmt.Errorf("describe-subnets (sweep): %w", err)
-	}
-	for _, sn := range subOut.Subnets {
-		id := aws.ToString(sn.SubnetId)
-		if id == "" {
-			continue
-		}
-		if _, err := c.DeleteSubnet(ctx, &ec2.DeleteSubnetInput{SubnetId: aws.String(id)}); err != nil {
-			logger.Warn("sweep: delete-subnet failed", "id", id, "err", err)
+		errs = append(errs, fmt.Errorf("describe-subnets (sweep): %w", err))
+	} else {
+		for _, sn := range subOut.Subnets {
+			id := aws.ToString(sn.SubnetId)
+			if id == "" {
+				continue
+			}
+			if _, err := c.DeleteSubnet(ctx, &ec2.DeleteSubnetInput{SubnetId: aws.String(id)}); err != nil {
+				logger.Warn("sweep: delete-subnet failed", "id", id, "err", err)
+			}
 		}
 	}
 
 	// Internet gateways — detach from every attached VPC, then delete.
 	igwOut, err := c.DescribeInternetGateways(ctx, &ec2.DescribeInternetGatewaysInput{Filters: tagFilter})
 	if err != nil {
-		return fmt.Errorf("describe-internet-gateways (sweep): %w", err)
-	}
-	for _, igw := range igwOut.InternetGateways {
-		id := aws.ToString(igw.InternetGatewayId)
-		if id == "" {
-			continue
-		}
-		for _, att := range igw.Attachments {
-			vid := aws.ToString(att.VpcId)
-			if vid == "" {
+		errs = append(errs, fmt.Errorf("describe-internet-gateways (sweep): %w", err))
+	} else {
+		for _, igw := range igwOut.InternetGateways {
+			id := aws.ToString(igw.InternetGatewayId)
+			if id == "" {
 				continue
 			}
-			if _, err := c.DetachInternetGateway(ctx, &ec2.DetachInternetGatewayInput{
-				InternetGatewayId: aws.String(id),
-				VpcId:             aws.String(vid),
-			}); err != nil {
-				logger.Warn("sweep: detach-internet-gateway failed", "igw", id, "vpc", vid, "err", err)
+			for _, att := range igw.Attachments {
+				vid := aws.ToString(att.VpcId)
+				if vid == "" {
+					continue
+				}
+				if _, err := c.DetachInternetGateway(ctx, &ec2.DetachInternetGatewayInput{
+					InternetGatewayId: aws.String(id),
+					VpcId:             aws.String(vid),
+				}); err != nil {
+					logger.Warn("sweep: detach-internet-gateway failed", "igw", id, "vpc", vid, "err", err)
+				}
 			}
-		}
-		if _, err := c.DeleteInternetGateway(ctx, &ec2.DeleteInternetGatewayInput{InternetGatewayId: aws.String(id)}); err != nil {
-			logger.Warn("sweep: delete-internet-gateway failed", "id", id, "err", err)
+			if _, err := c.DeleteInternetGateway(ctx, &ec2.DeleteInternetGatewayInput{InternetGatewayId: aws.String(id)}); err != nil {
+				logger.Warn("sweep: delete-internet-gateway failed", "id", id, "err", err)
+			}
 		}
 	}
 
 	// VPCs
 	vpcOut, err := c.DescribeVpcs(ctx, &ec2.DescribeVpcsInput{Filters: tagFilter})
 	if err != nil {
-		return fmt.Errorf("describe-vpcs (sweep): %w", err)
-	}
-	for _, v := range vpcOut.Vpcs {
-		id := aws.ToString(v.VpcId)
-		if id == "" {
-			continue
-		}
-		if _, err := c.DeleteVpc(ctx, &ec2.DeleteVpcInput{VpcId: aws.String(id)}); err != nil {
-			logger.Warn("sweep: delete-vpc failed", "id", id, "err", err)
+		errs = append(errs, fmt.Errorf("describe-vpcs (sweep): %w", err))
+	} else {
+		for _, v := range vpcOut.Vpcs {
+			id := aws.ToString(v.VpcId)
+			if id == "" {
+				continue
+			}
+			if _, err := c.DeleteVpc(ctx, &ec2.DeleteVpcInput{VpcId: aws.String(id)}); err != nil {
+				logger.Warn("sweep: delete-vpc failed", "id", id, "err", err)
+			}
 		}
 	}
 
-	return nil
+	return errors.Join(errs...)
 }

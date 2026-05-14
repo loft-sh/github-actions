@@ -76,7 +76,7 @@ type ResourceIDs struct {
 }
 
 func runProvision(ctx context.Context, logger *slog.Logger, name string, args []string) error {
-	fs := flag.NewFlagSet(name, flag.ExitOnError)
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	cfg := ProvisionConfig{}
 	var (
 		consumerTag string
@@ -465,7 +465,7 @@ func waitSSMOnline(
 		if err == nil {
 			online := 0
 			for _, info := range out.InstanceInformationList {
-				if info.PingStatus == "Online" {
+				if info.PingStatus == ssmtypes.PingStatusOnline {
 					online++
 				}
 			}
