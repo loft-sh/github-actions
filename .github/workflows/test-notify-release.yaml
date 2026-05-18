@@ -4,11 +4,20 @@ on:
   pull_request:
     paths:
       - '.github/workflows/notify-release.yaml'
+      - '.github/actions/release-notification/**'
+      - '.github/workflows/test-notify-release.yaml'
+  schedule:
+    # Weekly canary so contract drift between the wrapper workflow and its
+    # internal composite-action pin is caught even when nobody touches the
+    # files. DEVOPS-923 hid for weeks because the only signal was a
+    # production release failure.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
 
 permissions: {}
 
 jobs:
-  notify-release:
+  notify-release-success:
     permissions:
       contents: read
     uses: ./.github/workflows/notify-release.yaml
@@ -23,18 +32,36 @@ jobs:
       # never uses it — notify-release.yaml declares it as required.
       SLACK_WEBHOOK_URL_PRODUCT_RELEASES: ${{ secrets.SLACK_WEBHOOK_URL_PRODUCT_RELEASES }}
 
+  notify-release-failure:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/notify-release.yaml
+    with:
+      release_version: 'v0.0.0-smoke-test'
+      target_repo: ${{ github.repository }}
+      product: 'smoke-test'
+      status: 'failure'
+      dry-run: true
+    secrets:
+      SLACK_WEBHOOK_URL_PRODUCT_RELEASES: ${{ secrets.SLACK_WEBHOOK_URL_PRODUCT_RELEASES }}
+
   verify:
-    needs: [notify-release]
+    needs: [notify-release-success, notify-release-failure]
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - name: Check notify-release result
+      - name: Check notify-release results
         env:
-          RESULT: ${{ needs.notify-release.result }}
+          SUCCESS_RESULT: ${{ needs.notify-release-success.result }}
+          FAILURE_RESULT: ${{ needs.notify-release-failure.result }}
         run: |
-          echo "notify-release result=$RESULT"
-          if [ "$RESULT" != "success" ]; then
-            echo "::error::Expected notify-release result=success (dry-run), got '$RESULT'"
-            exit 1
-          fi
-          echo "notify-release workflow completed with result: $RESULT"
+          echo "notify-release-success result=$SUCCESS_RESULT"
+          echo "notify-release-failure result=$FAILURE_RESULT"
+          rc=0
+          for r in "$SUCCESS_RESULT" "$FAILURE_RESULT"; do
+            if [ "$r" != "success" ]; then
+              echo "::error::Expected notify-release dry-run result=success, got '$r'"
+              rc=1
+            fi
+          done
+          exit "$rc"
