@@ -125,7 +125,7 @@ runs:
               text:
                 type: plain_text
                 text: "${{ steps.status_text.outputs.emoji }} Release Pipeline ${{ steps.status_text.outputs.label }}"
-                emoji: false
+                emoji: true
             - type: section
               fields:
                 - type: mrkdwn
