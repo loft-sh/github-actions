@@ -1,0 +1,3 @@
+# Local build artifact from `go build .` — the action builds at runtime,
+# so this binary should never be committed.
+aws-test-infra
