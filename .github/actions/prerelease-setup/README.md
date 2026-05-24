@@ -8,7 +8,7 @@ and `prerelease-aicloud` jobs.
 The action performs, in order:
 
 1. Free disk space (`jlumbroso/free-disk-space@v1.3.1`).
-2. Checkout the calling repo.
+2. Checkout the calling repo (`actions/checkout@v6`).
 3. Install Go (`actions/setup-go@v5`, `go-version-file: go.mod`, cache on).
 4. Install `kubectl` (`azure/setup-kubectl@v4`).
 5. Install `helm` (`azure/setup-helm@v4`).
@@ -27,15 +27,17 @@ provisioning (`aws-test-infra`) and the Ginkgo test execution
 
 ## Inputs
 
-| Name | Required | Default | Description |
-|------|----------|---------|-------------|
-| `role-session-name` | yes | — | AWS STS role-session-name. Pass a job-distinct value such as `prerelease-vcluster-${{ github.run_id }}`. |
-| `standalone-vcluster-version` | no | `''` | Standalone vCluster install version (e.g. `0.34.0`). Empty resolves to the latest GitHub release of `loft-sh/vcluster`. |
-| `standalone-vcluster-upgrade-version` | yes | — | Standalone vCluster upgrade target (e.g. `0.35.0-alpha.7`). Must differ from the resolved base. |
-| `platform-base-version` | no | `''` | Platform install version (e.g. `4.9.0`). Empty leaves `PLATFORM_BASE_VERSION` unset; the consumer test step uses its own default. |
-| `platform-rc-version` | no | `''` | Platform RC upgrade version (e.g. `4.10.0-alpha.6`). Empty resolves to the latest pre-release of `loft-sh/loft-enterprise`. |
-| `vci-k8s-version` | no | `''` | Pass-through for the private-nodes VCI Kubernetes version (v-prefixed, e.g. `v1.34.5`). Forwarded to `$GITHUB_ENV` as `VCI_K8S_VERSION`. |
-| `vci-k8s-upgrade-version` | no | `''` | Pass-through for the VCI K8s upgrade target (v-prefixed). Forwarded to `$GITHUB_ENV` as `VCI_K8S_UPGRADE_VERSION`. |
+<!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
+
+|                INPUT                |  TYPE  | REQUIRED | DEFAULT |                                                                        DESCRIPTION                                                                        |
+|-------------------------------------|--------|----------|---------|-----------------------------------------------------------------------------------------------------------------------------------------------------------|
+|        platform-base-version        | string |  false   |         | Platform version for the initial install <br>(e.g. 4.9.0). Empty leaves the output empty; <br>the consumer wires its own default <br>into the test step.  |
+|         platform-rc-version         | string |  false   |         |           Platform RC version for upgrade (e.g. 4.10.0-alpha.6). <br>Empty resolves to the latest pre-release <br>of loft-sh/loft-enterprise.             |
+|          role-session-name          | string |   true   |         |        AWS STS role-session-name. Each consumer job <br>passes a distinct value (e.g. prerelease-vcluster-<run-id>, prerelease-aicloud-<run-id>).         |
+| standalone-vcluster-upgrade-version | string |   true   |         |                   vCluster version to upgrade standalone to <br>(e.g. 0.35.0-alpha.7). Must differ from the resolved <br>base version.                    |
+|     standalone-vcluster-version     | string |  false   |         |            vCluster version to install for standalone <br>(e.g. 0.34.0). Empty resolves to the latest <br>GitHub release of loft-sh/vcluster.             |
+
+<!-- AUTO-DOC-INPUT:END -->
 
 Inputs accept versions with or without a leading `v`; the action strips
 the `v` before validating against the semver regex
@@ -43,31 +45,29 @@ the `v` before validating against the semver regex
 
 ## Outputs
 
-| Name | Description |
-|------|-------------|
-| `standalone-vcluster-version` | Resolved standalone vCluster version (no leading `v`). |
-| `standalone-vcluster-upgrade-version` | Validated upgrade version (no leading `v`). |
-| `platform-base-version` | Validated platform base version (no leading `v`). Empty when the input was empty. |
-| `platform-rc-version` | Resolved platform RC version (no leading `v`). |
+<!-- AUTO-DOC-OUTPUT:START - Do not remove or modify this section -->
 
-## Environment variables exported to subsequent steps
+|               OUTPUT                |  TYPE  |                                     DESCRIPTION                                      |
+|-------------------------------------|--------|--------------------------------------------------------------------------------------|
+|        platform-base-version        | string | Validated platform base version (no leading v). Empty <br>when the input was empty.  |
+|         platform-rc-version         | string |                    Resolved platform RC version (no leading v).                      |
+| standalone-vcluster-upgrade-version | string |            Validated standalone vCluster upgrade version (no leading v).             |
+|     standalone-vcluster-version     | string |                Resolved standalone vCluster version (no leading v).                  |
 
-The action also writes the resolved values to `$GITHUB_ENV` so the
-calling job's downstream steps (in particular `run-ginkgo`) read them
-as plain env vars, matching the behaviour of the inlined version:
+<!-- AUTO-DOC-OUTPUT:END -->
 
-- `STANDALONE_VCLUSTER_VERSION`
-- `DEFAULT_VCLUSTER_CHART_VERSION` (same value as
-  `STANDALONE_VCLUSTER_VERSION`; consumed by some test paths)
-- `STANDALONE_VCLUSTER_UPGRADE_VERSION`
-- `PLATFORM_RC_VERSION`
-- `PLATFORM_BASE_VERSION` (only when `platform-base-version` was provided)
-- `VCI_K8S_VERSION` (only when `vci-k8s-version` was provided)
-- `VCI_K8S_UPGRADE_VERSION` (only when `vci-k8s-upgrade-version` was provided)
+Outputs are written to `$GITHUB_OUTPUT` only. The consumer wires them to
+its downstream test step via an `env:` block (see Usage below). This
+matches the convention of `aws-test-infra` and avoids the
+`github-env` zizmor finding that comes with mirroring values into
+`$GITHUB_ENV` from a composite step.
 
 The OIDC step exports `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and
 `AWS_SESSION_TOKEN` to the environment via
 `aws-actions/configure-aws-credentials` with `output-credentials: true`.
+These propagate to subsequent steps in the calling job through the
+standard action mechanism, so the consumer does not need to wire them
+explicitly.
 
 ## Permissions
 
@@ -97,6 +97,7 @@ jobs:
       PLATFORM_RC_VERSION:   ${{ inputs.platform_rc_version   || github.event.client_payload.platform_rc_version }}
     steps:
       - name: Pre-release setup
+        id: setup
         uses: loft-sh/github-actions/.github/actions/prerelease-setup@prerelease-setup/v1
         with:
           role-session-name: prerelease-vcluster-${{ github.run_id }}
@@ -113,9 +114,27 @@ jobs:
           timeout: 80m
           procs: "1"
           additional-ginkgo-flags: "-v"
+        env:
+          STANDALONE_VCLUSTER_VERSION:         ${{ steps.setup.outputs.standalone-vcluster-version }}
+          DEFAULT_VCLUSTER_CHART_VERSION:      ${{ steps.setup.outputs.standalone-vcluster-version }}
+          STANDALONE_VCLUSTER_UPGRADE_VERSION: ${{ steps.setup.outputs.standalone-vcluster-upgrade-version }}
+          PLATFORM_BASE_VERSION:               ${{ steps.setup.outputs.platform-base-version }}
+          PLATFORM_RC_VERSION:                 ${{ steps.setup.outputs.platform-rc-version }}
+          AWS_ACCESS_KEY_ID:     ${{ env.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN:     ${{ env.AWS_SESSION_TOKEN }}
 ```
 
 The AI Cloud job is identical apart from a different `role-session-name`,
-the addition of `vci-k8s-version` / `vci-k8s-upgrade-version` inputs, and
-the surrounding `aws-test-infra` provision/cleanup steps that are
-specific to that job.
+the addition of `VCI_K8S_VERSION` / `VCI_K8S_UPGRADE_VERSION` (kept at
+the workflow `env:` block in the consumer, not passed through this
+action), and the surrounding `aws-test-infra` provision/cleanup steps
+that are specific to that job.
+
+## Notes
+
+- The two `vci-k8s-*` inputs called out in the original ticket scope are
+  intentionally not part of this action. They are not produced or
+  validated by any of the setup steps, and they are already available to
+  the consumer at the workflow `env:` level. Adding them as
+  pass-through-only inputs would be dead code.

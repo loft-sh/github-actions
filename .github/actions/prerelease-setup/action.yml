@@ -13,19 +13,11 @@ inputs:
     description: 'vCluster version to upgrade standalone to (e.g. 0.35.0-alpha.7). Must differ from the resolved base version.'
     required: true
   platform-base-version:
-    description: 'Platform version for the initial install (e.g. 4.9.0). Empty leaves PLATFORM_BASE_VERSION unset; the consumer test step uses its own default.'
+    description: 'Platform version for the initial install (e.g. 4.9.0). Empty leaves the output empty; the consumer wires its own default into the test step.'
     required: false
     default: ''
   platform-rc-version:
     description: 'Platform RC version for upgrade (e.g. 4.10.0-alpha.6). Empty resolves to the latest pre-release of loft-sh/loft-enterprise.'
-    required: false
-    default: ''
-  vci-k8s-version:
-    description: 'Kubernetes version for the private-nodes VCI (v-prefixed, e.g. v1.34.5). Pass-through — the consumer workflow is expected to pin a default and forward it here so it appears as an env var to subsequent steps.'
-    required: false
-    default: ''
-  vci-k8s-upgrade-version:
-    description: 'Kubernetes version to upgrade the private-nodes VCI to (v-prefixed, e.g. v1.35.0). Pass-through — see vci-k8s-version.'
     required: false
     default: ''
 
@@ -83,8 +75,6 @@ runs:
         STANDALONE_VCLUSTER_UPGRADE_VERSION_INPUT: ${{ inputs.standalone-vcluster-upgrade-version }}
         PLATFORM_BASE_VERSION_INPUT: ${{ inputs.platform-base-version }}
         PLATFORM_RC_VERSION_INPUT: ${{ inputs.platform-rc-version }}
-        VCI_K8S_VERSION_INPUT: ${{ inputs.vci-k8s-version }}
-        VCI_K8S_UPGRADE_VERSION_INPUT: ${{ inputs.vci-k8s-upgrade-version }}
       run: |
         set -euo pipefail
         # Accept inputs with or without a leading `v`; normalize to no-v before exporting.
@@ -126,30 +116,6 @@ runs:
           echo "platform-rc-version=$RC"
           echo "platform-base-version=$BASE"
         } >> "$GITHUB_OUTPUT"
-
-        # Also mirror to $GITHUB_ENV so the next composite step (Setup vCluster
-        # CLI) and the consumer's downstream test step read the same env vars
-        # the inlined version of this setup exported. This preserves behavioural
-        # parity with the pre-extraction workflow.
-        {
-          echo "STANDALONE_VCLUSTER_VERSION=$VERSION"
-          echo "DEFAULT_VCLUSTER_CHART_VERSION=$VERSION"
-          echo "STANDALONE_VCLUSTER_UPGRADE_VERSION=$UP"
-          echo "PLATFORM_RC_VERSION=$RC"
-        } >> "$GITHUB_ENV"
-        if [ -n "$BASE" ]; then
-          echo "PLATFORM_BASE_VERSION=$BASE" >> "$GITHUB_ENV"
-        fi
-
-        # VCI K8s versions are pass-through: the consumer pins a default and
-        # forwards it here; we re-export to env so the test step sees it
-        # without the consumer wiring per-step env: blocks.
-        if [ -n "$VCI_K8S_VERSION_INPUT" ]; then
-          echo "VCI_K8S_VERSION=$VCI_K8S_VERSION_INPUT" >> "$GITHUB_ENV"
-        fi
-        if [ -n "$VCI_K8S_UPGRADE_VERSION_INPUT" ]; then
-          echo "VCI_K8S_UPGRADE_VERSION=$VCI_K8S_UPGRADE_VERSION_INPUT" >> "$GITHUB_ENV"
-        fi
 
     - name: Setup vCluster CLI (matches base standalone version)
       shell: bash
