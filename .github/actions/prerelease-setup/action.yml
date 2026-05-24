@@ -45,6 +45,11 @@ runs:
 
     - name: Checkout
       uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        # The test code only reads from the working tree (go build, ginkgo
+        # discovery). No subsequent push/fetch needs the embedded token, so
+        # we drop it from the .git/config to satisfy zizmor[artipacked].
+        persist-credentials: false
 
     - name: Setup Go
       uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
