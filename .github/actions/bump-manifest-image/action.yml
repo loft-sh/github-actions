@@ -1,0 +1,112 @@
+name: Bump manifest image
+description: |
+  Opens a pull request that bumps a container's image tag in a Kubernetes
+  deployment manifest, for a single environment. Domain-agnostic: the caller
+  supplies the manifest path, container name, image repo, and tag. Skips
+  pre-releases for prod, never downgrades (semver-aware), and optionally
+  enables auto-merge. Designed to be called from a matrix over environments.
+inputs:
+  tag:
+    description: 'Release tag to roll out (e.g. v0.2.0 or 0.2.0-rc1).'
+    required: true
+  environment:
+    description: 'Target environment. "prod" skips pre-release tags.'
+    required: true
+  manifest-path:
+    description: 'Path to the deployment manifest to edit.'
+    required: true
+  container-name:
+    description: 'Name of the container whose image tag is tracked.'
+    required: true
+  image-repo:
+    description: 'Image repo without tag (e.g. ghcr.io/loft-sh/revops-events-api).'
+    required: true
+  auto-merge:
+    description: 'Enable GitHub auto-merge (squash) on the opened PR.'
+    required: false
+    default: 'false'
+  base-branch:
+    description: 'Base branch for the PR.'
+    required: false
+    default: 'main'
+  token:
+    description: |
+      PAT used to open the PR and (if enabled) enable auto-merge. Must be a PAT
+      or App token, not GITHUB_TOKEN: a GITHUB_TOKEN merge emits no events, so
+      downstream merge-triggered workflows would never run.
+    required: true
+outputs:
+  updated:
+    description: 'true when a PR was opened (a newer applicable version existed).'
+    value: ${{ steps.decide.outputs.should_update }}
+  pull-request-number:
+    description: 'Number of the opened PR (empty when no update).'
+    value: ${{ steps.pr.outputs.pull-request-number }}
+runs:
+  using: composite
+  steps:
+    - name: Resolve version
+      id: resolve
+      shell: bash
+      env:
+        RAW_TAG: ${{ inputs.tag }}
+        IMAGE_REPO: ${{ inputs.image-repo }}
+      run: ${{ github.action_path }}/src/resolve-version.sh
+
+    - name: Decide whether to update
+      id: decide
+      shell: bash
+      env:
+        MANIFEST_PATH: ${{ inputs.manifest-path }}
+        CONTAINER_NAME: ${{ inputs.container-name }}
+        NEW_VERSION: ${{ steps.resolve.outputs.new_version }}
+        IS_STABLE: ${{ steps.resolve.outputs.is_stable }}
+        ENVIRONMENT: ${{ inputs.environment }}
+      run: ${{ github.action_path }}/src/should-update.sh
+
+    - name: Apply image bump
+      if: steps.decide.outputs.should_update == 'true'
+      shell: bash
+      env:
+        MANIFEST_PATH: ${{ inputs.manifest-path }}
+        CONTAINER_NAME: ${{ inputs.container-name }}
+        IMAGE_REPO: ${{ inputs.image-repo }}
+        NEW_TAG: ${{ steps.resolve.outputs.new_tag }}
+      run: ${{ github.action_path }}/src/apply-bump.sh
+
+    - name: Create pull request
+      id: pr
+      if: steps.decide.outputs.should_update == 'true'
+      uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+      with:
+        token: ${{ inputs.token }}
+        base: ${{ inputs.base-branch }}
+        committer: Loft Bot <loft-bot@users.noreply.github.com>
+        commit-message: "chore(${{ steps.resolve.outputs.app_name }}): bump ${{ inputs.environment }} to ${{ steps.resolve.outputs.new_tag }}"
+        title: "chore(${{ steps.resolve.outputs.app_name }}): bump ${{ inputs.environment }} to ${{ steps.resolve.outputs.new_tag }}"
+        body: |
+          Automated image bump.
+
+          - Environment: `${{ inputs.environment }}`
+          - Image: `${{ inputs.image-repo }}:${{ steps.resolve.outputs.new_tag }}`
+          - Manifest: `${{ inputs.manifest-path }}`
+
+          Opened by the `bump-manifest-image` action.
+        branch: "update-${{ inputs.environment }}-${{ steps.resolve.outputs.app_name }}-${{ steps.resolve.outputs.new_version }}"
+        delete-branch: true
+
+    - name: Enable auto-merge
+      if: steps.decide.outputs.should_update == 'true' && inputs.auto-merge == 'true' && steps.pr.outputs.pull-request-number
+      shell: bash
+      env:
+        # PAT, not GITHUB_TOKEN: the merge event must trigger downstream workflows.
+        GH_TOKEN: ${{ inputs.token }}
+        PR_NUMBER: ${{ steps.pr.outputs.pull-request-number }}
+      run: gh pr merge "$PR_NUMBER" --squash --auto
+
+    - name: Summary
+      shell: bash
+      env:
+        ENVIRONMENT: ${{ inputs.environment }}
+        REASON: ${{ steps.decide.outputs.reason }}
+      run: echo "$ENVIRONMENT - $REASON"

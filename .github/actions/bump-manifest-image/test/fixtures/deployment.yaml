@@ -1,0 +1,12 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: revops-events-api
+spec:
+  template:
+    spec:
+      containers:
+        - name: revops-events-api
+          image: ghcr.io/loft-sh/revops-events-api:v0.1.0
+        - name: sidecar
+          image: ghcr.io/loft-sh/sidecar:v9.9.9
