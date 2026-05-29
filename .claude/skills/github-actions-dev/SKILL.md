@@ -97,6 +97,50 @@ jobs:
       # setup step + test command
 ```
 
+## Gotchas: job-level `if` conditions
+
+### success() transitive skip propagation
+
+`success()` (the implicit default in `needs`) evaluates the ENTIRE transitive `needs` chain. If any ancestor job is skipped, ALL descendants skip too — even if the immediate parent succeeded.
+
+Fix pattern: move skip-causing conditions from job-level `if` to step-level `if`. The job runs as a no-op (success) instead of being skipped, so downstream jobs proceed normally.
+
+```yaml
+# BAD: job skips on alpha tags, causing ALL downstream to skip
+check_version:
+  if: github.repository_owner == 'loft-sh' && !contains(github.event.release.tag_name, '-')
+
+# GOOD: job always runs, steps skip on alpha tags
+check_version:
+  if: github.repository_owner == 'loft-sh'
+  steps:
+    - uses: actions/checkout@v6
+      if: ${{ !contains(github.event.release.tag_name, '-') }}
+    - name: Validate version
+      if: ${{ !contains(github.event.release.tag_name, '-') }}
+```
+
+Reference: loft-enterprise#6265, vcluster#3636 (fix for vcluster#3593).
+
+### Surgical condition removal
+
+When fixing a compound `if` on a job, preserve all guards unrelated to the bug. Don't strip the whole condition — remove only the problematic part.
+
+```yaml
+# Original (buggy compound condition):
+  if: github.repository_owner == 'loft-sh' && !contains(tag, '-')
+
+# WRONG fix (removes ALL guards):
+  if: always()
+
+# CORRECT fix (preserves fork guard, moves only alpha condition to steps):
+  if: github.repository_owner == 'loft-sh'
+```
+
+### Backport label matching
+
+When creating a fix PR for a bug introduced by another PR, the fix must carry the same backport labels as the buggy PR — no more, no less. The fix only needs to reach branches where the bug was backported.
+
 ## Common mistakes
 
 - Creating actions outside `.github/actions/` — all actions live there
