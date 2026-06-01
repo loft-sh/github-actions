@@ -9,13 +9,12 @@ The action performs, in order:
 
 1. Free disk space (`jlumbroso/free-disk-space@v1.3.1`).
 2. Checkout the calling repo (`actions/checkout@v6`).
-3. Install Go (`actions/setup-go@v5`, `go-version-file: go.mod`, cache on).
-4. Install `kubectl` (`azure/setup-kubectl@v4`).
-5. Install `helm` (`azure/setup-helm@v4`).
-6. AWS Login via OIDC (`aws-actions/configure-aws-credentials@v5.1.1`,
+3. Install Go (`actions/setup-go@v6`, `go-version-file: go.mod`, cache on).
+4. Install `kubectl` (`azure/setup-kubectl@v5`).
+5. Install `helm` (`azure/setup-helm@v5`).
+6. AWS Login via OIDC (`aws-actions/configure-aws-credentials@v6`,
    `role-to-assume: arn:aws:iam::084374023943:role/e2e-test-executor`,
-   `aws-region: us-west-2`, `role-duration-seconds: 6300`,
-   `output-credentials: true`).
+   `aws-region: us-west-2`, `role-duration-seconds: 6300`).
 7. Resolve and validate the four version inputs (see below).
 8. Download the `vcluster` CLI binary that matches the resolved base
    standalone vCluster version.
@@ -29,13 +28,14 @@ provisioning (`aws-test-infra`) and the Ginkgo test execution
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-|                INPUT                |  TYPE  | REQUIRED | DEFAULT |                                                                        DESCRIPTION                                                                        |
-|-------------------------------------|--------|----------|---------|-----------------------------------------------------------------------------------------------------------------------------------------------------------|
-|        platform-base-version        | string |  false   |         | Platform version for the initial install <br>(e.g. 4.9.0). Empty leaves the output empty; <br>the consumer wires its own default <br>into the test step.  |
-|         platform-rc-version         | string |  false   |         |           Platform RC version for upgrade (e.g. 4.10.0-alpha.6). <br>Empty resolves to the latest pre-release <br>of loft-sh/loft-enterprise.             |
-|          role-session-name          | string |   true   |         |        AWS STS role-session-name. Each consumer job <br>passes a distinct value (e.g. prerelease-vcluster-<run-id>, prerelease-aicloud-<run-id>).         |
-| standalone-vcluster-upgrade-version | string |   true   |         |                   vCluster version to upgrade standalone to <br>(e.g. 0.35.0-alpha.7). Must differ from the resolved <br>base version.                    |
-|     standalone-vcluster-version     | string |  false   |         |            vCluster version to install for standalone <br>(e.g. 0.34.0). Empty resolves to the latest <br>GitHub release of loft-sh/vcluster.             |
+|                INPUT                |  TYPE  | REQUIRED | DEFAULT |                                                                                                                                      DESCRIPTION                                                                                                                                      |
+|-------------------------------------|--------|----------|---------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|            github-token             | string |   true   |         | GitHub token with contents:read on loft-sh/loft-enterprise. <br>Required because the platform release resolvers <br>call the GitHub API for a <br>private repo; unauthenticated calls return 404. <br>Pass ${{ github.token }} from a <br>job whose permissions grant contents:read.  |
+|        platform-base-version        | string |  false   |         |                                                               Platform version for the initial install <br>(e.g. 4.9.0). Empty leaves the output empty; <br>the consumer wires its own default <br>into the test step.                                                                |
+|         platform-rc-version         | string |  false   |         |                                                                         Platform RC version for upgrade (e.g. 4.10.0-alpha.6). <br>Empty resolves to the latest pre-release <br>of loft-sh/loft-enterprise.                                                                           |
+|          role-session-name          | string |   true   |         |                                                                      AWS STS role-session-name. Each consumer job <br>passes a distinct value (e.g. prerelease-vcluster-<run-id>, prerelease-aicloud-<run-id>).                                                                       |
+| standalone-vcluster-upgrade-version | string |   true   |         |                                                                                 vCluster version to upgrade standalone to <br>(e.g. 0.35.0-alpha.7). Must differ from the resolved <br>base version.                                                                                  |
+|     standalone-vcluster-version     | string |  false   |         |                                                                          vCluster version to install for standalone <br>(e.g. 0.34.0). Empty resolves to the latest <br>GitHub release of loft-sh/vcluster.                                                                           |
 
 <!-- AUTO-DOC-INPUT:END -->
 
@@ -64,10 +64,9 @@ matches the convention of `aws-test-infra` and avoids the
 
 The OIDC step exports `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and
 `AWS_SESSION_TOKEN` to the environment via
-`aws-actions/configure-aws-credentials` with `output-credentials: true`.
-These propagate to subsequent steps in the calling job through the
-standard action mechanism, so the consumer does not need to wire them
-explicitly.
+`aws-actions/configure-aws-credentials`. These propagate to subsequent
+steps in the calling job through the standard action mechanism, so the
+consumer does not need to wire them explicitly.
 
 ## Permissions
 
@@ -101,6 +100,7 @@ jobs:
         uses: loft-sh/github-actions/.github/actions/prerelease-setup@prerelease-setup/v1
         with:
           role-session-name: prerelease-vcluster-${{ github.run_id }}
+          github-token: ${{ github.token }}
           standalone-vcluster-version: ${{ inputs.standalone_vcluster_version || github.event.client_payload.standalone_vcluster_version }}
           standalone-vcluster-upgrade-version: ${{ env.STANDALONE_VCLUSTER_UPGRADE_VERSION }}
           platform-base-version: ${{ env.PLATFORM_BASE_VERSION }}
