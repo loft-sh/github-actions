@@ -8,7 +8,7 @@ inputs:
     description: 'Test suite name for the header (e.g. "E2E Ginkgo Nightly Tests"). Keep under ~130 chars — Slack header blocks have a 150-char limit and the status suffix takes ~15 chars.'
     required: true
   status:
-    description: 'Test status: success, failure, cancelled, or skipped'
+    description: 'Run status, typically `needs.<job>.result` or `job.status`. `success` and `failure` notify; `cancelled` and `skipped` are treated as no-ops and send nothing.'
     required: true
   details:
     description: 'Markdown text appended after the build URL (test results, versions, artifact links, etc.)'
@@ -21,14 +21,16 @@ inputs:
 runs:
   using: "composite"
   steps:
-    - name: Check webhook URL
-      if: inputs.webhook-url == ''
+    - name: Decide whether to notify
+      id: gate
       shell: bash
-      run: |
-        echo "::warning::webhook-url is empty (expected on fork PRs where secrets are unavailable), skipping notification"
+      env:
+        STATUS: ${{ inputs.status }}
+        WEBHOOK_URL: ${{ inputs.webhook-url }}
+      run: ${{ github.action_path }}/should-notify.sh
 
     - name: Build Slack payload
-      if: inputs.webhook-url != ''
+      if: steps.gate.outputs.notify == 'true'
       shell: bash
       env:
         TEST_NAME: ${{ inputs.test-name }}
@@ -41,7 +43,7 @@ runs:
       run: ${{ github.action_path }}/build-payload.sh
 
     - name: Send Slack notification
-      if: inputs.webhook-url != ''
+      if: steps.gate.outputs.notify == 'true'
       uses: slackapi/slack-github-action@45a88b9581bfab2566dc881e2cd66d334e621e2c # v3.0.3
       with:
         errors: true

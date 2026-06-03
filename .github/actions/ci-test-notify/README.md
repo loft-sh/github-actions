@@ -11,7 +11,7 @@ Replaces the nightly-specific `ci-notify-nightly-tests` action with a generic in
 |    INPUT    |  TYPE  | REQUIRED | DEFAULT |                                                                                         DESCRIPTION                                                                                         |
 |-------------|--------|----------|---------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 |   details   | string |  false   |         |                                               Markdown text appended after the build <br>URL (test results, versions, artifact links, etc.)                                                 |
-|   status    | string |   true   |         |                                                                  Test status: success, failure, cancelled, or <br>skipped                                                                   |
+|   status    | string |   true   |         |         Run status, typically `needs.<job>.result` or `job.status`. <br>`success` and `failure` notify; `cancelled` and <br>`skipped` are treated as no-ops and <br>send nothing.           |
 |  test-name  | string |   true   |         | Test suite name for the header <br>(e.g. "E2E Ginkgo Nightly Tests"). Keep under ~130 chars — <br>Slack header blocks have a 150-char <br>limit and the status suffix takes <br>~15 chars.  |
 | webhook-url | string |   true   |         |                                                                                 Slack incoming webhook URL                                                                                  |
 
@@ -72,6 +72,17 @@ Build URL: <link to workflow run>
       ${{ needs.e2e-tests.outputs.failure-summary || 'Check build logs for details.' }}
     webhook-url: ${{ secrets.SLACK_WEBHOOK_URL_DEV_VCLUSTER }}
 ```
+
+## Notification gating
+
+The action only notifies on actionable outcomes. A `status` of `cancelled` or
+`skipped` is treated as a no-op: the action logs a notice and sends nothing.
+This means callers can pass `needs.<job>.result` or `job.status` straight
+through without a guard. A cancelled run (aborted by a human or superseded) or a
+skipped job never produces a Slack alert; only `success` and `failure` do.
+
+An empty `webhook-url` (fork PRs, where secrets are unavailable) also suppresses
+the notification.
 
 ## Permissions
 
