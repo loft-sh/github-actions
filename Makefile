@@ -123,7 +123,7 @@ test-ai-step: ## run ai-step bats tests
 	bats $(ACTIONS_DIR)/ai-step/test/*.bats
 
 test-ci-test-notify: ## run ci-test-notify bats tests
-	bats $(ACTIONS_DIR)/ci-test-notify/test/build-payload.bats
+	bats $(ACTIONS_DIR)/ci-test-notify/test
 
 test-publish-helm-chart: ## run publish-helm-chart bats tests (requires mikefarah/yq on PATH)
 	bats $(ACTIONS_DIR)/publish-helm-chart/test/run.bats
