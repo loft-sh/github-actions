@@ -1,0 +1,159 @@
+name: 'Pre-Release Setup'
+description: 'Shared setup for the loft-enterprise pre-release vCluster + AI Cloud workflow jobs: free disk, checkout, install Go/kubectl/helm/vCluster CLI, AWS Login, and resolve+validate the four version inputs (standalone vCluster base+upgrade, platform base+RC) including "latest" fallback resolvers.'
+
+inputs:
+  role-session-name:
+    description: 'AWS STS role-session-name. Each consumer job passes a distinct value (e.g. prerelease-vcluster-<run-id>, prerelease-aicloud-<run-id>).'
+    required: true
+  github-token:
+    description: 'GitHub token with contents:read on loft-sh/loft-enterprise. Required because the platform release resolvers call the GitHub API for a private repo; unauthenticated calls return 404. Pass ${{ github.token }} from a job whose permissions grant contents:read.'
+    required: true
+  standalone-vcluster-version:
+    description: 'vCluster version to install for standalone (e.g. 0.34.0). Empty resolves to the latest GitHub release of loft-sh/vcluster.'
+    required: false
+    default: ''
+  standalone-vcluster-upgrade-version:
+    description: 'vCluster version to upgrade standalone to (e.g. 0.35.0-alpha.7). Must differ from the resolved base version.'
+    required: true
+  platform-base-version:
+    description: 'Platform version for the initial install (e.g. 4.9.0). Empty leaves the output empty; the consumer wires its own default into the test step.'
+    required: false
+    default: ''
+  platform-rc-version:
+    description: 'Platform RC version for upgrade (e.g. 4.10.0-alpha.6). Empty resolves to the latest pre-release of loft-sh/loft-enterprise.'
+    required: false
+    default: ''
+
+outputs:
+  standalone-vcluster-version:
+    description: 'Resolved standalone vCluster version (no leading v).'
+    value: ${{ steps.resolve.outputs.standalone-vcluster-version }}
+  standalone-vcluster-upgrade-version:
+    description: 'Validated standalone vCluster upgrade version (no leading v).'
+    value: ${{ steps.resolve.outputs.standalone-vcluster-upgrade-version }}
+  platform-base-version:
+    description: 'Validated platform base version (no leading v). Empty when the input was empty.'
+    value: ${{ steps.resolve.outputs.platform-base-version }}
+  platform-rc-version:
+    description: 'Resolved platform RC version (no leading v).'
+    value: ${{ steps.resolve.outputs.platform-rc-version }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Free disk space
+      uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+      with:
+        tool-cache: false
+
+    - name: Checkout
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        # The test code only reads from the working tree (go build, ginkgo
+        # discovery). No subsequent push/fetch needs the embedded token, so
+        # we drop it from the .git/config to satisfy zizmor[artipacked].
+        persist-credentials: false
+
+    - name: Setup Go
+      uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+      with:
+        go-version-file: go.mod
+        cache: true
+
+    - name: Setup kubectl
+      uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
+
+    - name: Setup helm
+      uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+
+    - name: AWS Login
+      uses: aws-actions/configure-aws-credentials@99214aa6889fcddfa57764031d71add364327e59 # v6.1.3
+      with:
+        role-to-assume: arn:aws:iam::084374023943:role/e2e-test-executor
+        role-session-name: ${{ inputs.role-session-name }}
+        aws-region: us-west-2
+        role-duration-seconds: 6300
+
+    - name: Resolve and validate versions
+      id: resolve
+      shell: bash
+      env:
+        STANDALONE_VCLUSTER_VERSION_INPUT: ${{ inputs.standalone-vcluster-version }}
+        STANDALONE_VCLUSTER_UPGRADE_VERSION_INPUT: ${{ inputs.standalone-vcluster-upgrade-version }}
+        PLATFORM_BASE_VERSION_INPUT: ${{ inputs.platform-base-version }}
+        PLATFORM_RC_VERSION_INPUT: ${{ inputs.platform-rc-version }}
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: |
+        set -euo pipefail
+        # Accept inputs with or without a leading `v`; normalize to no-v before exporting.
+        VERSION_RE='^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$'
+
+        VERSION="$STANDALONE_VCLUSTER_VERSION_INPUT"
+        if [ -z "$VERSION" ]; then
+          # vcluster is public but unauthenticated calls share the runner IP's 60/hr rate limit.
+          # Pass the token to bump the budget to 1000/hr per token and avoid intermittent 403s.
+          VERSION=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/repos/loft-sh/vcluster/releases/latest | jq -r .tag_name)
+        fi
+        VERSION="${VERSION#v}"
+        [[ "$VERSION" =~ $VERSION_RE ]] || { echo "invalid standalone-vcluster-version: $VERSION"; exit 1; }
+        echo "Resolved vCluster version: $VERSION"
+
+        UP="${STANDALONE_VCLUSTER_UPGRADE_VERSION_INPUT#v}"
+        [[ "$UP" =~ $VERSION_RE ]] || { echo "invalid standalone-vcluster-upgrade-version: $UP"; exit 1; }
+        [ "$UP" != "$VERSION" ] || { echo "standalone-vcluster-upgrade-version must differ from base ($VERSION)"; exit 1; }
+
+        RC="${PLATFORM_RC_VERSION_INPUT#v}"
+        if [ -z "$RC" ]; then
+          # GitHub's /releases/latest excludes pre-releases, so list /releases and filter on `prerelease == true`.
+          # The list is newest-first by created_at, so `[0]` after filter = latest pre-release.
+          # loft-enterprise is private — unauthenticated requests return 404, so the token is required.
+          RC=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/repos/loft-sh/loft-enterprise/releases \
+            | jq -r '[.[] | select(.prerelease == true and .draft == false)][0].tag_name')
+          [ -n "$RC" ] && [ "$RC" != "null" ] || { echo "no platform pre-release found in loft-sh/loft-enterprise"; exit 1; }
+          RC="${RC#v}"
+          echo "Resolved latest platform pre-release: $RC"
+        fi
+        [[ "$RC" =~ $VERSION_RE ]] || { echo "invalid platform-rc-version: $RC"; exit 1; }
+
+        BASE="${PLATFORM_BASE_VERSION_INPUT#v}"
+        if [ -n "$BASE" ]; then
+          [[ "$BASE" =~ $VERSION_RE ]] || { echo "invalid platform-base-version: $BASE"; exit 1; }
+          [ "$BASE" != "$RC" ] || { echo "platform-base-version must differ from platform-rc-version"; exit 1; }
+        fi
+
+        {
+          echo "standalone-vcluster-version=$VERSION"
+          echo "standalone-vcluster-upgrade-version=$UP"
+          echo "platform-rc-version=$RC"
+          echo "platform-base-version=$BASE"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Setup vCluster CLI (matches base standalone version)
+      shell: bash
+      env:
+        STANDALONE_VCLUSTER_VERSION: ${{ steps.resolve.outputs.standalone-vcluster-version }}
+      run: |
+        set -euo pipefail
+        # Initial CLI matches the base standalone vCluster — used by the
+        # initial `vcluster platform start` in BeforeSuite. The test swaps
+        # this binary to the upgrade-target CLI before the platform upgrade
+        # spec runs.
+        URL="https://github.com/loft-sh/vcluster/releases/download/v${STANDALONE_VCLUSTER_VERSION}/vcluster-linux-amd64"
+        sudo curl -fL "${URL}" -o /usr/local/bin/vcluster
+        sudo chmod +x /usr/local/bin/vcluster
+        vcluster --version
+
+    - name: Verify required CLIs
+      shell: bash
+      run: |
+        set -e
+        echo "kubectl: $(command -v kubectl)"
+        kubectl version --client
+        echo "helm: $(command -v helm)"
+        helm version
+        echo "vcluster: $(command -v vcluster)"
+        vcluster --version
+
+branding:
+  icon: 'package'
+  color: 'orange'
