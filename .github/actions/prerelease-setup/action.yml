@@ -112,7 +112,11 @@ runs:
         [ "$UP" != "$VERSION" ] || { echo "standalone-vcluster-upgrade-version must differ from base ($VERSION)"; exit 1; }
         # Reject an older-branch pre-release (e.g. base=0.34.1, latest pre-release=0.33.5-rc.1):
         # `sort -V` puts the higher semver last, so the upgrade target must equal that tail.
-        [ "$(printf '%s\n%s\n' "$VERSION" "$UP" | sort -V | tail -n1)" = "$UP" ] \
+        # `sort -V` ranks a pre-release AFTER its release (4.9.0-alpha.1 > 4.9.0), the opposite
+        # of semver. Map the semver '-' separator to '~', which sort -V treats as lower than
+        # everything, so 4.9.0~alpha.1 < 4.9.0 as semver requires.
+        VS="${VERSION/-/\~}"; US="${UP/-/\~}"
+        [ "$(printf '%s\n%s\n' "$VS" "$US" | sort -V | tail -n1)" = "$US" ] \
           || { echo "standalone-vcluster-upgrade-version ($UP) is not newer than base ($VERSION)"; exit 1; }
 
         RC="${PLATFORM_RC_VERSION_INPUT#v}"
@@ -140,7 +144,9 @@ runs:
         [[ "$BASE" =~ $VERSION_RE ]] || { echo "invalid platform-base-version: $BASE"; exit 1; }
         [ "$BASE" != "$RC" ] || { echo "platform-base-version must differ from platform-rc-version"; exit 1; }
         # Same older-branch-pre-release guard as for vCluster: RC must be strictly newer than BASE.
-        [ "$(printf '%s\n%s\n' "$BASE" "$RC" | sort -V | tail -n1)" = "$RC" ] \
+        # See the '~' note above: map the semver '-' to '~' so the pre-release sorts before its release.
+        BS="${BASE/-/\~}"; RS="${RC/-/\~}"
+        [ "$(printf '%s\n%s\n' "$BS" "$RS" | sort -V | tail -n1)" = "$RS" ] \
           || { echo "platform-rc-version ($RC) is not newer than platform-base-version ($BASE)"; exit 1; }
 
         {
