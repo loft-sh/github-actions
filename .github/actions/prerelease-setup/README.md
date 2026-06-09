@@ -42,10 +42,10 @@ provisioning (`aws-test-infra`) and the Ginkgo test execution
 |                INPUT                |  TYPE  | REQUIRED | DEFAULT |                                                                                                                                      DESCRIPTION                                                                                                                                      |
 |-------------------------------------|--------|----------|---------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 |            github-token             | string |   true   |         | GitHub token with contents:read on loft-sh/loft-enterprise. <br>Required because the platform release resolvers <br>call the GitHub API for a <br>private repo; unauthenticated calls return 404. <br>Pass ${{ github.token }} from a <br>job whose permissions grant contents:read.  |
-|        platform-base-version        | string |  false   |         |                                                                  Platform version for the initial install <br>(e.g. 4.9.0). Empty resolves to <br>the latest stable release of loft-sh/loft-enterprise.                                                                              |
+|        platform-base-version        | string |  false   |         |                                                                        Platform version for the initial install <br>(e.g. 4.9.0). Empty resolves to the latest <br>stable release of loft-sh/loft-enterprise.                                                                         |
 |         platform-rc-version         | string |  false   |         |                                                                         Platform RC version for upgrade (e.g. 4.10.0-alpha.6). <br>Empty resolves to the latest pre-release <br>of loft-sh/loft-enterprise.                                                                           |
 |          role-session-name          | string |   true   |         |                                                                      AWS STS role-session-name. Each consumer job <br>passes a distinct value (e.g. prerelease-vcluster-<run-id>, prerelease-aicloud-<run-id>).                                                                       |
-| standalone-vcluster-upgrade-version | string |  false   |         |                                                                          vCluster version to upgrade standalone to <br>(e.g. 0.35.0-alpha.7). Empty resolves to <br>the latest vCluster pre-release. Must differ <br>from the resolved base version.                                  |
+| standalone-vcluster-upgrade-version | string |  false   |         |                                                     vCluster version to upgrade standalone to <br>(e.g. 0.35.0-alpha.7). Empty resolves to the latest <br>vCluster pre-release. Must differ from the <br>resolved base version.                                                       |
 |     standalone-vcluster-version     | string |  false   |         |                                                                          vCluster version to install for standalone <br>(e.g. 0.34.0). Empty resolves to the latest <br>GitHub release of loft-sh/vcluster.                                                                           |
 
 <!-- AUTO-DOC-INPUT:END -->
@@ -58,12 +58,12 @@ the `v` before validating against the semver regex
 
 <!-- AUTO-DOC-OUTPUT:START - Do not remove or modify this section -->
 
-|               OUTPUT                |  TYPE  |                            DESCRIPTION                             |
-|-------------------------------------|--------|--------------------------------------------------------------------|
-|        platform-base-version        | string |           Resolved platform base version (no leading v).           |
-|         platform-rc-version         | string |           Resolved platform RC version (no leading v).             |
-| standalone-vcluster-upgrade-version | string |   Resolved standalone vCluster upgrade version (no leading v).     |
-|     standalone-vcluster-version     | string |       Resolved standalone vCluster version (no leading v).         |
+|               OUTPUT                |  TYPE  |                          DESCRIPTION                          |
+|-------------------------------------|--------|---------------------------------------------------------------|
+|        platform-base-version        | string |        Resolved platform base version (no leading v).         |
+|         platform-rc-version         | string |         Resolved platform RC version (no leading v).          |
+| standalone-vcluster-upgrade-version | string | Resolved standalone vCluster upgrade version (no leading v).  |
+|     standalone-vcluster-version     | string |     Resolved standalone vCluster version (no leading v).      |
 
 <!-- AUTO-DOC-OUTPUT:END -->
 
