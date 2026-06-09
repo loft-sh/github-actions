@@ -1,5 +1,5 @@
 name: 'Pre-Release Setup'
-description: 'Shared setup for the loft-enterprise pre-release vCluster + AI Cloud workflow jobs: free disk, checkout, install Go/kubectl/helm/vCluster CLI, AWS Login (with output-credentials), and resolve+validate the four version inputs (standalone vCluster base+upgrade, platform base+RC) including "latest release" / "latest pre-release" fallbacks. Resolved versions are also verified against the matching release assets so a missing artifact fails fast before downstream provisioning.'
+description: 'Shared setup for the loft-enterprise pre-release vCluster + AI Cloud workflow jobs: free disk, checkout, install Go/kubectl/helm/vCluster CLI, AWS Login, and resolve+validate the four version inputs (standalone vCluster base+upgrade, platform base+RC) including "latest release" / "latest pre-release" fallbacks. Resolved versions are also verified against the matching release assets so a missing artifact fails fast before downstream provisioning.'
 
 inputs:
   role-session-name:
@@ -73,11 +73,6 @@ runs:
         role-to-assume: arn:aws:iam::084374023943:role/e2e-test-executor
         role-session-name: ${{ inputs.role-session-name }}
         aws-region: us-west-2
-        # Required: downstream consumer steps (e.g. run-ginkgo) read AWS_ACCESS_KEY_ID /
-        # AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN as env vars. Without output-credentials
-        # the action sets them only as masked process-env, not in $GITHUB_ENV, so the
-        # consumer's `env:` block referencing env.AWS_* resolves to empty strings.
-        output-credentials: true
         role-duration-seconds: 6300
 
     - name: Resolve and validate versions
@@ -115,6 +110,10 @@ runs:
         fi
         [[ "$UP" =~ $VERSION_RE ]] || { echo "invalid standalone-vcluster-upgrade-version: $UP"; exit 1; }
         [ "$UP" != "$VERSION" ] || { echo "standalone-vcluster-upgrade-version must differ from base ($VERSION)"; exit 1; }
+        # Reject an older-branch pre-release (e.g. base=0.34.1, latest pre-release=0.33.5-rc.1):
+        # `sort -V` puts the higher semver last, so the upgrade target must equal that tail.
+        [ "$(printf '%s\n%s\n' "$VERSION" "$UP" | sort -V | tail -n1)" = "$UP" ] \
+          || { echo "standalone-vcluster-upgrade-version ($UP) is not newer than base ($VERSION)"; exit 1; }
 
         RC="${PLATFORM_RC_VERSION_INPUT#v}"
         if [ -z "$RC" ]; then
@@ -140,6 +139,9 @@ runs:
         fi
         [[ "$BASE" =~ $VERSION_RE ]] || { echo "invalid platform-base-version: $BASE"; exit 1; }
         [ "$BASE" != "$RC" ] || { echo "platform-base-version must differ from platform-rc-version"; exit 1; }
+        # Same older-branch-pre-release guard as for vCluster: RC must be strictly newer than BASE.
+        [ "$(printf '%s\n%s\n' "$BASE" "$RC" | sort -V | tail -n1)" = "$RC" ] \
+          || { echo "platform-rc-version ($RC) is not newer than platform-base-version ($BASE)"; exit 1; }
 
         {
           echo "standalone-vcluster-version=$VERSION"
@@ -168,7 +170,7 @@ runs:
         set -euo pipefail
         # install-standalone.sh comes from a separate vcluster-pro workflow, so a vCluster
         # pre-release can lack it; fail before downstream provisioning (e.g. EC2) is attempted.
-        check_asset() { curl -sfL -o /dev/null "$1" || { echo "::error::missing release asset: $1"; exit 1; }; }
+        check_asset() { curl -sfIL -o /dev/null "$1" || { echo "::error::missing release asset: $1"; exit 1; }; }
         rel="https://github.com/loft-sh/vcluster/releases/download"
         check_asset "${rel}/v${STANDALONE_VCLUSTER_VERSION}/install-standalone.sh"
         check_asset "${rel}/v${STANDALONE_VCLUSTER_UPGRADE_VERSION}/install-standalone.sh"

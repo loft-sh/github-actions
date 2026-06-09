@@ -14,10 +14,10 @@ The action performs, in order:
 5. Install `helm` (`azure/setup-helm@v5`).
 6. AWS Login via OIDC (`aws-actions/configure-aws-credentials@v6`,
    `role-to-assume: arn:aws:iam::084374023943:role/e2e-test-executor`,
-   `aws-region: us-west-2`, `role-duration-seconds: 6300`,
-   `output-credentials: true` so consumer steps can read
-   `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN`
-   as env vars).
+   `aws-region: us-west-2`, `role-duration-seconds: 6300`). The action
+   exports `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` /
+   `AWS_SESSION_TOKEN` to `$GITHUB_ENV` by default, so consumer steps
+   reading them as `env.AWS_*` resolve as expected.
 7. Resolve and validate the four version inputs (see below). Empty
    inputs fall back to "latest" via the GitHub API: latest release for
    `standalone-vcluster-version` and `platform-base-version`; latest
@@ -74,10 +74,10 @@ Resolved versions are written to **both** `$GITHUB_OUTPUT` and
 mirror lets consumer steps (Summarize, Run pre-release …) keep reading
 them as env vars exactly as in the pre-extraction inlined workflow.
 
-The OIDC step uses `output-credentials: true`, which exports
+`aws-actions/configure-aws-credentials` exports
 `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `AWS_SESSION_TOKEN`
-to `$GITHUB_ENV`. Consumer `env:` blocks referencing `env.AWS_*` (e.g.
-the `run-ginkgo` step) resolve as expected.
+to `$GITHUB_ENV` by default. Consumer `env:` blocks referencing
+`env.AWS_*` (e.g. the `run-ginkgo` step) resolve as expected.
 
 ## Permissions
 
