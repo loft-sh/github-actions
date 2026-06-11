@@ -1,0 +1,19 @@
+This action is vendored from bridgecrewio/checkov-action.
+
+  Source:  https://github.com/bridgecrewio/checkov-action
+  License: Apache License 2.0 (see ./LICENSE)
+  Author:  Chris Mavrakis / Bridgecrew
+
+Why this copy exists
+--------------------
+The upstream action repository publishes a very large number of git tags,
+which prevents Renovate from enumerating its releases and bumping the action.
+By hosting the action definition locally and referencing the upstream checkov
+Docker image (docker://ghcr.io/bridgecrewio/checkov:<tag>) directly, Renovate's
+built-in github-actions manager can keep the checkov version up to date via the
+`runs.image` reference in action.yml.
+
+Local modifications
+-------------------
+- Added this NOTICE and a header comment in action.yml explaining the vendoring.
+- No changes to inputs, outputs, args, or runtime behavior.

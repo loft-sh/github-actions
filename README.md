@@ -487,6 +487,53 @@ jobs:
 - The caller checks out its own source and controls `runs-on`/`timeout-minutes`/fork guarding at the job level.
 - A composite action cannot declare `timeout-minutes` on its steps; set `timeout-minutes` on the caller job (default ~10m is reasonable for most modules).
 
+### Checkov
+
+Runs [Checkov](https://www.checkov.io/) against infrastructure as code, open
+source packages, container images, and CI/CD configurations. This is a local
+copy of [`bridgecrewio/checkov-action`](https://github.com/bridgecrewio/checkov-action)
+(Apache-2.0) vendored verbatim — same inputs, outputs, and behavior. We host it
+here because the upstream action publishes too many git tags for Renovate to
+enumerate releases; the vendored copy pins the checkov Docker image
+(`docker://ghcr.io/bridgecrewio/checkov:<tag>`) directly, which Renovate's
+built-in `github-actions` manager keeps up to date via the `runs.image`
+reference.
+
+**Location:** `.github/actions/checkov` (see `LICENSE` and `NOTICE` there)
+
+**Usage:**
+
+```yaml
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: loft-sh/github-actions/.github/actions/checkov@checkov/v1
+        with:
+          directory: .
+          framework: terraform
+          soft_fail: "true"
+          output_format: cli
+```
+
+**Inputs/outputs:** identical to the upstream action — see its
+[input table](https://github.com/bridgecrewio/checkov-action#inputs). Common
+inputs: `directory` (default `.`), `file`, `framework`, `skip_check`, `check`,
+`soft_fail`, `quiet`, `compact`, `config_file`, `output_format` (default
+`sarif`), `output_file_path`. The single output is `results`.
+
+**Notes:**
+
+- This is a Docker action; it does not need a `checkout`-installed toolchain,
+  but the caller must still check out the code it wants scanned.
+- To bump checkov, let Renovate update the image tag in `action.yml` — do not
+  re-point callers at the upstream action.
+
 ## Testing
 
 Run all action tests locally:
