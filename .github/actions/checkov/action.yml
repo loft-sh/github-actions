@@ -1,0 +1,217 @@
+# This file is a copy of bridgecrewio/checkov-action's action.yml
+# (https://github.com/bridgecrewio/checkov-action), licensed under the Apache
+# License 2.0. A copy of the license is in ./LICENSE and attribution is in
+# ./NOTICE in this directory.
+#
+# MODIFIED FROM THE ORIGINAL (Apache-2.0 section 4(b)): this header comment was
+# added. No inputs, outputs, args, env, or runtime behavior were changed.
+#
+# We host it locally so Renovate can manage the checkov version: the upstream
+# action repo publishes too many tags for Renovate to enumerate releases,
+# whereas the checkov Docker image below has clean semver tags that Renovate's
+# built-in github-actions manager bumps via `runs.image`.
+name: 'Checkov GitHub Action'
+author: 'Chris Mavrakis'
+description: 'Run Checkov against infrastructure as code, open source packages, container images, and CI/CD configurations as a pre-packaged GitHub Action.'
+inputs:
+  file:
+    description: 'File with infrastructure code or packages to scan'
+    required: false
+  directory:
+    default: '.'
+    description: 'Directory with infrastructure code and/or package manager files to scan'
+    required: false
+  check:
+    description: 'Run scan only on a specific check identifier (comma separated)'
+    required: false
+  skip_check:
+    description: 'Run scan on all checks but a specific check identifier (comma separated)'
+    required: false
+  compact:
+    description: 'Do not display code blocks in output'
+    required: false
+  quiet:
+    description: 'display only failed checks'
+    required: false
+  api-key:
+    description: 'Environment variable name of the Bridgecrew API key from Bridgecrew app'
+    required: false
+  output_bc_ids:
+    description: 'Output Bridgecrew IDs (BC...) instead of Checkov IDs (CKV...)'
+    required: false
+  use_enforcement_rules:
+    description: 'Use the Enforcement rules configured in the platform for hard / soft fail logic. See checkov help text for more details on the nuances of this option.'
+    required: false
+  skip_results_upload:
+    description: 'Do not upload scan results to the platform to view in the console. Results are only available locally. If you use the --support flag, logs will still get uploaded.'
+    required: false
+  soft_fail:
+    description: 'do not return an error code if there are failed checks'
+    required: false
+  framework:
+    description: 'run only on a specific infrastructure'
+    required: false
+  skip_framework:
+    description: 'skip a specific infrastructure'
+    required: false
+  external_checks_dirs:
+    description: 'comma separated list of external (custom) checks directories'
+    required: false
+  external_checks_repos:
+    description: 'comma separated list of external (custom) checks repositories'
+    required: false
+  output_format:
+    description: 'The format of the output. cli, json, junitxml, github_failed_only, or sarif (comma separated)'
+    required: false
+    default: 'sarif'
+  output_file_path:
+    description: 'Path and name for output file, needs to end with a comma for a single output format'
+    required: false
+  download_external_modules:
+    description: 'download external terraform modules from public git repositories and terraform registry:true, false'
+    required: false
+  enable_secrets_scan_all_files:
+    description: 'Scan all files for secrets'
+    required: false
+  log_level:
+    description: 'log level'
+    required: false
+    default: 'WARNING'
+  config_file:
+    description: 'checkov configuration file'
+    required: false
+  baseline:
+    description: 'Path to a .checkov.baseline file to compare. Report will include only failed checks that are not in the baseline'
+    required: false
+  soft_fail_on:
+    description: 'Do not return an error code only for specific check identifiers (comma separated)'
+    required: false
+  hard_fail_on:
+    description: 'Return an error code only for specific check identifiers (comma separated)'
+    required: false
+  container_user:
+    default: 0
+    description: 'Set the username or UID used and optionally the groupname or GID for the action to run under'
+    required: false
+  docker_image:
+    description: 'Name of the docker image with the tags. Only works with an API and Dockerfile path'
+    required: false
+  dockerfile_path:
+    description: 'Path to the Dockerfile of the scanned docker image'
+    required: false
+  var_file:
+    description: 'Variable files to load in addition to the default files. Currently only supported for source Terraform (.tf file), and Helm chart scans. Requires using --directory, not --file. (comma separated)'
+    required: false
+  github_pat:
+    description: 'Environment variable name for a Github personal access token for scanning external modules sourced from private repositories'
+    required: false
+  tfc_token:
+    description: '(deprecated, use tf_registry_token) Environment variable name for a Terraform Cloud token for scanning external modules sourced from private registries'
+    required: false
+  tf_registry_token:
+    description: 'Environment variable name for a Terraform registry token for scanning external modules sourced from private registries'
+    required: false
+  ckv_validate_secrets:
+    description: 'Environment variable to enable local validation of secrets. Off by default.'
+    required: false
+  vcs_base_url:
+    description: 'Environment variable name for the base url of a self hosted VCS with external modules. To be used with vcs_username and vcs_token'
+    required: false
+  vcs_username:
+    description: 'Environment variable name for the username for basic auth against a self hosted VCS with external modules. To be used with vcs_base_url and vcs_token'
+    required: false
+  vcs_token:
+    description: 'Environment variable name for the password (personal access token) for basic auth against a self hosted VCS with external modules. To be used with vcs_base_url and vcs_username'
+    required: false
+  bitbucket_token:
+    description: 'Environment variable name for a Bitbucket access token to scan external modules sourced from a private Bitbucket repository'
+    required: false
+  bitbucket_app_password:
+    description: 'Environment variable name for a Bitbucket app password to perform basic auth in order to scan external modules sourced from a private Bitbucket repository. To be used with bitbucket_usernam'
+    required: false
+  bitbucket_username:
+    description: 'Environment variable name for a Bitbucket username to perform basic auth in order to scan external modules sourced from a private Bitbucket repository. To be used with bitbucket_app_password'
+    required: false
+  repo_root_for_plan_enrichment:
+    description: 'Directory containing the hcl code used to generate a given plan file. Use with `file`'
+    required: false
+  deep_analysis:
+    description: 'Combine the TF Plan and TF graphs to make additional connections. Must be used with `repo_root_for_plan_enrichment`'
+    required: false
+  policy_metadata_filter:
+    description: 'Comma separated key:value string to filter policies based on Prisma Cloud policy metadata. See https://prisma.pan.dev/api/cloud/cspm/policy#operation/get-policy-filters-and-options for information on allowed filters. Format: policy.label=test,cloud.type=aws'
+    required: false
+  policy_metadata_filter_exception:
+    description: 'Comma separated key:value string to exclude filtered policies based on Prisma Cloud policy metadata. When used with policy_metadata_filter, the exceptions override any policies selected asa result of the policy_metadata_filter flag.See https://prisma.pan.dev/api/cloud/cspm/policy#operation/get-policy-filters-and-options for information on allowed filters. Format: policy.label=test,cloud.type=aws'
+    required: false
+  skip_path:
+    description: 'Path (file or directory) to skip, using regular expression logic, relative to the current working directory. Word boundaries are not implicit; i.e., specifying "dir1" will skip any directory or subdirectory named "dir1". Ignored with -f. (comma separated)'
+    required: false
+  skip_cve_package:
+    description: 'Filter scan to run on all packages except for a specific CVE package identifier, e.g. CVE-2018-19788 (comma separated)'
+    required: false
+  skip_download:
+    description: 'Do not download any data from Bridgecrew. This will omit doc links, severities, etc., as well as custom policies and suppressions if using an API token. Note: it will prevent BC platform IDs from being available in Checkov.'
+    required: false
+  prisma-api-url:
+    description: 'Prisma API URL for prisma platform features'
+    required: false
+outputs:
+  results:
+    description: 'The results from the infrastructure scan'
+
+branding:
+  icon: 'shield'
+  color: 'purple'
+runs:
+  using: 'docker'
+  # renovate manages this tag via the built-in github-actions manager (runs.image).
+  image: 'docker://ghcr.io/bridgecrewio/checkov:3.3.0'
+  args:
+    - ${{ inputs.file }}
+    - ${{ inputs.directory }}
+    - ${{ inputs.check }}
+    - ${{ inputs.skip_check }}
+    - ${{ inputs.compact }}
+    - ${{ inputs.quiet }}
+    - ${{ inputs.soft_fail }}
+    - ${{ inputs.output_bc_ids }}
+    - ${{ inputs.use_enforcement_rules }}
+    - ${{ inputs.skip_results_upload }}
+    - ${{ inputs.framework }}
+    - ${{ inputs.skip_framework }}
+    - ${{ inputs.external_checks_dirs }}
+    - ${{ inputs.external_checks_repos }}
+    - ${{ inputs.output_format }}
+    - ${{ inputs.output_file_path }}
+    - ${{ inputs.download_external_modules }}
+    - ${{ inputs.enable_secrets_scan_all_files }}
+    - ${{ inputs.log_level }}
+    - ${{ inputs.config_file }}
+    - ${{ inputs.baseline }}
+    - ${{ inputs.hard_fail_on }}
+    - ${{ inputs.soft_fail_on }}
+    - ${{ inputs.docker_image }}
+    - ${{ inputs.dockerfile_path }}
+    - ${{ inputs.var_file }}
+    - ${{ inputs.repo_root_for_plan_enrichment }}
+    - ${{ inputs.deep_analysis }}
+    - ${{ inputs.policy_metadata_filter }}
+    - ${{ inputs.policy_metadata_filter_exception }}
+    - ${{ inputs.skip_path }}
+    - ${{ inputs.skip_cve_package }}
+    - ${{ inputs.skip_download }}
+    - "--user ${{ inputs.container_user }}"
+  env:
+    API_KEY_VARIABLE: ${{ inputs.api-key }}
+    GITHUB_PAT: ${{ inputs.github_pat }}
+    TFC_TOKEN: ${{ inputs.tfc_token }}
+    TF_REGISTRY_TOKEN: ${{ inputs.tf_registry_token }}
+    VCS_USERNAME: ${{ inputs.vcs_username }}
+    VCS_BASE_URL: ${{ inputs.vcs_base_url }}
+    VCS_TOKEN: ${{ inputs.vcs_token }}
+    BITBUCKET_TOKEN: ${{ inputs.bitbucket_token }}
+    BITBUCKET_USERNAME: ${{ inputs.bitbucket_username }}
+    BITBUCKET_APP_PASSWORD: ${{ inputs.bitbucket_app_password }}
+    PRISMA_API_URL: ${{ inputs.prisma-api-url }}
+    CKV_VALIDATE_SECRETS: ${{ inputs.ckv_validate_secrets }}
