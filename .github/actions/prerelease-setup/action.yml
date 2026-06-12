@@ -6,7 +6,7 @@ inputs:
     description: 'AWS STS role-session-name. Each consumer job passes a distinct value (e.g. prerelease-vcluster-<run-id>, prerelease-aicloud-<run-id>).'
     required: true
   github-token:
-    description: 'GitHub token with contents:read on loft-sh/loft-enterprise. Required because the platform release resolvers call the GitHub API for a private repo; unauthenticated calls return 404. Pass ${{ github.token }} from a job whose permissions grant contents:read.'
+    description: 'GitHub token with contents:read on loft-sh/loft-enterprise. Required because the platform release resolvers call the GitHub API for a private repo; unauthenticated calls return 404. Pass the calling job''s github.token from a job whose permissions grant contents:read.'
     required: true
   standalone-vcluster-version:
     description: 'vCluster version to install for standalone (e.g. 0.34.0). Empty resolves to the latest GitHub release of loft-sh/vcluster.'
