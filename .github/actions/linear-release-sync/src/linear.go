@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"strings"
 
-	semver "github.com/Masterminds/semver/v3"
 	"github.com/shurcooL/graphql"
 )
 
@@ -51,17 +50,6 @@ func NewLinearClient(ctx context.Context, token string, logger *slog.Logger) Lin
 	client := graphql.NewClient("https://api.linear.app/graphql", httpClient)
 
 	return LinearClient{client: client, logger: logger}
-}
-
-// isStableRelease checks if a version is a stable release (no pre-release suffix).
-// Returns true for stable releases like v0.26.1, v4.5.0
-// Returns false for pre-releases like v0.26.1-alpha.1, v0.26.1-rc.4, v4.5.0-beta.2
-func isStableRelease(version string) bool {
-	v, err := semver.NewVersion(version)
-	if err != nil {
-		return false
-	}
-	return v.Prerelease() == ""
 }
 
 // ListTeams returns all available teams, paginating through all results.
@@ -265,16 +253,20 @@ func (l *LinearClient) IsIssueInStateByName(ctx context.Context, issueID string,
 // MoveIssueToState moves the issue to the given state if it's not already there and if it's in the ready for release state.
 // It also adds a comment to the issue about when it was first released and on which tag.
 // For stable releases on already-released issues, it adds a "now available in stable" comment.
+//
+// isStable reflects the GitHub release's prerelease flag (true when the release is
+// not a prerelease). It is the authoritative signal for whether to treat this as a
+// shippable release, deliberately decoupled from parsing the tag string: vCluster
+// publishes backport patches like v0.28.2-patch.1 (semver-prerelease by suffix, but
+// marked prerelease=false on GitHub), while -rc/-alpha tags are marked prerelease=true.
 // issueDetails should be pre-fetched via GetIssueDetails to avoid redundant API calls.
-func (l *LinearClient) MoveIssueToState(ctx context.Context, dryRun bool, issueID string, issueDetails *IssueDetails, releasedStateID, readyForReleaseStateName, releaseTagName, releaseDate string) error {
+func (l *LinearClient) MoveIssueToState(ctx context.Context, dryRun bool, issueID string, issueDetails *IssueDetails, releasedStateID, readyForReleaseStateName, releaseTagName, releaseDate string, isStable bool) error {
 	// (ThomasK33): Skip CVEs
 	if strings.HasPrefix(strings.ToLower(issueID), "cve") {
 		return nil
 	}
 
 	logger := l.logger
-
-	isStable := isStableRelease(releaseTagName)
 
 	alreadyReleased := issueDetails.StateID == releasedStateID
 

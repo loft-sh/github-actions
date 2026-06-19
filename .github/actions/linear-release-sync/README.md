@@ -10,6 +10,7 @@ A GitHub Action that syncs Linear issues to the "Released" state when a GitHub r
 - Moves issues from "Ready for Release" to "Released" state
 - Adds release comments with version and date
 - For stable releases on already-released issues, adds "Now available in stable release" comments
+- Classifies a release as stable from GitHub's `prerelease` flag, not the tag string, so backport patches like `v0.28.2-patch.1` (a semver-prerelease by suffix but published with `prerelease=false`) sync, while `-rc`/`-alpha` tags (`prerelease=true`) are skipped
 - Skips CVE issues automatically
 - Supports dry-run mode for previewing changes
 

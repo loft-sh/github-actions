@@ -217,6 +217,12 @@ func run(
 
 	currentReleaseDateStr := currentRelease.PublishedAt.Format("2006-01-02")
 
+	// Treat the release as shippable based on GitHub's prerelease flag, not the tag
+	// string. vCluster publishes backport patches like v0.28.2-patch.1 (semver-prerelease
+	// by suffix, but prerelease=false on GitHub); -rc/-alpha tags are prerelease=true.
+	isStable := !currentRelease.IsPrerelease
+	logger.Info("Release stability", "releaseTag", currentRelease.TagName, "isPrerelease", currentRelease.IsPrerelease, "isStable", isStable)
+
 	releasedCount := 0
 	skippedCount := 0
 
@@ -249,7 +255,7 @@ func run(
 			continue
 		}
 
-		if err := linearClient.MoveIssueToState(ctx, *dryRun, issueID, issueDetails, releasedStateID, *readyForReleaseStateName, currentRelease.TagName, currentReleaseDateStr); err != nil {
+		if err := linearClient.MoveIssueToState(ctx, *dryRun, issueID, issueDetails, releasedStateID, *readyForReleaseStateName, currentRelease.TagName, currentReleaseDateStr, isStable); err != nil {
 			logger.Error("Failed to move issue to state", "issueID", issueID, "error", err)
 			skippedCount++
 		} else {

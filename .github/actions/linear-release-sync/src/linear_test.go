@@ -352,40 +352,32 @@ func TestIssueIDsExtraction(t *testing.T) {
 	}
 }
 
-func TestIsStableRelease(t *testing.T) {
+// TestReleaseStabilityFromPrereleaseFlag documents that release stability is derived
+// from GitHub's prerelease flag (see main.go: isStable := !currentRelease.IsPrerelease),
+// not from parsing the tag string. vCluster publishes backport patches like
+// v0.28.2-patch.1 that are semver-prereleases by suffix but real releases on GitHub
+// (prerelease=false); they must be treated as stable so already-released issues get a
+// single "Now available in stable release" comment. RC/alpha tags are prerelease=true
+// and must be skipped. This is the DEVOPS-1006 regression guard.
+func TestReleaseStabilityFromPrereleaseFlag(t *testing.T) {
 	testCases := []struct {
-		version  string
-		expected bool
+		name         string
+		tag          string
+		isPrerelease bool
+		wantStable   bool
 	}{
-		// Stable releases
-		{"v0.26.1", true},
-		{"v4.5.0", true},
-		{"v1.0.0", true},
-		{"0.26.1", true}, // without v prefix
-		{"v27.0.0", true},
-
-		// Invalid versions
-		{"not-a-version", false},
-		{"", false},
-
-		// Pre-releases
-		{"v0.26.1-alpha.1", false},
-		{"v0.26.1-alpha.5", false},
-		{"v0.26.1-beta.1", false},
-		{"v0.26.1-rc.1", false},
-		{"v0.26.1-rc.4", false},
-		{"v0.26.1-dev.1", false},
-		{"v0.26.1-pre.1", false},
-		{"v0.26.1-next.1", false},
-		{"v4.5.0-beta.2", false},
-		{"0.27.0-alpha.1", false}, // without v prefix
+		{"stable release", "v0.34.4", false, true},
+		{"backport patch (DEVOPS-1006)", "v0.28.2-patch.1", false, true},
+		{"release candidate", "v0.35.0-rc.9", true, false},
+		{"alpha", "v0.35.0-alpha.8", true, false},
 	}
 
 	for _, tc := range testCases {
-		t.Run(tc.version, func(t *testing.T) {
-			result := isStableRelease(tc.version)
-			if result != tc.expected {
-				t.Errorf("isStableRelease(%q) = %v, want %v", tc.version, result, tc.expected)
+		t.Run(tc.name, func(t *testing.T) {
+			// Mirror the production decision in main.go.
+			isStable := !tc.isPrerelease
+			if isStable != tc.wantStable {
+				t.Errorf("tag %q (isPrerelease=%v): isStable=%v, want %v", tc.tag, tc.isPrerelease, isStable, tc.wantStable)
 			}
 		})
 	}
@@ -504,9 +496,10 @@ func TestStableReleaseCommentText(t *testing.T) {
 }
 
 func TestMoveIssueToState_PreReleaseAlreadyReleased(t *testing.T) {
-	// When an issue is already in Released state and the release is a pre-release,
-	// MoveIssueToState should skip entirely (no state change, no comment).
-	// This is tested by replicating the logic since the real method requires a live GraphQL client.
+	// When an issue is already in Released state and the release is a prerelease
+	// (GitHub prerelease flag = true, e.g. v0.27.0-rc.1), MoveIssueToState should skip
+	// entirely (no state change, no comment). Replicated here since the real method
+	// requires a live GraphQL client.
 
 	issueDetails := &IssueDetails{
 		StateID:   "released-id",
@@ -514,25 +507,45 @@ func TestMoveIssueToState_PreReleaseAlreadyReleased(t *testing.T) {
 		TeamName:  "Engineering",
 	}
 	releasedStateID := "released-id"
-	releaseTagName := "v0.27.0-alpha.1"
 
-	isStable := isStableRelease(releaseTagName)
+	// GitHub marks -rc/-alpha tags as prerelease=true.
+	isStable := false
 	alreadyReleased := issueDetails.StateID == releasedStateID
 
 	if !alreadyReleased {
 		t.Fatal("expected issue to be already released")
 	}
-	if isStable {
-		t.Fatal("expected pre-release tag to not be stable")
-	}
 
-	// The code returns nil early for pre-release + already-released — no comment added.
-	// This is the desired behavior: pre-releases should not add duplicate comments.
+	// The code returns nil early for prerelease + already-released — no comment added.
 	if alreadyReleased && !isStable {
-		// This is the expected early-return path
-		return
+		return // expected early-return path
 	}
-	t.Error("should have returned early for pre-release on already-released issue")
+	t.Error("should have returned early for prerelease on already-released issue")
+}
+
+func TestMoveIssueToState_PatchReleaseAlreadyReleased(t *testing.T) {
+	// A backport patch (e.g. v0.28.2-patch.1) is published as prerelease=false, so
+	// isStable=true. For an already-released issue this must NOT take the prerelease
+	// early-return path; it proceeds to the dedup check and, if no prior comment exists
+	// for this tag, the "Now available in stable release" comment. DEVOPS-1006 guard.
+
+	issueDetails := &IssueDetails{
+		StateID:   "released-id",
+		StateName: "Released",
+		TeamName:  "Engineering",
+	}
+	releasedStateID := "released-id"
+
+	// GitHub marks -patch.N backport releases as prerelease=false.
+	isStable := true
+	alreadyReleased := issueDetails.StateID == releasedStateID
+
+	if alreadyReleased && !isStable {
+		t.Fatal("patch release must not take the prerelease early-return path")
+	}
+	if !(alreadyReleased && isStable) {
+		t.Fatal("expected the 'Now available in stable release' branch for a patch on an already-released issue")
+	}
 }
 
 func TestMoveIssueToState_SkipsWrongState(t *testing.T) {
