@@ -125,12 +125,11 @@ func LatestStableSemverRange(ctx context.Context, client *githubv4.Client, owner
 }
 
 type Release struct {
-	PublishedAt  githubv4.DateTime
-	Description  string
-	Name         string
-	TagName      string
-	IsPrerelease bool
-	DatabaseId   int64
+	PublishedAt githubv4.DateTime
+	Description string
+	Name        string
+	TagName     string
+	DatabaseId  int64
 }
 
 // FetchReleaseByTag fetches a release by its tag name.

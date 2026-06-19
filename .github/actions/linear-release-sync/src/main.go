@@ -12,6 +12,7 @@ import (
 	"strings"
 	"syscall"
 
+	semver "github.com/Masterminds/semver/v3"
 	pullrequests "github.com/loft-sh/github-actions/linear-release-sync/changelog/pull-requests"
 	"github.com/loft-sh/github-actions/linear-release-sync/changelog/releases"
 	"github.com/shurcooL/githubv4"
@@ -217,11 +218,14 @@ func run(
 
 	currentReleaseDateStr := currentRelease.PublishedAt.Format("2006-01-02")
 
-	// Treat the release as shippable based on GitHub's prerelease flag, not the tag
-	// string. vCluster publishes backport patches like v0.28.2-patch.1 (semver-prerelease
-	// by suffix, but prerelease=false on GitHub); -rc/-alpha tags are prerelease=true.
-	isStable := releaseIsStable(currentRelease)
-	logger.Info("Release stability", "releaseTag", currentRelease.TagName, "isPrerelease", currentRelease.IsPrerelease, "isStable", isStable)
+	// Classify the release as shippable from its tag name (DEVOPS-1006). vCluster
+	// publishes backport patches like v0.28.2-patch.1 that must be treated as real
+	// releases; -rc/-alpha/-beta/-dev/-pre/-next tags are prereleases and are skipped.
+	// The tag is the signal rather than GitHub's prerelease flag because that flag is
+	// human-set and a release is often published as a prerelease first and promoted to
+	// stable later, so it is not reliable at sync time.
+	isStable := releaseIsStable(currentRelease.TagName)
+	logger.Info("Release stability", "releaseTag", currentRelease.TagName, "isStable", isStable)
 
 	releasedCount := 0
 	skippedCount := 0
@@ -290,13 +294,24 @@ func (s caseInsensitiveSet) Contains(value string) bool {
 	return ok
 }
 
-// releaseIsStable reports whether a fetched GitHub release should be treated as a
-// shippable stable release. It trusts GitHub's prerelease flag rather than parsing the
-// tag string: vCluster publishes backport patches like v0.28.2-patch.1 that are
-// semver-prereleases by suffix but real releases on GitHub (prerelease=false), while
-// -rc/-alpha tags are prerelease=true. See DEVOPS-1006.
-func releaseIsStable(r releases.Release) bool {
-	return !r.IsPrerelease
+// releaseIsStable reports whether a release tag should be treated as a shippable
+// stable release, classified from the tag name. A tag is stable when it has no semver
+// prerelease component (e.g. v0.34.4) or when that component is the vCluster backport
+// patch marker "patch" / "patch.N": vCluster publishes patches like v0.28.2-patch.1 that
+// are semver-prereleases by suffix but are real releases. Everything else with a
+// prerelease component (-rc/-alpha/-beta/-dev/-pre/-next) is a prerelease and is skipped.
+// A non-semver tag is treated as not stable.
+//
+// The tag is used rather than GitHub's prerelease flag (DEVOPS-1006): that flag is
+// human-set and a release is often published as a prerelease first and promoted to
+// stable later, so it is not a reliable signal at sync time.
+func releaseIsStable(tag string) bool {
+	v, err := semver.NewVersion(tag)
+	if err != nil {
+		return false
+	}
+	pre := v.Prerelease()
+	return pre == "" || pre == "patch" || strings.HasPrefix(pre, "patch.")
 }
 
 // deduplicateIssueIDs removes duplicate issue IDs from the slice while preserving order

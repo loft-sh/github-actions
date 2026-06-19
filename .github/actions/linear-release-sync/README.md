@@ -10,7 +10,7 @@ A GitHub Action that syncs Linear issues to the "Released" state when a GitHub r
 - Moves issues from "Ready for Release" to "Released" state
 - Adds release comments with version and date
 - For stable releases on already-released issues, adds "Now available in stable release" comments
-- Classifies a release as stable from GitHub's `prerelease` flag, not the tag string, so backport patches like `v0.28.2-patch.1` (a semver-prerelease by suffix but published with `prerelease=false`) sync, while `-rc`/`-alpha` tags (`prerelease=true`) are skipped
+- Classifies a release as stable from the tag name: a tag with no semver prerelease component (e.g. `v0.34.4`) or one beginning with `patch` (e.g. `v0.28.2-patch.1`) is treated as a real release and syncs, while `-rc`/`-alpha`/`-beta`/`-dev`/`-pre`/`-next` tags are prereleases and are skipped. The tag is used rather than GitHub's `prerelease` flag because that flag is human-set and a release is often published as a prerelease first and promoted to stable later
 - Skips CVE issues automatically
 - Supports dry-run mode for previewing changes
 

@@ -46,9 +46,9 @@ func (a releaseAction) String() string {
 // decideReleaseAction determines what to do for an issue from its current state and the
 // release's stability, independent of any Linear API call. The tag-scoped dedup check
 // for actionStableComment is applied separately by the caller because it needs to fetch
-// the issue's comments. isStable reflects GitHub's prerelease flag (see releaseIsStable
-// in main.go): -patch.N backports are stable (prerelease=false) and must reach
-// actionStableComment, while -rc/-alpha are not. DEVOPS-1006 regression guard.
+// the issue's comments. isStable is classified from the release tag (see releaseIsStable
+// in main.go): -patch.N backports are stable and must reach actionStableComment, while
+// -rc/-alpha are not. DEVOPS-1006 regression guard.
 func decideReleaseAction(issueID string, alreadyReleased, isStable, inReadyForRelease bool) releaseAction {
 	// (ThomasK33): Skip CVEs
 	if strings.HasPrefix(strings.ToLower(issueID), "cve") {
@@ -312,11 +312,10 @@ func (l *LinearClient) IsIssueInStateByName(ctx context.Context, issueID string,
 // It also adds a comment to the issue about when it was first released and on which tag.
 // For stable releases on already-released issues, it adds a "now available in stable" comment.
 //
-// isStable reflects the GitHub release's prerelease flag (true when the release is
-// not a prerelease). It is the authoritative signal for whether to treat this as a
-// shippable release, deliberately decoupled from parsing the tag string: vCluster
-// publishes backport patches like v0.28.2-patch.1 (semver-prerelease by suffix, but
-// marked prerelease=false on GitHub), while -rc/-alpha tags are marked prerelease=true.
+// isStable is classified from the release tag (see releaseIsStable in main.go): it is
+// true for stable releases and for -patch.N backports (vCluster publishes patches like
+// v0.28.2-patch.1 that are real releases), and false for -rc/-alpha/-beta/-dev/-pre/-next
+// prereleases. It is the signal for whether to treat this as a shippable release.
 // issueDetails should be pre-fetched via GetIssueDetails to avoid redundant API calls.
 func (l *LinearClient) MoveIssueToState(ctx context.Context, dryRun bool, issueID string, issueDetails *IssueDetails, releasedStateID, readyForReleaseStateName, releaseTagName, releaseDate string, isStable bool) error {
 	logger := l.logger

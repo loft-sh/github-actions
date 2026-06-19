@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	pullrequests "github.com/loft-sh/github-actions/linear-release-sync/changelog/pull-requests"
-	"github.com/loft-sh/github-actions/linear-release-sync/changelog/releases"
 )
 
 func TestMoveIssueLogic(t *testing.T) {
@@ -326,31 +325,36 @@ func TestIssueIDsExtraction(t *testing.T) {
 }
 
 // TestReleaseIsStable drives the real production decision (releaseIsStable in main.go)
-// that classifies a release from GitHub's prerelease flag rather than parsing the tag
-// string. vCluster publishes backport patches like v0.28.2-patch.1 that are
-// semver-prereleases by suffix but real releases on GitHub (prerelease=false); they must
+// that classifies a release from its tag name. vCluster publishes backport patches like
+// v0.28.2-patch.1 that are semver-prereleases by suffix but are real releases; they must
 // be treated as stable so already-released issues get a single "Now available in stable
-// release" comment. RC/alpha tags are prerelease=true and must be skipped. Feeding a
-// real releases.Release through releaseIsStable means an accidental inversion of the
-// production logic fails here. This is the DEVOPS-1006 regression guard.
+// release" comment. -rc/-alpha/-beta/-dev/-pre/-next tags are prereleases and must be
+// skipped, and a non-semver tag is not stable. Calling the production function with
+// hardcoded expectations means an accidental inversion of the logic fails here. This is
+// the DEVOPS-1006 regression guard.
 func TestReleaseIsStable(t *testing.T) {
 	testCases := []struct {
-		name         string
-		tag          string
-		isPrerelease bool
-		wantStable   bool
+		name       string
+		tag        string
+		wantStable bool
 	}{
-		{"stable release", "v0.34.4", false, true},
-		{"backport patch (DEVOPS-1006)", "v0.28.2-patch.1", false, true},
-		{"release candidate", "v0.35.0-rc.9", true, false},
-		{"alpha", "v0.35.0-alpha.8", true, false},
+		{"stable release", "v0.34.4", true},
+		{"backport patch (DEVOPS-1006)", "v0.28.2-patch.1", true},
+		{"release candidate", "v0.35.0-rc.9", false},
+		{"alpha", "v0.35.0-alpha.8", false},
+		{"beta", "v0.35.0-beta.2", false},
+		{"dev", "v0.35.0-dev.1", false},
+		{"pre", "v0.35.0-pre.1", false},
+		{"next", "v0.35.0-next.0", false},
+		{"patch-like prerelease is not a patch", "v0.35.0-patchset.1", false},
+		{"non-semver tag", "latest", false},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := releaseIsStable(releases.Release{TagName: tc.tag, IsPrerelease: tc.isPrerelease})
+			got := releaseIsStable(tc.tag)
 			if got != tc.wantStable {
-				t.Errorf("releaseIsStable(%q, isPrerelease=%v) = %v, want %v", tc.tag, tc.isPrerelease, got, tc.wantStable)
+				t.Errorf("releaseIsStable(%q) = %v, want %v", tc.tag, got, tc.wantStable)
 			}
 		})
 	}

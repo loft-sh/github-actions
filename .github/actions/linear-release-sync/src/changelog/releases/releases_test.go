@@ -304,12 +304,11 @@ func TestFetchReleaseByTag(t *testing.T) {
 			"data": map[string]any{
 				"repository": map[string]any{
 					"release": map[string]any{
-						"publishedAt":  "2024-01-15T12:00:00Z",
-						"description":  "Release notes",
-						"name":         "v1.2.0",
-						"tagName":      "v1.2.0",
-						"isPrerelease": true,
-						"databaseId":   42,
+						"publishedAt": "2024-01-15T12:00:00Z",
+						"description": "Release notes",
+						"name":        "v1.2.0",
+						"tagName":     "v1.2.0",
+						"databaseId":  42,
 					},
 				},
 			},
@@ -331,9 +330,6 @@ func TestFetchReleaseByTag(t *testing.T) {
 	}
 	if release.DatabaseId != 42 {
 		t.Errorf("expected databaseId 42, got %d", release.DatabaseId)
-	}
-	if !release.IsPrerelease {
-		t.Errorf("expected IsPrerelease true, got %v", release.IsPrerelease)
 	}
 }
 
