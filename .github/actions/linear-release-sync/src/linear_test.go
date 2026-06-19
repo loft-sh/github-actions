@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	pullrequests "github.com/loft-sh/github-actions/linear-release-sync/changelog/pull-requests"
+	"github.com/loft-sh/github-actions/linear-release-sync/changelog/releases"
 )
 
 func TestMoveIssueLogic(t *testing.T) {
@@ -101,34 +102,6 @@ func (m *MockLinearClient) IsIssueInState(ctx context.Context, issueID string, s
 func (m *MockLinearClient) IsIssueInStateByName(ctx context.Context, issueID string, stateName string) (bool, error) {
 	_, currentStateName, _ := m.IssueStateDetails(ctx, issueID)
 	return currentStateName == stateName, nil
-}
-
-// MoveIssueToState implementation for tests
-func (m *MockLinearClient) MoveIssueToState(ctx context.Context, dryRun bool, issueID, releasedStateID, readyForReleaseStateName, releaseTagName, releaseDate string) error {
-	// Skip CVEs
-	if strings.HasPrefix(strings.ToLower(issueID), "cve") {
-		return nil
-	}
-
-	currentStateID, currentStateName, _ := m.IssueStateDetails(ctx, issueID)
-
-	// Already in released state
-	if currentStateID == releasedStateID {
-		return nil
-	}
-
-	// Skip if not in ready for release state
-	if currentStateName != readyForReleaseStateName {
-		return fmt.Errorf("issue %s not in ready for release state", issueID)
-	}
-
-	// Only ENG-1234 is expected to be moved successfully
-	// Explicitly return errors for other issues to ensure the test only counts ENG-1234
-	if issueID != "ENG-1234" {
-		return fmt.Errorf("would not move issue %s for test purposes", issueID)
-	}
-
-	return nil
 }
 
 func TestIsIssueInState(t *testing.T) {
@@ -352,14 +325,15 @@ func TestIssueIDsExtraction(t *testing.T) {
 	}
 }
 
-// TestReleaseStabilityFromPrereleaseFlag documents that release stability is derived
-// from GitHub's prerelease flag (see main.go: isStable := !currentRelease.IsPrerelease),
-// not from parsing the tag string. vCluster publishes backport patches like
-// v0.28.2-patch.1 that are semver-prereleases by suffix but real releases on GitHub
-// (prerelease=false); they must be treated as stable so already-released issues get a
-// single "Now available in stable release" comment. RC/alpha tags are prerelease=true
-// and must be skipped. This is the DEVOPS-1006 regression guard.
-func TestReleaseStabilityFromPrereleaseFlag(t *testing.T) {
+// TestReleaseIsStable drives the real production decision (releaseIsStable in main.go)
+// that classifies a release from GitHub's prerelease flag rather than parsing the tag
+// string. vCluster publishes backport patches like v0.28.2-patch.1 that are
+// semver-prereleases by suffix but real releases on GitHub (prerelease=false); they must
+// be treated as stable so already-released issues get a single "Now available in stable
+// release" comment. RC/alpha tags are prerelease=true and must be skipped. Feeding a
+// real releases.Release through releaseIsStable means an accidental inversion of the
+// production logic fails here. This is the DEVOPS-1006 regression guard.
+func TestReleaseIsStable(t *testing.T) {
 	testCases := []struct {
 		name         string
 		tag          string
@@ -374,10 +348,9 @@ func TestReleaseStabilityFromPrereleaseFlag(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			// Mirror the production decision in main.go.
-			isStable := !tc.isPrerelease
-			if isStable != tc.wantStable {
-				t.Errorf("tag %q (isPrerelease=%v): isStable=%v, want %v", tc.tag, tc.isPrerelease, isStable, tc.wantStable)
+			got := releaseIsStable(releases.Release{TagName: tc.tag, IsPrerelease: tc.isPrerelease})
+			if got != tc.wantStable {
+				t.Errorf("releaseIsStable(%q, isPrerelease=%v) = %v, want %v", tc.tag, tc.isPrerelease, got, tc.wantStable)
 			}
 		})
 	}
@@ -495,77 +468,37 @@ func TestStableReleaseCommentText(t *testing.T) {
 	}
 }
 
-func TestMoveIssueToState_PreReleaseAlreadyReleased(t *testing.T) {
-	// When an issue is already in Released state and the release is a prerelease
-	// (GitHub prerelease flag = true, e.g. v0.27.0-rc.1), MoveIssueToState should skip
-	// entirely (no state change, no comment). Replicated here since the real method
-	// requires a live GraphQL client.
-
-	issueDetails := &IssueDetails{
-		StateID:   "released-id",
-		StateName: "Released",
-		TeamName:  "Engineering",
-	}
-	releasedStateID := "released-id"
-
-	// GitHub marks -rc/-alpha tags as prerelease=true.
-	isStable := false
-	alreadyReleased := issueDetails.StateID == releasedStateID
-
-	if !alreadyReleased {
-		t.Fatal("expected issue to be already released")
-	}
-
-	// The code returns nil early for prerelease + already-released — no comment added.
-	if alreadyReleased && !isStable {
-		return // expected early-return path
-	}
-	t.Error("should have returned early for prerelease on already-released issue")
-}
-
-func TestMoveIssueToState_PatchReleaseAlreadyReleased(t *testing.T) {
-	// A backport patch (e.g. v0.28.2-patch.1) is published as prerelease=false, so
-	// isStable=true. For an already-released issue this must NOT take the prerelease
-	// early-return path; it proceeds to the dedup check and, if no prior comment exists
-	// for this tag, the "Now available in stable release" comment. DEVOPS-1006 guard.
-
-	issueDetails := &IssueDetails{
-		StateID:   "released-id",
-		StateName: "Released",
-		TeamName:  "Engineering",
-	}
-	releasedStateID := "released-id"
-
-	// GitHub marks -patch.N backport releases as prerelease=false.
-	isStable := true
-	alreadyReleased := issueDetails.StateID == releasedStateID
-
-	if alreadyReleased && !isStable {
-		t.Fatal("patch release must not take the prerelease early-return path")
-	}
-	if !(alreadyReleased && isStable) {
-		t.Fatal("expected the 'Now available in stable release' branch for a patch on an already-released issue")
-	}
-}
-
-func TestMoveIssueToState_SkipsWrongState(t *testing.T) {
-	// Issues not in "Ready for Release" and not already released should be skipped.
-	issueDetails := &IssueDetails{
-		StateID:   "in-progress-id",
-		StateName: "In Progress",
-		TeamName:  "Engineering",
-	}
-	releasedStateID := "released-id"
-	readyForReleaseStateName := "Ready for Release"
-
-	alreadyReleased := issueDetails.StateID == releasedStateID
-	if alreadyReleased {
-		t.Fatal("issue should not be in released state")
+// TestDecideReleaseAction drives the real branch selection (decideReleaseAction in
+// linear.go) that MoveIssueToState performs before any Linear API call. It is the
+// DEVOPS-1006 regression guard: a -patch.N backport is published as prerelease=false
+// (isStable=true), so an already-released issue must reach actionStableComment, not the
+// prerelease skip. -rc/-alpha (isStable=false) on an already-released issue must skip.
+// Because the test calls the production function, inverting the logic fails here.
+func TestDecideReleaseAction(t *testing.T) {
+	testCases := []struct {
+		name              string
+		issueID           string
+		alreadyReleased   bool
+		isStable          bool
+		inReadyForRelease bool
+		want              releaseAction
+	}{
+		{"cve is always skipped", "CVE-1234", false, true, true, actionSkip},
+		{"ready for release, stable -> move", "ENG-1", false, true, true, actionMoveToReleased},
+		{"ready for release, prerelease -> move", "ENG-2", false, false, true, actionMoveToReleased},
+		{"not ready and not released -> skip", "ENG-3", false, true, false, actionSkip},
+		{"already released, prerelease (rc/alpha) -> skip", "ENG-4", true, false, false, actionSkip},
+		{"already released, stable backport patch (DEVOPS-1006) -> stable comment", "ENG-5", true, true, false, actionStableComment},
+		{"already released, stable -> stable comment", "ENG-6", true, true, true, actionStableComment},
 	}
 
-	if issueDetails.StateName == readyForReleaseStateName {
-		t.Fatal("issue should not be in ready for release state")
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := decideReleaseAction(tc.issueID, tc.alreadyReleased, tc.isStable, tc.inReadyForRelease)
+			if got != tc.want {
+				t.Errorf("decideReleaseAction(%q, alreadyReleased=%v, isStable=%v, inReadyForRelease=%v) = %v, want %v",
+					tc.issueID, tc.alreadyReleased, tc.isStable, tc.inReadyForRelease, got, tc.want)
+			}
+		})
 	}
-
-	// The code skips this issue — no state change, no comment.
 }

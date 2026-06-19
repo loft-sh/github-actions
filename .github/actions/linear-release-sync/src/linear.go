@@ -13,6 +13,64 @@ import (
 
 var ErrNoWorkflowFound = errors.New("no workflow state found")
 
+// releaseAction is the decision MoveIssueToState makes for a single issue. It is
+// derived purely from the issue's current state and the release's stability so the
+// branching can be unit-tested without a live Linear client.
+type releaseAction int
+
+const (
+	// actionSkip leaves the issue untouched: a CVE, an issue already released on a
+	// prior prerelease, or an issue not yet in the ready-for-release state.
+	actionSkip releaseAction = iota
+	// actionMoveToReleased moves the issue to Released and adds the "first released" comment.
+	actionMoveToReleased
+	// actionStableComment means the issue is already released and this is a stable
+	// release, so (subject to the tag-scoped dedup check) add the "Now available in
+	// stable release" comment.
+	actionStableComment
+)
+
+func (a releaseAction) String() string {
+	switch a {
+	case actionSkip:
+		return "skip"
+	case actionMoveToReleased:
+		return "move-to-released"
+	case actionStableComment:
+		return "stable-comment"
+	default:
+		return fmt.Sprintf("releaseAction(%d)", int(a))
+	}
+}
+
+// decideReleaseAction determines what to do for an issue from its current state and the
+// release's stability, independent of any Linear API call. The tag-scoped dedup check
+// for actionStableComment is applied separately by the caller because it needs to fetch
+// the issue's comments. isStable reflects GitHub's prerelease flag (see releaseIsStable
+// in main.go): -patch.N backports are stable (prerelease=false) and must reach
+// actionStableComment, while -rc/-alpha are not. DEVOPS-1006 regression guard.
+func decideReleaseAction(issueID string, alreadyReleased, isStable, inReadyForRelease bool) releaseAction {
+	// (ThomasK33): Skip CVEs
+	if strings.HasPrefix(strings.ToLower(issueID), "cve") {
+		return actionSkip
+	}
+
+	if alreadyReleased {
+		// Already released on a prior prerelease: nothing to do. A stable release adds
+		// a one-time "now available in stable" comment instead.
+		if !isStable {
+			return actionSkip
+		}
+		return actionStableComment
+	}
+
+	// Not released yet: only act on issues sitting in the ready-for-release state.
+	if !inReadyForRelease {
+		return actionSkip
+	}
+	return actionMoveToReleased
+}
+
 // AvailableWorkflowState lists all workflow states for a team (for debugging)
 type AvailableWorkflowState struct {
 	Name string
@@ -261,25 +319,19 @@ func (l *LinearClient) IsIssueInStateByName(ctx context.Context, issueID string,
 // marked prerelease=false on GitHub), while -rc/-alpha tags are marked prerelease=true.
 // issueDetails should be pre-fetched via GetIssueDetails to avoid redundant API calls.
 func (l *LinearClient) MoveIssueToState(ctx context.Context, dryRun bool, issueID string, issueDetails *IssueDetails, releasedStateID, readyForReleaseStateName, releaseTagName, releaseDate string, isStable bool) error {
-	// (ThomasK33): Skip CVEs
-	if strings.HasPrefix(strings.ToLower(issueID), "cve") {
-		return nil
-	}
-
 	logger := l.logger
 
 	alreadyReleased := issueDetails.StateID == releasedStateID
+	inReadyForRelease := issueDetails.StateName == readyForReleaseStateName
 
-	// If already in released state:
-	// - Pre-releases: skip entirely (already released in a previous pre-release)
-	// - Stable releases: skip state update but add "now available in stable" comment (only once)
-	if alreadyReleased {
-		if !isStable {
-			logger.Debug("Issue already has desired state", "issueID", issueID, "stateID", releasedStateID)
-			return nil
-		}
+	switch decideReleaseAction(issueID, alreadyReleased, isStable, inReadyForRelease) {
+	case actionSkip:
+		logger.Debug("Skipping issue", "issueID", issueID, "alreadyReleased", alreadyReleased, "isStable", isStable, "currentState", issueDetails.StateName)
+		return nil
 
-		// Check if a stable release comment for this specific tag already exists to avoid duplicates
+	case actionStableComment:
+		// Already released on a stable release: add the "now available in stable" comment
+		// once. Check for a comment scoped to this specific tag first to avoid duplicates.
 		comments, err := l.ListIssueComments(ctx, issueID)
 		if err != nil {
 			return fmt.Errorf("list issue comments: %w", err)
@@ -288,15 +340,9 @@ func (l *LinearClient) MoveIssueToState(ctx context.Context, dryRun bool, issueI
 			logger.Debug("Issue already has stable release comment, skipping", "issueID", issueID)
 			return nil
 		}
-
 		logger.Debug("Issue already released, adding stable release comment", "issueID", issueID)
-	} else {
-		// Skip issues not in ready for release state
-		if issueDetails.StateName != readyForReleaseStateName {
-			logger.Debug("Skipping issue not in ready for release state", "issueID", issueID, "currentState", issueDetails.StateName, "requiredState", readyForReleaseStateName)
-			return nil
-		}
 
+	case actionMoveToReleased:
 		// Update issue state to Released
 		if !dryRun {
 			if err := l.updateIssueState(ctx, issueID, releasedStateID); err != nil {

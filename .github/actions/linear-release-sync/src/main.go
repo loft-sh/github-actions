@@ -220,7 +220,7 @@ func run(
 	// Treat the release as shippable based on GitHub's prerelease flag, not the tag
 	// string. vCluster publishes backport patches like v0.28.2-patch.1 (semver-prerelease
 	// by suffix, but prerelease=false on GitHub); -rc/-alpha tags are prerelease=true.
-	isStable := !currentRelease.IsPrerelease
+	isStable := releaseIsStable(currentRelease)
 	logger.Info("Release stability", "releaseTag", currentRelease.TagName, "isPrerelease", currentRelease.IsPrerelease, "isStable", isStable)
 
 	releasedCount := 0
@@ -288,6 +288,15 @@ func parseCSV(csv string) caseInsensitiveSet {
 func (s caseInsensitiveSet) Contains(value string) bool {
 	_, ok := s[strings.ToLower(value)]
 	return ok
+}
+
+// releaseIsStable reports whether a fetched GitHub release should be treated as a
+// shippable stable release. It trusts GitHub's prerelease flag rather than parsing the
+// tag string: vCluster publishes backport patches like v0.28.2-patch.1 that are
+// semver-prereleases by suffix but real releases on GitHub (prerelease=false), while
+// -rc/-alpha tags are prerelease=true. See DEVOPS-1006.
+func releaseIsStable(r releases.Release) bool {
+	return !r.IsPrerelease
 }
 
 // deduplicateIssueIDs removes duplicate issue IDs from the slice while preserving order
