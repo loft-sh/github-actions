@@ -58,6 +58,26 @@ Syncs Linear issues to the "Released" state when a GitHub release is published. 
 
 See [linear-release-sync README](./.github/actions/linear-release-sync/README.md) for detailed documentation.
 
+### Link Backport PRs Action
+
+Links sorenlouv-created backport PRs to the matching Linear sub-issue (`[X.Y] Copy of ...`) by adding `Fixes <id>` to the backport PR body, so the per-release-line issue closes when the backport merges. Wired into the [`backport.yaml`](./docs/workflows/backport.md) reusable workflow and runs automatically after backports are created; advisory and skipped when no `linear-token` is configured.
+
+**Location:** `.github/actions/link-backport-prs`
+
+**Usage:**
+
+```yaml
+- uses: loft-sh/github-actions/.github/actions/link-backport-prs@link-backport-prs/v1
+  with:
+    source-pr: ${{ github.event.pull_request.number }}
+    repo-owner: ${{ github.repository_owner }}
+    repo-name: ${{ github.event.repository.name }}
+    github-token: ${{ secrets.GH_ACCESS_TOKEN }}
+    linear-token: ${{ secrets.LINEAR_API_TOKEN }}
+```
+
+See [link-backport-prs README](./.github/actions/link-backport-prs/README.md) for detailed documentation.
+
 ### Run Ginkgo Tests
 
 Runs Ginkgo tests with directory or label-based filtering and generates a
@@ -627,6 +647,7 @@ the action's files change:
 
 - `test-semver-validation.yaml` - triggers on `.github/actions/semver-validation/**`
 - `test-linear-pr-commenter.yaml` - triggers on `.github/actions/linear-pr-commenter/**`
+- `test-link-backport-prs.yaml` - triggers on `.github/actions/link-backport-prs/**`
 - `test-linear-release-sync.yaml` - triggers on `.github/actions/linear-release-sync/**`
 - `test-sticky-pr-comment.yaml` - triggers on `.github/actions/sticky-pr-comment/**`
 - `release-linear-release-sync.yaml` - builds and publishes the binary on tag push or `workflow_dispatch`
