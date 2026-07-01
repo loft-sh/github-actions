@@ -1,0 +1,54 @@
+name: 'subtree-mirror'
+description: "Mirror a monorepo subtree to a downstream OSS repo. Fast-forward-only for release lines; marker-guarded force push for the mirror branch so external contributions are never silently destroyed."
+
+inputs:
+  subtree-prefix:
+    description: "Path of the subtree within this repo, e.g. staging/github.com/loft-sh/vcluster. Requires a full-history checkout (fetch-depth: 0)."
+    required: true
+  oss-repo:
+    description: "Downstream OSS repository as owner/repo, e.g. loft-sh/vcluster."
+    required: true
+  branch:
+    description: "Target branch on the OSS repo (usually github.ref_name)."
+    required: true
+  github-token:
+    description: "Token with write access to the OSS repo. Used to build the push remote; never logged."
+    required: true
+  force:
+    description: "true = marker-guarded force push (mirror branch). false = fast-forward-only push (release lines)."
+    required: false
+    default: "false"
+  marker-ref:
+    description: "Ref on the OSS repo tracking the last mirrored SHA. Force mode only."
+    required: false
+    default: refs/sync/mirror-head
+  allow-divergent-force:
+    description: "Bypass the divergence guard and force-push even if the OSS branch has unmirrored commits. Use only after confirming those commits are absorbed into the subtree (manual re-bless). Force mode only."
+    required: false
+    default: "false"
+
+outputs:
+  diverged:
+    description: "true when the OSS branch had commits not present in the subtree and the force push was refused."
+    value: ${{ steps.mirror.outputs.diverged }}
+  pushed:
+    description: "true when a push to the OSS branch was performed."
+    value: ${{ steps.mirror.outputs.pushed }}
+  split-sha:
+    description: "The subtree split SHA that was (or would have been) pushed."
+    value: ${{ steps.mirror.outputs.split-sha }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Mirror subtree
+      id: mirror
+      shell: bash
+      env:
+        SUBTREE_PREFIX: ${{ inputs.subtree-prefix }}
+        OSS_REMOTE: https://x-access-token:${{ inputs.github-token }}@github.com/${{ inputs.oss-repo }}.git
+        BRANCH: ${{ inputs.branch }}
+        FORCE: ${{ inputs.force }}
+        MARKER_REF: ${{ inputs.marker-ref }}
+        ALLOW_DIVERGENT_FORCE: ${{ inputs.allow-divergent-force }}
+      run: ${{ github.action_path }}/run.sh

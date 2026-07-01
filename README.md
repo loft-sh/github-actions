@@ -200,6 +200,48 @@ runs).
 a PAT or GitHub App token with `repo` scope on the target. See the action
 README for full details.
 
+### Subtree Mirror Action
+
+Mirrors a monorepo subtree to a downstream OSS repository. Fast-forward-only for release lines; marker-guarded force push for the mirror branch so contributions merged directly on the OSS repo are never silently destroyed. On divergence it fails closed, sets `diverged=true`, and leaves the OSS branch untouched.
+
+**Location:** `.github/actions/subtree-mirror`
+
+**Usage:**
+
+```yaml
+- uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+  with:
+    fetch-depth: 0
+    persist-credentials: false
+
+- id: mirror
+  uses: loft-sh/github-actions/.github/actions/subtree-mirror@subtree-mirror/v1
+  with:
+    subtree-prefix: staging/github.com/loft-sh/vcluster
+    oss-repo: loft-sh/vcluster
+    branch: ${{ github.ref_name }}
+    force: ${{ github.ref_name == 'main' }}
+    github-token: ${{ secrets.GH_ACCESS_TOKEN }}
+```
+
+**Inputs:**
+
+- `subtree-prefix` (required): Subtree path within this repo. Requires `fetch-depth: 0`.
+- `oss-repo` (required): Downstream repo as `<owner>/<repo>`.
+- `branch` (required): Target branch on the OSS repo (usually `github.ref_name`).
+- `github-token` (required): Token with write access to the OSS repo.
+- `force` (optional, default `false`): `true` = marker-guarded force push; `false` = fast-forward-only.
+- `marker-ref` (optional, default `refs/sync/mirror-head`): Ref tracking the last mirrored SHA. Force mode only.
+- `allow-divergent-force` (optional, default `false`): Bypass the divergence guard. Force mode only.
+
+**Outputs:**
+
+- `diverged`: `true` when the OSS branch had unmirrored commits and the force push was refused.
+- `pushed`: `true` when a push was performed.
+- `split-sha`: The subtree split SHA that was (or would have been) pushed.
+
+See [subtree-mirror README](./.github/actions/subtree-mirror/README.md) for detailed documentation.
+
 ## Available Reusable Workflows
 
 ### Validate Renovate Config
