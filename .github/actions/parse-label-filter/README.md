@@ -23,20 +23,28 @@ edit cannot cancel a still-running code run and then skip.
 
 ## Inputs
 
-| Input | Required | Default | Description |
-| --- | --- | --- | --- |
-| `pr-body` | no | `''` | Current PR description. Pass `${{ github.event.pull_request.body }}`. |
-| `previous-pr-body` | no | `''` | PR description before an edit. Pass `${{ github.event.changes.body.from }}`; only populated on edited events. |
-| `event-name` | no | `''` | Triggering event. Pass `${{ github.event_name }}`. |
-| `event-action` | no | `''` | Event action. Pass `${{ github.event.action }}`. |
-| `label-filter-input` | no | `''` | Fallback label filter from a manual dispatch. Pass `${{ inputs.ginkgo-label }}`. Used only when the PR description has no label-filter block. |
+<!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
+
+|       INPUT        |  TYPE  | REQUIRED | DEFAULT |                                                                          DESCRIPTION                                                                          |
+|--------------------|--------|----------|---------|---------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|    event-action    | string |  false   |         |                                                 The event action. Pass the github.event.action <br>context.                                                   |
+|     event-name     | string |  false   |         |                                                The triggering event. Pass the github.event_name <br>context.                                                  |
+| label-filter-input | string |  false   |         | Fallback label filter from a manual <br>dispatch. Pass the ginkgo-label workflow input. <br>Used only when the PR description <br>has no label-filter block.  |
+|      pr-body       | string |  false   |         |                                         Current PR description. Pass the github.event.pull_request.body <br>context.                                          |
+|  previous-pr-body  | string |  false   |         |                           PR description before an edit. Pass <br>github.event.changes.body.from; only populated on edited events.                            |
+
+<!-- AUTO-DOC-INPUT:END -->
 
 ## Outputs
 
-| Output | Description |
-| --- | --- |
-| `label-filter` | Resolved Ginkgo label filter: the parsed PR-description block, else the dispatch input, else `pr`. |
-| `skip-edited` | `"true"` only when this is a `pull_request` `edited` event whose label-filter block did not change; otherwise `"false"`. |
+<!-- AUTO-DOC-OUTPUT:START - Do not remove or modify this section -->
+
+|    OUTPUT    |  TYPE  |                                                             DESCRIPTION                                                              |
+|--------------|--------|--------------------------------------------------------------------------------------------------------------------------------------|
+| label-filter | string |             Resolved Ginkgo label filter: the parsed <br>PR-description block, else the dispatch input, <br>else "pr".               |
+| skip-edited  | string | Either "true" or "false". "true" only <br>when this is a pull_request edited <br>event whose label-filter block did not <br>change.  |
+
+<!-- AUTO-DOC-OUTPUT:END -->
 
 ## Usage
 

@@ -10,23 +10,23 @@ description: |
   writes outputs.
 inputs:
   pr-body:
-    description: 'Current PR description. Pass ${{ github.event.pull_request.body }}.'
+    description: 'Current PR description. Pass the github.event.pull_request.body context.'
     required: false
     default: ''
   previous-pr-body:
-    description: 'PR description before an edit. Pass ${{ github.event.changes.body.from }}; only populated on edited events.'
+    description: 'PR description before an edit. Pass github.event.changes.body.from; only populated on edited events.'
     required: false
     default: ''
   event-name:
-    description: 'The triggering event. Pass ${{ github.event_name }}.'
+    description: 'The triggering event. Pass the github.event_name context.'
     required: false
     default: ''
   event-action:
-    description: 'The event action. Pass ${{ github.event.action }}.'
+    description: 'The event action. Pass the github.event.action context.'
     required: false
     default: ''
   label-filter-input:
-    description: 'Fallback label filter from a manual dispatch. Pass ${{ inputs.ginkgo-label }}. Used only when the PR description has no label-filter block.'
+    description: 'Fallback label filter from a manual dispatch. Pass the ginkgo-label workflow input. Used only when the PR description has no label-filter block.'
     required: false
     default: ''
 outputs:
