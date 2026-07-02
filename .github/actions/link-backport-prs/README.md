@@ -45,15 +45,15 @@ The `github-token` must be the same PAT that created the backport PRs (a PAT, no
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-|    INPUT     |  TYPE  | REQUIRED |     DEFAULT      |                                                      DESCRIPTION                                                      |
-|--------------|--------|----------|------------------|-----------------------------------------------------------------------------------------------------------------------|
-|   dry-run    | string |  false   |    `"false"`     |                                       Log intended edits without applying them                                        |
-| github-token | string |   true   |                  | GitHub token with permission to read <br>and edit pull requests (must be the same PAT that created the backport PRs)  |
-| label-prefix | string |  false   | `"backport-to-"` |                                  Prefix of the backport labels on <br>the source PR                                   |
-| linear-token | string |  false   |                  |                Linear API token for resolving the <br>issue family. If empty, the action <br>no-ops.                  |
-|  repo-name   | string |   true   |                  |                                              The name of the repository                                               |
-|  repo-owner  | string |   true   |                  |                                              The owner of the repository                                              |
-|  source-pr   | string |   true   |                  |                            The merged source pull request number <br>that was backported                              |
+|    INPUT     |  TYPE  | REQUIRED |     DEFAULT      |                                                                                                                                  DESCRIPTION                                                                                                                                  |
+|--------------|--------|----------|------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|   dry-run    | string |  false   |    `"false"`     |                                                                                                                   Log intended edits without applying them                                                                                                                    |
+| github-token | string |   true   |                  |                                                                             GitHub token with permission to read <br>and edit pull requests (must be the same PAT that created the backport PRs)                                                                              |
+| label-prefix | string |  false   | `"backport-to-"` |                                                                                                              Prefix of the backport labels on <br>the source PR                                                                                                               |
+| linear-token | string |  false   |                  | Linear API token for resolving the <br>issue family. Optional by design: this <br>is an advisory step, so when <br>empty the action no-ops and exits <br>0 instead of failing, letting callers <br>adopt the shared backport workflow before <br>a Linear token is wired up.  |
+|  repo-name   | string |   true   |                  |                                                                                                                          The name of the repository                                                                                                                           |
+|  repo-owner  | string |   true   |                  |                                                                                                                          The owner of the repository                                                                                                                          |
+|  source-pr   | string |   true   |                  |                                                                                                        The merged source pull request number <br>that was backported                                                                                                          |
 
 <!-- AUTO-DOC-INPUT:END -->
 

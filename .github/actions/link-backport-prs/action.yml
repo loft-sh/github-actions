@@ -15,7 +15,7 @@ inputs:
     description: 'GitHub token with permission to read and edit pull requests (must be the same PAT that created the backport PRs)'
     required: true
   linear-token:
-    description: 'Linear API token for resolving the issue family. If empty, the action no-ops.'
+    description: 'Linear API token for resolving the issue family. Optional by design: this is an advisory step, so when empty the action no-ops and exits 0 instead of failing, letting callers adopt the shared backport workflow before a Linear token is wired up.'
     required: false
     default: ''
   label-prefix:
