@@ -24,8 +24,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/google/go-github/v84/github"
-	"golang.org/x/oauth2"
+	"github.com/google/go-github/v88/github"
 )
 
 const linearAPIURL = "https://api.linear.app/graphql"
@@ -84,8 +83,10 @@ func run() error {
 	}
 
 	ctx := context.Background()
-	ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: githubToken})
-	gh := github.NewClient(oauth2.NewClient(ctx, ts))
+	gh, err := github.NewClient(github.WithAuthToken(githubToken))
+	if err != nil {
+		return fmt.Errorf("create github client: %w", err)
+	}
 
 	src, _, err := gh.PullRequests.Get(ctx, *repoOwner, *repoName, *sourcePR)
 	if err != nil {
