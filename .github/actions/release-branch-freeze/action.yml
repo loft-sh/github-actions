@@ -38,7 +38,7 @@ inputs:
     default: ''
 outputs:
   ruleset-id:
-    description: 'Id of the freeze ruleset that was created, updated, or disabled.'
+    description: 'ID of the freeze ruleset that was created, updated, or disabled.'
     value: ${{ steps.run.outputs.ruleset-id }}
 runs:
   using: composite

@@ -152,6 +152,10 @@ last_body() {
   run "$SCRIPT"
   [ "$status" -eq 0 ]
   grep -q '^PUT repos/loft-sh/vcluster-pro/rulesets/777$' "$GH_MOCK_CALLS"
+  # assert the PUT actually carried enforcement=disabled, not just the log line
+  grep -q '^enforcement=disabled$' "$GH_MOCK_FIELD_LOG"
+  # and that the ruleset id was written to the step output, as the freeze paths do
+  grep -q '^ruleset-id=777$' "$GITHUB_OUTPUT"
   [[ "$output" == *"disabled"* ]]
 }
 
@@ -175,8 +179,30 @@ last_body() {
 
 # --- error propagation ------------------------------------------------------
 
-@test "gh failure surfaces a non-zero exit" {
+@test "gh read failure surfaces a non-zero exit" {
+  # default GH_MOCK_RULESETS='[]' means the first call is the GET in
+  # find_ruleset_id, so this exercises the read side.
   export GH_MOCK_FAIL=1
   run "$SCRIPT"
   [ "$status" -ne 0 ]
+}
+
+@test "gh write failure surfaces a non-zero exit" {
+  # GET succeeds (ruleset found) so we reach the PUT, which then fails: proves
+  # the write path propagates errors instead of swallowing them.
+  export GH_MOCK_RULESETS='[{"id":777,"name":"release-branch-code-freeze"}]'
+  export GH_MOCK_FAIL_WRITE=1
+  run "$SCRIPT"
+  [ "$status" -ne 0 ]
+  grep -q '^PUT repos/loft-sh/vcluster-pro/rulesets/777$' "$GH_MOCK_CALLS"
+}
+
+@test "freeze fails loudly when the create response has no id" {
+  # POST returns a 2xx body without an id; the script must not write
+  # ruleset-id=null and exit 0.
+  export GH_MOCK_POST_NO_ID=1
+  run "$SCRIPT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"no id"* ]]
+  ! grep -q '^ruleset-id=' "$GITHUB_OUTPUT"
 }

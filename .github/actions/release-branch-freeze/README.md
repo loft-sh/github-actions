@@ -32,7 +32,7 @@ pre-installed on hosted runners.
 
 |   OUTPUT   |  TYPE  |                              DESCRIPTION                              |
 |------------|--------|-----------------------------------------------------------------------|
-| ruleset-id | string | Id of the freeze ruleset that <br>was created, updated, or disabled.  |
+| ruleset-id | string | ID of the freeze ruleset that <br>was created, updated, or disabled.  |
 
 <!-- AUTO-DOC-OUTPUT:END -->
 

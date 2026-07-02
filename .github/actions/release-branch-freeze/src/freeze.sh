@@ -44,8 +44,10 @@ BRANCH="${INPUT_BRANCH:-}"
 RULESET_NAME="${INPUT_RULESET_NAME:-release-branch-code-freeze}"
 
 # Echo the id of the freeze ruleset (matched by name), or nothing.
+# --paginate so a repo with more than one page of rulesets (30 per page)
+# can't hide the freeze ruleset on a later page and make us create a second.
 find_ruleset_id() {
-  gh api "repos/${REPO}/rulesets" |
+  gh api --paginate "repos/${REPO}/rulesets" |
     jq -r --arg n "$RULESET_NAME" 'map(select(.name == $n)) | (.[0].id // empty)'
 }
 
@@ -91,7 +93,11 @@ case "$INPUT_OPERATION" in
       gh api -X PUT "repos/${REPO}/rulesets/${RID}" --input - <<<"$BODY" >/dev/null
     else
       echo "::notice::creating ruleset ${RULESET_NAME} on ${REPO} -> ${BRANCH} (${ENFORCEMENT})"
-      RID="$(gh api -X POST "repos/${REPO}/rulesets" --input - <<<"$BODY" | jq -r '.id')"
+      RID="$(gh api -X POST "repos/${REPO}/rulesets" --input - <<<"$BODY" | jq -r '.id // empty')"
+      if [ -z "$RID" ]; then
+        echo "::error::ruleset POST succeeded but response contained no id; freeze may not have been applied"
+        exit 1
+      fi
     fi
     write_output "ruleset-id" "$RID"
     echo "::notice::freeze ${ENFORCEMENT}: only team ${INPUT_BYPASS_TEAM_ID} may merge into ${BRANCH} on ${REPO}"
