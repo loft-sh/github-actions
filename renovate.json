@@ -23,6 +23,12 @@
       "matchManagers": ["gomod"],
       "matchFileNames": [".github/actions/linear-release-sync/**"],
       "groupName": "linear-release-sync"
+    },
+    {
+      "description": "Group link-backport-prs Go dependencies",
+      "matchManagers": ["gomod"],
+      "matchFileNames": [".github/actions/link-backport-prs/**"],
+      "groupName": "link-backport-prs"
     }
   ],
   "customManagers": [
