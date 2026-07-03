@@ -163,6 +163,64 @@ reports — when that job is skipped via `if:`, the upsert never runs and the
 previous comment stays in place, which is the desired "preserve last real
 result" behavior. See the action README for full details.
 
+### Parse label filter
+
+Parses the ` ```label-filter``` ` fenced block from a PR description, resolves
+the Ginkgo label filter, and decides whether a `pull_request` `edited` event
+can be skipped. E2E workflows trigger on `edited` so editing the label-filter
+re-targets suites without a new commit, but that also re-runs the suite when a
+bot (e.g. `cursor[bot]`) edits the PR description. The action returns
+`skip-edited=true` when the label-filter block is unchanged across an edit, so
+the caller can skip the suite. Side-effect free.
+
+**Location:** `.github/actions/parse-label-filter`
+
+**Usage:**
+
+```yaml
+jobs:
+  parse-label-filter:
+    runs-on: ubuntu-22.04
+    outputs:
+      label-filter: ${{ steps.parse.outputs.label-filter }}
+      skip-edited: ${{ steps.parse.outputs.skip-edited }}
+    steps:
+      - name: Parse label filter
+        id: parse
+        uses: loft-sh/github-actions/.github/actions/parse-label-filter@parse-label-filter/v1
+        with:
+          pr-body: ${{ github.event.pull_request.body }}
+          previous-pr-body: ${{ github.event.changes.body.from }}
+          event-name: ${{ github.event_name }}
+          event-action: ${{ github.event.action }}
+          label-filter-input: ${{ inputs.ginkgo-label }}
+
+  e2e-tests:
+    needs: [parse-label-filter]
+    if: needs.parse-label-filter.outputs.skip-edited != 'true'
+    runs-on: large-8_32
+    steps:
+      - run: echo "filter ${{ needs.parse-label-filter.outputs.label-filter }}"
+```
+
+**Inputs:**
+
+- `pr-body` (optional): current PR description (`${{ github.event.pull_request.body }}`)
+- `previous-pr-body` (optional): PR description before an edit (`${{ github.event.changes.body.from }}`)
+- `event-name` (optional): `${{ github.event_name }}`
+- `event-action` (optional): `${{ github.event.action }}`
+- `label-filter-input` (optional): manual-dispatch fallback (`${{ inputs.ginkgo-label }}`)
+
+**Outputs:**
+
+- `label-filter`: resolved filter (parsed block, else dispatch input, else `pr`)
+- `skip-edited`: `true` only for an `edited` event whose label-filter is unchanged
+
+Pair with a concurrency group that splits edited from code events
+(`...-${{ github.event.action == 'edited' && 'edited' || 'code' }}`) so a bot
+edit cannot cancel a still-running code run and then skip. See the action
+README for full details.
+
 ### Repository Dispatch
 
 Sends a `repository_dispatch` event to a target repository so any source repo

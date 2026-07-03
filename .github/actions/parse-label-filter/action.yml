@@ -1,0 +1,54 @@
+name: Parse label filter
+description: |
+  Parses the ```label-filter``` fenced block from a pull request description and
+  resolves the Ginkgo label filter for an E2E run. Also decides whether a
+  pull_request `edited` event should be skipped: bots (e.g. cursor[bot]) edit the
+  PR description after open, firing `edited` on the same head SHA with no code
+  change. When the label-filter block is unchanged across the edit there is
+  nothing new to test, so `skip-edited` is set to "true" and the caller can skip
+  the suite. Domain-agnostic and side-effect free: it only reads inputs and
+  writes outputs.
+inputs:
+  pr-body:
+    description: 'Current PR description. Pass the github.event.pull_request.body context.'
+    required: false
+    default: ''
+  previous-pr-body:
+    description: 'PR description before an edit. Pass github.event.changes.body.from; only populated on edited events.'
+    required: false
+    default: ''
+  event-name:
+    description: 'The triggering event. Pass the github.event_name context.'
+    required: false
+    default: ''
+  event-action:
+    description: 'The event action. Pass the github.event.action context.'
+    required: false
+    default: ''
+  label-filter-input:
+    description: 'Fallback label filter from a manual dispatch. Pass the ginkgo-label workflow input. Used only when the PR description has no label-filter block.'
+    required: false
+    default: ''
+outputs:
+  label-filter:
+    description: 'Resolved Ginkgo label filter: the parsed PR-description block, else the dispatch input, else "pr".'
+    value: ${{ steps.parse.outputs.label-filter }}
+  skip-edited:
+    description: 'Either "true" or "false". "true" only when this is a pull_request edited event whose label-filter block did not change.'
+    value: ${{ steps.parse.outputs.skip-edited }}
+runs:
+  using: composite
+  steps:
+    - name: Parse label filter and check edited
+      id: parse
+      shell: bash
+      env:
+        INPUT_PR_BODY: ${{ inputs.pr-body }}
+        INPUT_PREVIOUS_PR_BODY: ${{ inputs.previous-pr-body }}
+        INPUT_EVENT_NAME: ${{ inputs.event-name }}
+        INPUT_EVENT_ACTION: ${{ inputs.event-action }}
+        INPUT_LABEL_FILTER_INPUT: ${{ inputs.label-filter-input }}
+      run: ${{ github.action_path }}/src/parse-label-filter.sh
+branding:
+  icon: 'filter'
+  color: 'orange'
