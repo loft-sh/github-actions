@@ -278,6 +278,42 @@ runs).
 a PAT or GitHub App token with `repo` scope on the target. See the action
 README for full details.
 
+### Release Branch Code Freeze
+
+Applies or lifts a temporary code freeze on a release branch by managing a
+repository ruleset with the "Restrict updates" rule. During the freeze only a
+bypass team can merge into the branch; unfreeze disables the ruleset so the
+branch returns to its standing rules. One reusable ruleset per repo is
+re-pointed at the branch being released, so only that branch is frozen.
+
+**Location:** `.github/actions/release-branch-freeze`
+
+**Usage:**
+
+```yaml
+- name: Freeze the release branch
+  uses: loft-sh/github-actions/.github/actions/release-branch-freeze@release-branch-freeze/v1
+  with:
+    operation: freeze
+    repository: ${{ github.repository }}
+    branch: ${{ github.event.ref }}
+    bypass-team-id: "16898535" # loft-sh/Eng-Tech-Leads
+  env:
+    GH_TOKEN: ${{ secrets.CODE_FREEZE_TOKEN }}
+```
+
+**Inputs:**
+
+- `operation` (required): `freeze` or `unfreeze`
+- `repository` (required): `<owner>/<repo>` to manage
+- `branch` (freeze only): release branch to freeze, e.g. `v0.36`
+- `bypass-team-id` (freeze only): numeric team id allowed to merge during the freeze
+- `enforcement` (optional, default `active`): `active`, `evaluate` (dry run), or `disabled`
+
+`GH_TOKEN` is read from the step's environment, not from inputs. It must be a
+PAT or GitHub App token with Administration read and write on the target repo.
+See the action README for full details.
+
 ## Available Reusable Workflows
 
 ### Validate Renovate Config

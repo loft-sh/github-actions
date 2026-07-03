@@ -1,0 +1,59 @@
+name: Release Branch Code Freeze
+description: |
+  Applies or lifts a temporary code freeze on a release branch by managing a
+  GitHub repository ruleset with the "Restrict updates" rule. During the freeze
+  only a bypass team can merge into the branch; lifting the freeze disables the
+  ruleset so the branch returns to its standing rules.
+
+  One reusable ruleset per repo is re-pointed at the branch being released, so
+  only that branch is affected while other release lines keep their normal
+  rules. Uses the GitHub CLI (gh), pre-installed on hosted runners.
+
+  The caller must expose a token with Administration:write on the target repo
+  as the GH_TOKEN environment variable (job or step env). secrets.GITHUB_TOKEN
+  cannot manage rulesets.
+inputs:
+  operation:
+    description: 'freeze (apply the code freeze) or unfreeze (lift it).'
+    required: true
+  repository:
+    description: 'Target repository in owner/name form.'
+    required: true
+  branch:
+    description: 'Release branch to freeze or unfreeze, e.g. v0.36 or release-4.11. Required for freeze.'
+    required: false
+    default: ''
+  bypass-team-id:
+    description: |
+      Numeric GitHub team id allowed to merge during the freeze (required for
+      freeze). Find it with: gh api orgs/<org>/teams/<slug> --jq .id
+    required: false
+  enforcement:
+    description: 'active | evaluate | disabled. evaluate is a dry run that logs would-be blocks without blocking. Default active.'
+    required: false
+    default: 'active'
+  ruleset-name:
+    description: 'Override the ruleset name. Default release-branch-code-freeze.'
+    required: false
+    default: ''
+outputs:
+  ruleset-id:
+    description: 'ID of the freeze ruleset that was created, updated, or disabled.'
+    value: ${{ steps.run.outputs.ruleset-id }}
+runs:
+  using: composite
+  steps:
+    - name: Manage code-freeze ruleset
+      id: run
+      shell: bash
+      env:
+        INPUT_OPERATION: ${{ inputs.operation }}
+        INPUT_REPOSITORY: ${{ inputs.repository }}
+        INPUT_BRANCH: ${{ inputs.branch }}
+        INPUT_BYPASS_TEAM_ID: ${{ inputs.bypass-team-id }}
+        INPUT_ENFORCEMENT: ${{ inputs.enforcement }}
+        INPUT_RULESET_NAME: ${{ inputs.ruleset-name }}
+      run: ${{ github.action_path }}/src/freeze.sh
+branding:
+  icon: 'lock'
+  color: 'orange'
