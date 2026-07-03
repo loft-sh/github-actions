@@ -144,3 +144,48 @@ body_with_filter() {
   [ "$status" -eq 0 ]
   [ "$(kv label-filter)" = "label-filter=istio && core" ]
 }
+
+# A label-filter block that spans several physical lines. Each line is trimmed
+# and the newlines between them are stripped (no separator inserted), so the
+# block collapses into a single filter string. This mirrors the original inline
+# `awk '{$1=$1; print}' | tr -d '\r\n'` sanitize step the action replaced.
+@test "multi-line label-filter block is joined into a single filter" {
+  export INPUT_EVENT_NAME="pull_request"
+  export INPUT_EVENT_ACTION="opened"
+  export INPUT_PR_BODY="$(printf '%s\n' \
+    'Intro.' \
+    '' \
+    '```label-filter' \
+    'db-datasource && aws' \
+    '|| istio' \
+    '```' \
+    '' \
+    'Outro.')"
+
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv label-filter)" = "label-filter=db-datasource && aws|| istio" ]
+  [ "$(kv skip-edited)" = "skip-edited=false" ]
+}
+
+@test "edited with unchanged multi-line label-filter -> skip=true" {
+  export INPUT_EVENT_NAME="pull_request"
+  export INPUT_EVENT_ACTION="edited"
+  export INPUT_PR_BODY="$(printf '%s\n' \
+    'A bot appended a summary.' \
+    '```label-filter' \
+    'db-datasource && aws' \
+    '|| istio' \
+    '```')"
+  export INPUT_PREVIOUS_PR_BODY="$(printf '%s\n' \
+    'Original human description.' \
+    '```label-filter' \
+    'db-datasource && aws' \
+    '|| istio' \
+    '```')"
+
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv label-filter)" = "label-filter=db-datasource && aws|| istio" ]
+  [ "$(kv skip-edited)" = "skip-edited=true" ]
+}
