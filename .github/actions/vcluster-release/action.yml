@@ -1,0 +1,39 @@
+name: Cut vCluster release
+description: |
+  Single entry point for cutting a vCluster release on any supported line. The
+  version string decides the routing, so nobody has to remember which release
+  procedure a given version needs. Classifies the era by numeric compare against
+  the cutover (v0.36), then creates the tag(s) and dispatches each line's own
+  release.yaml via workflow_dispatch (gh workflow run --ref <tag>, which runs the
+  tagged commit's version of the workflow). Legacy lines (< v0.36) fan out to
+  both loft-sh/vcluster and loft-sh/vcluster-pro (OSS first); monorepo lines
+  (>= v0.36) dispatch loft-sh/vcluster-pro only. The GitHub Release is a pipeline
+  output, so nothing here triggers a downstream release:created build.
+inputs:
+  version:
+    description: 'Release version to cut, e.g. v0.35.4 or v0.36.2.'
+    required: true
+  dry-run:
+    description: 'When true (default), run the read-only routing checks and print the exact tag + dispatch calls without firing them.'
+    required: false
+    default: 'true'
+  github-token:
+    description: 'Token with repo + workflow scope on both loft-sh/vcluster and loft-sh/vcluster-pro (cross-repo tag creation and dispatch).'
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Validate version
+      uses: loft-sh/github-actions/.github/actions/semver-validation@6b5890feaccd82f7c0999ccf10a425cd0844dee0 # semver-validation/v1
+      with:
+        version: ${{ inputs.version }}
+    - name: Cut release
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        INPUT_VERSION: ${{ inputs.version }}
+        INPUT_DRY_RUN: ${{ inputs.dry-run }}
+      run: ${{ github.action_path }}/src/vcluster-release.sh
+branding:
+  icon: 'tag'
+  color: 'orange'
