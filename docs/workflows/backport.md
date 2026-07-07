@@ -12,8 +12,9 @@ No inputs.
 
 <!-- AUTO-DOC-SECRETS:START - Do not remove or modify this section -->
 
-|     SECRET      | REQUIRED |             DESCRIPTION              |
-|-----------------|----------|--------------------------------------|
-| gh-access-token |   true   | GitHub PAT for creating backport PRs |
+|     SECRET      | REQUIRED |                                                                DESCRIPTION                                                                 |
+|-----------------|----------|--------------------------------------------------------------------------------------------------------------------------------------------|
+| gh-access-token |   true   |                                                    GitHub PAT for creating backport PRs                                                    |
+|  linear-token   |  false   | Linear API token for linking backport <br>PRs to their matching Linear sub-issue. <br>Optional; linking is skipped when not <br>provided.  |
 
 <!-- AUTO-DOC-SECRETS:END -->

@@ -58,6 +58,26 @@ Syncs Linear issues to the "Released" state when a GitHub release is published. 
 
 See [linear-release-sync README](./.github/actions/linear-release-sync/README.md) for detailed documentation.
 
+### Link Backport PRs Action
+
+Links sorenlouv-created backport PRs to the matching Linear sub-issue (`[X.Y] Copy of ...`) by adding `Fixes <id>` to the backport PR body, so the per-release-line issue closes when the backport merges. Wired into the [`backport.yaml`](./docs/workflows/backport.md) reusable workflow and runs automatically after backports are created; advisory and skipped when no `linear-token` is configured.
+
+**Location:** `.github/actions/link-backport-prs`
+
+**Usage:**
+
+```yaml
+- uses: loft-sh/github-actions/.github/actions/link-backport-prs@link-backport-prs/v1
+  with:
+    source-pr: ${{ github.event.pull_request.number }}
+    repo-owner: ${{ github.repository_owner }}
+    repo-name: ${{ github.event.repository.name }}
+    github-token: ${{ secrets.GH_ACCESS_TOKEN }}
+    linear-token: ${{ secrets.LINEAR_API_TOKEN }}
+```
+
+See [link-backport-prs README](./.github/actions/link-backport-prs/README.md) for detailed documentation.
+
 ### Run Ginkgo Tests
 
 Runs Ginkgo tests with directory or label-based filtering and generates a
@@ -163,6 +183,64 @@ reports — when that job is skipped via `if:`, the upsert never runs and the
 previous comment stays in place, which is the desired "preserve last real
 result" behavior. See the action README for full details.
 
+### Parse label filter
+
+Parses the ` ```label-filter``` ` fenced block from a PR description, resolves
+the Ginkgo label filter, and decides whether a `pull_request` `edited` event
+can be skipped. E2E workflows trigger on `edited` so editing the label-filter
+re-targets suites without a new commit, but that also re-runs the suite when a
+bot (e.g. `cursor[bot]`) edits the PR description. The action returns
+`skip-edited=true` when the label-filter block is unchanged across an edit, so
+the caller can skip the suite. Side-effect free.
+
+**Location:** `.github/actions/parse-label-filter`
+
+**Usage:**
+
+```yaml
+jobs:
+  parse-label-filter:
+    runs-on: ubuntu-22.04
+    outputs:
+      label-filter: ${{ steps.parse.outputs.label-filter }}
+      skip-edited: ${{ steps.parse.outputs.skip-edited }}
+    steps:
+      - name: Parse label filter
+        id: parse
+        uses: loft-sh/github-actions/.github/actions/parse-label-filter@parse-label-filter/v1
+        with:
+          pr-body: ${{ github.event.pull_request.body }}
+          previous-pr-body: ${{ github.event.changes.body.from }}
+          event-name: ${{ github.event_name }}
+          event-action: ${{ github.event.action }}
+          label-filter-input: ${{ inputs.ginkgo-label }}
+
+  e2e-tests:
+    needs: [parse-label-filter]
+    if: needs.parse-label-filter.outputs.skip-edited != 'true'
+    runs-on: large-8_32
+    steps:
+      - run: echo "filter ${{ needs.parse-label-filter.outputs.label-filter }}"
+```
+
+**Inputs:**
+
+- `pr-body` (optional): current PR description (`${{ github.event.pull_request.body }}`)
+- `previous-pr-body` (optional): PR description before an edit (`${{ github.event.changes.body.from }}`)
+- `event-name` (optional): `${{ github.event_name }}`
+- `event-action` (optional): `${{ github.event.action }}`
+- `label-filter-input` (optional): manual-dispatch fallback (`${{ inputs.ginkgo-label }}`)
+
+**Outputs:**
+
+- `label-filter`: resolved filter (parsed block, else dispatch input, else `pr`)
+- `skip-edited`: `true` only for an `edited` event whose label-filter is unchanged
+
+Pair with a concurrency group that splits edited from code events
+(`...-${{ github.event.action == 'edited' && 'edited' || 'code' }}`) so a bot
+edit cannot cancel a still-running code run and then skip. See the action
+README for full details.
+
 ### Repository Dispatch
 
 Sends a `repository_dispatch` event to a target repository so any source repo
@@ -199,6 +277,42 @@ runs).
 `GH_TOKEN` is read from the step's environment, not from inputs — it must be
 a PAT or GitHub App token with `repo` scope on the target. See the action
 README for full details.
+
+### Release Branch Code Freeze
+
+Applies or lifts a temporary code freeze on a release branch by managing a
+repository ruleset with the "Restrict updates" rule. During the freeze only a
+bypass team can merge into the branch; unfreeze disables the ruleset so the
+branch returns to its standing rules. One reusable ruleset per repo is
+re-pointed at the branch being released, so only that branch is frozen.
+
+**Location:** `.github/actions/release-branch-freeze`
+
+**Usage:**
+
+```yaml
+- name: Freeze the release branch
+  uses: loft-sh/github-actions/.github/actions/release-branch-freeze@release-branch-freeze/v1
+  with:
+    operation: freeze
+    repository: ${{ github.repository }}
+    branch: ${{ github.event.ref }}
+    bypass-team-id: "16898535" # loft-sh/Eng-Tech-Leads
+  env:
+    GH_TOKEN: ${{ secrets.CODE_FREEZE_TOKEN }}
+```
+
+**Inputs:**
+
+- `operation` (required): `freeze` or `unfreeze`
+- `repository` (required): `<owner>/<repo>` to manage
+- `branch` (freeze only): release branch to freeze, e.g. `v0.36`
+- `bypass-team-id` (freeze only): numeric team id allowed to merge during the freeze
+- `enforcement` (optional, default `active`): `active`, `evaluate` (dry run), or `disabled`
+
+`GH_TOKEN` is read from the step's environment, not from inputs. It must be a
+PAT or GitHub App token with Administration read and write on the target repo.
+See the action README for full details.
 
 ### Subtree Mirror Action
 
@@ -611,6 +725,7 @@ the action's files change:
 
 - `test-semver-validation.yaml` - triggers on `.github/actions/semver-validation/**`
 - `test-linear-pr-commenter.yaml` - triggers on `.github/actions/linear-pr-commenter/**`
+- `test-link-backport-prs.yaml` - triggers on `.github/actions/link-backport-prs/**`
 - `test-linear-release-sync.yaml` - triggers on `.github/actions/linear-release-sync/**`
 - `test-sticky-pr-comment.yaml` - triggers on `.github/actions/sticky-pr-comment/**`
 - `release-linear-release-sync.yaml` - builds and publishes the binary on tag push or `workflow_dispatch`
