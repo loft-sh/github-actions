@@ -1,4 +1,4 @@
-.PHONY: test test-semver-validation test-linear-pr-commenter test-link-backport-prs test-release-notification test-linear-release-sync test-aws-test-infra test-cleanup-head-charts test-ci-test-notify test-auto-approve-bot-prs test-ai-pr-review test-ai-step test-publish-helm-chart test-govulncheck test-go-licenses test-run-ginkgo test-sticky-pr-comment test-repository-dispatch test-parse-label-filter test-release-branch-freeze build-linear-release-sync lint install-auto-doc generate-docs check-docs help
+.PHONY: test test-semver-validation test-linear-pr-commenter test-link-backport-prs test-release-notification test-linear-release-sync test-aws-test-infra test-cleanup-head-charts test-ci-test-notify test-auto-approve-bot-prs test-ai-pr-review test-ai-step test-publish-helm-chart test-govulncheck test-go-licenses test-run-ginkgo test-sticky-pr-comment test-repository-dispatch test-parse-label-filter test-release-branch-freeze test-subtree-mirror build-linear-release-sync lint install-auto-doc generate-docs check-docs help
 
 ACTIONS_DIR := .github/actions
 WORKFLOWS_DIR := .github/workflows
@@ -93,7 +93,7 @@ check-docs: generate-docs ## verify docs are up to date (fails if drift detected
 help: ## show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-30s %s\n", $$1, $$2}'
 
-test: test-semver-validation test-linear-pr-commenter test-link-backport-prs test-release-notification test-linear-release-sync test-aws-test-infra test-cleanup-head-charts test-auto-approve-bot-prs test-ai-pr-review test-ai-step test-ci-test-notify test-go-licenses test-publish-helm-chart test-govulncheck test-run-ginkgo test-sticky-pr-comment test-repository-dispatch test-parse-label-filter test-release-branch-freeze ## run all action tests
+test: test-semver-validation test-linear-pr-commenter test-link-backport-prs test-release-notification test-linear-release-sync test-aws-test-infra test-cleanup-head-charts test-auto-approve-bot-prs test-ai-pr-review test-ai-step test-ci-test-notify test-go-licenses test-publish-helm-chart test-govulncheck test-run-ginkgo test-sticky-pr-comment test-repository-dispatch test-parse-label-filter test-release-branch-freeze test-subtree-mirror ## run all action tests
 
 test-semver-validation: ## run semver-validation unit tests
 	cd $(ACTIONS_DIR)/semver-validation && npm ci --silent && NODE_OPTIONS=--experimental-vm-modules npx jest --ci --coverage --watchAll=false
@@ -151,6 +151,9 @@ test-parse-label-filter: ## run parse-label-filter bats tests
 
 test-release-branch-freeze: ## run release-branch-freeze bats tests
 	bats $(ACTIONS_DIR)/release-branch-freeze/test
+
+test-subtree-mirror: ## run subtree-mirror bats tests
+	bats $(ACTIONS_DIR)/subtree-mirror/test/run.bats
 
 build-linear-release-sync: ## build linear-release-sync binary (linux/amd64)
 	cd $(ACTIONS_DIR)/linear-release-sync/src && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o ../linear-release-sync-linux-amd64 .
