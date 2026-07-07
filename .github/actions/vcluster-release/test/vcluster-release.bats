@@ -40,8 +40,10 @@ if [[ "$sub" == "api" ]]; then
       rest="${path#repos/}"; repo="${rest%%/branches/*}"; branch="${rest##*/branches/}"
       # Real gh: prints the status line to stdout for both, but exits non-zero on
       # 404. GH_STUB_TRANSIENT=1 simulates a network/auth failure (no status line,
-      # non-zero exit).
+      # non-zero exit). GH_STUB_UNEXPECTED=1 simulates an unexpected HTTP status
+      # (e.g. 403/500) that is neither 200 nor 404 - it must abort, not fall back.
       if [[ "${GH_STUB_TRANSIENT:-}" == "1" ]]; then exit 1; fi
+      if [[ "${GH_STUB_UNEXPECTED:-}" == "1" ]]; then echo "HTTP/2.0 403 Forbidden"; exit 1; fi
       if contains "${GH_STUB_BRANCHES:-}" "${repo}:${branch}"; then echo "HTTP/2.0 200 OK"; exit 0; else echo "HTTP/2.0 404 Not Found"; exit 1; fi ;;
     repos/*/git/refs/tags/*)
       rest="${path#repos/}"; repo="${rest%%/git/refs/tags/*}"; tag="${rest##*/git/refs/tags/}"
@@ -171,6 +173,13 @@ EOF
   oss_line=$(printf '%s\n' "$output" | grep -n 'gh workflow run release.yaml --repo loft-sh/vcluster ' | head -1 | cut -d: -f1)
   pro_line=$(printf '%s\n' "$output" | grep -n 'gh workflow run release.yaml --repo loft-sh/vcluster-pro ' | head -1 | cut -d: -f1)
   [ -n "$oss_line" ] && [ -n "$pro_line" ] && [ "$oss_line" -lt "$pro_line" ]
+  # Both repos are tagged, and the tag-before-dispatch invariant holds: each
+  # tag POST must precede the first dispatch line.
+  oss_tag=$(printf '%s\n' "$output" | grep -n 'POST repos/loft-sh/vcluster/git/refs ' | head -1 | cut -d: -f1)
+  pro_tag=$(printf '%s\n' "$output" | grep -n 'POST repos/loft-sh/vcluster-pro/git/refs ' | head -1 | cut -d: -f1)
+  [ -n "$oss_tag" ] && [ -n "$pro_tag" ]
+  [ "$oss_tag" -lt "$oss_line" ]
+  [ "$pro_tag" -lt "$oss_line" ]
   # Dry-run only: never actually dispatched.
   [[ "$output" != *"dispatched release.yaml"* ]]
 }
@@ -243,4 +252,40 @@ EOF
   run main
   [ "$status" -ne 0 ]
   [[ "$output" == *"INPUT_VERSION is required"* ]]
+}
+
+# ---- main: live (non-dry-run) path ----
+
+@test "legacy non-dry-run: reaches the mutating path (real tag + dispatch), emits recovery notice" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  # The mutating branches ran, not the dry-run prints.
+  [[ "$output" == *"created tag v0.35.4 in loft-sh/vcluster "* ]]
+  [[ "$output" == *"created tag v0.35.4 in loft-sh/vcluster-pro "* ]]
+  [[ "$output" == *"dispatched release.yaml in loft-sh/vcluster "* ]]
+  [[ "$output" == *"dispatched release.yaml in loft-sh/vcluster-pro "* ]]
+  [[ "$output" != *"[dry-run]"* ]]
+  # Partial-failure recovery hint fires only on the live path.
+  [[ "$output" == *"do NOT delete tags and re-run this action"* ]]
+}
+
+@test "monorepo non-dry-run: reaches the mutating pro-only path" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.36"
+  INPUT_VERSION="v0.36.2" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"created tag v0.36.2 in loft-sh/vcluster-pro "* ]]
+  [[ "$output" == *"dispatched release.yaml in loft-sh/vcluster-pro "* ]]
+  [[ "$output" != *"[dry-run]"* ]]
+  # No OSS mutation on the monorepo path.
+  [[ "$output" != *"in loft-sh/vcluster "* ]]
+}
+
+@test "monorepo: an unexpected HTTP status (403/500) aborts loudly (not read as missing)" {
+  # The *) arm of branch_exists: neither 200 nor 404 must hard-fail, never fall
+  # back to main.
+  export GH_STUB_UNEXPECTED="1"
+  INPUT_VERSION="v0.36.0" INPUT_DRY_RUN="true" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"unexpected status"* ]]
 }

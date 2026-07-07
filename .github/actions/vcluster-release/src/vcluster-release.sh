@@ -133,7 +133,15 @@ create_tag() {
     echo "[dry-run] gh api -X POST repos/${repo}/git/refs -f ref=refs/tags/${tag} -f sha=<${branch} head>"
     return 0
   fi
-  sha="$(gh api "repos/${repo}/git/refs/heads/${branch}" --jq '.object.sha')"
+  # `.object.sha // empty` guards the jq null-string hazard: on an unexpected
+  # ref-response shape jq would otherwise print the literal "null" and exit 0
+  # (set -e does not catch it), producing a GitHub 422 "Invalid SHA" instead of
+  # a meaningful diagnostic.
+  sha="$(gh api "repos/${repo}/git/refs/heads/${branch}" --jq '.object.sha // empty')"
+  if [[ -z "$sha" ]]; then
+    echo "::error::could not resolve HEAD sha for branch '${branch}' in ${repo}" >&2
+    exit 1
+  fi
   gh api -X POST "repos/${repo}/git/refs" -f ref="refs/tags/${tag}" -f sha="${sha}" >/dev/null
   echo "created tag ${tag} in ${repo} at ${branch} (${sha})"
 }
@@ -167,6 +175,14 @@ cut_legacy() {
   create_tag "$OSS_REPO" "$line" "$version"
   create_tag "$PRO_REPO" "$line" "$version"
   dispatch "$OSS_REPO" "$version"
+  # OSS is now building. This sequence is non-atomic: if the pro dispatch below
+  # fails, the correct recovery is to dispatch pro ONLY. Deleting the tags and
+  # re-running this action would re-dispatch (and rebuild) OSS. Emit the true
+  # progress state so a partial failure is diagnosable from the run log rather
+  # than misread as a plain double-cut. See README > Partial-failure recovery.
+  if [[ "${DRY_RUN:-true}" != "true" ]]; then
+    echo "::notice::${OSS_REPO} dispatched for ${version}. If the ${PRO_REPO} dispatch below fails, recover by dispatching ${PRO_REPO} only - do NOT delete tags and re-run this action (that re-dispatches OSS)."
+  fi
   dispatch "$PRO_REPO" "$version"
 }
 

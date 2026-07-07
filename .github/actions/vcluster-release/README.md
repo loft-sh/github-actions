@@ -45,6 +45,23 @@ in the monorepo era.
 - **Dry-run** still performs the read-only checks, so a bad routing decision
   (missing branch, already-released) is caught before anything is dispatched.
 
+## Partial-failure recovery
+
+The legacy path (tag OSS → tag pro → dispatch OSS → dispatch pro) is **not
+atomic**. If a run dies partway, read the log to see how far it got before
+recovering, so an interrupted cut is not mistaken for a genuine double-cut:
+
+- **Failed during tagging** (one repo tagged, the other not, nothing dispatched):
+  delete the orphaned tag and re-run the action. Nothing has been built yet.
+- **Failed after the OSS dispatch** (the log shows the `::notice::` that
+  `loft-sh/vcluster` was dispatched, but the pro dispatch did not run): the OSS
+  build is already in flight. **Do not** delete the tags and re-run this action
+  wholesale (that would dispatch OSS a second time). Instead, dispatch pro only:
+
+  ```bash
+  gh workflow run release.yaml --repo loft-sh/vcluster-pro --ref <version>
+  ```
+
 ## Usage
 
 Consumed by a `workflow_dispatch` workflow on the caller's default branch (the
