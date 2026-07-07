@@ -200,8 +200,21 @@ cut_monorepo() {
 }
 
 main() {
-  local version="${INPUT_VERSION:?INPUT_VERSION is required}" era line
-  export DRY_RUN="${INPUT_DRY_RUN:-true}"
+  local version="${INPUT_VERSION:?INPUT_VERSION is required}" era line raw_dry_run
+  # Fail closed: only an explicit, unambiguous "false" cuts for real. Any other
+  # value (empty, typo, "yes", "1", wrong case, stray whitespace) stays in
+  # dry-run, so a misconfigured caller can never accidentally fire a real
+  # cross-repo release.
+  raw_dry_run="${INPUT_DRY_RUN:-true}"
+  case "${raw_dry_run,,}" in
+    false) DRY_RUN="false" ;;
+    true)  DRY_RUN="true" ;;
+    *)
+      echo "::warning::unrecognized dry-run value '${raw_dry_run}'; defaulting to dry-run (no mutations). Pass exactly 'false' to cut for real." >&2
+      DRY_RUN="true"
+      ;;
+  esac
+  export DRY_RUN
   echo "vcluster-release: version=${version} dry_run=${DRY_RUN} cutover=${CUTOVER}"
 
   era="$(classify_era "$version")"

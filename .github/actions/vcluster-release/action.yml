@@ -14,7 +14,7 @@ inputs:
     description: 'Release version to cut, e.g. v0.35.4 or v0.36.2.'
     required: true
   dry-run:
-    description: 'When true (default), run the read-only routing checks and print the exact tag + dispatch calls without firing them.'
+    description: 'Fail-closed: only an explicit "false" cuts for real. Any other value (the default, a typo, wrong case) runs the read-only routing checks and prints the exact tag + dispatch calls without firing them.'
     required: false
     default: 'true'
   github-token:

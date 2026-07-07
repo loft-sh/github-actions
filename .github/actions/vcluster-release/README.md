@@ -15,11 +15,11 @@ monorepo-created OSS release cannot re-trigger the OSS builder.
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-|    INPUT     |  TYPE  | REQUIRED | DEFAULT  |                                                           DESCRIPTION                                                            |
-|--------------|--------|----------|----------|----------------------------------------------------------------------------------------------------------------------------------|
-|   dry-run    | string |  false   | `"true"` | When true (default), run the read-only <br>routing checks and print the exact <br>tag + dispatch calls without firing <br>them.  |
-| github-token | string |   true   |          | Token with repo + workflow scope <br>on both loft-sh/vcluster and loft-sh/vcluster-pro (cross-repo tag creation and dispatch).   |
-|   version    | string |   true   |          |                                      Release version to cut, e.g. v0.35.4 <br>or v0.36.2.                                        |
+|    INPUT     |  TYPE  | REQUIRED | DEFAULT  |                                                                                                       DESCRIPTION                                                                                                        |
+|--------------|--------|----------|----------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|   dry-run    | string |  false   | `"true"` | Fail-closed: only an explicit "false" cuts <br>for real. Any other value (the default, a typo, wrong case) <br>runs the read-only routing checks and <br>prints the exact tag + dispatch <br>calls without firing them.  |
+| github-token | string |   true   |          |                                             Token with repo + workflow scope <br>on both loft-sh/vcluster and loft-sh/vcluster-pro (cross-repo tag creation and dispatch).                                               |
+|   version    | string |   true   |          |                                                                                  Release version to cut, e.g. v0.35.4 <br>or v0.36.2.                                                                                    |
 
 <!-- AUTO-DOC-INPUT:END -->
 
@@ -44,6 +44,9 @@ in the monorepo era.
   silent fallback), distinguishing a real 404 from a transient API error.
 - **Dry-run** still performs the read-only checks, so a bad routing decision
   (missing branch, already-released) is caught before anything is dispatched.
+  Dry-run is **fail-closed**: only an explicit `false` cuts for real; any other
+  `dry-run` value (a typo, wrong case, empty) stays in dry-run and warns, so a
+  misconfigured caller cannot accidentally fire a real cross-repo release.
 
 ## Partial-failure recovery
 

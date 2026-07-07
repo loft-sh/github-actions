@@ -281,6 +281,26 @@ EOF
   [[ "$output" != *"in loft-sh/vcluster "* ]]
 }
 
+@test "dry-run fail-closed: an unrecognized value stays dry (no mutation), warns" {
+  # 'yes' is neither 'true' nor 'false' - must NOT be read as "cut for real".
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="yes" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"unrecognized dry-run value"* ]]
+  [[ "$output" == *"dry_run=true"* ]]
+  [[ "$output" == *"[dry-run]"* ]]
+  [[ "$output" != *"dispatched release.yaml"* ]]
+}
+
+@test "dry-run fail-closed: only an explicit false cuts for real (case-insensitive)" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="False" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"dry_run=false"* ]]
+  [[ "$output" == *"dispatched release.yaml"* ]]
+  [[ "$output" != *"[dry-run]"* ]]
+}
+
 @test "monorepo: an unexpected HTTP status (403/500) aborts loudly (not read as missing)" {
   # The *) arm of branch_exists: neither 200 nor 404 must hard-fail, never fall
   # back to main.
