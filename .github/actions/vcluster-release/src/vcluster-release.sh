@@ -76,30 +76,38 @@ classify_era() {
 # in dry-run). Mutating ones honour DRY_RUN.
 # ---------------------------------------------------------------------------
 
-# branch_exists <repo> <branch> -> 0 if 200, 1 if 404, exits 1 on transient error.
-# Read only the HTTP status line. On a 404 `gh` exits non-zero, so we must
-# capture its output with `|| true` BEFORE parsing - piping gh directly into the
-# status-substitution would let pipefail propagate the non-zero exit and clobber
-# the code to empty, misreading a real 404 as a transient failure. gh writes the
-# "HTTP/2.0 404" status line to stdout even with --silent (only the body is
-# suppressed); a genuine transient error (DNS/auth/rate-limit) yields no status
-# line, so an empty code correctly means "could not reach the API".
-branch_exists() {
-  local repo="$1" branch="$2" headers http_code
-  headers="$(gh api "repos/${repo}/branches/${branch}" --silent -i 2>/dev/null || true)"
+# api_exists <path> <what> -> 0 if 200, 1 if 404, exits 1 on transient/unexpected.
+# Shared read-only existence probe. Read only the HTTP status line. On a 404 `gh`
+# exits non-zero, so we must capture its output with `|| true` BEFORE parsing -
+# piping gh directly into the status-substitution would let pipefail propagate the
+# non-zero exit and clobber the code to empty, misreading a real 404 as a transient
+# failure. gh writes the "HTTP/2.0 404" status line to stdout even with --silent
+# (only the body is suppressed); a genuine transient error (DNS/auth/rate-limit)
+# yields no status line, so an empty code correctly means "could not reach the API".
+# Distinguishing the two matters to every caller: an unreachable API must never be
+# silently read as "absent" (a missed double-cut guard) or "missing" (a wrong branch).
+api_exists() {
+  local path="$1" what="$2" headers http_code
+  headers="$(gh api "$path" --silent -i 2>/dev/null || true)"
   http_code="$(printf '%s\n' "$headers" | head -1 | awk '{print $2}')"
   case "$http_code" in
     200) return 0 ;;
     404) return 1 ;;
     "")
-      echo "::error::failed to reach ${repo} branches API for '${branch}' (no HTTP status - DNS, rate-limit, or auth). Not treating as missing." >&2
+      echo "::error::failed to reach GitHub API for ${what} (no HTTP status - DNS, rate-limit, or auth). Not treating as absent." >&2
       exit 1
       ;;
     *)
-      echo "::error::unexpected status ${http_code} from ${repo} branches API for '${branch}'." >&2
+      echo "::error::unexpected status ${http_code} from GitHub API for ${what}." >&2
       exit 1
       ;;
   esac
+}
+
+# branch_exists <repo> <branch> -> 0 if 200, 1 if 404, exits 1 on transient error.
+branch_exists() {
+  local repo="$1" branch="$2"
+  api_exists "repos/${repo}/branches/${branch}" "branch '${branch}' in ${repo}"
 }
 
 # require_branch <repo> <branch> - hard error if the branch is absent.
@@ -115,11 +123,17 @@ require_branch() {
 # release for this version is a hard error: releases are cut once.
 guard_not_released() {
   local repo="$1" tag="$2"
-  if gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
+  # Both probes go through api_exists, so a transient API failure (rate-limit /
+  # auth / DNS) aborts loudly instead of being misread as "not released" - which
+  # would silently skip the double-cut guard.
+  if api_exists "repos/${repo}/releases/tags/${tag}" "release ${tag} in ${repo}"; then
     echo "::error::release ${tag} already exists in ${repo}. Refusing to re-cut (double-cut guard)." >&2
     exit 1
   fi
-  if gh api "repos/${repo}/git/refs/tags/${tag}" >/dev/null 2>&1; then
+  # Singular `git/ref/tags/` requires an exact match (404s otherwise). The plural
+  # `git/refs/tags/` prefix-matches, so it would report `v0.35.4` as existing when
+  # only `v0.35.4-rc.1` had been tagged - a false double-cut on the final release.
+  if api_exists "repos/${repo}/git/ref/tags/${tag}" "tag ${tag} in ${repo}"; then
     echo "::error::tag ${tag} already exists in ${repo}. Delete it to re-cut, or bump the version." >&2
     exit 1
   fi

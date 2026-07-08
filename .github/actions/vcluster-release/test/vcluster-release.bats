@@ -24,7 +24,10 @@ teardown() {
 #   GH_STUB_RELEASES="loft-sh/vcluster:v0.35.4"
 #   GH_STUB_TAGS="loft-sh/vcluster-pro:v0.35.4"
 # Anything not listed 404s / is absent. POST refs, refs/heads sha lookups and
-# `workflow run` succeed (only reached in non-dry-run tests).
+# `workflow run` succeed (only reached in non-dry-run tests). GH_STUB_TRANSIENT /
+# GH_STUB_UNEXPECTED simulate API failures on every probe; GH_STUB_TRANSIENT_TAGS
+# scopes a transient failure to the double-cut probes only (branch check still
+# passes), to exercise guard_not_released's transient handling in isolation.
 install_gh_stub() {
   cat >"${STUB_DIR}/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -35,31 +38,45 @@ contains() { case " $1 " in *" $2 "*) return 0 ;; *) return 1 ;; esac; }
 
 if [[ "$sub" == "api" ]]; then
   path="$1"
+  # emit_status <present:0|1> <scope> - print an HTTP status line and exit like
+  # real gh. Real gh prints the status line to stdout for 200 AND 404, but exits
+  # non-zero on 404. GH_STUB_TRANSIENT=1 simulates a network/auth failure (no
+  # status line, non-zero exit) on every probe. GH_STUB_TRANSIENT_TAGS=1 scopes
+  # that same failure to the double-cut probes only (scope=tags), so a test can
+  # let the branch check pass and still exercise the guard's transient handling.
+  # GH_STUB_UNEXPECTED=1 simulates an unexpected status (403/500) that is neither
+  # 200 nor 404 - it must abort, not fall back.
+  emit_status() {
+    if [[ "${GH_STUB_TRANSIENT:-}" == "1" ]]; then exit 1; fi
+    if [[ "$2" == "tags" && "${GH_STUB_TRANSIENT_TAGS:-}" == "1" ]]; then exit 1; fi
+    if [[ "${GH_STUB_UNEXPECTED:-}" == "1" ]]; then echo "HTTP/2.0 403 Forbidden"; exit 1; fi
+    if [[ "$1" == "0" ]]; then echo "HTTP/2.0 200 OK"; exit 0; else echo "HTTP/2.0 404 Not Found"; exit 1; fi
+  }
   case "$path" in
     repos/*/branches/*)
       rest="${path#repos/}"; repo="${rest%%/branches/*}"; branch="${rest##*/branches/}"
-      # Real gh: prints the status line to stdout for both, but exits non-zero on
-      # 404. GH_STUB_TRANSIENT=1 simulates a network/auth failure (no status line,
-      # non-zero exit). GH_STUB_UNEXPECTED=1 simulates an unexpected HTTP status
-      # (e.g. 403/500) that is neither 200 nor 404 - it must abort, not fall back.
-      if [[ "${GH_STUB_TRANSIENT:-}" == "1" ]]; then exit 1; fi
-      if [[ "${GH_STUB_UNEXPECTED:-}" == "1" ]]; then echo "HTTP/2.0 403 Forbidden"; exit 1; fi
-      if contains "${GH_STUB_BRANCHES:-}" "${repo}:${branch}"; then echo "HTTP/2.0 200 OK"; exit 0; else echo "HTTP/2.0 404 Not Found"; exit 1; fi ;;
+      contains "${GH_STUB_BRANCHES:-}" "${repo}:${branch}" && emit_status 0 branches || emit_status 1 branches ;;
+    repos/*/releases/tags/*)
+      rest="${path#repos/}"; repo="${rest%%/releases/tags/*}"; tag="${rest##*/releases/tags/}"
+      contains "${GH_STUB_RELEASES:-}" "${repo}:${tag}" && emit_status 0 tags || emit_status 1 tags ;;
+    repos/*/git/ref/tags/*)
+      # Singular endpoint: exact match, 404 otherwise (mirrors the real API).
+      rest="${path#repos/}"; repo="${rest%%/git/ref/tags/*}"; tag="${rest##*/git/ref/tags/}"
+      contains "${GH_STUB_TAGS:-}" "${repo}:${tag}" && emit_status 0 tags || emit_status 1 tags ;;
     repos/*/git/refs/tags/*)
+      # Plural endpoint: prefix match (mirrors the real API). Kept so a regression
+      # from the singular exact-match endpoint trips the false-double-cut test.
       rest="${path#repos/}"; repo="${rest%%/git/refs/tags/*}"; tag="${rest##*/git/refs/tags/}"
-      contains "${GH_STUB_TAGS:-}" "${repo}:${tag}" && exit 0 || exit 1 ;;
+      for entry in ${GH_STUB_TAGS:-}; do
+        [[ "${entry%%:*}" == "$repo" && "${entry#*:}" == "${tag}"* ]] && emit_status 0 tags
+      done
+      emit_status 1 tags ;;
     repos/*/git/refs/heads/*)
       echo "deadbeefcafe"; exit 0 ;;
     *)
       # POST repos/<repo>/git/refs and anything else: succeed.
       exit 0 ;;
   esac
-fi
-
-if [[ "$sub" == "release" && "${1:-}" == "view" ]]; then
-  tag="$2"; repo=""
-  while [[ $# -gt 0 ]]; do [[ "$1" == "--repo" ]] && repo="$2"; shift; done
-  contains "${GH_STUB_RELEASES:-}" "${repo}:${tag}" && exit 0 || exit 1
 fi
 
 if [[ "$sub" == "workflow" && "${1:-}" == "run" ]]; then exit 0; fi
@@ -206,6 +223,27 @@ EOF
   INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="true" run main
   [ "$status" -ne 0 ]
   [[ "$output" == *"tag v0.35.4 already exists"* ]]
+}
+
+@test "guard: a transient failure on the double-cut probe aborts loudly (not read as not-released)" {
+  # The branch check passes; only the guard's release/tag probe transient-fails.
+  # guard_not_released must abort, not silently treat the API error as "absent".
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.36"
+  export GH_STUB_TRANSIENT_TAGS="1"
+  INPUT_VERSION="v0.36.2" INPUT_DRY_RUN="true" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"failed to reach"* ]]
+}
+
+@test "legacy: a prerelease tag does not trip the final release's double-cut guard" {
+  # v0.35.4-rc.1 is tagged; cutting the final v0.35.4 must NOT be seen as an
+  # existing tag. The singular git/ref/tags/ endpoint exact-matches; a regression
+  # to the plural prefix-matching endpoint would falsely trip the guard here.
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  export GH_STUB_TAGS="loft-sh/vcluster:v0.35.4-rc.1 loft-sh/vcluster-pro:v0.35.4-rc.1"
+  INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="true" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"already exists"* ]]
 }
 
 # ---- main: monorepo flow (dry-run) ----

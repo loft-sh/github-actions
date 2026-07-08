@@ -39,7 +39,9 @@ in the monorepo era.
 ## Guards
 
 - **Double-cut:** fails if the tag or a release for `version` already exists in a
-  target repo.
+  target repo. The tag lookup is an exact match (a prerelease like `v0.35.4-rc.1`
+  does not block the final `v0.35.4`), and like the branch check it distinguishes
+  a real 404 from a transient API error rather than silently skipping the guard.
 - **Unprepared line:** fails loudly if a required `vX.Y` branch is absent (no
   silent fallback), distinguishing a real 404 from a transient API error.
 - **Dry-run** still performs the read-only checks, so a bad routing decision
