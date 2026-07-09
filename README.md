@@ -314,6 +314,34 @@ re-pointed at the branch being released, so only that branch is frozen.
 PAT or GitHub App token with Administration read and write on the target repo.
 See the action README for full details.
 
+### Cut vCluster release
+
+Single entry point for cutting a vCluster release on any supported line. The
+version string decides the routing (legacy `< v0.36` fans out to both
+`loft-sh/vcluster` and `loft-sh/vcluster-pro`; monorepo `>= v0.36` dispatches
+`loft-sh/vcluster-pro` only). Creates the tag(s) and dispatches each line's own
+`release.yaml`; the GitHub Release is a pipeline output, not a trigger.
+
+**Location:** `.github/actions/vcluster-release`
+
+**Usage:**
+
+```yaml
+- uses: loft-sh/github-actions/.github/actions/vcluster-release@vcluster-release/v1
+  with:
+    version: ${{ inputs.version }}
+    dry-run: ${{ inputs.dry_run }}
+    github-token: ${{ secrets.GH_ACCESS_TOKEN }}
+```
+
+**Inputs:**
+
+- `version` (required): release version, e.g. `v0.35.4` or `v0.36.2`
+- `dry-run` (optional, default `true`): run read-only routing checks and print the tag + dispatch calls without firing them
+- `github-token` (required): PAT/App token with `repo` + `workflow` scope on both `loft-sh/vcluster` and `loft-sh/vcluster-pro`
+
+See the [action README](./.github/actions/vcluster-release/README.md) for routing and guard details.
+
 ### Subtree Mirror Action
 
 Mirrors a monorepo subtree to a downstream OSS repository. Fast-forward-only for release lines; marker-guarded force push for the mirror branch so contributions merged directly on the OSS repo are never silently destroyed. On divergence it fails closed, sets `diverged=true`, and leaves the OSS branch untouched.
