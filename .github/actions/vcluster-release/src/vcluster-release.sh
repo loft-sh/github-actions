@@ -11,18 +11,19 @@
 # build. Nothing triggers on `release:created`, so a monorepo-created OSS release
 # cannot re-trigger the OSS builder.
 #
-# Routing by numeric (major, minor) compare against CUTOVER (v0.36):
-#   legacy   (< v0.36) -> verify the vX.Y branch in BOTH repos, tag both, then
+# Routing by numeric (major, minor) compare against CUTOVER (v0.37):
+#   legacy   (< v0.37) -> verify the vX.Y branch in BOTH repos, tag both, then
 #                         dispatch loft-sh/vcluster FIRST, then loft-sh/vcluster-pro.
-#   monorepo (>= v0.36) -> resolve target (line branch vX.Y if it exists, else
+#   monorepo (>= v0.37) -> resolve target (line branch vX.Y if it exists, else
 #                         main), tag it, dispatch loft-sh/vcluster-pro only.
+# v0.36 is a legacy line (two-repo dance); v0.37 is the first merged/monorepo line.
 #
 # dry_run (default true) performs the read-only checks (branch existence,
 # double-cut guard) so the printed routing decision is validated, but prints the
 # mutating tag/dispatch calls instead of firing them.
 set -euo pipefail
 
-CUTOVER="${CUTOVER:-v0.36}"
+CUTOVER="${CUTOVER:-v0.37}"
 OSS_REPO="${OSS_REPO:-loft-sh/vcluster}"
 PRO_REPO="${PRO_REPO:-loft-sh/vcluster-pro}"
 WORKFLOW="${WORKFLOW:-release.yaml}"
