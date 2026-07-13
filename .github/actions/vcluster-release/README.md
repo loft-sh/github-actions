@@ -19,22 +19,23 @@ monorepo-created OSS release cannot re-trigger the OSS builder.
 |--------------|--------|----------|----------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 |   dry-run    | string |  false   | `"true"` | Fail-closed: only an explicit "false" cuts <br>for real. Any other value (the default, a typo, wrong case) <br>runs the read-only routing checks and <br>prints the exact tag + dispatch <br>calls without firing them.  |
 | github-token | string |   true   |          |                                             Token with repo + workflow scope <br>on both loft-sh/vcluster and loft-sh/vcluster-pro (cross-repo tag creation and dispatch).                                               |
-|   version    | string |   true   |          |                                                                                  Release version to cut, e.g. v0.35.4 <br>or v0.36.2.                                                                                    |
+|   version    | string |   true   |          |                                                                                  Release version to cut, e.g. v0.35.4 <br>or v0.37.2.                                                                                    |
 
 <!-- AUTO-DOC-INPUT:END -->
 
 ## Routing
 
 Era is decided by a numeric `(major, minor)` compare against the `CUTOVER`
-constant (`v0.36`):
+constant (`v0.37`):
 
 | Era | Versions | Fan-out |
 |-----|----------|---------|
-| legacy | `< v0.36` | Verify the `vX.Y` branch in **both** repos, tag both, dispatch `loft-sh/vcluster` **first**, then `loft-sh/vcluster-pro`. |
-| monorepo | `>= v0.36` | Resolve target (`vX.Y` line branch if it exists, else `main`), dispatch `loft-sh/vcluster-pro` only. |
+| legacy | `< v0.37` | Verify the `vX.Y` branch in **both** repos, tag both, dispatch `loft-sh/vcluster` **first**, then `loft-sh/vcluster-pro`. |
+| monorepo | `>= v0.37` | Resolve target (`vX.Y` line branch if it exists, else `main`), dispatch `loft-sh/vcluster-pro` only. |
 
-Numeric compare matters: `v0.9` sorts *below* `v0.36` (legacy), and `v1.0` lands
-in the monorepo era.
+`v0.36` is the last legacy line (two-repo dance); `v0.37` is the first
+merged/monorepo line. Numeric compare matters: `v0.9` sorts *below* `v0.37`
+(legacy), and `v1.0` lands in the monorepo era.
 
 ## Guards
 
@@ -78,7 +79,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version to cut (e.g. v0.35.4 or v0.36.2)"
+        description: "Release version to cut (e.g. v0.35.4 or v0.37.2)"
         type: string
         required: true
       dry_run:

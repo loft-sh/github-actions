@@ -154,18 +154,23 @@ EOF
   [ "$output" = "legacy" ]
 }
 
-@test "classify_era: v0.36 (cutover boundary) is monorepo" {
+@test "classify_era: v0.36 is legacy (last legacy line, below the v0.37 cutover)" {
   run classify_era "v0.36.0"
-  [ "$output" = "monorepo" ]
+  [ "$output" = "legacy" ]
 }
 
-@test "classify_era: v0.36.0-rc.1 is monorepo" {
+@test "classify_era: v0.36.0-rc.1 is legacy" {
   run classify_era "v0.36.0-rc.1"
+  [ "$output" = "legacy" ]
+}
+
+@test "classify_era: v0.37 (cutover boundary) is monorepo" {
+  run classify_era "v0.37.0"
   [ "$output" = "monorepo" ]
 }
 
-@test "classify_era: v0.37 is monorepo" {
-  run classify_era "v0.37.2"
+@test "classify_era: v0.37.0-rc.1 is monorepo" {
+  run classify_era "v0.37.0-rc.1"
   [ "$output" = "monorepo" ]
 }
 
@@ -228,9 +233,9 @@ EOF
 @test "guard: a transient failure on the double-cut probe aborts loudly (not read as not-released)" {
   # The branch check passes; only the guard's release/tag probe transient-fails.
   # guard_not_released must abort, not silently treat the API error as "absent".
-  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.36"
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.37"
   export GH_STUB_TRANSIENT_TAGS="1"
-  INPUT_VERSION="v0.36.2" INPUT_DRY_RUN="true" run main
+  INPUT_VERSION="v0.37.2" INPUT_DRY_RUN="true" run main
   [ "$status" -ne 0 ]
   [[ "$output" == *"failed to reach"* ]]
 }
@@ -249,12 +254,12 @@ EOF
 # ---- main: monorepo flow (dry-run) ----
 
 @test "monorepo dry-run: pro-only dispatch, target line branch when it exists" {
-  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.36"
-  INPUT_VERSION="v0.36.2" INPUT_DRY_RUN="true" run main
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.37"
+  INPUT_VERSION="v0.37.2" INPUT_DRY_RUN="true" run main
   [ "$status" -eq 0 ]
   [[ "$output" == *"-> monorepo"* ]]
-  [[ "$output" == *"target v0.36"* ]]
-  [[ "$output" == *"gh workflow run release.yaml --repo loft-sh/vcluster-pro --ref v0.36.2"* ]]
+  [[ "$output" == *"target v0.37"* ]]
+  [[ "$output" == *"gh workflow run release.yaml --repo loft-sh/vcluster-pro --ref v0.37.2"* ]]
   # No OSS dispatch on the monorepo path.
   [[ "$output" != *"--repo loft-sh/vcluster "* ]]
 }
@@ -263,7 +268,7 @@ EOF
   # Regression: a real 404 makes gh exit non-zero. branch_exists must read that
   # as "missing" (-> main), not as a transient error that aborts the cut.
   export GH_STUB_BRANCHES=""
-  INPUT_VERSION="v0.36.0" INPUT_DRY_RUN="true" run main
+  INPUT_VERSION="v0.37.0" INPUT_DRY_RUN="true" run main
   [ "$status" -eq 0 ]
   [[ "$output" == *"target main"* ]]
   [[ "$output" != *"failed to reach"* ]]
@@ -271,15 +276,15 @@ EOF
 
 @test "monorepo: a genuine transient API failure aborts loudly (not read as missing)" {
   export GH_STUB_TRANSIENT="1"
-  INPUT_VERSION="v0.36.0" INPUT_DRY_RUN="true" run main
+  INPUT_VERSION="v0.37.0" INPUT_DRY_RUN="true" run main
   [ "$status" -ne 0 ]
   [[ "$output" == *"failed to reach"* ]]
 }
 
 @test "monorepo: existing release is a double-cut hard error" {
-  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.36"
-  export GH_STUB_RELEASES="loft-sh/vcluster-pro:v0.36.2"
-  INPUT_VERSION="v0.36.2" INPUT_DRY_RUN="true" run main
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.37"
+  export GH_STUB_RELEASES="loft-sh/vcluster-pro:v0.37.2"
+  INPUT_VERSION="v0.37.2" INPUT_DRY_RUN="true" run main
   [ "$status" -ne 0 ]
   [[ "$output" == *"already exists"* ]]
 }
@@ -309,10 +314,10 @@ EOF
 }
 
 @test "monorepo non-dry-run: reaches the mutating pro-only path" {
-  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.36"
-  INPUT_VERSION="v0.36.2" INPUT_DRY_RUN="false" run main
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.37"
+  INPUT_VERSION="v0.37.2" INPUT_DRY_RUN="false" run main
   [ "$status" -eq 0 ]
-  [[ "$output" == *"created tag v0.36.2 in loft-sh/vcluster-pro "* ]]
+  [[ "$output" == *"created tag v0.37.2 in loft-sh/vcluster-pro "* ]]
   [[ "$output" == *"dispatched release.yaml in loft-sh/vcluster-pro "* ]]
   [[ "$output" != *"[dry-run]"* ]]
   # No OSS mutation on the monorepo path.
@@ -343,7 +348,7 @@ EOF
   # The *) arm of branch_exists: neither 200 nor 404 must hard-fail, never fall
   # back to main.
   export GH_STUB_UNEXPECTED="1"
-  INPUT_VERSION="v0.36.0" INPUT_DRY_RUN="true" run main
+  INPUT_VERSION="v0.37.0" INPUT_DRY_RUN="true" run main
   [ "$status" -ne 0 ]
   [[ "$output" == *"unexpected status"* ]]
 }
