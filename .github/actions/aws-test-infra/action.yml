@@ -3,14 +3,15 @@ description: 'Provision or tear down AWS test infrastructure (VPC + subnet + IGW
 
 inputs:
   command:
-    description: 'Subcommand: provision or cleanup'
+    description: 'Subcommand: provision | cleanup | s3-stage | s3-download | s3-cleanup'
     required: true
   region:
     description: 'AWS region'
     required: true
   run-id:
-    description: 'Unique run identifier; tagged on every resource as RunID'
-    required: true
+    description: 'Unique run identifier; tagged as RunID on provisioned resources and on s3-stage buckets. For s3-stage the bucket name defaults to the lowercased run-id.'
+    required: false
+    default: ''
 
   # Provision-only inputs ────────────────────────────────────────────────
   consumer-tag:
@@ -140,9 +141,39 @@ inputs:
     required: false
     default: 'false'
   strict-sweep:
-    description: '(cleanup) Fail the cleanup step on sweep errors. Default false matches the original Bash teardown (set +e). Set true if you would rather see sweep failures than silently leak resources on AWS API hiccups.'
+    description: '(cleanup, s3-cleanup) Fail the step on sweep errors. Default false matches the original Bash teardown (set +e). Set true if you would rather see sweep failures than silently leak resources on AWS API hiccups.'
     required: false
     default: 'false'
+
+  # S3 inputs (s3-stage / s3-download / s3-cleanup) ───────────────────────
+  bucket:
+    description: '(s3-*) Bucket name. For s3-stage it defaults to the lowercased run-id. Required for s3-download. For s3-cleanup, pass the bucket to delete directly and/or bucket-prefix for the tag sweep.'
+    required: false
+    default: ''
+  uploads:
+    description: '(s3-stage) Newline-separated local-path=object-key pairs to upload. Example: "vcluster_image=vcluster.tar\n/tmp/kind-node.tar.gz=kind-node.tar.gz"'
+    required: false
+    default: ''
+  presign:
+    description: '(s3-stage) Newline-separated object-key:method pairs to presign (method get|put). Example: "vcluster.tar:get\nresults.tar.gz:put". Read the result via fromJSON(outputs.presigned-urls).<key>.'
+    required: false
+    default: ''
+  expires-in:
+    description: '(s3-stage) Presigned URL lifetime as a Go duration (e.g. 4h, 14400s).'
+    required: false
+    default: '4h'
+  key:
+    description: '(s3-download) Object key to download.'
+    required: false
+    default: ''
+  dest:
+    description: '(s3-download) Local destination path.'
+    required: false
+    default: ''
+  bucket-prefix:
+    description: '(s3-cleanup) Bucket name prefix for the tag-based sweep fallback.'
+    required: false
+    default: ''
 
 outputs:
   vpc-id:
@@ -184,6 +215,12 @@ outputs:
   instance-id-by-role:
     description: 'JSON map of role → instance ID. Use for arbitrary role names (anything other than primary/worker1/worker2). Consumer accesses with `fromJSON(steps.<id>.outputs.instance-id-by-role).<role>`.'
     value: ${{ steps.run.outputs.instance_id_by_role }}
+  bucket:
+    description: '(s3-stage) Bucket name that was ensured/used.'
+    value: ${{ steps.run.outputs.bucket }}
+  presigned-urls:
+    description: '(s3-stage) JSON map of object-key → presigned URL. Access with `fromJSON(steps.<id>.outputs.presigned-urls).<key>`.'
+    value: ${{ steps.run.outputs.presigned_urls }}
 
 runs:
   using: 'composite'
@@ -260,6 +297,14 @@ runs:
         INPUT_SKIP_DIRECT: ${{ inputs.skip-direct }}
         INPUT_SKIP_SWEEP: ${{ inputs.skip-sweep }}
         INPUT_STRICT_SWEEP: ${{ inputs.strict-sweep }}
+        # S3
+        INPUT_BUCKET: ${{ inputs.bucket }}
+        INPUT_UPLOADS: ${{ inputs.uploads }}
+        INPUT_PRESIGN: ${{ inputs.presign }}
+        INPUT_EXPIRES_IN: ${{ inputs.expires-in }}
+        INPUT_KEY: ${{ inputs.key }}
+        INPUT_DEST: ${{ inputs.dest }}
+        INPUT_BUCKET_PREFIX: ${{ inputs.bucket-prefix }}
       run: |
         set -euo pipefail
         ARGS=(-region="$INPUT_REGION" -run-id="$INPUT_RUN_ID")
@@ -306,8 +351,45 @@ runs:
             [ "$INPUT_STRICT_SWEEP" = "true" ] && ARGS+=(-strict-sweep)
             "$BINARY" cleanup "${ARGS[@]}"
             ;;
+          s3-stage)
+            # s3 commands have their own flag sets; build a dedicated arg list
+            # rather than reuse the provision/cleanup base (which carries flags
+            # they don't define).
+            S3ARGS=(-region="$INPUT_REGION" -run-id="$INPUT_RUN_ID")
+            [ -n "$INPUT_BUCKET" ] && S3ARGS+=(-bucket="$INPUT_BUCKET")
+            [ -n "$INPUT_EXPIRES_IN" ] && S3ARGS+=(-expires-in="$INPUT_EXPIRES_IN")
+            # Turn the newline-separated uploads/presign inputs into repeatable
+            # flags. parse-list.sh (tested with bats) does the trim/split so this
+            # YAML stays logic-free.
+            PARSE="$GITHUB_ACTION_PATH/src/parse-list.sh"
+            # Capture into a variable first so `set -e`/`pipefail` sees a parse-list.sh
+            # failure; a `< <(...)` process substitution would swallow it and leave
+            # S3ARGS silently missing its -upload/-presign flags.
+            if [ -n "$INPUT_UPLOADS" ]; then
+              _uploads=$(printf '%s\n' "$INPUT_UPLOADS" | bash "$PARSE" -upload)
+              while IFS= read -r arg; do [ -n "$arg" ] && S3ARGS+=("$arg"); done <<< "$_uploads"
+            fi
+            if [ -n "$INPUT_PRESIGN" ]; then
+              _presign=$(printf '%s\n' "$INPUT_PRESIGN" | bash "$PARSE" -presign)
+              while IFS= read -r arg; do [ -n "$arg" ] && S3ARGS+=("$arg"); done <<< "$_presign"
+            fi
+            S3ARGS+=(-output="$GITHUB_OUTPUT" -output-format=github-output)
+            "$BINARY" s3-stage "${S3ARGS[@]}"
+            ;;
+          s3-download)
+            "$BINARY" s3-download -region="$INPUT_REGION" -bucket="$INPUT_BUCKET" -key="$INPUT_KEY" -dest="$INPUT_DEST"
+            ;;
+          s3-cleanup)
+            S3ARGS=(-region="$INPUT_REGION")
+            [ -n "$INPUT_RUN_ID" ] && S3ARGS+=(-run-id="$INPUT_RUN_ID")
+            [ -n "$INPUT_BUCKET" ] && S3ARGS+=(-bucket="$INPUT_BUCKET")
+            [ -n "$INPUT_BUCKET_PREFIX" ] && S3ARGS+=(-bucket-prefix="$INPUT_BUCKET_PREFIX")
+            [ "$INPUT_SKIP_SWEEP" = "true" ] && S3ARGS+=(-skip-sweep)
+            [ "$INPUT_STRICT_SWEEP" = "true" ] && S3ARGS+=(-strict)
+            "$BINARY" s3-cleanup "${S3ARGS[@]}"
+            ;;
           *)
-            echo "::error::Unknown command: $INPUT_CMD (must be 'provision' or 'cleanup')"
+            echo "::error::Unknown command: $INPUT_CMD (must be provision, cleanup, s3-stage, s3-download, or s3-cleanup)"
             exit 1
             ;;
         esac

@@ -41,18 +41,11 @@ func emitOutput(logger *slog.Logger, destination, format string, ids ResourceIDs
 		}
 	}
 
-	var w io.Writer
-	if destination == "" {
-		w = os.Stdout
-	} else {
-		// GITHUB_OUTPUT / GITHUB_ENV are append-mode files per Actions docs.
-		f, err := os.OpenFile(destination, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-		if err != nil {
-			return fmt.Errorf("open output destination %q: %w", destination, err)
-		}
-		defer f.Close()
-		w = f
+	w, err := openDestWriter(destination)
+	if err != nil {
+		return err
 	}
+	defer w.Close()
 
 	switch format {
 	case "json":
@@ -79,6 +72,26 @@ func destinationLabel(d string) string {
 	}
 	return d
 }
+
+// openDestWriter returns the writer for an output destination: os.Stdout (with
+// a no-op Close) when empty, otherwise the append-opened file. GITHUB_OUTPUT /
+// GITHUB_ENV are append-mode files per the Actions docs.
+func openDestWriter(destination string) (io.WriteCloser, error) {
+	if destination == "" {
+		return nopWriteCloser{os.Stdout}, nil
+	}
+	f, err := os.OpenFile(destination, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("open output destination %q: %w", destination, err)
+	}
+	return f, nil
+}
+
+// nopWriteCloser adds a no-op Close to a Writer so callers can always defer
+// Close without special-casing os.Stdout.
+type nopWriteCloser struct{ io.Writer }
+
+func (nopWriteCloser) Close() error { return nil }
 
 func writeKeyValuePairs(w io.Writer, ids ResourceIDs) error {
 	pairs := []struct {
