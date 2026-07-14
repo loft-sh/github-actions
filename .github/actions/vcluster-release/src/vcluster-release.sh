@@ -11,11 +11,20 @@
 # build. Nothing triggers on `release:created`, so a monorepo-created OSS release
 # cannot re-trigger the OSS builder.
 #
-# Routing by numeric (major, minor) compare against CUTOVER (v0.37):
-#   legacy   (< v0.37) -> verify the vX.Y branch in BOTH repos, tag both, then
-#                         dispatch loft-sh/vcluster FIRST, then loft-sh/vcluster-pro.
-#   monorepo (>= v0.37) -> resolve target (line branch vX.Y if it exists, else
-#                         main), tag it, dispatch loft-sh/vcluster-pro only.
+# The prerelease suffix decides which branch a version may be cut from
+# (fail-closed - an unroutable suffix like -devpod.alpha is rejected, never
+# guessed):
+#   -alpha / -beta      -> main only
+#   -rc                 -> main or the vX.Y release branch (default main)
+#   stable (vX.Y.Z)     -> the vX.Y release branch only
+#   -next / -next.internal -> a short-lived feature branch (source-branch input
+#                         required); always builds pro only.
+# The feature-branch prereleases short-circuit the era routing below; everything
+# else routes by numeric (major, minor) compare against CUTOVER (v0.37):
+#   legacy   (< v0.37) -> rc/stable only, from the vX.Y branch in BOTH repos;
+#                         tag both, dispatch loft-sh/vcluster FIRST, then -pro.
+#   monorepo (>= v0.37) -> tag the resolved branch in loft-sh/vcluster-pro,
+#                         dispatch loft-sh/vcluster-pro only.
 # v0.36 is a legacy line (two-repo dance); v0.37 is the first merged/monorepo line.
 #
 # dry_run (default true) performs the read-only checks (branch existence,
@@ -70,6 +79,72 @@ classify_era() {
   else
     printf 'legacy\n'
   fi
+}
+
+# classify_suffix <version> -> alpha | beta | rc | next | next-internal | stable
+# Fail-closed: only the prerelease suffixes the dispatcher knows how to route are
+# accepted. Anything else - including a legal-but-unrouted tag such as
+# -devpod.alpha - is rejected so an unhandled release type can never be silently
+# misrouted onto the wrong branch. Order matters: -next.internal is a sub-flavor
+# of -next and must be matched first.
+classify_suffix() {
+  local v="$1"
+  case "$v" in
+    *-next.internal.*) printf 'next-internal\n' ;;
+    *-next.*)          printf 'next\n' ;;
+    *-alpha.*)         printf 'alpha\n' ;;
+    *-beta.*)          printf 'beta\n' ;;
+    *-rc.*)            printf 'rc\n' ;;
+    *-*)
+      echo "::error::version '$v' has an unsupported prerelease suffix; the dispatcher cuts only -alpha/-beta/-rc/-next/-next.internal or a stable vX.Y.Z" >&2
+      return 1 ;;
+    *) printf 'stable\n' ;;
+  esac
+}
+
+# is_feature_branch <branch> -> 0 for a short-lived feature branch, 1 otherwise.
+# A feature branch is anything that is neither main nor a vX.Y release branch.
+is_feature_branch() {
+  local b="$1"
+  [[ "$b" == "main" ]] && return 1
+  [[ "$b" =~ ^v[0-9]+\.[0-9]+$ ]] && return 1
+  return 0
+}
+
+# resolve_target <suffix> <source-branch> <line> -> the branch to tag, or a hard
+# error if <source-branch> violates the matrix. Handles the non-feature suffixes
+# only (alpha/beta/rc/stable); next/next.internal are routed by cut_feature_prerelease.
+#   alpha|beta -> main only
+#   rc         -> main or the line branch vX.Y (empty source-branch defaults to main)
+#   stable     -> the line branch vX.Y only
+resolve_target() {
+  local suffix="$1" src="$2" line="$3"
+  case "$suffix" in
+    alpha|beta)
+      if [[ -n "$src" && "$src" != "main" ]]; then
+        echo "::error::${suffix} releases are cut from main only, not '${src}'" >&2
+        return 1
+      fi
+      printf 'main\n' ;;
+    rc)
+      if [[ -z "$src" || "$src" == "main" ]]; then
+        printf 'main\n'
+      elif [[ "$src" == "$line" ]]; then
+        printf '%s\n' "$line"
+      else
+        echo "::error::rc releases are cut from main or the ${line} release branch, not '${src}'" >&2
+        return 1
+      fi ;;
+    stable)
+      if [[ -n "$src" && "$src" != "$line" ]]; then
+        echo "::error::stable releases are cut from the ${line} release branch only, not '${src}'" >&2
+        return 1
+      fi
+      printf '%s\n' "$line" ;;
+    *)
+      echo "::error::resolve_target: unexpected suffix '${suffix}'" >&2
+      return 1 ;;
+  esac
 }
 
 # ---------------------------------------------------------------------------
@@ -202,15 +277,26 @@ cut_legacy() {
 }
 
 cut_monorepo() {
-  local version="$1" line="$2" target
-  if branch_exists "$PRO_REPO" "$line"; then
-    target="$line"
-  else
-    target="main"
-  fi
-  echo "Routing ${version} -> monorepo (line ${line}, target ${target}); dispatch: ${PRO_REPO} only"
+  local version="$1" target="$2"
+  echo "Routing ${version} -> monorepo (target ${target}); dispatch: ${PRO_REPO} only"
+  # The target is resolved from the suffix matrix, so it must already exist:
+  # stable/rc name a vX.Y branch that has to be cut first, alpha/beta name main.
+  # Refusing to guess is the point - never fall back to a different branch.
+  require_branch "$PRO_REPO" "$target"
   guard_not_released "$PRO_REPO" "$version"
   create_tag "$PRO_REPO" "$target" "$version"
+  dispatch "$PRO_REPO" "$version"
+}
+
+# cut_feature_prerelease <version> <feature-branch> - -next / -next.internal are
+# cut from a short-lived feature branch and only ever build pro (they are
+# prereleases of a future, monorepo-era line). Bypasses the era fan-out.
+cut_feature_prerelease() {
+  local version="$1" feature="$2"
+  echo "Routing ${version} -> feature-branch prerelease (source ${feature}); dispatch: ${PRO_REPO} only"
+  require_branch "$PRO_REPO" "$feature"
+  guard_not_released "$PRO_REPO" "$version"
+  create_tag "$PRO_REPO" "$feature" "$version"
   dispatch "$PRO_REPO" "$version"
 }
 
@@ -230,15 +316,49 @@ main() {
       ;;
   esac
   export DRY_RUN
-  echo "vcluster-release: version=${version} dry_run=${DRY_RUN} cutover=${CUTOVER}"
+
+  local suffix source_branch target
+  suffix="$(classify_suffix "$version")" || exit 1
+  source_branch="${INPUT_SOURCE_BRANCH:-}"
+  line="$(derive_line "$version")"
+  echo "vcluster-release: version=${version} suffix=${suffix} source-branch=${source_branch:-<none>} dry_run=${DRY_RUN} cutover=${CUTOVER}"
+
+  # Feature-branch prereleases (-next/-next.internal) short-circuit the era
+  # routing: they are cut from a short-lived feature branch and always build pro.
+  if [[ "$suffix" == "next" || "$suffix" == "next-internal" ]]; then
+    if [[ -z "$source_branch" ]]; then
+      echo "::error::${suffix} releases require the source-branch input (the short-lived feature branch to cut from)." >&2
+      exit 1
+    fi
+    if ! is_feature_branch "$source_branch"; then
+      echo "::error::${suffix} releases are cut from a short-lived feature branch, not '${source_branch}' (main and vX.Y release branches are not allowed)." >&2
+      exit 1
+    fi
+    cut_feature_prerelease "$version" "$source_branch"
+    return
+  fi
 
   era="$(classify_era "$version")"
-  line="$(derive_line "$version")"
 
   case "$era" in
-    legacy)   cut_legacy "$version" "$line" ;;
-    monorepo) cut_monorepo "$version" "$line" ;;
-    *)        echo "::error::unknown era '${era}'" >&2; exit 1 ;;
+    monorepo)
+      target="$(resolve_target "$suffix" "$source_branch" "$line")" || exit 1
+      cut_monorepo "$version" "$target" ;;
+    legacy)
+      # Legacy lines are historical two-repo lines: only rc/stable are cut, from
+      # the vX.Y branch. main-sourced (alpha/beta) and feature-sourced (next)
+      # prereleases are go-forward concepts that do not apply here.
+      case "$suffix" in
+        rc|stable) ;;
+        *) echo "::error::${suffix} releases are not supported on the legacy line ${line}; legacy lines cut only rc or stable from the ${line} branch." >&2; exit 1 ;;
+      esac
+      if [[ -n "$source_branch" && "$source_branch" != "$line" ]]; then
+        echo "::error::legacy ${line} releases are cut from the ${line} branch, not '${source_branch}'." >&2
+        exit 1
+      fi
+      cut_legacy "$version" "$line" ;;
+    *)
+      echo "::error::unknown era '${era}'" >&2; exit 1 ;;
   esac
 }
 

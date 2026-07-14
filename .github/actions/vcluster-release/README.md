@@ -15,23 +15,42 @@ monorepo-created OSS release cannot re-trigger the OSS builder.
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-|    INPUT     |  TYPE  | REQUIRED | DEFAULT  |                                                                                                       DESCRIPTION                                                                                                        |
-|--------------|--------|----------|----------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-|   dry-run    | string |  false   | `"true"` | Fail-closed: only an explicit "false" cuts <br>for real. Any other value (the default, a typo, wrong case) <br>runs the read-only routing checks and <br>prints the exact tag + dispatch <br>calls without firing them.  |
-| github-token | string |   true   |          |                                             Token with repo + workflow scope <br>on both loft-sh/vcluster and loft-sh/vcluster-pro (cross-repo tag creation and dispatch).                                               |
-|   version    | string |   true   |          |                                                                                  Release version to cut, e.g. v0.35.4 <br>or v0.37.2.                                                                                    |
+|     INPUT     |  TYPE  | REQUIRED | DEFAULT  |                                                                                                                                 DESCRIPTION                                                                                                                                  |
+|---------------|--------|----------|----------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|    dry-run    | string |  false   | `"true"` |                           Fail-closed: only an explicit "false" cuts <br>for real. Any other value (the default, a typo, wrong case) <br>runs the read-only routing checks and <br>prints the exact tag + dispatch <br>calls without firing them.                            |
+| github-token  | string |   true   |          |                                                                       Token with repo + workflow scope <br>on both loft-sh/vcluster and loft-sh/vcluster-pro (cross-repo tag creation and dispatch).                                                                         |
+| source-branch | string |  false   |          | Branch to cut from. Required for <br>-next/-next.internal (the short-lived feature branch). Optional for -rc (main or the vX.Y branch; defaults to main). <br>Must be main for -alpha/-beta and <br>the vX.Y branch for stable; leave <br>empty to take the matrix default.  |
+|    version    | string |   true   |          |                                                                                                            Release version to cut, e.g. v0.35.4 <br>or v0.37.2.                                                                                                              |
 
 <!-- AUTO-DOC-INPUT:END -->
 
 ## Routing
+
+Two independent decisions: the **prerelease suffix** fixes which branch a version
+may be cut from (the `source-branch` input), and the **era** fixes the fan-out.
+
+### Suffix -> source branch (fail-closed)
+
+An unroutable suffix (e.g. `-devpod.alpha`) is rejected, never guessed.
+
+| Suffix | Allowed source branch | Notes |
+|--------|-----------------------|-------|
+| `-alpha` / `-beta` | `main` only | |
+| `-rc` | `main` or the `vX.Y` release branch | empty `source-branch` defaults to `main` |
+| stable (`vX.Y.Z`) | the `vX.Y` release branch only | no fallback to `main` |
+| `-next` / `-next.internal` | a short-lived feature branch (`source-branch` **required**) | not `main`, not `vX.Y`; **always builds `loft-sh/vcluster-pro` only** |
+
+`-next`/`-next.internal` short-circuit the era routing below.
+
+### Era -> fan-out
 
 Era is decided by a numeric `(major, minor)` compare against the `CUTOVER`
 constant (`v0.37`):
 
 | Era | Versions | Fan-out |
 |-----|----------|---------|
-| legacy | `< v0.37` | Verify the `vX.Y` branch in **both** repos, tag both, dispatch `loft-sh/vcluster` **first**, then `loft-sh/vcluster-pro`. |
-| monorepo | `>= v0.37` | Resolve target (`vX.Y` line branch if it exists, else `main`), dispatch `loft-sh/vcluster-pro` only. |
+| legacy | `< v0.37` | `-rc`/stable only, from the `vX.Y` branch in **both** repos; tag both, dispatch `loft-sh/vcluster` **first**, then `loft-sh/vcluster-pro`. |
+| monorepo | `>= v0.37` | Tag the suffix-resolved branch in `loft-sh/vcluster-pro`, dispatch `loft-sh/vcluster-pro` only. |
 
 `v0.36` is the last legacy line (two-repo dance); `v0.37` is the first
 merged/monorepo line. Numeric compare matters: `v0.9` sorts *below* `v0.37`
