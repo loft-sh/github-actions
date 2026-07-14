@@ -1,11 +1,14 @@
 name: Cut vCluster release
 description: |
   Single entry point for cutting a vCluster release on any supported line. The
-  version string decides the routing, so nobody has to remember which release
-  procedure a given version needs. Classifies the era by numeric compare against
-  the cutover (v0.37), then creates the tag(s) and dispatches each line's own
-  release.yaml via workflow_dispatch (gh workflow run --ref <tag>, which runs the
-  tagged commit's version of the workflow). Legacy lines (< v0.37) fan out to
+  version string plus its prerelease suffix decide the routing, so nobody has to
+  remember which release procedure a given version needs. The suffix fixes which
+  branch a version may be cut from (-alpha/-beta from main, -rc from main or the
+  release branch, stable from the release branch, -next/-next.internal from a
+  short-lived feature branch); the era (numeric compare against the cutover
+  v0.37) fixes the fan-out. It then creates the tag(s) and dispatches each line's
+  own release.yaml via workflow_dispatch (gh workflow run --ref <tag>, which runs
+  the tagged commit's version of the workflow). Legacy lines (< v0.37) fan out to
   both loft-sh/vcluster and loft-sh/vcluster-pro (OSS first); monorepo lines
   (>= v0.37) dispatch loft-sh/vcluster-pro only. The GitHub Release is a pipeline
   output, so nothing here triggers a downstream release:created build.
@@ -13,6 +16,10 @@ inputs:
   version:
     description: 'Release version to cut, e.g. v0.35.4 or v0.37.2.'
     required: true
+  source-branch:
+    description: 'Branch to cut from. Required for -next/-next.internal (the short-lived feature branch). Optional for -rc (main or the vX.Y branch; defaults to main). Must be main for -alpha/-beta and the vX.Y branch for stable; leave empty to take the matrix default.'
+    required: false
+    default: ''
   dry-run:
     description: 'Fail-closed: only an explicit "false" cuts for real. Any other value (the default, a typo, wrong case) runs the read-only routing checks and prints the exact tag + dispatch calls without firing them.'
     required: false
@@ -32,6 +39,7 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.github-token }}
         INPUT_VERSION: ${{ inputs.version }}
+        INPUT_SOURCE_BRANCH: ${{ inputs.source-branch }}
         INPUT_DRY_RUN: ${{ inputs.dry-run }}
       run: ${{ github.action_path }}/src/vcluster-release.sh
 branding:

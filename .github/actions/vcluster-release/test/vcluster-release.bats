@@ -264,14 +264,47 @@ EOF
   [[ "$output" != *"--repo loft-sh/vcluster "* ]]
 }
 
-@test "monorepo dry-run: falls back to main when the line branch is absent (404 exits non-zero)" {
-  # Regression: a real 404 makes gh exit non-zero. branch_exists must read that
-  # as "missing" (-> main), not as a transient error that aborts the cut.
+@test "monorepo: stable with no vX.Y branch is a hard error (no fallback to main)" {
+  # Matrix rule: stable is cut from the vX.Y release branch only. A missing v0.37
+  # branch (real 404, gh exits non-zero) must fail loudly, never silently retarget
+  # main. branch_exists still distinguishes 404 from a transient failure.
   export GH_STUB_BRANCHES=""
   INPUT_VERSION="v0.37.0" INPUT_DRY_RUN="true" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"release branch 'v0.37' not found"* ]]
+  [[ "$output" != *"failed to reach"* ]]
+}
+
+@test "monorepo rc: an omitted source-branch defaults to main" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:main"
+  INPUT_VERSION="v0.40.0-rc.1" INPUT_DRY_RUN="true" run main
   [ "$status" -eq 0 ]
   [[ "$output" == *"target main"* ]]
-  [[ "$output" != *"failed to reach"* ]]
+  [[ "$output" == *"[dry-run] gh workflow run release.yaml --repo loft-sh/vcluster-pro --ref v0.40.0-rc.1"* ]]
+}
+
+@test "monorepo rc: an explicit vX.Y source-branch targets the release branch" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.40"
+  INPUT_VERSION="v0.40.0-rc.1" INPUT_SOURCE_BRANCH="v0.40" INPUT_DRY_RUN="true" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"target v0.40"* ]]
+}
+
+@test "monorepo rc: a foreign source-branch is rejected" {
+  INPUT_VERSION="v0.40.0-rc.1" INPUT_SOURCE_BRANCH="my-feature" INPUT_DRY_RUN="true" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"rc releases are cut from main or the v0.40 release branch"* ]]
+}
+
+@test "monorepo alpha: defaults to main; a non-main source-branch is rejected" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:main"
+  INPUT_VERSION="v0.40.0-alpha.1" INPUT_DRY_RUN="true" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"target main"* ]]
+
+  INPUT_VERSION="v0.40.0-alpha.1" INPUT_SOURCE_BRANCH="v0.40" INPUT_DRY_RUN="true" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"alpha releases are cut from main only"* ]]
 }
 
 @test "monorepo: a genuine transient API failure aborts loudly (not read as missing)" {
@@ -351,4 +384,87 @@ EOF
   INPUT_VERSION="v0.37.0" INPUT_DRY_RUN="true" run main
   [ "$status" -ne 0 ]
   [[ "$output" == *"unexpected status"* ]]
+}
+
+# ---- classify_suffix (pure) ----
+
+@test "classify_suffix: stable / alpha / beta / rc" {
+  run classify_suffix "v0.40.0";        [ "$output" = "stable" ]
+  run classify_suffix "v0.40.0-alpha.1"; [ "$output" = "alpha" ]
+  run classify_suffix "v0.40.0-beta.2";  [ "$output" = "beta" ]
+  run classify_suffix "v0.40.0-rc.3";    [ "$output" = "rc" ]
+}
+
+@test "classify_suffix: -next.internal is matched before -next" {
+  run classify_suffix "v0.40.0-next.internal.1"
+  [ "$output" = "next-internal" ]
+  run classify_suffix "v0.40.0-next.5"
+  [ "$output" = "next" ]
+}
+
+@test "classify_suffix: an unrouted legal suffix (-devpod.alpha) is fail-closed" {
+  run classify_suffix "v0.40.0-devpod.alpha.1"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"unsupported prerelease suffix"* ]]
+}
+
+# ---- is_feature_branch (pure) ----
+
+@test "is_feature_branch: main and vX.Y are not feature branches; anything else is" {
+  run is_feature_branch "my-feature"; [ "$status" -eq 0 ]
+  run is_feature_branch "dmytrosydorov/foo"; [ "$status" -eq 0 ]
+  run is_feature_branch "main"; [ "$status" -ne 0 ]
+  run is_feature_branch "v0.40"; [ "$status" -ne 0 ]
+}
+
+# ---- resolve_target (pure) ----
+
+@test "resolve_target: stable requires the line branch; a foreign source is rejected" {
+  run resolve_target "stable" "" "v0.40";        [ "$output" = "v0.40" ]
+  run resolve_target "stable" "v0.40" "v0.40";   [ "$output" = "v0.40" ]
+  run resolve_target "stable" "main" "v0.40";    [ "$status" -ne 0 ]
+}
+
+# ---- main: feature-branch prereleases (-next / -next.internal) ----
+
+@test "next: cut from a feature branch, pro-only, tags the feature head" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:my-feature"
+  INPUT_VERSION="v0.40.0-next.1" INPUT_SOURCE_BRANCH="my-feature" INPUT_DRY_RUN="true" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"feature-branch prerelease (source my-feature)"* ]]
+  [[ "$output" == *"[dry-run] gh workflow run release.yaml --repo loft-sh/vcluster-pro --ref v0.40.0-next.1"* ]]
+  # feature head is tagged, and OSS is never touched.
+  [[ "$output" == *"repos/loft-sh/vcluster-pro/git/refs -f ref=refs/tags/v0.40.0-next.1 -f sha=<my-feature head>"* ]]
+  [[ "$output" != *"loft-sh/vcluster/"* ]]
+}
+
+@test "next.internal: also cut from a feature branch, pro-only" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:my-feature"
+  INPUT_VERSION="v0.40.0-next.internal.2" INPUT_SOURCE_BRANCH="my-feature" INPUT_DRY_RUN="true" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"feature-branch prerelease (source my-feature)"* ]]
+}
+
+@test "next: a missing source-branch is a hard error" {
+  INPUT_VERSION="v0.40.0-next.1" INPUT_DRY_RUN="true" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"require the source-branch input"* ]]
+}
+
+@test "next: main and vX.Y sources are rejected (feature branch only)" {
+  INPUT_VERSION="v0.40.0-next.1" INPUT_SOURCE_BRANCH="main" INPUT_DRY_RUN="true" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"short-lived feature branch"* ]]
+
+  INPUT_VERSION="v0.40.0-next.1" INPUT_SOURCE_BRANCH="v0.40" INPUT_DRY_RUN="true" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"short-lived feature branch"* ]]
+}
+
+# ---- main: legacy line only accepts rc/stable ----
+
+@test "legacy: alpha/beta/next are rejected on a legacy line" {
+  INPUT_VERSION="v0.35.0-alpha.1" INPUT_DRY_RUN="true" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"not supported on the legacy line v0.35"* ]]
 }
