@@ -425,6 +425,27 @@ EOF
   run resolve_target "stable" "main" "v0.40";    [ "$status" -ne 0 ]
 }
 
+@test "resolve_target: rc defaults to main, accepts main or the line branch, rejects a foreign source" {
+  run resolve_target "rc" "" "v0.40";          [ "$output" = "main" ]
+  run resolve_target "rc" "main" "v0.40";      [ "$output" = "main" ]
+  run resolve_target "rc" "v0.40" "v0.40";     [ "$output" = "v0.40" ]
+  run resolve_target "rc" "my-feature" "v0.40"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"rc releases are cut from main or the v0.40 release branch"* ]]
+}
+
+@test "resolve_target: alpha/beta default to main, accept main, reject anything else" {
+  run resolve_target "alpha" "" "v0.40";     [ "$output" = "main" ]
+  run resolve_target "alpha" "main" "v0.40"; [ "$output" = "main" ]
+  run resolve_target "beta" "" "v0.40";      [ "$output" = "main" ]
+  run resolve_target "alpha" "v0.40" "v0.40"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"alpha releases are cut from main only"* ]]
+  run resolve_target "beta" "v0.40" "v0.40"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"beta releases are cut from main only"* ]]
+}
+
 # ---- main: feature-branch prereleases (-next / -next.internal) ----
 
 @test "next: cut from a feature branch, pro-only, tags the feature head" {
@@ -451,6 +472,12 @@ EOF
   [[ "$output" == *"require the source-branch input"* ]]
 }
 
+@test "next.internal: a missing source-branch is a hard error" {
+  INPUT_VERSION="v0.40.0-next.internal.1" INPUT_DRY_RUN="true" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"require the source-branch input"* ]]
+}
+
 @test "next: main and vX.Y sources are rejected (feature branch only)" {
   INPUT_VERSION="v0.40.0-next.1" INPUT_SOURCE_BRANCH="main" INPUT_DRY_RUN="true" run main
   [ "$status" -ne 0 ]
@@ -467,4 +494,18 @@ EOF
   INPUT_VERSION="v0.35.0-alpha.1" INPUT_DRY_RUN="true" run main
   [ "$status" -ne 0 ]
   [[ "$output" == *"not supported on the legacy line v0.35"* ]]
+}
+
+@test "legacy: a foreign source-branch is rejected (must be the line branch)" {
+  INPUT_VERSION="v0.35.4" INPUT_SOURCE_BRANCH="my-feature" INPUT_DRY_RUN="true" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"legacy v0.35 releases are cut from the v0.35 branch, not 'my-feature'"* ]]
+}
+
+@test "legacy: an explicit source-branch equal to the line branch is accepted" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  INPUT_VERSION="v0.35.4" INPUT_SOURCE_BRANCH="v0.35" INPUT_DRY_RUN="true" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"-> legacy (line v0.35)"* ]]
+  [[ "$output" == *"gh workflow run release.yaml --repo loft-sh/vcluster --ref v0.35.4"* ]]
 }
