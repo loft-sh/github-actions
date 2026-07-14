@@ -15,12 +15,12 @@ monorepo-created OSS release cannot re-trigger the OSS builder.
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-|    INPUT     |  TYPE  | REQUIRED | DEFAULT  |                                                                                                       DESCRIPTION                                                                                                        |
-|--------------|--------|----------|----------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-|   dry-run    | string |  false   | `"true"` | Fail-closed: only an explicit "false" cuts <br>for real. Any other value (the default, a typo, wrong case) <br>runs the read-only routing checks and <br>prints the exact tag + dispatch <br>calls without firing them.  |
-| github-token | string |   true   |          |                                             Token with repo + workflow scope <br>on both loft-sh/vcluster and loft-sh/vcluster-pro (cross-repo tag creation and dispatch).                                               |
-| source-branch | string |  false   | `""` |                              Branch to cut from. Required for `-next`/`-next.internal` <br>(the feature branch). Optional for `-rc` (main or `vX.Y`, defaults main). <br>Must be main for `-alpha`/`-beta`, `vX.Y` for stable; empty takes the matrix default.                               |
-|   version    | string |   true   |          |                                                                                  Release version to cut, e.g. v0.35.4 <br>or v0.37.2.                                                                                    |
+|     INPUT     |  TYPE  | REQUIRED | DEFAULT  |                                                                                                                                 DESCRIPTION                                                                                                                                  |
+|---------------|--------|----------|----------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|    dry-run    | string |  false   | `"true"` |                           Fail-closed: only an explicit "false" cuts <br>for real. Any other value (the default, a typo, wrong case) <br>runs the read-only routing checks and <br>prints the exact tag + dispatch <br>calls without firing them.                            |
+| github-token  | string |   true   |          |                                                                       Token with repo + workflow scope <br>on both loft-sh/vcluster and loft-sh/vcluster-pro (cross-repo tag creation and dispatch).                                                                         |
+| source-branch | string |  false   |          | Branch to cut from. Required for <br>-next/-next.internal (the short-lived feature branch). Optional for -rc (main or the vX.Y branch; defaults to main). <br>Must be main for -alpha/-beta and <br>the vX.Y branch for stable; leave <br>empty to take the matrix default.  |
+|    version    | string |   true   |          |                                                                                                            Release version to cut, e.g. v0.35.4 <br>or v0.37.2.                                                                                                              |
 
 <!-- AUTO-DOC-INPUT:END -->
 
