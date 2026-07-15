@@ -155,6 +155,24 @@ get_summary_line() {
   [[ "$summary" == *"All tests passed!"* ]]
 }
 
+# --- Suite with zero matched specs (SpecReports: null) ---
+
+@test "a suite with null SpecReports does not abort the script" {
+  REPORT_FILE="$FIXTURES/with-null-specreports.json" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+}
+
+@test "a suite with null SpecReports is excluded from counts of the other suite" {
+  REPORT_FILE="$FIXTURES/with-null-specreports.json" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+
+  local summary
+  summary="$(get_summary)"
+  [[ "$summary" == *"Failed: 2"* ]]
+  [[ "$summary" == *"Passed: 2"* ]]
+  [[ "$summary" == *"Skipped: 1"* ]]
+}
+
 # --- Missing report file ---
 
 @test "missing report file produces fallback message" {

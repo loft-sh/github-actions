@@ -22,13 +22,15 @@ echo "Generating failure summary from JSON report..."
 
 command -v jq >/dev/null || { echo "::error::jq is required but not found"; exit 1; }
 
-# Count as failed: anything not passed, skipped, or pending
+# Count as failed: anything not passed, skipped, or pending. Suites matching zero specs
+# under the label filter (e.g. a discovered package with no matching labels) report
+# "SpecReports": null rather than [] - default to [] so they don't abort the whole script.
 STATS=$(jq -r '
   {
-    failed: ([.[].SpecReports[] | select(.State | IN("passed", "skipped", "pending") | not)] | length),
-    passed: ([.[].SpecReports[] | select(.State == "passed")] | length),
-    skipped: ([.[].SpecReports[] | select(.State == "skipped")] | length),
-    pending: ([.[].SpecReports[] | select(.State == "pending")] | length),
+    failed: ([.[] | (.SpecReports // [])[] | select(.State | IN("passed", "skipped", "pending") | not)] | length),
+    passed: ([.[] | (.SpecReports // [])[] | select(.State == "passed")] | length),
+    skipped: ([.[] | (.SpecReports // [])[] | select(.State == "skipped")] | length),
+    pending: ([.[] | (.SpecReports // [])[] | select(.State == "pending")] | length),
     total_specs: (.[0].PreRunStats.TotalSpecs // 0),
     specs_to_run: (.[0].PreRunStats.SpecsThatWillRun // 0),
     runtime: ((.[0].RunTime // 0) / 1000000000 | floor)
@@ -67,7 +69,7 @@ RUNTIME=$(echo "$STATS" | jq -r '.runtime')
   if [[ "$FAILED_COUNT" -gt 0 ]]; then
     echo ""
     echo "*Failed Tests:*"
-    jq -r '[.[].SpecReports[] | select(.State | IN("passed", "skipped", "pending") | not)] |
+    jq -r '[.[] | (.SpecReports // [])[] | select(.State | IN("passed", "skipped", "pending") | not)] |
       .[] |
       "❌ [" + (.State | ascii_upcase) + "] [" + .LeafNodeType + "]" +
       (if .ContainerHierarchyTexts then " " + (.ContainerHierarchyTexts | join(" ")) else "" end) +
