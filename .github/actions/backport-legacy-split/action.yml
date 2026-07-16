@@ -1,0 +1,72 @@
+name: 'backport-legacy-split'
+description: "Backport a merged monorepo commit into a pre-monorepo (<= v0.36) release line. Routes by changed path: pro-only (defer to cherry-pick), OSS-only (re-root to OSS layout + PR on the OSS repo), or mixed (two parallel PRs). Never cuts releases; conflicts open a conflicted PR."
+
+inputs:
+  subtree-prefix:
+    description: "Path of the OSS subtree within the monorepo, e.g. staging/github.com/loft-sh/vcluster. Requires a full-history checkout of the monorepo as the working directory (fetch-depth: 0)."
+    required: true
+  target-branch:
+    description: "Legacy release branch to backport onto, e.g. v0.35. Must exist on the OSS repo (and, for mixed commits, the pro repo)."
+    required: true
+  oss-repo:
+    description: "OSS repository as owner/repo, e.g. loft-sh/vcluster."
+    required: true
+  pro-repo:
+    description: "Pro repository as owner/repo, e.g. loft-sh/vcluster-pro. Target for pro-only commits and the pro half of a mixed commit."
+    required: true
+  github-token:
+    description: "Token with write access to both repos and permission to open PRs. Used to build push remotes and by gh; never logged."
+    required: true
+  commit:
+    description: "Monorepo merge commit to backport (the tip). Names the backport branch; also the diff HEAD in the fallback path. Defaults to HEAD."
+    required: false
+    default: ""
+  pr-number:
+    description: "Source PR number. When set, the PR head is fetched from refs/pull/<n>/head (via github-token) and the diff is merge-base(commit^1, pr-head)..pr-head -- GitHub's 'Files changed', correct for any merge strategy (squash, rebase, or merge commit). Omit (e.g. tests) to fall back to commit^..commit."
+    required: false
+    default: ""
+  create-pr:
+    description: "true = open a PR per pushed backport branch via gh. false = push branches only."
+    required: false
+    default: "true"
+
+outputs:
+  route:
+    description: "Classification of the commit: pro-only | oss-only | mixed."
+    value: ${{ steps.backport.outputs.route }}
+  backport-branch:
+    description: "The backport branch name pushed to the target repo(s)."
+    value: ${{ steps.backport.outputs.backport-branch }}
+  oss-pushed:
+    description: "true when an OSS backport branch was pushed."
+    value: ${{ steps.backport.outputs.oss-pushed }}
+  pro-pushed:
+    description: "true when a pro backport branch was pushed (pro-only or mixed commits)."
+    value: ${{ steps.backport.outputs.pro-pushed }}
+  oss-conflicts:
+    description: "true when the OSS half applied with merge conflicts."
+    value: ${{ steps.backport.outputs.oss-conflicts }}
+  pro-conflicts:
+    description: "true when the pro half applied with merge conflicts."
+    value: ${{ steps.backport.outputs.pro-conflicts }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Backport to legacy line
+      id: backport
+      shell: bash
+      env:
+        SUBTREE_PREFIX: ${{ inputs.subtree-prefix }}
+        TARGET_BRANCH: ${{ inputs.target-branch }}
+        COMMIT: ${{ inputs.commit }}
+        PR_NUMBER: ${{ inputs.pr-number }}
+        CREATE_PR: ${{ inputs.create-pr }}
+        OSS_REPO: ${{ inputs.oss-repo }}
+        PRO_REPO: ${{ inputs.pro-repo }}
+        # Token-less remotes: run.sh authenticates via http.extraheader in the
+        # environment (git_auth), so the PAT never appears in argv / .git/config.
+        OSS_REMOTE: https://github.com/${{ inputs.oss-repo }}.git
+        PRO_REMOTE: https://github.com/${{ inputs.pro-repo }}.git
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: ${{ github.action_path }}/run.sh

@@ -2,6 +2,33 @@ name: Automatic backport action
 
 on:
   workflow_call:
+    inputs:
+      legacy-split:
+        description: >-
+          Enable the pre-monorepo (<= v0.36) split/re-root backport flow. When
+          true this workflow empties auto_backport_label_prefix so sorenlouv
+          honors the caller's .backportrc.json branchLabelMapping regex (which
+          MUST be scoped to the monorepo era, >= v0.37), and a companion job
+          routes <= v0.36 targets through backport-legacy-split. Requires
+          subtree-prefix, oss-repo and pro-repo.
+        type: boolean
+        required: false
+        default: false
+      subtree-prefix:
+        description: 'OSS subtree path in the monorepo, e.g. staging/github.com/loft-sh/vcluster. Required when legacy-split is true.'
+        type: string
+        required: false
+        default: ''
+      oss-repo:
+        description: 'OSS repo as owner/repo for legacy OSS-side backport PRs. Required when legacy-split is true.'
+        type: string
+        required: false
+        default: ''
+      pro-repo:
+        description: 'Pro repo as owner/repo for the pro half of mixed legacy backports. Required when legacy-split is true.'
+        type: string
+        required: false
+        default: ''
     secrets:
       gh-access-token:
         description: 'GitHub PAT for creating backport PRs'
@@ -9,6 +36,14 @@ on:
       linear-token:
         description: 'Linear API token for linking backport PRs to their matching Linear sub-issue. Optional; linking is skipped when not provided.'
         required: false
+
+# Serialize runs for the same source PR so two rapid label events can't both race
+# past the open-PR check and double-create the same deterministic backport branch
+# (the second gh pr create would fail "already exists"). Queue, don't cancel, so
+# an in-flight backport always finishes.
+concurrency:
+  group: backport-${{ github.repository }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
 
 jobs:
   backport:
@@ -23,6 +58,7 @@ jobs:
       ) &&
       (github.event.action == 'closed' || startsWith(github.event.label.name, 'backport-to-'))
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
@@ -39,7 +75,13 @@ jobs:
         uses: sorenlouv/backport-github-action@9460b7102fea25466026ce806c9ebf873ac48721 # v11.0.0
         with:
           github_token: ${{ secrets.gh-access-token }} # zizmor: ignore[secrets-outside-env] -- PAT passed via workflow_call, not a repo secret
-          auto_backport_label_prefix: backport-to-
+          # With legacy-split on, scope sorenlouv to the monorepo era (>= v0.37)
+          # by deferring to the caller's branchLabelMapping regex: an empty
+          # prefix makes the action pass branchLabelMapping: undefined, which the
+          # backport tool strips (excludeUndefined) so the file's mapping wins.
+          # The `== false && A || B` form is required because GHA's `A && x || B`
+          # collapses when x is the empty string.
+          auto_backport_label_prefix: ${{ inputs.legacy-split == false && 'backport-to-' || '' }}
 
       # Link each backport PR to the matching Linear sub-issue ([X.Y] Copy of ...)
       # so it closes on merge. Advisory: never fails the job, and is skipped when
@@ -63,3 +105,88 @@ jobs:
       - name: Debug log
         if: ${{ failure() }}
         run: cat ~/.backport/backport.debug.log
+
+  # --- pre-monorepo (<= v0.36) split/re-root flow ---------------------------
+  # sorenlouv (above) only cherry-picks monorepo-era (>= v0.37) targets. Legacy
+  # lines predate the monorepo layout, so a cherry-pick there would recreate the
+  # staging/ tree; they are re-rooted and PR'd by backport-legacy-split instead.
+  legacy-classify:
+    name: Classify legacy targets
+    if: |
+      inputs.legacy-split &&
+      github.event.pull_request.merged == true &&
+      contains(join(github.event.pull_request.labels.*.name, ','), 'backport-to-') &&
+      (github.event.action == 'closed' || startsWith(github.event.label.name, 'backport-to-'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      targets: ${{ steps.allowlist.outputs.targets }}
+      has-targets: ${{ steps.allowlist.outputs.has-targets }}
+    steps:
+      - name: Validate legacy-split inputs
+        env:
+          SUBTREE_PREFIX: ${{ inputs.subtree-prefix }}
+          OSS_REPO: ${{ inputs.oss-repo }}
+          PRO_REPO: ${{ inputs.pro-repo }}
+        shell: bash
+        run: |
+          missing=()
+          [ -n "$SUBTREE_PREFIX" ] || missing+=(subtree-prefix)
+          [ -n "$OSS_REPO" ] || missing+=(oss-repo)
+          [ -n "$PRO_REPO" ] || missing+=(pro-repo)
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::legacy-split is enabled but required input(s) empty: ${missing[*]}. Set them in the caller (uses: backport.yaml with: ...)."
+            exit 1
+          fi
+
+      - name: Compute in-support legacy allow-list
+        id: allowlist
+        uses: loft-sh/github-actions/.github/actions/backport-legacy-allowlist@backport-legacy-allowlist/v1 # zizmor: ignore[unpinned-uses] -- internal loft-sh/github-actions ref; reusable workflows check out the CALLER repo, so a local ./.github/actions path is not present here. @backport-legacy-allowlist/v1 is the floating coordination tag kept aligned with backport/v1 (see DEVOPS-923 pin-drift class).
+        with:
+          labels: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          max-minor: '36'
+
+  legacy-backport:
+    name: Backport ${{ matrix.target }} (legacy)
+    needs: legacy-classify
+    if: needs.legacy-classify.outputs.has-targets == 'true'
+    runs-on: ubuntu-latest
+    # Bound clone + apply + push so a GitHub service stall can't strand the
+    # matrix slot up to the 6h wall-clock default.
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.legacy-classify.outputs.targets) }}
+    steps:
+      - name: Checkout monorepo at the merged commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # Pin to the merge commit so it AND its parent (the diff base) are
+          # present locally; on a pull_request_target closed event the default
+          # checkout ref is the pre-merge base SHA, which would not contain it.
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install GH CLI
+        uses: dev-hanz-ops/install-gh-cli-action@af38ce09b1ec248aeb08eea2b16bbecea9e059f8 # v0.2.1
+
+      - name: Backport to ${{ matrix.target }}
+        uses: loft-sh/github-actions/.github/actions/backport-legacy-split@backport-legacy-split/v1 # zizmor: ignore[unpinned-uses] -- internal loft-sh/github-actions ref; reusable workflows check out the CALLER repo, so a local ./.github/actions path is not present here. @backport-legacy-split/v1 is the floating coordination tag kept aligned with backport/v1 (see DEVOPS-923 pin-drift class).
+        with:
+          subtree-prefix: ${{ inputs.subtree-prefix }}
+          target-branch: ${{ matrix.target }}
+          oss-repo: ${{ inputs.oss-repo }}
+          pro-repo: ${{ inputs.pro-repo }}
+          github-token: ${{ secrets.gh-access-token }}
+          commit: ${{ github.event.pull_request.merge_commit_sha }}
+          # PR number so the action diffs the PR head (refs/pull/N/head) from its
+          # merge base -- GitHub's "Files changed" -- capturing every commit of a
+          # rebase-merged PR, not just the merge tip.
+          pr-number: ${{ github.event.pull_request.number }}
+          create-pr: 'true'
