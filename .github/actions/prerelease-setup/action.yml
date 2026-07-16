@@ -102,8 +102,9 @@ runs:
         UP="${STANDALONE_VCLUSTER_UPGRADE_VERSION_INPUT#v}"
         if [ -z "$UP" ]; then
           # Empty = latest vCluster pre-release (alpha/rc). Mirrors the platform RC resolver below.
+          # -next tags are internal builds, not release candidates — exclude them from auto-resolution.
           UP=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/repos/loft-sh/vcluster/releases \
-            | jq -r '[.[] | select(.prerelease == true and .draft == false)][0].tag_name')
+            | jq -r '[.[] | select(.prerelease == true and .draft == false and (.tag_name | test("-next") | not))][0].tag_name')
           [ -n "$UP" ] && [ "$UP" != "null" ] || { echo "no vCluster pre-release found in loft-sh/vcluster"; exit 1; }
           UP="${UP#v}"
           echo "Resolved latest vCluster pre-release: $UP"
@@ -123,9 +124,10 @@ runs:
         if [ -z "$RC" ]; then
           # GitHub's /releases/latest excludes pre-releases, so list /releases and filter on `prerelease == true`.
           # The list is newest-first by created_at, so `[0]` after filter = latest pre-release.
+          # -next tags are internal builds, not release candidates — exclude them from auto-resolution.
           # loft-enterprise is private — unauthenticated requests return 404, so the token is required.
           RC=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/repos/loft-sh/loft-enterprise/releases \
-            | jq -r '[.[] | select(.prerelease == true and .draft == false)][0].tag_name')
+            | jq -r '[.[] | select(.prerelease == true and .draft == false and (.tag_name | test("-next") | not))][0].tag_name')
           [ -n "$RC" ] && [ "$RC" != "null" ] || { echo "no platform pre-release found in loft-sh/loft-enterprise"; exit 1; }
           RC="${RC#v}"
           echo "Resolved latest platform pre-release: $RC"
