@@ -1,0 +1,45 @@
+name: 'backport-legacy-allowlist'
+description: "Gate backport-to-* labels to in-support pre-monorepo (<= v0.36) release lines. Reads the vCluster lifecycle doc so the allow-list self-prunes as lines reach EOL, and emits the allowed legacy targets as a JSON array for a matrix. Monorepo-era (>= v0.37) and end-of-life lines are dropped."
+
+inputs:
+  labels:
+    description: "JSON array of label names on the source PR, e.g. toJSON(github.event.pull_request.labels.*.name). Only labels matching '<label-prefix>v0.<minor>' are considered."
+    required: true
+  label-prefix:
+    description: "Prefix that marks a backport label."
+    required: false
+    default: "backport-to-"
+  max-minor:
+    description: "Highest 0.x minor that is still pre-monorepo (old layout). Lines above this are the monorepo era and are handled by the cherry-pick path, not here. The era boundary is v0.37, so the last legacy line is v0.36."
+    required: false
+    default: "36"
+  lifecycle-url:
+    description: "vCluster lifecycle JSON used to prune end-of-life lines. On fetch/parse failure the action falls back to a hardcoded lower bound."
+    required: false
+    default: "https://www.vcluster.com/docs/api/lifecycle/vcluster.json"
+  fallback-min-minor:
+    description: "Lowest in-support 0.x minor to assume when the lifecycle doc cannot be read. Points at v0.31 per the lifecycle doc as of 2026-07."
+    required: false
+    default: "31"
+
+outputs:
+  targets:
+    description: "JSON array of allowed legacy target branches, e.g. [\"v0.35\",\"v0.34\"]. Empty array when none qualify."
+    value: ${{ steps.allowlist.outputs.targets }}
+  has-targets:
+    description: "\"true\" when at least one legacy target qualified, else \"false\"."
+    value: ${{ steps.allowlist.outputs.has-targets }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Compute legacy allow-list
+      id: allowlist
+      shell: bash
+      env:
+        LABELS: ${{ inputs.labels }}
+        LABEL_PREFIX: ${{ inputs.label-prefix }}
+        MAX_MINOR: ${{ inputs.max-minor }}
+        LIFECYCLE_URL: ${{ inputs.lifecycle-url }}
+        FALLBACK_MIN_MINOR: ${{ inputs.fallback-min-minor }}
+      run: ${{ github.action_path }}/run.sh
