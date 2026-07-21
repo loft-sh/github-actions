@@ -40,6 +40,10 @@ inputs:
   webhook_url:
     description: 'Slack Webhook URL'
     required: true
+  triggered_by:
+    description: 'Who triggered the release (shown in the Slack banner). Defaults to github.actor; callers that dispatch the release via a bot PAT should pass the human actor so the banner does not read as the bot.'
+    required: false
+    default: ${{ github.actor }}
 
 runs:
   using: "composite"
@@ -86,7 +90,7 @@ runs:
                 - type: mrkdwn
                   text: "*Repository:*\n${{ inputs.target_repo }}"
                 - type: mrkdwn
-                  text: "*Released by:*\n${{ github.actor }}"
+                  text: "*Released by:*\n${{ inputs.triggered_by }}"
             - type: section
               fields:
                 - type: mrkdwn
@@ -135,6 +139,6 @@ runs:
             - type: section
               fields:
                 - type: mrkdwn
-                  text: "*Triggered by:*\n${{ github.actor }}"
+                  text: "*Triggered by:*\n${{ inputs.triggered_by }}"
                 - type: mrkdwn
                   text: "*Run:*\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View details>"

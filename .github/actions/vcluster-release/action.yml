@@ -41,6 +41,11 @@ runs:
         INPUT_VERSION: ${{ inputs.version }}
         INPUT_SOURCE_BRANCH: ${{ inputs.source-branch }}
         INPUT_DRY_RUN: ${{ inputs.dry-run }}
+        # The human who invoked cut-release (this composite runs in that
+        # workflow_dispatch context). Forwarded to the monorepo-era release.yaml
+        # so the Slack banner attributes the person, not the bot PAT that runs
+        # the dispatched build.
+        TRIGGERED_BY: ${{ github.actor }}
       run: ${{ github.action_path }}/src/vcluster-release.sh
 branding:
   icon: 'tag'
