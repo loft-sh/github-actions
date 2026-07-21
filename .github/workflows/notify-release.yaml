@@ -35,6 +35,11 @@ on:
         required: false
         type: boolean
         default: false
+      triggered_by:
+        description: 'Human who triggered the release; forwarded to the Slack banner. Leave empty to fall back to github.actor (the run actor, which is the bot PAT when the release was dispatched cross-workflow).'
+        required: false
+        type: string
+        default: ''
     secrets:
       SLACK_WEBHOOK_URL_PRODUCT_RELEASES:
         description: 'Slack incoming webhook URL for #product-releases'
@@ -89,4 +94,8 @@ jobs:
           target_repo: ${{ inputs.target_repo }}
           product: ${{ inputs.product }}
           status: ${{ inputs.status }}
+          # Forward the human actor when the caller supplies one; otherwise fall
+          # back to github.actor (the composite's own default) for callers that
+          # don't pass it, keeping existing behavior unchanged.
+          triggered_by: ${{ inputs.triggered_by || github.actor }}
           webhook_url: ${{ secrets.SLACK_WEBHOOK_URL_PRODUCT_RELEASES }} # zizmor: ignore[secrets-outside-env] -- webhook URL passed via workflow_call

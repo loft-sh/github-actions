@@ -36,6 +36,12 @@ CUTOVER="${CUTOVER:-v0.37}"
 OSS_REPO="${OSS_REPO:-loft-sh/vcluster}"
 PRO_REPO="${PRO_REPO:-loft-sh/vcluster-pro}"
 WORKFLOW="${WORKFLOW:-release.yaml}"
+# The human who invoked cut-release. Forwarded to the monorepo-era release.yaml
+# (-f triggered_by=...) so the Slack banner attributes the person, not the bot
+# PAT that dispatches the build. Only passed on paths whose release.yaml declares
+# the input (monorepo + feature-prerelease); legacy release.yaml's don't have it,
+# and gh workflow run rejects undeclared inputs, so legacy dispatches omit it.
+TRIGGERED_BY="${TRIGGERED_BY:-}"
 
 # ---------------------------------------------------------------------------
 # Pure helpers (no network) - the routing brain, exhaustively unit-tested.
@@ -240,11 +246,16 @@ create_tag() {
 # tagged commit's version of the workflow (verified in sandbox).
 dispatch() {
   local repo="$1" tag="$2"
+  shift 2
+  # Optional trailing args are extra `gh workflow run` flags (e.g.
+  # -f triggered_by=<actor>). Callers on legacy paths pass none, so those
+  # dispatches are byte-for-byte unchanged.
+  local extra=("$@")
   if [[ "${DRY_RUN:-true}" == "true" ]]; then
-    echo "[dry-run] gh workflow run ${WORKFLOW} --repo ${repo} --ref ${tag}"
+    echo "[dry-run] gh workflow run ${WORKFLOW} --repo ${repo} --ref ${tag} ${extra[*]}"
     return 0
   fi
-  gh workflow run "${WORKFLOW}" --repo "${repo}" --ref "${tag}"
+  gh workflow run "${WORKFLOW}" --repo "${repo}" --ref "${tag}" "${extra[@]}"
   echo "dispatched ${WORKFLOW} in ${repo} at ${tag}"
 }
 
@@ -285,7 +296,9 @@ cut_monorepo() {
   require_branch "$PRO_REPO" "$target"
   guard_not_released "$PRO_REPO" "$version"
   create_tag "$PRO_REPO" "$target" "$version"
-  dispatch "$PRO_REPO" "$version"
+  local dispatch_args=()
+  [[ -n "${TRIGGERED_BY}" ]] && dispatch_args=(-f "triggered_by=${TRIGGERED_BY}")
+  dispatch "$PRO_REPO" "$version" "${dispatch_args[@]}"
 }
 
 # cut_feature_prerelease <version> <feature-branch> - -next / -next.internal are
@@ -297,7 +310,9 @@ cut_feature_prerelease() {
   require_branch "$PRO_REPO" "$feature"
   guard_not_released "$PRO_REPO" "$version"
   create_tag "$PRO_REPO" "$feature" "$version"
-  dispatch "$PRO_REPO" "$version"
+  local dispatch_args=()
+  [[ -n "${TRIGGERED_BY}" ]] && dispatch_args=(-f "triggered_by=${TRIGGERED_BY}")
+  dispatch "$PRO_REPO" "$version" "${dispatch_args[@]}"
 }
 
 main() {

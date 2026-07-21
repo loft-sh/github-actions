@@ -6,18 +6,19 @@ Sends a Slack notification when a new release is published.
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-|     INPUT     |  TYPE  | REQUIRED |           DEFAULT            |                                           DESCRIPTION                                           |
-|---------------|--------|----------|------------------------------|-------------------------------------------------------------------------------------------------|
-|  base_branch  | string |  false   |                              | Source branch from which the release <br>was cut (auto-detected from git history when omitted)  |
-|    changes    | string |  false   | `"See changelog link below"` |                                         Release changes                                         |
-|   is_draft    | string |  false   |          `"false"`           |                                    Is this a draft release?                                     |
-| is_prerelease | string |  false   |          `"false"`           |                                     Is this a pre-release?                                      |
-| previous_tag  | string |  false   |                              |                          Previous release tag for changelog comparison                          |
-|    product    | string |   true   |                              |                          Product name (vCluster or vCluster Platform)                           |
-|    status     | string |  false   |         `"success"`          |                  Release status: success, failure, cancelled, or <br>skipped                    |
-|  target_repo  | string |   true   |                              |                                        Target repository                                        |
-|    version    | string |   true   |                              |                                         Release version                                         |
-|  webhook_url  | string |   true   |                              |                                        Slack Webhook URL                                        |
+|     INPUT     |  TYPE  | REQUIRED |           DEFAULT            |                                                                                                        DESCRIPTION                                                                                                        |
+|---------------|--------|----------|------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|  base_branch  | string |  false   |                              |                                                              Source branch from which the release <br>was cut (auto-detected from git history when omitted)                                                               |
+|    changes    | string |  false   | `"See changelog link below"` |                                                                                                      Release changes                                                                                                      |
+|   is_draft    | string |  false   |          `"false"`           |                                                                                                 Is this a draft release?                                                                                                  |
+| is_prerelease | string |  false   |          `"false"`           |                                                                                                  Is this a pre-release?                                                                                                   |
+| previous_tag  | string |  false   |                              |                                                                                       Previous release tag for changelog comparison                                                                                       |
+|    product    | string |   true   |                              |                                                                                       Product name (vCluster or vCluster Platform)                                                                                        |
+|    status     | string |  false   |         `"success"`          |                                                                               Release status: success, failure, cancelled, or <br>skipped                                                                                 |
+|  target_repo  | string |   true   |                              |                                                                                                     Target repository                                                                                                     |
+| triggered_by  | string |  false   |   `"${{ github.actor }}"`    | Who triggered the release (shown in the Slack banner). Defaults <br>to github.actor; callers that dispatch the <br>release via a bot PAT should <br>pass the human actor so the <br>banner does not read as the <br>bot.  |
+|    version    | string |   true   |                              |                                                                                                      Release version                                                                                                      |
+|  webhook_url  | string |   true   |                              |                                                                                                     Slack Webhook URL                                                                                                     |
 
 <!-- AUTO-DOC-INPUT:END -->
 

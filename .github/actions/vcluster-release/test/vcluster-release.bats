@@ -466,6 +466,27 @@ EOF
   [[ "$output" == *"feature-branch prerelease (source my-feature)"* ]]
 }
 
+@test "TRIGGERED_BY: forwarded as -f triggered_by on the feature-prerelease dispatch" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:my-feature"
+  TRIGGERED_BY="alice" INPUT_VERSION="v0.40.0-next.1" INPUT_SOURCE_BRANCH="my-feature" INPUT_DRY_RUN="true" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"gh workflow run release.yaml --repo loft-sh/vcluster-pro --ref v0.40.0-next.1 -f triggered_by=alice"* ]]
+}
+
+@test "TRIGGERED_BY: forwarded on the monorepo dispatch too" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.40"
+  TRIGGERED_BY="bob" INPUT_VERSION="v0.40.1" INPUT_DRY_RUN="true" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"--repo loft-sh/vcluster-pro --ref v0.40.1 -f triggered_by=bob"* ]]
+}
+
+@test "TRIGGERED_BY: never passed on legacy dispatches (release.yaml lacks the input)" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  TRIGGERED_BY="carol" INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="true" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"triggered_by"* ]]
+}
+
 @test "next: a missing source-branch is a hard error" {
   INPUT_VERSION="v0.40.0-next.1" INPUT_DRY_RUN="true" run main
   [ "$status" -ne 0 ]
