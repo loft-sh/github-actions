@@ -13,6 +13,9 @@ setup_fixture() {
   export GIT_CONFIG_GLOBAL="$ROOT/gitconfig"
   git config --file "$GIT_CONFIG_GLOBAL" init.defaultBranch main
   git config --file "$GIT_CONFIG_GLOBAL" protocol.file.allow always
+  # CI runners have no GECOS name, so git cannot invent an ident there; make
+  # local runs equally strict so missing-ident regressions bite everywhere.
+  git config --file "$GIT_CONFIG_GLOBAL" user.useConfigOnly true
 
   EXPORT="$BATS_TEST_DIRNAME/../export.sh"
   IMPORT="$BATS_TEST_DIRNAME/../import.sh"

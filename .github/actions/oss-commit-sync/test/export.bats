@@ -283,8 +283,13 @@ Monorepo-Commit: $M0"
   )
   seed_oss=$(oss_tip)
 
+  # Run with NO git identity in the environment, like a bare CI runner: the
+  # alignment commit-tree must not depend on the fixture's exported idents
+  # (rehearsal caught "empty ident name" here).
   SEED_MONOREPO_COMMIT="$M0" SEED_OSS_COMMIT="$seed_oss" \
-    EXCLUDE_PATHS=".github/workflows/release.yaml" ALIGN_TREE=true run bash "$EXPORT"
+    EXCLUDE_PATHS=".github/workflows/release.yaml" ALIGN_TREE=true \
+    run env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL \
+    bash "$EXPORT"
   [ "$status" -eq 0 ]
   [ "$(output_value pushed)" = "true" ]
   # the alignment commit deleted the excluded leftover and seeded the trailer

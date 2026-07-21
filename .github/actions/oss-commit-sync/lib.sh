@@ -22,6 +22,12 @@ OSS_TRAILER="Oss-Commit"
 # the source commit). Callers may override via the standard git env vars.
 export GIT_COMMITTER_NAME="${GIT_COMMITTER_NAME:-github-actions[bot]}"
 export GIT_COMMITTER_EMAIL="${GIT_COMMITTER_EMAIL:-41898282+github-actions[bot]@users.noreply.github.com}"
+# Author defaults matter for the one commit not covered by replay_commit's
+# per-commit author env: the export alignment commit (git commit-tree). On a
+# bare CI runner with no user.name configured, git refuses to invent an
+# author ("empty ident name"), so default the author to the bot identity.
+export GIT_AUTHOR_NAME="${GIT_AUTHOR_NAME:-$GIT_COMMITTER_NAME}"
+export GIT_AUTHOR_EMAIL="${GIT_AUTHOR_EMAIL:-$GIT_COMMITTER_EMAIL}"
 
 emit() { echo "$1=$2" >> "${GITHUB_OUTPUT}"; }
 
