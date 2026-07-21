@@ -228,12 +228,15 @@ NEW_TIP="$(git -C "$WT" rev-parse HEAD)"
 
 # --- convergence assertion ---------------------------------------------------
 
-# Excluded paths are ignored: they are never mirrored, so an external commit
-# touching only them may legitimately leave the OSS tree differing there.
+# The assertion ignores excluded paths: they are never mirrored, so an
+# external commit touching only them may legitimately leave the OSS tree
+# differing there. ALIGN_TREE=true instead aligns on ANY difference,
+# including excluded paths: it is the explicit operator escape hatch, and at
+# migration this is what deletes the OSS-only producer workflows and seeds
+# the first Monorepo-Commit trailer.
 STAGING_TREE="$(git rev-parse "HEAD:${SUBTREE_PREFIX}")"
 OSS_TREE="$(git -C "$WT" rev-parse "HEAD^{tree}")"
-if [ "$STAGING_TREE" != "$OSS_TREE" ] \
-  && ! git diff --quiet "$OSS_TREE" "$STAGING_TREE" -- . ${excludes[@]+"${excludes[@]}"}; then
+if [ "$STAGING_TREE" != "$OSS_TREE" ]; then
   if [ "$ALIGN_TREE" = "true" ]; then
     msgfile="$(mktemp)"
     {
@@ -248,11 +251,13 @@ if [ "$STAGING_TREE" != "$OSS_TREE" ] \
     rm -f "$msgfile"
     count=$((count + 1))
     echo "Appended alignment commit ${NEW_TIP}"
-  else
+  elif ! git diff --quiet "$OSS_TREE" "$STAGING_TREE" -- . ${excludes[@]+"${excludes[@]}"}; then
     echo "::error::OSS tree does not match the monorepo staging tree after replay:"
     git --no-pager diff --stat "$OSS_TREE" "$STAGING_TREE" -- . ${excludes[@]+"${excludes[@]}"} || true
     echo "::error::Re-run with align-tree=true to append a snapshot alignment commit."
     exit 1
+  else
+    echo "OSS tree differs from staging only in excluded paths; leaving them as-is"
   fi
 fi
 

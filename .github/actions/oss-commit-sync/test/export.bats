@@ -263,3 +263,40 @@ Monorepo-Commit: $M0"
   [ "$status" -ne 0 ]
   [ "$(output_value diverged)" = "true" ]
 }
+
+@test "migration: align-tree removes excluded-path leftovers and seeds the trailer" {
+  # Pre-migration OSS carries a producer workflow that staging does not have,
+  # the exclude list covers it, and OSS has no trailers yet. Reproduces the
+  # rehearsal finding: with an exclude-aware align, the migration run was a
+  # green no-op that seeded nothing.
+  rm -rf "$OSS_REMOTE" "$ROOT/ossseed"
+  git init -q --bare "$OSS_REMOTE"
+  git init -q "$ROOT/ossseed"
+  (
+    cd "$ROOT/ossseed"
+    git checkout -q -b main
+    mkdir -p pkg .github/workflows
+    printf 'l1\nl2\nl3\n' > pkg/app.go
+    echo "producer" > .github/workflows/release.yaml
+    git add . && git commit -qm "pre-migration oss"
+    git push -q "$OSS_REMOTE" main
+  )
+  seed_oss=$(oss_tip)
+
+  SEED_MONOREPO_COMMIT="$M0" SEED_OSS_COMMIT="$seed_oss" \
+    EXCLUDE_PATHS=".github/workflows/release.yaml" ALIGN_TREE=true run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value pushed)" = "true" ]
+  # the alignment commit deleted the excluded leftover and seeded the trailer
+  run oss_file .github/workflows/release.yaml
+  [ "$status" -ne 0 ]
+  [ -n "$(git -C "$OSS_REMOTE" log -1 --format='%(trailers:key=Monorepo-Commit,valueonly)' main)" ]
+  [ "$(git -C "$OSS_REMOTE" rev-parse 'main^{tree}')" = "$(git -C "$MONO" rev-parse "HEAD:$PFX")" ]
+
+  # and the seeded trailer makes the next run self-sufficient (no seeds)
+  company_commit pkg/app.go "post-migration" "feat: first post-migration change" >/dev/null
+  EXCLUDE_PATHS=".github/workflows/release.yaml" run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value exported-count)" = "1" ]
+  [ "$(oss_file pkg/app.go)" = "post-migration" ]
+}
