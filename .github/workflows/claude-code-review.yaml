@@ -55,6 +55,19 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.anthropic-api-key }} # zizmor: ignore[secrets-outside-env] -- API key passed via workflow_call, not a repo secret
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          # Session caps for unattended CI (DEVOPS-1115). Bound runaway
+          # subagent / web-search loops before they burn budget. On overflow
+          # Claude logs a cap-reached notice and continues with what it has; it
+          # does not abort. Passed via the action's `settings` env because the
+          # action does not forward step-level env: to the CLI. Rationale and
+          # the full cross-repo cap list: docs/claude-code-ci-caps.md
+          settings: |
+            {
+              "env": {
+                "CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION": "20",
+                "CLAUDE_CODE_MAX_WEB_SEARCHES_PER_SESSION": "50"
+              }
+            }
           allowed_bots: "renovate"
           track_progress: true
           prompt: |
