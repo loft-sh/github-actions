@@ -278,7 +278,14 @@ Applied with merge conflicts that need manual resolution."
   # Emit only on the commit path so a skipped/failed side keeps the default
   # <side>-conflicts=false (emitted up front) rather than a phantom true.
   emit "${side}-conflicts" "$conflicts"
-  git -C "$checkout" commit -q -m "$msg"
+  # $checkout is a fresh `git clone` of the target repo (see above), NOT the
+  # actions/checkout workspace -- so it inherits no user.name/user.email and an
+  # unqualified `git commit` dies with "empty ident name". Set the bot identity
+  # inline (both author and committer) rather than depending on ambient config.
+  git -C "$checkout" \
+    -c user.name="github-actions[bot]" \
+    -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+    commit -q -m "$msg"
 
   # No open PR (checked before cloning), so nothing to protect: (re)create the
   # branch. Force keeps a re-run before the PR exists idempotent -- e.g. a

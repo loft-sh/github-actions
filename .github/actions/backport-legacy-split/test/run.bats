@@ -538,3 +538,30 @@ short() { git -C "$MONO" rev-parse --short HEAD; }
   [ "$(output_value oss-pushed)" = "false" ]
   [ "$(output_value pro-pushed)" = "false" ]
 }
+
+# --- commit identity -------------------------------------------------------
+
+@test "commits under the bot identity when no ambient git identity is set" {
+  # Regression: the target checkout is a fresh clone that carries no
+  # user.name/user.email, so an unqualified `git commit` died with
+  # "empty ident name" in real CI. The rest of the suite masks this because
+  # setup() exports GIT_{AUTHOR,COMMITTER}_* -- here we strip them (and rely on
+  # the user-less GIT_CONFIG_GLOBAL) to reproduce the CI environment, and assert
+  # the commit still lands under the github-actions[bot] identity.
+  cd "$MONO"
+  printf 'line1\nCHANGED\nline3\n' > "$PFX/app.go"
+  git commit -qam "oss: change"
+  local br="backport/v0.35/$(short)"
+
+  run env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL \
+          -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL \
+          bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value oss-pushed)" = "true" ]
+
+  # Both author and committer must be the bot -- proving the identity came from
+  # run.sh's inline -c flags, not leftover ambient config.
+  [ "$(git -C "$OSS_REMOTE" show -s --format='%an' "$br")" = "github-actions[bot]" ]
+  [ "$(git -C "$OSS_REMOTE" show -s --format='%cn' "$br")" = "github-actions[bot]" ]
+  [ "$(git -C "$OSS_REMOTE" show -s --format='%ae' "$br")" = "41898282+github-actions[bot]@users.noreply.github.com" ]
+}
