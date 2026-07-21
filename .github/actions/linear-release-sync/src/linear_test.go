@@ -420,6 +420,54 @@ func TestHasStableReleaseComment(t *testing.T) {
 	}
 }
 
+// TestShippedCommentDedup drives the real dedup guard (hasReleaseComment in linear.go) for
+// the DEVOPS-1099 "Shipped in" comment. Unlike actionMoveToReleased, the comment-only path
+// leaves the issue in place, so this per-tag guard is the only thing preventing a repeat
+// comment on every later sync of the same tag (and across vcluster + vcluster-pro, which cut
+// identical tags against the same issue). Hardcoded expectations, so an inversion fails here.
+func TestShippedCommentDedup(t *testing.T) {
+	testCases := []struct {
+		name       string
+		comments   []string
+		releaseTag string
+		expected   bool
+	}{
+		{
+			name:       "no comments",
+			comments:   nil,
+			releaseTag: "v0.27.0",
+			expected:   false,
+		},
+		{
+			name:       "has matching shipped comment",
+			comments:   []string{"Shipped in v0.27.0 (released 2025-02-01). This issue is not in \"Ready for Release\", so it was not moved to the released state."},
+			releaseTag: "v0.27.0",
+			expected:   true,
+		},
+		{
+			name:       "shipped comment for a different tag does not match",
+			comments:   []string{"Shipped in v0.27.0 (released 2025-02-01)."},
+			releaseTag: "v0.27.1",
+			expected:   false,
+		},
+		{
+			name:       "stable release comment is not a shipped comment",
+			comments:   []string{"Now available in stable release v0.27.0 (released 2025-02-01)"},
+			releaseTag: "v0.27.0",
+			expected:   false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := hasReleaseComment(tc.comments, shippedCommentPrefix, tc.releaseTag)
+			if result != tc.expected {
+				t.Errorf("hasReleaseComment(%v, %q, %q) = %v, want %v", tc.comments, shippedCommentPrefix, tc.releaseTag, result, tc.expected)
+			}
+		})
+	}
+}
+
 func TestStableReleaseCommentText(t *testing.T) {
 	// Test the comment text logic for different scenarios
 	testCases := []struct {
@@ -488,9 +536,11 @@ func TestDecideReleaseAction(t *testing.T) {
 		want              releaseAction
 	}{
 		{"cve is always skipped", "CVE-1234", false, true, true, actionSkip},
+		{"cve not ready on stable release is still skipped", "CVE-9999", false, true, false, actionSkip},
 		{"ready for release, stable -> move", "ENG-1", false, true, true, actionMoveToReleased},
 		{"ready for release, prerelease -> move", "ENG-2", false, false, true, actionMoveToReleased},
-		{"not ready and not released -> skip", "ENG-3", false, true, false, actionSkip},
+		{"not ready, not released, stable -> comment only (DEVOPS-1099)", "ENG-3", false, true, false, actionCommentOnly},
+		{"not ready, not released, prerelease -> skip (no RC spam)", "ENG-7", false, false, false, actionSkip},
 		{"already released, prerelease (rc/alpha) -> skip", "ENG-4", true, false, false, actionSkip},
 		{"already released, stable backport patch (DEVOPS-1006) -> stable comment", "ENG-5", true, true, false, actionStableComment},
 		{"already released, stable -> stable comment", "ENG-6", true, true, true, actionStableComment},
