@@ -1,0 +1,21 @@
+name: Test oss-commit-sync
+
+on:
+  pull_request:
+    paths:
+      - '.github/actions/oss-commit-sync/**'
+      - '.github/workflows/test-oss-commit-sync.yaml'
+
+permissions: {}
+
+jobs:
+  bats:
+    name: Run bats tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: bats-core/bats-action@77d6fb60505b4d0d1d73e48bd035b55074bbfb43 # 4.0.0
+        with:
+          tests: .github/actions/oss-commit-sync/test
