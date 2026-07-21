@@ -20,7 +20,7 @@ type releaseAction int
 
 const (
 	// actionSkip leaves the issue untouched: a CVE, an issue already released on a
-	// prior prerelease, or an issue not yet in the ready-for-release state.
+	// prior prerelease, or an issue that is not ready and shipped only in a prerelease.
 	actionSkip releaseAction = iota
 	// actionMoveToReleased moves the issue to Released and adds the "first released" comment.
 	actionMoveToReleased
@@ -28,6 +28,11 @@ const (
 	// release, so (subject to the tag-scoped dedup check) add the "Now available in
 	// stable release" comment.
 	actionStableComment
+	// actionCommentOnly means the issue's PRs shipped in this (stable) release but the
+	// issue is not in the ready-for-release state, so it is NOT moved. Add a status-neutral
+	// "Shipped in" comment (subject to the tag-scoped dedup check) so the shipment is
+	// tracked without claiming the issue is done. DEVOPS-1099.
+	actionCommentOnly
 )
 
 func (a releaseAction) String() string {
@@ -38,6 +43,8 @@ func (a releaseAction) String() string {
 		return "move-to-released"
 	case actionStableComment:
 		return "stable-comment"
+	case actionCommentOnly:
+		return "comment-only"
 	default:
 		return fmt.Sprintf("releaseAction(%d)", int(a))
 	}
@@ -64,11 +71,21 @@ func decideReleaseAction(issueID string, alreadyReleased, isStable, inReadyForRe
 		return actionStableComment
 	}
 
-	// Not released yet: only act on issues sitting in the ready-for-release state.
-	if !inReadyForRelease {
-		return actionSkip
+	// Not released yet.
+	if inReadyForRelease {
+		return actionMoveToReleased
 	}
-	return actionMoveToReleased
+
+	// Not released and not ready for release: the issue's PRs shipped in this release but
+	// it is not marked ready, so it must not be moved to Released. On a stable release,
+	// post a status-neutral "Shipped in" comment so the shipment is still tracked (a docs
+	// PR or follow-up can move an issue back out of the ready set, so it would otherwise be
+	// silently skipped). On a prerelease, stay quiet to avoid re-commenting on the same
+	// not-ready issue for every RC. DEVOPS-1099.
+	if isStable {
+		return actionCommentOnly
+	}
+	return actionSkip
 }
 
 // AvailableWorkflowState lists all workflow states for a team (for debugging)
@@ -323,6 +340,12 @@ func (l *LinearClient) MoveIssueToState(ctx context.Context, dryRun bool, issueI
 	alreadyReleased := issueDetails.StateID == releasedStateID
 	inReadyForRelease := issueDetails.StateName == readyForReleaseStateName
 
+	// releaseComment is the text posted at the end. Each acting branch sets it; the two
+	// comment-without-move branches also run a tag-scoped dedup check first, because they
+	// leave the issue in place and so would otherwise re-comment on every later sync (and
+	// vcluster + vcluster-pro cut identical tags against the same Linear issue, DEVOPS-1006).
+	var releaseComment string
+
 	switch decideReleaseAction(issueID, alreadyReleased, isStable, inReadyForRelease) {
 	case actionSkip:
 		logger.Debug("Skipping issue", "issueID", issueID, "alreadyReleased", alreadyReleased, "isStable", isStable, "currentState", issueDetails.StateName)
@@ -335,11 +358,29 @@ func (l *LinearClient) MoveIssueToState(ctx context.Context, dryRun bool, issueI
 		if err != nil {
 			return fmt.Errorf("list issue comments: %w", err)
 		}
-		if hasStableReleaseComment(comments, releaseTagName) {
+		if hasReleaseComment(comments, stableReleaseCommentPrefix, releaseTagName) {
 			logger.Debug("Issue already has stable release comment, skipping", "issueID", issueID)
 			return nil
 		}
 		logger.Debug("Issue already released, adding stable release comment", "issueID", issueID)
+		// Distinct wording from the "first released in" pattern used by linear-webhook-service.
+		releaseComment = fmt.Sprintf("%s %v (released %v)", stableReleaseCommentPrefix, releaseTagName, releaseDate)
+
+	case actionCommentOnly:
+		// The issue's PRs shipped in this stable release but it is not in the ready-for-release
+		// state, so do not move it. Post a status-neutral "Shipped in" comment once per tag so
+		// the shipment is tracked without claiming the issue is done (DEVOPS-1099). There is no
+		// state transition to make this idempotent, so the tag-scoped dedup check is required.
+		comments, err := l.ListIssueComments(ctx, issueID)
+		if err != nil {
+			return fmt.Errorf("list issue comments: %w", err)
+		}
+		if hasReleaseComment(comments, shippedCommentPrefix, releaseTagName) {
+			logger.Debug("Issue already has shipped comment, skipping", "issueID", issueID)
+			return nil
+		}
+		logger.Debug("Issue not ready for release, adding shipped comment", "issueID", issueID, "currentState", issueDetails.StateName)
+		releaseComment = fmt.Sprintf("%s %v (released %v). This issue is not in %q, so it was not moved to the released state.", shippedCommentPrefix, releaseTagName, releaseDate, readyForReleaseStateName)
 
 	case actionMoveToReleased:
 		// Update issue state to Released
@@ -351,15 +392,6 @@ func (l *LinearClient) MoveIssueToState(ctx context.Context, dryRun bool, issueI
 			logger.Info("Would update issue state", "issueID", issueID, "releasedStateID", releasedStateID)
 		}
 		logger.Info("Moved issue to desired state", "issueID", issueID, "stateID", releasedStateID)
-	}
-
-	// Add release comment
-	// Use different text for stable releases on already-released issues to avoid
-	// confusion with the "first released in" pattern used by linear-webhook-service
-	var releaseComment string
-	if alreadyReleased && isStable {
-		releaseComment = fmt.Sprintf("Now available in stable release %v (released %v)", releaseTagName, releaseDate)
-	} else {
 		releaseComment = fmt.Sprintf("This issue was first released in %v on %v", releaseTagName, releaseDate)
 	}
 
@@ -399,6 +431,11 @@ func (l *LinearClient) updateIssueState(ctx context.Context, issueID, releasedSt
 
 // stableReleaseCommentPrefix is the prefix used to identify stable release comments.
 const stableReleaseCommentPrefix = "Now available in stable release"
+
+// shippedCommentPrefix is the prefix used to identify the status-neutral "shipped in a
+// release but not moved" comment posted for issues whose PRs shipped while the issue was
+// not in the ready-for-release state (DEVOPS-1099).
+const shippedCommentPrefix = "Shipped in"
 
 // ListIssueComments returns the body text of all comments on the given issue.
 // It paginates through all comments to avoid missing any beyond the default page size.
@@ -444,18 +481,30 @@ func (l *LinearClient) ListIssueComments(ctx context.Context, issueID string) ([
 	return bodies, nil
 }
 
-// hasStableReleaseComment checks whether any of the given comment bodies
-// indicate that a stable release comment for the specific release tag has
-// already been posted. This is scoped to the tag so that cherry-picks released
-// in a later stable version still get their own comment.
-func hasStableReleaseComment(comments []string, releaseTag string) bool {
-	expected := fmt.Sprintf("%s %s", stableReleaseCommentPrefix, releaseTag)
+// hasReleaseComment reports whether any comment body starts with "<prefix> <releaseTag> (released ".
+// It is used to make the release comments idempotent per tag, so a cherry-pick released in
+// a later version still gets its own comment while a repeated sync of the same tag does not
+// re-comment (vcluster and vcluster-pro cut identical tags against the same Linear issue).
+//
+// The trailing " (released " delimiter is required, not cosmetic: both release comment bodies
+// place it immediately after the tag, and matching it prevents a shorter tag from falsely
+// matching a longer one (e.g. releaseTag "v0.28.2" must NOT dedup against an existing
+// "...v0.28.20 (released ..." comment, which would silently suppress the v0.28.2 comment).
+func hasReleaseComment(comments []string, prefix, releaseTag string) bool {
+	expected := fmt.Sprintf("%s %s (released ", prefix, releaseTag)
 	for _, body := range comments {
 		if strings.HasPrefix(body, expected) {
 			return true
 		}
 	}
 	return false
+}
+
+// hasStableReleaseComment checks whether a stable release comment for the specific release
+// tag has already been posted. Scoped to the tag so cherry-picks in a later stable version
+// still get their own comment.
+func hasStableReleaseComment(comments []string, releaseTag string) bool {
+	return hasReleaseComment(comments, stableReleaseCommentPrefix, releaseTag)
 }
 
 // createComment creates a comment on the given issue.

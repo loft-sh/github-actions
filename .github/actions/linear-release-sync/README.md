@@ -7,9 +7,10 @@ A GitHub Action that syncs Linear issues to the "Released" state when a GitHub r
 - Fetches all team keys from Linear to filter false positive issue IDs (e.g. `pr-3354`, `snap-1`)
 - Extracts Linear issue IDs from PR descriptions and branch names (e.g., `ENG-1234`, `DEVOPS-471`)
 - Strict time-based filtering: only includes PRs merged before the release was published
-- Moves issues from "Ready for Release" to "Released" state
+- Moves issues from "Ready for Release" to "Released" state (only issues in that state are moved)
 - Adds release comments with version and date
 - For stable releases on already-released issues, adds "Now available in stable release" comments
+- For stable releases, comments on shipped issues regardless of status: an issue whose PRs are in the release but which is not in "Ready for Release" (e.g. moved back to "In Progress" by a follow-up docs PR) gets a status-neutral "Shipped in `<tag>`" comment and is left in place, so the shipment is tracked without claiming the issue is done. Prereleases stay quiet to avoid re-commenting per RC, and the comment is deduplicated per tag (DEVOPS-1099)
 - Classifies a release as stable from the tag name: a tag with no semver prerelease component (e.g. `v0.34.4`) or one beginning with `patch` (e.g. `v0.28.2-patch.1`) is treated as a real release and syncs, while `-rc`/`-alpha`/`-beta`/`-dev`/`-pre`/`-next` tags are prereleases and are skipped. The tag is used rather than GitHub's `prerelease` flag because that flag is human-set and a release is often published as a prerelease first and promoted to stable later
 - Skips CVE issues automatically
 - Supports dry-run mode for previewing changes
