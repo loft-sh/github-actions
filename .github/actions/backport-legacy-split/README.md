@@ -106,14 +106,17 @@ than pushing an empty backport.
 
 <!-- AUTO-DOC-OUTPUT:START - Do not remove or modify this section -->
 
-|     OUTPUT      |  TYPE  |                                 DESCRIPTION                                  |
-|-----------------|--------|------------------------------------------------------------------------------|
-| backport-branch | string |         The backport branch name pushed to <br>the target repo(s).           |
-|  oss-conflicts  | string |          true when the OSS half applied <br>with merge conflicts.            |
-|   oss-pushed    | string |              true when an OSS backport branch <br>was pushed.                |
-|  pro-conflicts  | string |          true when the pro half applied <br>with merge conflicts.            |
-|   pro-pushed    | string | true when a pro backport branch <br>was pushed (pro-only or mixed commits).  |
-|      route      | string |       Classification of the commit: pro-only | <br>oss-only | mixed.         |
+|     OUTPUT      |  TYPE  |                                                                               DESCRIPTION                                                                                |
+|-----------------|--------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| backport-branch | string |                                                       The backport branch name pushed to <br>the target repo(s).                                                         |
+|  comment-body   | string | Ready-to-post Markdown summarizing the backport PR <br>link(s) for this target; empty when <br>none were opened/found. Upsert as a <br>sticky comment on the source PR.  |
+|  oss-conflicts  | string |                                                        true when the OSS half applied <br>with merge conflicts.                                                          |
+|   oss-pr-url    | string |                                      URL of the OSS backport PR <br>opened this run (or the one already open); empty if <br>none.                                        |
+|   oss-pushed    | string |                                                            true when an OSS backport branch <br>was pushed.                                                              |
+|  pro-conflicts  | string |                                                        true when the pro half applied <br>with merge conflicts.                                                          |
+|   pro-pr-url    | string |                                      URL of the pro backport PR <br>opened this run (or the one already open); empty if <br>none.                                        |
+|   pro-pushed    | string |                                               true when a pro backport branch <br>was pushed (pro-only or mixed commits).                                                |
+|      route      | string |                                                     Classification of the commit: pro-only | <br>oss-only | mixed.                                                       |
 
 <!-- AUTO-DOC-OUTPUT:END -->
 

@@ -112,6 +112,17 @@ emit oss-pushed false
 emit pro-pushed false
 emit oss-conflicts false
 emit pro-conflicts false
+emit oss-pr-url ""
+emit pro-pr-url ""
+
+# Accumulated across both sides so the summary comment (emitted at the very end)
+# can list every backport PR this run opened or found already open. backport_side
+# records into these as it goes; a plain key=value output can't carry the
+# multi-line comment body, so it's written with the heredoc form below.
+OSS_PR_URL=""; PRO_PR_URL=""
+OSS_CONFLICTS=false; PRO_CONFLICTS=false
+set_url()       { case "$1" in oss) OSS_PR_URL="$2" ;; pro) PRO_PR_URL="$2" ;; esac; }
+set_conflicts() { case "$1" in oss) OSS_CONFLICTS="$2" ;; pro) PRO_CONFLICTS="$2" ;; esac; }
 
 SHA="$(git rev-parse "$COMMIT")"
 SHORT="$(git rev-parse --short "$COMMIT")"
@@ -218,6 +229,9 @@ backport_side() {
     fi
     if [ -n "$existing" ]; then
       echo "${side}: PR #${existing} already open for ${BACKPORT_BRANCH} -> ${TARGET_BRANCH}; leaving branch and PR as-is (may hold manual conflict resolution)"
+      # Still surface the open PR's URL so a re-run's summary comment keeps
+      # listing it (advisory: a failed lookup just omits the link, never errors).
+      set_url "$side" "$(gh pr view "$existing" --repo "$slug" --json url --jq '.url' 2>/dev/null || true)"
       return 0
     fi
   fi
@@ -278,6 +292,7 @@ Applied with merge conflicts that need manual resolution."
   # Emit only on the commit path so a skipped/failed side keeps the default
   # <side>-conflicts=false (emitted up front) rather than a phantom true.
   emit "${side}-conflicts" "$conflicts"
+  set_conflicts "$side" "$conflicts"
   # $checkout is a fresh `git clone` of the target repo (see above), NOT the
   # actions/checkout workspace -- so it inherits no user.name/user.email and an
   # unqualified `git commit` dies with "empty ident name". Set the bot identity
@@ -320,7 +335,12 @@ Applied with merge conflicts that need manual resolution."
 > auto-merged. Resolve the conflict markers, then mark this PR ready for review."
       create_args+=(--draft)
     fi
-    gh pr create "${create_args[@]}" --body "$body"
+    # gh prints the new PR's URL on stdout; capture it (echo it back so the job
+    # log still shows it) and record it for the summary comment.
+    local pr_url
+    pr_url="$(gh pr create "${create_args[@]}" --body "$body")"
+    printf '%s\n' "$pr_url"
+    set_url "$side" "$pr_url"
   fi
 }
 
@@ -350,3 +370,49 @@ if [ "$route" = "pro-only" ] || [ "$route" = "mixed" ]; then
   git diff --binary "${DIFF_BASE}" "${DIFF_HEAD}" -- . ":(exclude)${SUBTREE_PREFIX}" > "${WORKDIR}/pro.patch"
   backport_side pro "$PRO_REMOTE" "${PRO_REPO:-}" "${WORKDIR}/pro.patch"
 fi
+
+# --- summary comment -------------------------------------------------------
+# sorenlouv posts a "backport PRs opened" comment on the source PR for the
+# monorepo era (>= v0.37); this legacy path opens PRs itself, so it must build
+# the equivalent. Emit a ready-to-post Markdown body (empty when nothing was
+# opened/found) that the caller upserts as a sticky comment, one per target.
+build_comment_body() {
+  local -a bullets=()
+  local any_conflict=false side url conflicts
+  for side in pro oss; do          # pro first, then oss (matches the PR order)
+    case "$side" in
+      pro) url="$PRO_PR_URL"; conflicts="$PRO_CONFLICTS" ;;
+      oss) url="$OSS_PR_URL"; conflicts="$OSS_CONFLICTS" ;;
+    esac
+    [ -n "$url" ] || continue
+    if [ "$conflicts" = true ]; then
+      bullets+=("- **${side}:** ${url} — :warning: merge conflicts, opened as a draft")
+      any_conflict=true
+    else
+      bullets+=("- **${side}:** ${url}")
+    fi
+  done
+  [ "${#bullets[@]}" -gt 0 ] || return 0   # nothing opened/found -> no comment
+
+  local icon=":white_check_mark:" note=""
+  if [ "$any_conflict" = true ]; then
+    icon=":warning:"; note=" — resolve the conflicts and mark the draft ready"
+  fi
+  # shellcheck disable=SC2016  # the backticks are literal Markdown, not a subshell
+  printf '%s Backported to `%s`%s\n\n' "$icon" "$TARGET_BRANCH" "$note"
+  printf '%s\n' "${bullets[@]}"
+}
+
+# GITHUB_OUTPUT can't carry newlines as key=value, so use the heredoc form. A
+# fixed delimiter is safe: the body is bot-generated Markdown that never contains
+# this token. Always emitted (even empty) so the caller reads it unconditionally.
+COMMENT_BODY="$(build_comment_body)"
+{
+  printf 'comment-body<<__BACKPORT_BODY_EOF__\n'
+  printf '%s\n' "$COMMENT_BODY"
+  printf '__BACKPORT_BODY_EOF__\n'
+} >> "$GITHUB_OUTPUT"
+
+# Final per-side URLs (override the empty defaults emitted up front).
+emit oss-pr-url "$OSS_PR_URL"
+emit pro-pr-url "$PRO_PR_URL"

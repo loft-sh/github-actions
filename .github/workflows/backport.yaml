@@ -177,6 +177,7 @@ jobs:
         uses: dev-hanz-ops/install-gh-cli-action@af38ce09b1ec248aeb08eea2b16bbecea9e059f8 # v0.2.1
 
       - name: Backport to ${{ matrix.target }}
+        id: backport
         uses: loft-sh/github-actions/.github/actions/backport-legacy-split@backport-legacy-split/v1 # zizmor: ignore[unpinned-uses] -- internal loft-sh/github-actions ref; reusable workflows check out the CALLER repo, so a local ./.github/actions path is not present here. @backport-legacy-split/v1 is the floating coordination tag kept aligned with backport/v1 (see DEVOPS-923 pin-drift class).
         with:
           subtree-prefix: ${{ inputs.subtree-prefix }}
@@ -190,3 +191,29 @@ jobs:
           # rebase-merged PR, not just the merge tip.
           pr-number: ${{ github.event.pull_request.number }}
           create-pr: 'true'
+
+      # sorenlouv posts a "backport PRs opened" comment on the source PR for the
+      # monorepo era; the legacy path opens its PRs itself, so restore the
+      # equivalent here. The action emits a ready-to-post body per target; upsert
+      # it as a sticky comment (one marker per target) so re-runs update in place
+      # instead of stacking duplicates.
+      - name: Resolve PAT login for the sticky-comment author match
+        id: pat
+        if: ${{ steps.backport.outputs.comment-body != '' }}
+        env:
+          # The comment is posted with the PAT (parity with sorenlouv/link-backport-prs;
+          # the caller only grants contents: read), so its author is the PAT's
+          # account, not github-actions[bot]. sticky-pr-comment matches on author to
+          # find its prior comment -- feed it the resolved login so re-runs update.
+          GH_TOKEN: ${{ secrets.gh-access-token }}
+        run: echo "login=$(gh api user --jq '.login')" >> "$GITHUB_OUTPUT"
+
+      - name: Comment backport links on the source PR
+        if: ${{ steps.backport.outputs.comment-body != '' }}
+        uses: loft-sh/github-actions/.github/actions/sticky-pr-comment@sticky-pr-comment/v1 # zizmor: ignore[unpinned-uses] -- internal loft-sh/github-actions ref; reusable workflows check out the CALLER repo, so a local ./.github/actions path is not present here. sticky-pr-comment is a general-purpose action carrying its own independent @sticky-pr-comment/v1 tag (not part of the backport coordination set).
+        with:
+          marker: "<!-- legacy-backport-${{ matrix.target }} -->"
+          body: ${{ steps.backport.outputs.comment-body }}
+          pr-number: ${{ github.event.pull_request.number }}
+          github-token: ${{ secrets.gh-access-token }}
+          expected-author: ${{ steps.pat.outputs.login }}

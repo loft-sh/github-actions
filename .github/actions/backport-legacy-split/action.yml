@@ -49,6 +49,15 @@ outputs:
   pro-conflicts:
     description: "true when the pro half applied with merge conflicts."
     value: ${{ steps.backport.outputs.pro-conflicts }}
+  oss-pr-url:
+    description: "URL of the OSS backport PR opened this run (or the one already open); empty if none."
+    value: ${{ steps.backport.outputs.oss-pr-url }}
+  pro-pr-url:
+    description: "URL of the pro backport PR opened this run (or the one already open); empty if none."
+    value: ${{ steps.backport.outputs.pro-pr-url }}
+  comment-body:
+    description: "Ready-to-post Markdown summarizing the backport PR link(s) for this target; empty when none were opened/found. Upsert as a sticky comment on the source PR."
+    value: ${{ steps.backport.outputs.comment-body }}
 
 runs:
   using: "composite"
