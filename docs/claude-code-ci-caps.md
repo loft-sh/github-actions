@@ -110,12 +110,13 @@ of which warrant a look before trusting the caps.
 The PR review workflow (`claude-code-review.yaml`) runs under
 `pull_request_target` with secrets available and checks out PR head content, so
 a fork PR could otherwise ship a `.claude/settings.json` (or agents, commands,
-or hooks) that raises these caps or injects instructions. Before Claude runs,
-the workflow drops the PR-supplied `.claude/` and restores the base-branch copy,
-mirroring the existing CLAUDE.md scrub, so the caps set via the action's
-`settings` input stay authoritative for fork PRs. The order matters: that
-restore relies on `origin` still pointing at the base repo, so it runs before
-the fork `origin` rename.
+or hooks) that raises these caps or injects instructions. As the last step
+before Claude runs, and after the fork-setup checkout, the workflow removes any
+`.claude/` unconditionally (`rm -rf .claude`), so nothing earlier can leave
+PR-supplied config in place, including a fork that races a push between the
+initial checkout and the fork-setup fetch. No restore is needed: the caps live
+in the action's `settings` input, and the review's behavior is defined by the
+workflow.
 
 The other two Claude Code jobs are not exposed to this vector: the `@claude`
 responder (`claude.yaml`) runs from `workflow_call` in the caller's
