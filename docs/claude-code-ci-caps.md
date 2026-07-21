@@ -105,10 +105,24 @@ A green run confirms the caps are honored and the notice text still matches. A
 failure means either the cap did not fire or the CLI changed its message, both
 of which warrant a look before trusting the caps.
 
-## Open item
+## Prompt-injection hardening
 
-The PR review workflow checks out PR head content. A follow-up should confirm
-whether an attacker-supplied `.claude/settings.json` in a PR could raise these
-caps, or whether the action's explicit `settings` input takes precedence. That
-is a prompt-injection hardening question tracked separately from setting the
-default caps here.
+The PR review workflow (`claude-code-review.yaml`) runs under
+`pull_request_target` with secrets available and checks out PR head content, so
+a fork PR could otherwise ship a `.claude/settings.json` (or agents, commands,
+or hooks) that raises these caps or injects instructions. Before Claude runs,
+the workflow drops the PR-supplied `.claude/` and restores the base-branch copy,
+mirroring the existing CLAUDE.md scrub, so the caps set via the action's
+`settings` input stay authoritative for fork PRs. The order matters: that
+restore relies on `origin` still pointing at the base repo, so it runs before
+the fork `origin` rename.
+
+The other two Claude Code jobs are not exposed to this vector: the `@claude`
+responder (`claude.yaml`) runs from `workflow_call` in the caller's
+default-branch context, and this repo's own bot (`claude.yml`) triggers only on
+trusted events with a default-branch checkout.
+
+The merge precedence between the action's `settings` input and a project
+`.claude/settings.json` is not documented upstream, which is the underlying
+reason the review workflow scrubs PR-head config rather than relying on
+precedence.

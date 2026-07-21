@@ -39,7 +39,24 @@ jobs:
           # Restore the base-branch version; delete if it doesn't exist there.
           git show "origin/${BASE_REF}:CLAUDE.md" > CLAUDE.md 2>/dev/null || rm -f CLAUDE.md
 
+      - name: Restore .claude config from base branch
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          # This workflow runs under pull_request_target with secrets available
+          # and is checked out at the PR head, so a fork PR could ship a
+          # .claude/ (settings.json overriding the session caps, or injected
+          # agents / commands / hooks). Drop whatever the PR added and restore
+          # the base-branch .claude/, mirroring the CLAUDE.md scrub above, so
+          # the caps set on the action step below stay authoritative. (DEVOPS-1115)
+          # Must run before the origin->upstream rename below, while origin
+          # still points at the base repo.
+          rm -rf .claude
+          git checkout "origin/${BASE_REF}" -- .claude 2>/dev/null || true
+
       - name: Setup fork as origin for Claude
+        # Ordering invariant: the base-branch restores above rely on `origin`
+        # pointing at the base repo, so they must run before this rename.
         if: ${{ github.event.pull_request.head.repo.fork == true }}
         env:
           PR_HEAD_CLONE_URL: ${{ github.event.pull_request.head.repo.clone_url }}
