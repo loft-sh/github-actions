@@ -16,6 +16,15 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
+      - name: Install git-filter-repo
+        # The filter-repo backend is the production `auto` default whenever
+        # filter-repo is present. Stock ubuntu-latest does not ship it, so
+        # install it here (and verify) to exercise that path instead of letting
+        # its tests silently skip.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq git-filter-repo
+          git filter-repo --version
       - uses: bats-core/bats-action@77d6fb60505b4d0d1d73e48bd035b55074bbfb43 # 4.0.0
         with:
           tests: .github/actions/subtree-mirror/test

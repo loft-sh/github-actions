@@ -54,7 +54,7 @@ runs:
              && sudo apt-get install -y -qq git-filter-repo; then
           echo "installed git-filter-repo via apt-get"
         elif command -v pip3 >/dev/null 2>&1 \
-             && pip3 install --quiet --break-system-packages git-filter-repo; then
+             && pip3 install --quiet --break-system-packages 'git-filter-repo==2.47.0'; then
           echo "installed git-filter-repo via pip3"
         else
           echo "::warning::git-filter-repo unavailable; subtree split will fall back to git-subtree under bash"

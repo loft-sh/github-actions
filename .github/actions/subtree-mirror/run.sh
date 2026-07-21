@@ -51,6 +51,9 @@ set -euo pipefail
 #                          (default "refs/sync/mirror-head"). FORCE mode only.
 #   ALLOW_DIVERGENT_FORCE  "true" bypasses the divergence guard (default
 #                          "false"). FORCE mode only.
+#   SUBTREE_SPLIT_METHOD   Split backend: "auto" (default), "filter-repo", or
+#                          "subtree". auto prefers filter-repo in FORCE mode and
+#                          pins git-subtree for FORCE=false (see split_subtree).
 #   GITHUB_OUTPUT          Standard Actions output file; defaults to /dev/null
 #                          so the script is runnable outside CI.
 
@@ -76,8 +79,16 @@ emit pushed false
 # import. We therefore prefer `git filter-repo`, which is iterative and
 # unaffected, and fall back to running git-subtree under bash (whose recursion
 # is not capped) when filter-repo is unavailable. SUBTREE_SPLIT_METHOD
-# (auto|filter-repo|subtree) forces the choice; the downstream guards compare
-# trees, not ancestry, so the method is free to vary between runs.
+# (auto|filter-repo|subtree) forces the choice.
+#
+# The two backends produce different synthetic commit histories for the same
+# tree. In FORCE mode the push is a tree-guarded --force-with-lease, so the
+# backend may vary freely between runs. A FORCE=false push is fast-forward-only
+# and so requires history continuity with whatever produced the branch; `auto`
+# therefore pins it to the git-subtree backend (which every existing branch was
+# split with) to avoid a spurious non-fast-forward rejection when the two
+# backends alternate. git-subtree under bash escapes the recursion cap just the
+# same, so FORCE=false stays safe on deep histories.
 SUBTREE_SPLIT_METHOD="${SUBTREE_SPLIT_METHOD:-auto}"
 
 split_with_filter_repo() {
@@ -99,23 +110,44 @@ split_with_filter_repo() {
 split_with_subtree_bash() {
   # git-subtree's shebang is #!/bin/sh; invoke it explicitly under bash to
   # escape dash's 1000-frame recursion cap. Its startup guard only requires
-  # GIT_EXEC_PATH to be set and present on PATH.
-  local ep
+  # GIT_EXEC_PATH to be set and present on PATH. git-subtree usually lives in
+  # git's exec-path (as on the GitHub runner), but some distros/macOS setups
+  # ship it only on $PATH, so fall back to that before failing.
+  local ep gt
   ep="$(git --exec-path)"
+  if [ -x "${ep}/git-subtree" ]; then
+    gt="${ep}/git-subtree"
+  elif gt="$(command -v git-subtree 2>/dev/null)"; then
+    :
+  else
+    echo "::error::git-subtree not found; install it alongside git" >&2
+    exit 1
+  fi
   GIT_EXEC_PATH="${ep}" PATH="${ep}:${PATH}" \
-    bash "${ep}/git-subtree" split --prefix="${SUBTREE_PREFIX}"
+    bash "${gt}" split --prefix="${SUBTREE_PREFIX}"
 }
 
 split_subtree() {
-  case "${SUBTREE_SPLIT_METHOD}" in
-    filter-repo) split_with_filter_repo ;;
-    subtree)     split_with_subtree_bash ;;
-    auto)
-      if git filter-repo --version >/dev/null 2>&1; then
-        split_with_filter_repo
-      else
-        split_with_subtree_bash
-      fi
+  local method="${SUBTREE_SPLIT_METHOD}"
+  if [ "${method}" = "auto" ]; then
+    # Prefer filter-repo only where a backend switch is safe (FORCE mode's
+    # tree-guarded force push). FORCE=false is fast-forward-only, so pin it to
+    # git-subtree to keep history continuous with existing branches.
+    if [ "${FORCE}" = "true" ] && git filter-repo --version >/dev/null 2>&1; then
+      method="filter-repo"
+    else
+      method="subtree"
+    fi
+  fi
+  # Log the resolved backend so a divergence between runs is diagnosable.
+  case "${method}" in
+    filter-repo)
+      echo "subtree-split-method: filter-repo" >&2
+      split_with_filter_repo
+      ;;
+    subtree)
+      echo "subtree-split-method: subtree-bash" >&2
+      split_with_subtree_bash
       ;;
     *)
       echo "::error::unknown SUBTREE_SPLIT_METHOD '${SUBTREE_SPLIT_METHOD}' (want auto|filter-repo|subtree)" >&2

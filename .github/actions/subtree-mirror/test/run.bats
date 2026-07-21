@@ -239,3 +239,27 @@ add_external_commit() {
   [ "$status" -ne 0 ]
   [[ "$output" == *"unknown SUBTREE_SPLIT_METHOD"* ]]
 }
+
+# auto must pin FORCE=false to git-subtree: a fast-forward-only push needs a
+# history continuous with whatever produced the branch, and the two backends'
+# synthetic histories are not interchangeable. FORCE mode force-pushes behind a
+# tree guard, so there auto is free to prefer filter-repo. Both assertions only
+# hold when filter-repo is present (otherwise auto trivially picks subtree).
+
+@test "auto pins FORCE=false to the git-subtree backend even with filter-repo present" {
+  if ! git filter-repo --version >/dev/null 2>&1; then
+    skip "git-filter-repo not installed"
+  fi
+  FORCE=false BRANCH=v0.36 run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"subtree-split-method: subtree-bash"* ]]
+}
+
+@test "auto prefers filter-repo for FORCE mode when available" {
+  if ! git filter-repo --version >/dev/null 2>&1; then
+    skip "git-filter-repo not installed"
+  fi
+  FORCE=true run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"subtree-split-method: filter-repo"* ]]
+}
