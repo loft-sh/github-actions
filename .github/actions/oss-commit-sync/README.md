@@ -38,10 +38,11 @@ Safety mechanisms, in order:
    applied (snapshot projection would rewrite the whole tree).
 3. **Convergence assertion** — after replay, the OSS tip tree must equal the
    monorepo staging tree (ignoring `exclude-paths`, which are never
-   mirrored), or the run fails without pushing. `align-tree: true`
-   instead appends one bot-authored snapshot commit that sets the OSS tree to
-   the staging tree: the append-only escape hatch (used at migration to drop
-   OSS-only producer workflows, or after manual reconciliation).
+   mirrored), or the run fails without pushing. `align-tree: true` instead
+   appends one bot-authored snapshot commit that sets the OSS tree to the
+   staging tree — on ANY difference, excluded paths included: it is the
+   explicit operator escape hatch, and at migration it is what deletes the
+   OSS-only producer workflows and seeds the first trailer.
 
 New release lines: when the branch does not exist on OSS, it is created from
 the OSS commit corresponding to the monorepo branch point (found via trailers
