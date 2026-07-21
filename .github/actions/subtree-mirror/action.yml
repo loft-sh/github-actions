@@ -41,6 +41,24 @@ outputs:
 runs:
   using: "composite"
   steps:
+    - name: Ensure git-filter-repo (best effort)
+      # Preferred split backend for deep histories. run.sh falls back to
+      # git-subtree under bash when this is unavailable, so a failed install
+      # only degrades performance, it never fails the sync.
+      shell: bash
+      run: |
+        if git filter-repo --version >/dev/null 2>&1; then
+          echo "git-filter-repo already available"
+        elif command -v apt-get >/dev/null 2>&1 \
+             && sudo apt-get update -qq \
+             && sudo apt-get install -y -qq git-filter-repo; then
+          echo "installed git-filter-repo via apt-get"
+        elif command -v pip3 >/dev/null 2>&1 \
+             && pip3 install --quiet --break-system-packages git-filter-repo; then
+          echo "installed git-filter-repo via pip3"
+        else
+          echo "::warning::git-filter-repo unavailable; subtree split will fall back to git-subtree under bash"
+        fi
     - name: Mirror subtree
       id: mirror
       shell: bash

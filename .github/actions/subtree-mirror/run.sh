@@ -68,7 +68,63 @@ emit() { echo "$1=$2" >> "${GITHUB_OUTPUT}"; }
 emit diverged false
 emit pushed false
 
-SPLIT_SHA="$(git subtree split --prefix="${SUBTREE_PREFIX}")"
+# Split SUBTREE_PREFIX out of this repo and print the resulting commit SHA.
+#
+# `git subtree split` recurses one shell frame per commit, and git-subtree ships
+# a `#!/bin/sh` shebang, so on CI (where /bin/sh is dash, hard-capped at 1000
+# function frames) it aborts on deep histories such as a full-history OSS
+# import. We therefore prefer `git filter-repo`, which is iterative and
+# unaffected, and fall back to running git-subtree under bash (whose recursion
+# is not capped) when filter-repo is unavailable. SUBTREE_SPLIT_METHOD
+# (auto|filter-repo|subtree) forces the choice; the downstream guards compare
+# trees, not ancestry, so the method is free to vary between runs.
+SUBTREE_SPLIT_METHOD="${SUBTREE_SPLIT_METHOD:-auto}"
+
+split_with_filter_repo() {
+  # filter-repo rewrites history destructively, so run it in a throwaway clone
+  # and never touch this checkout. --no-hardlinks keeps the clone's objects
+  # independent of the origin. All chatter goes to stderr so stdout is the SHA.
+  local clone sha
+  clone="$(mktemp -d)"
+  git clone --no-hardlinks --quiet "$(pwd)" "${clone}" >&2
+  git -C "${clone}" filter-repo --force --quiet \
+    --subdirectory-filter "${SUBTREE_PREFIX}" >&2
+  # Bring the rewritten tip into this repo so it can be pushed, then print it.
+  git fetch --quiet "${clone}" HEAD >&2
+  sha="$(git rev-parse FETCH_HEAD)"
+  rm -rf "${clone}"
+  printf '%s\n' "${sha}"
+}
+
+split_with_subtree_bash() {
+  # git-subtree's shebang is #!/bin/sh; invoke it explicitly under bash to
+  # escape dash's 1000-frame recursion cap. Its startup guard only requires
+  # GIT_EXEC_PATH to be set and present on PATH.
+  local ep
+  ep="$(git --exec-path)"
+  GIT_EXEC_PATH="${ep}" PATH="${ep}:${PATH}" \
+    bash "${ep}/git-subtree" split --prefix="${SUBTREE_PREFIX}"
+}
+
+split_subtree() {
+  case "${SUBTREE_SPLIT_METHOD}" in
+    filter-repo) split_with_filter_repo ;;
+    subtree)     split_with_subtree_bash ;;
+    auto)
+      if git filter-repo --version >/dev/null 2>&1; then
+        split_with_filter_repo
+      else
+        split_with_subtree_bash
+      fi
+      ;;
+    *)
+      echo "::error::unknown SUBTREE_SPLIT_METHOD '${SUBTREE_SPLIT_METHOD}' (want auto|filter-repo|subtree)" >&2
+      exit 1
+      ;;
+  esac
+}
+
+SPLIT_SHA="$(split_subtree)"
 emit split-sha "${SPLIT_SHA}"
 echo "Subtree split SHA: ${SPLIT_SHA} -> ${BRANCH}"
 

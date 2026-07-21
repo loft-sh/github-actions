@@ -193,3 +193,49 @@ add_external_commit() {
   FORCE=true run bash "$SCRIPT"
   [ "$status" -ne 0 ]
 }
+
+# --- split backend selection ----------------------------------------------
+#
+# git subtree split recurses one frame per commit and dies under dash on deep
+# histories, so run.sh can split via git-filter-repo or via git-subtree-under-
+# bash. Both must produce an identical mirror; SUBTREE_SPLIT_METHOD forces each.
+
+@test "split via the git-subtree bash backend mirrors correctly" {
+  SUBTREE_SPLIT_METHOD=subtree FORCE=true run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value pushed)" = "true" ]
+  [ "$(output_value diverged)" = "false" ]
+  [ "$(oss_file main app.go)" = "v1" ]
+}
+
+@test "split via the git-filter-repo backend mirrors correctly" {
+  if ! git filter-repo --version >/dev/null 2>&1; then
+    skip "git-filter-repo not installed"
+  fi
+  SUBTREE_SPLIT_METHOD=filter-repo FORCE=true run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value pushed)" = "true" ]
+  [ "$(output_value diverged)" = "false" ]
+  [ "$(oss_file main app.go)" = "v1" ]
+}
+
+@test "both split backends yield the same tree" {
+  if ! git filter-repo --version >/dev/null 2>&1; then
+    skip "git-filter-repo not installed"
+  fi
+  SUBTREE_SPLIT_METHOD=subtree FORCE=true run bash "$SCRIPT"
+  sub_sha="$(output_value split-sha)"
+  # Reset the OSS side so the second run is an independent first-push.
+  git -C "$OSS_REMOTE" update-ref -d "$MARKER_REF" || true
+  SUBTREE_SPLIT_METHOD=filter-repo FORCE=true run bash "$SCRIPT"
+  fr_sha="$(output_value split-sha)"
+  # Synthetic commit SHAs differ between backends, but the tree they publish
+  # (the subtree content) must be identical.
+  [ "$(git -C "$PRO" rev-parse "${sub_sha}^{tree}")" = "$(git -C "$PRO" rev-parse "${fr_sha}^{tree}")" ]
+}
+
+@test "unknown split method fails loudly" {
+  SUBTREE_SPLIT_METHOD=bogus FORCE=true run bash "$SCRIPT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"unknown SUBTREE_SPLIT_METHOD"* ]]
+}
