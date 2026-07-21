@@ -88,6 +88,16 @@ fi
 if [ "$1" = pr ] && [ "$2" = create ]; then
   printf '%s\n' "$@" >> "${GH_CREATE_LOG:?}"
   echo "https://github.com/x/y/pull/99"
+  exit 0
+fi
+# `gh pr view <n> --json url --jq .url` -- surface the existing PR's URL.
+if [ "$1" = pr ] && [ "$2" = view ]; then
+  echo "https://github.com/x/y/pull/$3"
+  exit 0
+fi
+if [ "$1" = api ]; then   # `gh api user --jq .login`
+  echo "loft-bot"
+  exit 0
 fi
 exit 0
 STUB
@@ -99,6 +109,12 @@ STUB
 }
 
 output_value() { grep "^$1=" "$GITHUB_OUTPUT" | tail -n1 | cut -d= -f2-; }
+
+# comment-body is emitted with the GITHUB_OUTPUT heredoc form (it's multi-line),
+# so output_value can't read it -- extract the block between the delimiters.
+comment_body() {
+  awk '/^comment-body<<__BACKPORT_BODY_EOF__$/{f=1;next} /^__BACKPORT_BODY_EOF__$/{f=0} f' "$GITHUB_OUTPUT"
+}
 
 # Content of <path> on <branch> in a bare remote.
 remote_file() { git -C "$1" show "$2:$3"; }
@@ -511,6 +527,91 @@ short() { git -C "$MONO" rev-parse --short HEAD; }
   [ "$(output_value oss-conflicts)" = "true" ]
   [ "$(output_value oss-pushed)" = "true" ]
   grep -Fxq -- --draft "$GH_CREATE_LOG"  # conflicted PR opened as draft
+}
+
+# --- summary comment (backport PR links back onto the source PR) -----------
+
+@test "comment: a clean backport emits the PR url and a success summary comment" {
+  install_fake_gh
+  cd "$MONO"
+  printf 'line1\nOSS\nline3\n' > "$PFX/app.go"
+  git commit -qam "oss: change"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value oss-pr-url)" = "https://github.com/x/y/pull/99" ]
+  [ "$(output_value pro-pr-url)" = "" ]
+
+  run comment_body
+  [[ "$output" == *':white_check_mark: Backported to `v0.35`'* ]]
+  [[ "$output" == *'- **oss:** https://github.com/x/y/pull/99'* ]]
+  # Clean apply -> no conflict warning in the body.
+  [[ "$output" != *':warning:'* ]]
+}
+
+@test "comment: a conflicted backport flags the draft in the summary comment" {
+  install_fake_gh
+  git clone -q --branch v0.35 --single-branch "$OSS_REMOTE" "$ROOT/ossdiv"
+  (
+    cd "$ROOT/ossdiv"
+    printf 'line1\nLEGACY\nline3\n' > app.go
+    git commit -qam "oss legacy: divergent" && git push -q origin v0.35
+  )
+  cd "$MONO"
+  printf 'line1\nOSS\nline3\n' > "$PFX/app.go"
+  git commit -qam "oss: change"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+
+  run comment_body
+  [[ "$output" == *':warning: Backported to `v0.35`'* ]]
+  [[ "$output" == *'opened as a draft'* ]]
+}
+
+@test "comment: a mixed backport lists both the pro and oss PRs" {
+  install_fake_gh
+  cd "$MONO"
+  printf 'line1\nOSS\nline3\n' > "$PFX/app.go"
+  printf 'package main // pro\n' > main.go
+  git commit -qam "mixed: oss + pro"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value oss-pr-url)" = "https://github.com/x/y/pull/99" ]
+  [ "$(output_value pro-pr-url)" = "https://github.com/x/y/pull/99" ]
+
+  run comment_body
+  [[ "$output" == *'- **pro:** https://github.com/x/y/pull/99'* ]]
+  [[ "$output" == *'- **oss:** https://github.com/x/y/pull/99'* ]]
+}
+
+@test "comment: an already-open PR still appears in the summary comment" {
+  install_fake_gh
+  export GH_PRLIST=exists          # skip create; the existing PR is #42
+  cd "$MONO"
+  printf 'line1\nOSS\nline3\n' > "$PFX/app.go"
+  git commit -qam "oss: change"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -s "$GH_CREATE_LOG" ]                                   # nothing created
+  [ "$(output_value oss-pr-url)" = "https://github.com/x/y/pull/42" ]
+
+  run comment_body
+  [[ "$output" == *'- **oss:** https://github.com/x/y/pull/42'* ]]
+}
+
+@test "comment: nothing opened or found -> empty comment body" {
+  install_fake_gh
+  export GH_PRLIST=fail            # query fails -> side skipped, no PR, no url
+  cd "$MONO"
+  printf 'line1\nOSS\nline3\n' > "$PFX/app.go"
+  git commit -qam "oss: change"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ -z "$(comment_body)" ]
 }
 
 # --- guards ----------------------------------------------------------------
