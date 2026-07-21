@@ -28,14 +28,17 @@ trailer originated on OSS and are skipped (loop guard).
 Safety mechanisms, in order:
 
 1. **Divergence guard** — every OSS commit we did not create must already be
-   absorbed into the monorepo (appear as an `Oss-Commit` trailer). Otherwise
-   the run fails closed with `diverged=true` and the caller dispatches the
-   import direction. Nothing is pushed.
+   absorbed into the monorepo (appear as an `Oss-Commit` trailer) or be
+   *benign*: touching only `exclude-paths`, or carrying a post-image already
+   present in the subtree (the import skips both kinds without a trailer).
+   Otherwise the run fails closed with `diverged=true` and the caller
+   dispatches the import direction. Nothing is pushed.
 2. **Diff replay** — an absorbed external commit is never reverted by a
    replayed company commit, because only that commit's own changes are
    applied (snapshot projection would rewrite the whole tree).
 3. **Convergence assertion** — after replay, the OSS tip tree must equal the
-   monorepo staging tree, or the run fails without pushing. `align-tree: true`
+   monorepo staging tree (ignoring `exclude-paths`, which are never
+   mirrored), or the run fails without pushing. `align-tree: true`
    instead appends one bot-authored snapshot commit that sets the OSS tree to
    the staging tree: the append-only escape hatch (used at migration to drop
    OSS-only producer workflows, or after manual reconciliation).
@@ -54,7 +57,12 @@ caller pushes the branch and opens/updates the sync PR.
 - `exclude-paths` drops OSS-only paths (producer workflows) from every
   replayed diff. A commit whose diff becomes empty is skipped without a
   marker commit; the skip is re-derived deterministically on every run, so
-  no `--allow-empty` commit needs to survive GitHub's rebase-merge.
+  no `--allow-empty` commit needs to survive GitHub's rebase-merge. Pass the
+  same list to the export direction, whose guard and assertion ignore those
+  paths.
+- A patch that applies as a no-op (the same change already landed in the
+  subtree) is likewise skipped instead of aborting the run; the export guard
+  recognizes such commits as benign by comparing their post-image blobs.
 - A conflicting external commit fails the 3-way apply loudly; the run exits
   non-zero with `conflict-sha` set and a clean worktree.
 - The checkout must be at the base branch (`branch` input) with full history.
@@ -70,19 +78,19 @@ later by the export convergence assertion.
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-|        INPUT         |  TYPE  | REQUIRED |  DEFAULT  |                                                                                                           DESCRIPTION                                                                                                           |
-|----------------------|--------|----------|-----------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-|      align-tree      | string |  false   | `"false"` | Export only: when the post-replay OSS <br>tree differs from the staging tree, <br>append one snapshot alignment commit instead <br>of failing. Append-only escape hatch; use <br>for migration or after manual reconciliation.  |
-|        branch        | string |   true   |           |                                                                               Branch to sync (same name on both repos, usually github.ref_name).                                                                                |
-|      direction       | string |   true   |           |                                                            export (monorepo subtree -> OSS branch) or import (external OSS commits -> PR branch under the subtree).                                                             |
-|    exclude-paths     | string |  false   |           |                                      Import only: newline-separated paths (relative to the OSS repo root) dropped <br>during replay, e.g. producer workflows that <br>exist only on OSS.                                        |
-|     github-token     | string |   true   |           |                                                   Token with read (import) or write <br>(export) access to the OSS repo. <br>Used to build the remote URL; <br>never logged.                                                    |
-|  oss-default-branch  | string |  false   | `"main"`  |                                                                    OSS default branch used to anchor <br>newly created release-line branches. Export only.                                                                      |
-|       oss-repo       | string |   true   |           |                                                                              Downstream OSS repository as owner/repo, e.g. <br>loft-sh/vcluster.                                                                                |
-|      pr-branch       | string |  false   |           |                                                     Import only: local branch the replayed <br>commits are created on. Defaults to <br>automation/sync-from-oss-<branch>.                                                       |
-| seed-monorepo-commit | string |  false   |           |                                   Monorepo commit to resume from when <br>the OSS branch has no Monorepo-Commit <br>trailer yet (first export run). Must be paired <br>with seed-oss-commit.                                    |
-|   seed-oss-commit    | string |  false   |           |                          OSS commit anchor for the first <br>run: paired with seed-monorepo-commit on export; <br>the import resume point when the <br>base branch has no Oss-Commit trailer <br>yet.                           |
-|    subtree-prefix    | string |   true   |           |                                           Path of the subtree within this <br>repo, e.g. staging/github.com/loft-sh/vcluster. Requires a full-history <br>checkout (fetch-depth: 0).                                            |
+|        INPUT         |  TYPE  | REQUIRED |  DEFAULT  |                                                                                                                                       DESCRIPTION                                                                                                                                       |
+|----------------------|--------|----------|-----------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|      align-tree      | string |  false   | `"false"` |                             Export only: when the post-replay OSS <br>tree differs from the staging tree, <br>append one snapshot alignment commit instead <br>of failing. Append-only escape hatch; use <br>for migration or after manual reconciliation.                              |
+|        branch        | string |   true   |           |                                                                                                           Branch to sync (same name on both repos, usually github.ref_name).                                                                                                            |
+|      direction       | string |   true   |           |                                                                                        export (monorepo subtree -> OSS branch) or import (external OSS commits -> PR branch under the subtree).                                                                                         |
+|    exclude-paths     | string |  false   |           | Newline-separated paths (relative to the OSS repo root) that are never <br>mirrored, e.g. producer workflows. Import drops <br>them from replayed diffs; export ignores <br>them in the divergence guard and <br>the convergence assertion. Pass the same <br>list to both directions.  |
+|     github-token     | string |   true   |           |                                                                               Token with read (import) or write <br>(export) access to the OSS repo. <br>Used to build the remote URL; <br>never logged.                                                                                |
+|  oss-default-branch  | string |  false   | `"main"`  |                                                                                                OSS default branch used to anchor <br>newly created release-line branches. Export only.                                                                                                  |
+|       oss-repo       | string |   true   |           |                                                                                                          Downstream OSS repository as owner/repo, e.g. <br>loft-sh/vcluster.                                                                                                            |
+|      pr-branch       | string |  false   |           |                                                                                 Import only: local branch the replayed <br>commits are created on. Defaults to <br>automation/sync-from-oss-<branch>.                                                                                   |
+| seed-monorepo-commit | string |  false   |           |                                                               Monorepo commit to resume from when <br>the OSS branch has no Monorepo-Commit <br>trailer yet (first export run). Must be paired <br>with seed-oss-commit.                                                                |
+|   seed-oss-commit    | string |  false   |           |                                                      OSS commit anchor for the first <br>run: paired with seed-monorepo-commit on export; <br>the import resume point when the <br>base branch has no Oss-Commit trailer <br>yet.                                                       |
+|    subtree-prefix    | string |   true   |           |                                                                       Path of the subtree within this <br>repo, e.g. staging/github.com/loft-sh/vcluster. Requires a full-history <br>checkout (fetch-depth: 0).                                                                        |
 
 <!-- AUTO-DOC-INPUT:END -->
 

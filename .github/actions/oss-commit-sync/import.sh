@@ -54,7 +54,7 @@ emit skipped-count 0
 emit conflict-sha ""
 emit pr-branch "$PR_BRANCH"
 
-git fetch --quiet "$OSS_REMOTE" "refs/heads/${BRANCH}" \
+git_scrubbed fetch --quiet "$OSS_REMOTE" "refs/heads/${BRANCH}" \
   || die "failed to fetch OSS branch ${BRANCH}"
 OSS_TIP="$(git rev-parse FETCH_HEAD)"
 
@@ -110,6 +110,16 @@ while read -r E; do
     die "conflict replaying OSS commit ${E} into ${SUBTREE_PREFIX}; resolve manually (export any pending monorepo changes first, then re-run)"
   fi
   git add -A -- "$SUBTREE_PREFIX"
+  # A non-empty patch can still apply as a no-op when the same change already
+  # landed in staging (e.g. cherry-picked on both sides). Skip it instead of
+  # letting `git commit` abort the run. No trailer is recorded; the export
+  # divergence guard independently classifies such commits as benign because
+  # their post-image is already present in the subtree.
+  if nothing_staged "."; then
+    skipped=$((skipped + 1))
+    echo "Skipping ${E} (applies as a no-op; content already in ${SUBTREE_PREFIX})"
+    continue
+  fi
   replay_commit "$E" "$OSS_TRAILER" "."
   replayed=$((replayed + 1))
   echo "Replayed ${E} -> $(git rev-parse HEAD) ($(git log -1 --format=%s "$E"))"

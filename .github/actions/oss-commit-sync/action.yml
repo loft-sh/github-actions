@@ -34,7 +34,7 @@ inputs:
     required: false
     default: "false"
   exclude-paths:
-    description: "Import only: newline-separated paths (relative to the OSS repo root) dropped during replay, e.g. producer workflows that exist only on OSS."
+    description: "Newline-separated paths (relative to the OSS repo root) that are never mirrored, e.g. producer workflows. Import drops them from replayed diffs; export ignores them in the divergence guard and the convergence assertion. Pass the same list to both directions."
     required: false
     default: ""
   pr-branch:

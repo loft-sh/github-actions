@@ -161,3 +161,19 @@ teardown() {
   [ "$status" -ne 0 ]
   [[ "$output" == *"merge commit"* ]]
 }
+
+@test "no-op external (same change already in staging) is skipped, not a crash" {
+  company_commit pkg/dup.go "same-content" "feat: company version" >/dev/null
+  external_commit pkg/dup.go "same-content" "feat: external identical version" >/dev/null
+
+  run bash "$IMPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value has-changes)" = "false" ]
+  [ "$(output_value replayed-count)" = "0" ]
+  [ "$(output_value skipped-count)" = "1" ]
+  # idempotent: re-run from the base branch skips it again
+  git -C "$MONO" switch -q main
+  run bash "$IMPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value skipped-count)" = "1" ]
+}

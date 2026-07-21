@@ -73,12 +73,36 @@ ensure_not_merge() {
 # author name/email/date and full message, with "<trailer-key>: <src-sha>"
 # appended as a proper trailer. The committer stays the CI identity.
 replay_commit() {
-  local src="$1" key="$2" dir="$3" msgfile
+  local src="$1" key="$2" dir="$3" msgfile author_name author_email author_date
   msgfile=$(mktemp)
   git log -1 --format=%B "$src" | git interpret-trailers --trailer "${key}: ${src}" > "$msgfile"
-  GIT_AUTHOR_NAME="$(git log -1 --format=%an "$src")" \
-  GIT_AUTHOR_EMAIL="$(git log -1 --format=%ae "$src")" \
-  GIT_AUTHOR_DATE="$(git log -1 --format=%aI "$src")" \
+  IFS=$'\x1f' read -r author_name author_email author_date \
+    < <(git log -1 --format='%an%x1f%ae%x1f%aI' "$src")
+  GIT_AUTHOR_NAME="$author_name" \
+  GIT_AUTHOR_EMAIL="$author_email" \
+  GIT_AUTHOR_DATE="$author_date" \
     git -C "$dir" commit --quiet -F "$msgfile"
   rm -f "$msgfile"
+}
+
+# nothing_staged <git-dir>
+# True when the index matches HEAD, i.e. a non-empty patch applied as a no-op
+# because its content was already present (e.g. the same change landed on
+# both sides). Callers skip such commits instead of letting `git commit`
+# abort the run with "nothing to commit".
+nothing_staged() {
+  git -C "$1" diff --cached --quiet
+}
+
+# git_scrubbed <git args...>
+# Run git with all output captured and OSS_REMOTE (which may embed a token in
+# its URL) scrubbed before anything is echoed: git prints the remote URL on
+# its "To <remote>" / "unable to access" lines. Actions secret-masking covers
+# values that came from the secrets context; this covers the rest, matching
+# the scrub convention in backport-legacy-split.
+git_scrubbed() {
+  local out rc=0
+  out="$(git "$@" 2>&1)" || rc=$?
+  [ -n "$out" ] && echo "${out//${OSS_REMOTE}/<oss-remote>}"
+  return "$rc"
 }

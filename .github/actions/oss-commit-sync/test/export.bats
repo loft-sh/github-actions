@@ -200,3 +200,66 @@ Monorepo-Commit: $M0"
   git -C "$OSS_REMOTE" merge-base --is-ancestor "$before" v0.99
   [ "$(git -C "$OSS_REMOTE" log -1 --format=%s v0.99)" = "fix: backport" ]
 }
+
+@test "prefix-sharing sibling directory does not leak into the export (--relative boundary)" {
+  # A commit touching both the subtree and a string-prefix sibling
+  # (vcluster-values) must export only the subtree half.
+  (
+    cd "$MONO"
+    mkdir -p "${PFX}-values"
+    echo "sibling" > "${PFX}-values/values.yaml"
+    echo "l1-mixed" > "$PFX/pkg/app.go"
+    git add . && git commit -qm "feat: mixed subtree + sibling commit"
+  )
+
+  run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value exported-count)" = "1" ]
+  [ "$(oss_file pkg/app.go)" = "l1-mixed" ]
+  # the sibling file must not appear anywhere in the OSS tree
+  run git -C "$OSS_REMOTE" show "main:values.yaml"
+  [ "$status" -ne 0 ]
+  run git -C "$OSS_REMOTE" show "main:-values/values.yaml"
+  [ "$status" -ne 0 ]
+  [ "$(git -C "$OSS_REMOTE" rev-parse 'main^{tree}')" = "$(git -C "$MONO" rev-parse "HEAD:$PFX")" ]
+}
+
+@test "identical change on both sides: benign guard lets export proceed and converge" {
+  # Company commit and an external commit make the same change; the import
+  # skipped the external as a no-op (no trailer), so the guard must classify
+  # it as benign instead of reporting divergence forever.
+  company_commit pkg/dup.go "same-content" "feat: company version" >/dev/null
+  external_commit pkg/dup.go "same-content" "feat: external identical version" >/dev/null
+
+  run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value diverged)" = "false" ]
+  # the company commit replays as a no-op (content already on OSS via the
+  # external commit), so nothing needs pushing and the trees still converge
+  [ "$(output_value pushed)" = "false" ]
+  [ "$(output_value exported-count)" = "0" ]
+  [ "$(oss_file pkg/dup.go)" = "same-content" ]
+  [ "$(git -C "$OSS_REMOTE" rev-parse 'main^{tree}')" = "$(git -C "$MONO" rev-parse "HEAD:$PFX")" ]
+}
+
+@test "excluded-only external commit neither blocks the guard nor fails the assertion" {
+  external_commit .github/workflows/release.yaml "producer-edit" "chore: oss-only workflow" >/dev/null
+  company_commit pkg/app.go "l1-post-excluded" "feat: company change" >/dev/null
+
+  EXCLUDE_PATHS=".github/workflows/release.yaml" run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value diverged)" = "false" ]
+  [ "$(output_value pushed)" = "true" ]
+  # the excluded file stays on OSS untouched; the mirrored content converges
+  [ "$(oss_file .github/workflows/release.yaml)" = "producer-edit" ]
+  [ "$(oss_file pkg/app.go)" = "l1-post-excluded" ]
+}
+
+@test "genuinely divergent external still fails closed despite the benign check" {
+  external_commit pkg/app.go "external-different-content" "fix: real external change" >/dev/null
+  company_commit pkg/other.go "x" "feat: company change" >/dev/null
+
+  run bash "$EXPORT"
+  [ "$status" -ne 0 ]
+  [ "$(output_value diverged)" = "true" ]
+}
