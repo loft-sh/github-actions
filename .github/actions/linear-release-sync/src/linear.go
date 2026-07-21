@@ -481,12 +481,17 @@ func (l *LinearClient) ListIssueComments(ctx context.Context, issueID string) ([
 	return bodies, nil
 }
 
-// hasReleaseComment reports whether any comment body starts with "<prefix> <releaseTag>".
+// hasReleaseComment reports whether any comment body starts with "<prefix> <releaseTag> (released ".
 // It is used to make the release comments idempotent per tag, so a cherry-pick released in
 // a later version still gets its own comment while a repeated sync of the same tag does not
 // re-comment (vcluster and vcluster-pro cut identical tags against the same Linear issue).
+//
+// The trailing " (released " delimiter is required, not cosmetic: both release comment bodies
+// place it immediately after the tag, and matching it prevents a shorter tag from falsely
+// matching a longer one (e.g. releaseTag "v0.28.2" must NOT dedup against an existing
+// "...v0.28.20 (released ..." comment, which would silently suppress the v0.28.2 comment).
 func hasReleaseComment(comments []string, prefix, releaseTag string) bool {
-	expected := fmt.Sprintf("%s %s", prefix, releaseTag)
+	expected := fmt.Sprintf("%s %s (released ", prefix, releaseTag)
 	for _, body := range comments {
 		if strings.HasPrefix(body, expected) {
 			return true

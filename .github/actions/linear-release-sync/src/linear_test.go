@@ -408,6 +408,14 @@ func TestHasStableReleaseComment(t *testing.T) {
 			releaseTag: "v0.27.0",
 			expected:   false,
 		},
+		{
+			// A shorter tag must not falsely match a longer one via HasPrefix
+			// ("v0.28.2" vs "v0.28.20"), which would silently suppress the comment.
+			name:       "prefix-collision tag is not falsely deduped",
+			comments:   []string{"Now available in stable release v0.28.20 (released 2025-02-01)"},
+			releaseTag: "v0.28.2",
+			expected:   false,
+		},
 	}
 
 	for _, tc := range testCases {
@@ -454,6 +462,14 @@ func TestShippedCommentDedup(t *testing.T) {
 			name:       "stable release comment is not a shipped comment",
 			comments:   []string{"Now available in stable release v0.27.0 (released 2025-02-01)"},
 			releaseTag: "v0.27.0",
+			expected:   false,
+		},
+		{
+			// A shorter tag must not falsely match a longer one via HasPrefix
+			// ("v0.28.2" vs "v0.28.20"), which would silently suppress the comment.
+			name:       "prefix-collision tag is not falsely deduped",
+			comments:   []string{"Shipped in v0.28.20 (released 2025-02-01). This issue is not in \"Ready for Release\", so it was not moved to the released state."},
+			releaseTag: "v0.28.2",
 			expected:   false,
 		},
 	}
