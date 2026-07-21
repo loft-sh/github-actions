@@ -384,6 +384,47 @@ Mirrors a monorepo subtree to a downstream OSS repository. Fast-forward-only for
 
 See [subtree-mirror README](./.github/actions/subtree-mirror/README.md) for detailed documentation.
 
+### OSS Commit Sync Action
+
+Successor to Subtree Mirror. Bidirectional per-commit sync between a monorepo subtree and a downstream OSS repository: replays each commit's diff (3-way, re-rooted) preserving author, date, and message, and links the two histories with `Monorepo-Commit` / `Oss-Commit` trailers as the only sync state. Incremental (O(new commits), no `git subtree split`), append-only (never force-pushes), fails closed on divergence and conflicts.
+
+**Location:** `.github/actions/oss-commit-sync`
+
+**Usage:**
+
+```yaml
+- uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+  with:
+    fetch-depth: 0
+    persist-credentials: false
+
+# monorepo -> OSS (on push touching the subtree)
+- id: sync
+  uses: loft-sh/github-actions/.github/actions/oss-commit-sync@oss-commit-sync/v1
+  with:
+    direction: export
+    subtree-prefix: staging/github.com/loft-sh/vcluster
+    oss-repo: loft-sh/vcluster
+    branch: ${{ github.ref_name }}
+    github-token: ${{ secrets.GH_ACCESS_TOKEN }}
+
+# OSS -> monorepo PR branch (on cron / divergence dispatch)
+- id: import
+  uses: loft-sh/github-actions/.github/actions/oss-commit-sync@oss-commit-sync/v1
+  with:
+    direction: import
+    subtree-prefix: staging/github.com/loft-sh/vcluster
+    oss-repo: loft-sh/vcluster
+    branch: main
+    github-token: ${{ secrets.GH_ACCESS_TOKEN }}
+```
+
+**Key inputs:** `direction` (`export`/`import`), `subtree-prefix`, `oss-repo`, `branch`, `github-token`; `align-tree` (export escape hatch: append one snapshot alignment commit on tree drift), `exclude-paths` (import: OSS-only paths dropped during replay), `seed-monorepo-commit`/`seed-oss-commit` (first run only).
+
+**Key outputs:** export: `pushed`, `diverged`, `exported-count`, `oss-tip`; import: `has-changes`, `replayed-count`, `skipped-count`, `conflict-sha`, `pr-branch`.
+
+See [oss-commit-sync README](./.github/actions/oss-commit-sync/README.md) for the full contract, safety mechanisms, and migration steps.
+
 ## Available Reusable Workflows
 
 ### Validate Renovate Config

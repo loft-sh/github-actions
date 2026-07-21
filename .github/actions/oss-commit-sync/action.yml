@@ -1,0 +1,91 @@
+name: 'oss-commit-sync'
+description: "Bidirectional per-commit sync between a monorepo subtree and a downstream OSS repo. Replays each commit's diff (3-way, re-rooted) preserving author, date, and message; links histories with Monorepo-Commit / Oss-Commit trailers; append-only, never force-pushes."
+
+inputs:
+  direction:
+    description: "export (monorepo subtree -> OSS branch) or import (external OSS commits -> PR branch under the subtree)."
+    required: true
+  subtree-prefix:
+    description: "Path of the subtree within this repo, e.g. staging/github.com/loft-sh/vcluster. Requires a full-history checkout (fetch-depth: 0)."
+    required: true
+  oss-repo:
+    description: "Downstream OSS repository as owner/repo, e.g. loft-sh/vcluster."
+    required: true
+  branch:
+    description: "Branch to sync (same name on both repos, usually github.ref_name)."
+    required: true
+  github-token:
+    description: "Token with read (import) or write (export) access to the OSS repo. Used to build the remote URL; never logged."
+    required: true
+  oss-default-branch:
+    description: "OSS default branch used to anchor newly created release-line branches. Export only."
+    required: false
+    default: main
+  seed-monorepo-commit:
+    description: "Monorepo commit to resume from when the OSS branch has no Monorepo-Commit trailer yet (first export run). Must be paired with seed-oss-commit."
+    required: false
+    default: ""
+  seed-oss-commit:
+    description: "OSS commit anchor for the first run: paired with seed-monorepo-commit on export; the import resume point when the base branch has no Oss-Commit trailer yet."
+    required: false
+    default: ""
+  align-tree:
+    description: "Export only: when the post-replay OSS tree differs from the staging tree, append one snapshot alignment commit instead of failing. Append-only escape hatch; use for migration or after manual reconciliation."
+    required: false
+    default: "false"
+  exclude-paths:
+    description: "Import only: newline-separated paths (relative to the OSS repo root) dropped during replay, e.g. producer workflows that exist only on OSS."
+    required: false
+    default: ""
+  pr-branch:
+    description: "Import only: local branch the replayed commits are created on. Defaults to automation/sync-from-oss-<branch>."
+    required: false
+    default: ""
+
+outputs:
+  pushed:
+    description: "Export: true when commits were pushed to the OSS branch."
+    value: ${{ steps.sync.outputs.pushed }}
+  diverged:
+    description: "Export: true when OSS has external commits not yet absorbed and the run failed closed."
+    value: ${{ steps.sync.outputs.diverged }}
+  exported-count:
+    description: "Export: number of commits created on the OSS branch (including an alignment commit, if any)."
+    value: ${{ steps.sync.outputs.exported-count }}
+  oss-tip:
+    description: "Export: the OSS branch tip after the run."
+    value: ${{ steps.sync.outputs.oss-tip }}
+  has-changes:
+    description: "Import: true when at least one external commit was replayed onto the PR branch."
+    value: ${{ steps.sync.outputs.has-changes }}
+  replayed-count:
+    description: "Import: number of external commits replayed."
+    value: ${{ steps.sync.outputs.replayed-count }}
+  skipped-count:
+    description: "Import: number of external commits skipped because they touch only excluded paths."
+    value: ${{ steps.sync.outputs.skipped-count }}
+  conflict-sha:
+    description: "Import: the OSS commit that failed the 3-way apply, when the run failed on a conflict."
+    value: ${{ steps.sync.outputs.conflict-sha }}
+  pr-branch:
+    description: "Import: the local branch holding the replayed commits."
+    value: ${{ steps.sync.outputs.pr-branch }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Sync commits
+      id: sync
+      shell: bash
+      env:
+        DIRECTION: ${{ inputs.direction }}
+        SUBTREE_PREFIX: ${{ inputs.subtree-prefix }}
+        OSS_REMOTE: https://x-access-token:${{ inputs.github-token }}@github.com/${{ inputs.oss-repo }}.git
+        BRANCH: ${{ inputs.branch }}
+        OSS_DEFAULT_BRANCH: ${{ inputs.oss-default-branch }}
+        SEED_MONOREPO_COMMIT: ${{ inputs.seed-monorepo-commit }}
+        SEED_OSS_COMMIT: ${{ inputs.seed-oss-commit }}
+        ALIGN_TREE: ${{ inputs.align-tree }}
+        EXCLUDE_PATHS: ${{ inputs.exclude-paths }}
+        PR_BRANCH: ${{ inputs.pr-branch }}
+      run: ${{ github.action_path }}/run.sh
