@@ -68,33 +68,41 @@ later by the export convergence assertion.
 
 ## Inputs
 
-| Input | Required | Default | Description |
-|---|---|---|---|
-| `direction` | yes | | `export` or `import` |
-| `subtree-prefix` | yes | | Subtree path, e.g. `staging/github.com/loft-sh/vcluster` |
-| `oss-repo` | yes | | Downstream repo as `owner/repo` |
-| `branch` | yes | | Branch to sync (same name both sides) |
-| `github-token` | yes | | Token with read (import) / write (export) access to the OSS repo |
-| `oss-default-branch` | no | `main` | Anchor source for new release-line branches (export) |
-| `seed-monorepo-commit` | no | | First-run resume point, paired with `seed-oss-commit` (export) |
-| `seed-oss-commit` | no | | First-run anchor (export) / resume point (import) |
-| `align-tree` | no | `false` | Append a snapshot alignment commit on tree drift (export) |
-| `exclude-paths` | no | | Newline-separated OSS-root-relative paths to drop (import) |
-| `pr-branch` | no | `automation/sync-from-oss-<branch>` | Local branch for replayed commits (import) |
+<!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
+
+|        INPUT         |  TYPE  | REQUIRED |  DEFAULT  |                                                                                                           DESCRIPTION                                                                                                           |
+|----------------------|--------|----------|-----------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|      align-tree      | string |  false   | `"false"` | Export only: when the post-replay OSS <br>tree differs from the staging tree, <br>append one snapshot alignment commit instead <br>of failing. Append-only escape hatch; use <br>for migration or after manual reconciliation.  |
+|        branch        | string |   true   |           |                                                                               Branch to sync (same name on both repos, usually github.ref_name).                                                                                |
+|      direction       | string |   true   |           |                                                            export (monorepo subtree -> OSS branch) or import (external OSS commits -> PR branch under the subtree).                                                             |
+|    exclude-paths     | string |  false   |           |                                      Import only: newline-separated paths (relative to the OSS repo root) dropped <br>during replay, e.g. producer workflows that <br>exist only on OSS.                                        |
+|     github-token     | string |   true   |           |                                                   Token with read (import) or write <br>(export) access to the OSS repo. <br>Used to build the remote URL; <br>never logged.                                                    |
+|  oss-default-branch  | string |  false   | `"main"`  |                                                                    OSS default branch used to anchor <br>newly created release-line branches. Export only.                                                                      |
+|       oss-repo       | string |   true   |           |                                                                              Downstream OSS repository as owner/repo, e.g. <br>loft-sh/vcluster.                                                                                |
+|      pr-branch       | string |  false   |           |                                                     Import only: local branch the replayed <br>commits are created on. Defaults to <br>automation/sync-from-oss-<branch>.                                                       |
+| seed-monorepo-commit | string |  false   |           |                                   Monorepo commit to resume from when <br>the OSS branch has no Monorepo-Commit <br>trailer yet (first export run). Must be paired <br>with seed-oss-commit.                                    |
+|   seed-oss-commit    | string |  false   |           |                          OSS commit anchor for the first <br>run: paired with seed-monorepo-commit on export; <br>the import resume point when the <br>base branch has no Oss-Commit trailer <br>yet.                           |
+|    subtree-prefix    | string |   true   |           |                                           Path of the subtree within this <br>repo, e.g. staging/github.com/loft-sh/vcluster. Requires a full-history <br>checkout (fetch-depth: 0).                                            |
+
+<!-- AUTO-DOC-INPUT:END -->
 
 ## Outputs
 
-| Output | Direction | Description |
-|---|---|---|
-| `pushed` | export | `true` when commits were pushed to the OSS branch |
-| `diverged` | export | `true` when unabsorbed external commits blocked the run |
-| `exported-count` | export | Commits created on the OSS branch |
-| `oss-tip` | export | OSS branch tip after the run |
-| `has-changes` | import | `true` when external commits were replayed |
-| `replayed-count` | import | External commits replayed |
-| `skipped-count` | import | Commits skipped as excluded-paths-only |
-| `conflict-sha` | import | OSS commit that failed the 3-way apply |
-| `pr-branch` | import | Branch holding the replayed commits |
+<!-- AUTO-DOC-OUTPUT:START - Do not remove or modify this section -->
+
+|     OUTPUT     |  TYPE  |                                            DESCRIPTION                                            |
+|----------------|--------|---------------------------------------------------------------------------------------------------|
+|  conflict-sha  | string |  Import: the OSS commit that failed <br>the 3-way apply, when the run <br>failed on a conflict.   |
+|    diverged    | string |  Export: true when OSS has external <br>commits not yet absorbed and the <br>run failed closed.   |
+| exported-count | string | Export: number of commits created on <br>the OSS branch (including an alignment commit, if any).  |
+|  has-changes   | string |     Import: true when at least one <br>external commit was replayed onto the <br>PR branch.       |
+|    oss-tip     | string |                          Export: the OSS branch tip after <br>the run.                            |
+|   pr-branch    | string |                    Import: the local branch holding the <br>replayed commits.                     |
+|     pushed     | string |                   Export: true when commits were pushed <br>to the OSS branch.                    |
+| replayed-count | string |                           Import: number of external commits replayed.                            |
+| skipped-count  | string |      Import: number of external commits skipped <br>because they touch only excluded paths.       |
+
+<!-- AUTO-DOC-OUTPUT:END -->
 
 ## Usage
 
