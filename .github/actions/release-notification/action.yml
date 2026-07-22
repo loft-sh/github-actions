@@ -110,10 +110,16 @@ runs:
       env:
         STATUS: ${{ inputs.status }}
       run: |
+        # Use literal Unicode emoji, not Slack :shortcode: codes. The failure
+        # banner's leading emoji sits in a Block Kit `header`, and a header's
+        # plain_text does NOT render :shortcodes: even with `emoji: true` (Slack
+        # only renders shortcodes in mrkdwn/section text). A raw Unicode char
+        # renders in a header regardless. This is the actual fix for DEVOPS-1126;
+        # flipping the header's `emoji` flag (PR #146) never could have worked.
         case "$STATUS" in
-          failure)   echo "emoji=:rotating_light:" >> "$GITHUB_OUTPUT"; echo "label=Failed" >> "$GITHUB_OUTPUT" ;;
-          cancelled) echo "emoji=:warning:" >> "$GITHUB_OUTPUT"; echo "label=Cancelled" >> "$GITHUB_OUTPUT" ;;
-          skipped)   echo "emoji=:fast_forward:" >> "$GITHUB_OUTPUT"; echo "label=Skipped" >> "$GITHUB_OUTPUT" ;;
+          failure)   printf 'emoji=%s\n' '🚨' >> "$GITHUB_OUTPUT"; echo "label=Failed" >> "$GITHUB_OUTPUT" ;;
+          cancelled) printf 'emoji=%s\n' '⚠️' >> "$GITHUB_OUTPUT"; echo "label=Cancelled" >> "$GITHUB_OUTPUT" ;;
+          skipped)   printf 'emoji=%s\n' '⏩' >> "$GITHUB_OUTPUT"; echo "label=Skipped" >> "$GITHUB_OUTPUT" ;;
         esac
     - name: Post release failure notification
       if: inputs.status != 'success'
