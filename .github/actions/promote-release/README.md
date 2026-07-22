@@ -22,13 +22,14 @@ is a no-op, since moving tags and "latest" promotion aren't meaningful for
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-|    INPUT     |  TYPE  | REQUIRED | DEFAULT |                                                                                        DESCRIPTION                                                                                        |
-|--------------|--------|----------|---------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| version      | string |   true   |         | The promoted release tag, e.g. v0.37.1.                                                                                                                                                      |
-| images       | string |   true   |         | JSON array of image entries to retag, each `{"image": "ghcr.io/loft-sh/x", "suffix": ""}` (suffix optional, default ""). Copies `<image>:<version><suffix>` to the three moving tags below. |
-| oss-repo     | string |  false   | `""`    | owner/repo whose matching `<version>` release should also be promoted (prerelease unset, latest set). Leave empty to skip.                                                                  |
-| github-token | string |   true   |         | Token with GHCR write:packages, and contents:write on oss-repo if set.                                                                                                                       |
-| dry-run      | string |  false   | `false` | "true" prints the planned retags/promotion without executing them.                                                                                                                           |
+|     INPUT       |  TYPE  | REQUIRED | DEFAULT |                                                                                        DESCRIPTION                                                                                        |
+|-----------------|--------|----------|---------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| version         | string |   true   |         | The promoted release tag, e.g. v0.37.1.                                                                                                                                                      |
+| images          | string |   true   |         | JSON array of image entries to retag, each `{"image": "ghcr.io/loft-sh/x", "suffix": ""}` (suffix optional, default ""). Copies `<image>:<version><suffix>` to the three moving tags below. |
+| oss-repo        | string |  false   | `""`    | owner/repo whose matching `<version>` release should also be promoted (prerelease unset, latest set). Leave empty to skip.                                                                  |
+| github-token    | string |   true   |         | Token with GHCR write:packages, and contents:write on oss-repo if set.                                                                                                                       |
+| docker-username | string |   true   |         | Username paired with github-token for the GHCR login (GHCR checks the token; docker/login-action still requires a username value).                                                         |
+| dry-run         | string |  false   | `false` | "true" prints the planned retags/promotion without executing them.                                                                                                                           |
 
 <!-- AUTO-DOC-INPUT:END -->
 
@@ -53,6 +54,7 @@ jobs:
           version: ${{ github.event.release.tag_name }}
           oss-repo: loft-sh/vcluster
           github-token: ${{ secrets.GH_ACCESS_TOKEN }}
+          docker-username: ${{ secrets.DOCKER_USERNAME }}
           images: |
             [
               {"image": "ghcr.io/loft-sh/vcluster-pro"},
@@ -74,19 +76,11 @@ make — otherwise `release: types: [released]` never fires for a stable cut.
 
 ### GHCR login
 
-`docker buildx imagetools create` needs to push to GHCR, so log in before
-calling this action (skipped automatically when `dry-run: true`):
-
-```yaml
-      - uses: docker/login-action@<sha> # v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GH_ACCESS_TOKEN }}
-```
-
-The action.yml in this directory already includes this login step, so callers
-using `uses: .../promote-release@...` directly don't need to repeat it.
+`docker buildx imagetools create` needs to push to GHCR. `action.yml` already
+includes a `docker/login-action` step using `docker-username` + `github-token`
+(GHCR checks the token; `docker/login-action` still requires a username
+value), skipped automatically when `dry-run: true` — callers don't need to
+log in separately.
 
 ### oss-repo
 

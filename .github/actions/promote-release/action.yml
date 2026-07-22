@@ -35,6 +35,9 @@ inputs:
   github-token:
     description: 'Token with GHCR write:packages, and contents:write on oss-repo if set.'
     required: true
+  docker-username:
+    description: 'Username paired with github-token for the GHCR login (GHCR checks the token, but docker/login-action requires a username value).'
+    required: true
   dry-run:
     description: '"true" prints the planned retags/promotion without executing them.'
     required: false
@@ -47,7 +50,7 @@ runs:
       uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
       with:
         registry: ghcr.io
-        username: ${{ github.actor }}
+        username: ${{ inputs.docker-username }}
         password: ${{ inputs.github-token }}
     - name: Promote release
       shell: bash

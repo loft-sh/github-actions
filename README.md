@@ -665,6 +665,7 @@ jobs:
           version: ${{ github.event.release.tag_name }}
           oss-repo: loft-sh/vcluster
           github-token: ${{ secrets.GH_ACCESS_TOKEN }}
+          docker-username: ${{ secrets.DOCKER_USERNAME }}
           images: |
             [{"image": "ghcr.io/loft-sh/vcluster-pro"}]
 ```
