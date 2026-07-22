@@ -1,0 +1,63 @@
+name: Promote release
+description: |
+  Retags the moving docker tags (:latest, :{major}, :{major}.{minor}, and any
+  configured suffix variant e.g. -fips) onto the digest of an already
+  published, already signed version tag -- a manifest copy, never a rebuild,
+  so cosign signatures (OCI referrers, digest-scoped) stay valid with no
+  re-signing. Optionally also promotes the paired public release in a
+  companion repo (unsets prerelease, sets latest).
+
+  Wire this from `on: release: types: [released]` on the repo that owns the
+  moving tags. That event only fires when a human -- not GITHUB_TOKEN/a bot --
+  flips a release from pre-release to a full release (verified live for
+  DEVOPS-1083); a bot-authored release publish never triggers it, so there is
+  no risk of the build itself re-entering this action.
+
+  Only acts on a stable `vX.Y.Z` version (no prerelease suffix); any other
+  shape is a no-op, since moving tags and "latest" promotion aren't meaningful
+  for -rc/-alpha/-next cuts.
+inputs:
+  version:
+    description: 'The promoted release tag, e.g. v0.37.1.'
+    required: true
+  images:
+    description: |
+      JSON array of image entries to retag, each
+      `{"image": "ghcr.io/loft-sh/x", "suffix": ""}` (suffix optional, default
+      ""). For each entry, copies `<image>:<version><suffix>` to
+      `<image>:latest<suffix>`, `<image>:<major><suffix>`, and
+      `<image>:<major>.<minor><suffix>`.
+    required: true
+  oss-repo:
+    description: 'owner/repo whose matching <version> release should also be promoted (prerelease unset, latest set). Leave empty to skip.'
+    required: false
+    default: ''
+  github-token:
+    description: 'Token with GHCR write:packages, and contents:write on oss-repo if set.'
+    required: true
+  dry-run:
+    description: '"true" prints the planned retags/promotion without executing them.'
+    required: false
+    default: 'false'
+runs:
+  using: composite
+  steps:
+    - name: Log in to GHCR
+      if: inputs.dry-run != 'true'
+      uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ inputs.github-token }}
+    - name: Promote release
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        INPUT_VERSION: ${{ inputs.version }}
+        INPUT_IMAGES: ${{ inputs.images }}
+        INPUT_OSS_REPO: ${{ inputs.oss-repo }}
+        INPUT_DRY_RUN: ${{ inputs.dry-run }}
+      run: ${{ github.action_path }}/src/action.sh
+branding:
+  icon: 'upload-cloud'
+  color: 'orange'
