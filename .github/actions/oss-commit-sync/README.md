@@ -16,6 +16,41 @@ split` + guarded force-push) with incremental diff replay:
 - Both branches are append-only. Nothing is ever force-pushed; every failure
   mode fails closed before pushing.
 
+## Prerequisites
+
+The export pushes **directly** to the OSS default branch (the mirror is
+maintained by automation, not by per-change PRs). On a protected public repo
+that means the sync identity must be able to bypass **every** protection
+targeting that branch — and there are usually two independent systems, both
+of which must be satisfied:
+
+1. **Repository and organization rulesets** — the identity must be a bypass
+   actor on each ruleset that enforces `pull_request` on the branch. A
+   **team** bypass actor only takes effect if that team has access to the
+   repo; a team on the bypass list without repo access is silently inert. A
+   **classic PAT** does not reliably inherit team bypass in all setups — if a
+   team bypass won't apply, use a `RepositoryRole` bypass or a GitHub App
+   (`Integration`) bypass actor.
+2. **Legacy branch protection** (if still present alongside rulesets) — the
+   identity must be in both the "restrict who can push" allowlist and the
+   "allow specified actors to bypass required pull requests" list. Editing
+   `bypass_pull_request_allowances` via the API is **replace** semantics:
+   read the current list and append, or you will drop existing actors.
+
+There is no reliable pre-push check for this: server-side rulesets are not
+evaluated on `git push --dry-run`, and a token with write access can still be
+blocked. The only authoritative validation is an actual push plus the repo's
+**Rules → Rule Insights** view, which shows, per ruleset, whether the actor
+bypassed. When the push is rejected, this action fails with an actionable
+error and sets `push-rejected=true`.
+
+**Change-management note:** because the OSS repo is a downstream mirror of a
+source-of-truth monorepo (every commit is reviewed upstream before it is
+republished here), a scoped automation identity bypassing PR on the mirror is
+a documentable control exception, not an unreviewed production change. Record
+it as such (identity scoped, token rotated, mechanism deterministic and
+trailer-audited) if the mirror repo is in scope for change-management review.
+
 ## Directions
 
 ### `direction: export` (monorepo subtree → OSS branch)
@@ -106,17 +141,18 @@ later by the export convergence assertion.
 
 <!-- AUTO-DOC-OUTPUT:START - Do not remove or modify this section -->
 
-|     OUTPUT     |  TYPE  |                                            DESCRIPTION                                            |
-|----------------|--------|---------------------------------------------------------------------------------------------------|
-|  conflict-sha  | string |  Import: the OSS commit that failed <br>the 3-way apply, when the run <br>failed on a conflict.   |
-|    diverged    | string |  Export: true when OSS has external <br>commits not yet absorbed and the <br>run failed closed.   |
-| exported-count | string | Export: number of commits created on <br>the OSS branch (including an alignment commit, if any).  |
-|  has-changes   | string |     Import: true when at least one <br>external commit was replayed onto the <br>PR branch.       |
-|    oss-tip     | string |                          Export: the OSS branch tip after <br>the run.                            |
-|   pr-branch    | string |                    Import: the local branch holding the <br>replayed commits.                     |
-|     pushed     | string |                   Export: true when commits were pushed <br>to the OSS branch.                    |
-| replayed-count | string |                           Import: number of external commits replayed.                            |
-| skipped-count  | string |      Import: number of external commits skipped <br>because they touch only excluded paths.       |
+|     OUTPUT     |  TYPE  |                                                                  DESCRIPTION                                                                   |
+|----------------|--------|------------------------------------------------------------------------------------------------------------------------------------------------|
+|  conflict-sha  | string |                        Import: the OSS commit that failed <br>the 3-way apply, when the run <br>failed on a conflict.                          |
+|    diverged    | string |                        Export: true when OSS has external <br>commits not yet absorbed and the <br>run failed closed.                          |
+| exported-count | string |                       Export: number of commits created on <br>the OSS branch (including an alignment commit, if any).                         |
+|  has-changes   | string |                            Import: true when at least one <br>external commit was replayed onto the <br>PR branch.                             |
+|    oss-tip     | string |                                                 Export: the OSS branch tip after <br>the run.                                                  |
+|   pr-branch    | string |                                          Import: the local branch holding the <br>replayed commits.                                            |
+| push-rejected  | string | Export: true when the push to <br>the OSS branch was rejected by <br>branch protection / a ruleset (the sync identity is not a bypass actor).  |
+|     pushed     | string |                                         Export: true when commits were pushed <br>to the OSS branch.                                           |
+| replayed-count | string |                                                  Import: number of external commits replayed.                                                  |
+| skipped-count  | string |                            Import: number of external commits skipped <br>because they touch only excluded paths.                              |
 
 <!-- AUTO-DOC-OUTPUT:END -->
 

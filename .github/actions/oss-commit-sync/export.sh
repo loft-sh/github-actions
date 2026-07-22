@@ -41,7 +41,7 @@ set -euo pipefail
 # paths that are never mirrored; the guard and the convergence assertion
 # ignore them), GITHUB_OUTPUT.
 #
-# Outputs: pushed, diverged, exported-count, oss-tip.
+# Outputs: pushed, diverged, push-rejected, exported-count, oss-tip.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -91,6 +91,7 @@ external_is_benign() {
 
 emit diverged false
 emit pushed false
+emit push-rejected false
 emit exported-count 0
 
 # --- locate the OSS branch tip and the resume point ------------------------
@@ -264,9 +265,19 @@ fi
 # --- push (plain fast-forward; branch creation for new lines) ---------------
 
 if [ "$NEW_TIP" != "$OSS_TIP" ] || [ "$branch_absent" = "true" ]; then
-  git_scrubbed push --quiet "$OSS_REMOTE" "${NEW_TIP}:refs/heads/${BRANCH}"
-  emit pushed true
-  echo "Pushed ${NEW_TIP} to OSS ${BRANCH}"
+  # A true pre-push permission check isn't possible: server-side rulesets are
+  # not evaluated on --dry-run, and a token with write access can still be
+  # blocked by branch protection. So the fail-fast is here: on a rejection,
+  # translate git's raw error into an actionable one instead of leaving a bare
+  # GH013 in the log.
+  if git_scrubbed push --quiet "$OSS_REMOTE" "${NEW_TIP}:refs/heads/${BRANCH}"; then
+    emit pushed true
+    echo "Pushed ${NEW_TIP} to OSS ${BRANCH}"
+  else
+    emit push-rejected true
+    echo "::error::Push to OSS ${BRANCH} was rejected. If this is a branch-protection / ruleset rejection (GH013, 'must be made through a pull request', or 'not authorized to push'), the sync identity is not a bypass actor. It must bypass EVERY protection targeting ${BRANCH}: all repository/organization rulesets (require-PR bypass) AND legacy branch protection (require-PR bypass + push allowlist). Team bypass actors only apply if the team has access to the repo. See the oss-commit-sync README 'Prerequisites'."
+    exit 1
+  fi
 else
   echo "Nothing to push; OSS ${BRANCH} is up to date"
 fi
