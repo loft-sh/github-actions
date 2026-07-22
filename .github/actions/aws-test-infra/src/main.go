@@ -48,6 +48,12 @@ func run(ctx context.Context, stderr io.Writer, args []string) error {
 		return runProvision(ctx, logger, args[0]+" provision", args[2:])
 	case "cleanup":
 		return runCleanup(ctx, logger, args[0]+" cleanup", args[2:])
+	case "s3-stage":
+		return runS3Stage(ctx, logger, args[0]+" s3-stage", args[2:])
+	case "s3-download":
+		return runS3Download(ctx, logger, args[0]+" s3-download", args[2:])
+	case "s3-cleanup":
+		return runS3Cleanup(ctx, logger, args[0]+" s3-cleanup", args[2:])
 	case "-h", "--help", "help":
 		printUsage(stderr)
 		return nil
@@ -61,8 +67,11 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, `Usage: aws-test-infra <subcommand> [flags]
 
 Subcommands:
-  provision   Create VPC, subnet, IGW, route table, security group, and EC2 instances
-  cleanup     Tear down resources by ID and run a tag-based fallback sweep
+  provision     Create VPC, subnet, IGW, route table, security group, and EC2 instances
+  cleanup       Tear down resources by ID and run a tag-based fallback sweep
+  s3-stage      Ensure+tag an S3 bucket, upload artifacts, and emit presigned URLs
+  s3-download   Download an object to a local path (no-op if the object is absent)
+  s3-cleanup    Empty and delete an S3 bucket, with a tag-based fallback sweep
 
 Run "aws-test-infra <subcommand> -h" for subcommand flags.`)
 }

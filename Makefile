@@ -112,6 +112,7 @@ test-linear-release-sync: ## run linear-release-sync unit tests
 
 test-aws-test-infra: ## run aws-test-infra unit tests
 	cd $(ACTIONS_DIR)/aws-test-infra/src && go test -v -race -count=1 ./...
+	bats $(ACTIONS_DIR)/aws-test-infra/test
 
 test-cleanup-head-charts: ## run cleanup-head-charts bats tests
 	bats $(SCRIPTS_DIR)/cleanup-head-charts/test/cleanup-head-charts.bats
