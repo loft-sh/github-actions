@@ -58,6 +58,19 @@ Never-hard-fail enforcement for advisory workflows (approval, notifications):
 
 Actions use per-action tags (e.g. `semver-validation/v1`, `linear-release-sync/v1`).
 
+### Shipping a fix to a shared action: advance the tag, or it strands on main
+
+Callers pin a floating coordination tag (`<action-name>/vN`, e.g. `release-notification/v2`), not `main`. Merging a fix to a shared action does NOT ship it. The fix reaches callers only when you advance that tag to the merged commit. Skip this and the fix strands on `main` while every caller keeps running the old code pinned at the tag (pin drift: DEVOPS-1126, DEVOPS-923).
+
+So after merging any change to a shared action, advance its tag as part of the release:
+
+```bash
+git tag -f <action-name>/v2 origin/main   # the merged commit
+git push origin <action-name>/v2 --force
+```
+
+For `release-notification`, the `notify-release.yaml` wrapper and its inner composite both resolve at `@release-notification/v2` (see PR #147), so advancing that one tag moves the wrapper and composite together.
+
 ### YAML-only / Node.js actions (semver-validation, release-notification, etc.)
 - Update code and commit changes
 - Tag the release: `git tag -f <action-name>/v1`
