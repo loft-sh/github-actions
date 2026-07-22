@@ -68,6 +68,26 @@ teardown() {
   [ ! -s "$GH_MOCK_CALLS" ]
 }
 
+@test "every unstable suffix shape is a no-op -> never touches :latest or --latest" {
+  # A human can uncheck "pre-release" on ANY release regardless of what its
+  # tag looks like, so release:released can fire for an rc/alpha/beta/next
+  # cut too - this is the guard that stops that from ever moving :latest.
+  for version in \
+    "v9.9.9-rc.1" \
+    "v9.9.9-alpha.1" \
+    "v9.9.9-beta.2" \
+    "v9.9.9-next.3" \
+    "v9.9.9-next.internal.7"
+  do
+    export INPUT_VERSION="$version"
+    run "$SCRIPT"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"is not a stable vX.Y.Z release"* ]]
+    [ ! -s "$DOCKER_MOCK_CALLS" ]
+    [ ! -s "$GH_MOCK_CALLS" ]
+  done
+}
+
 @test "oss-repo has no matching release -> warns, still retags docker, does not edit" {
   export GH_MOCK_KNOWN_RELEASES=""
   run "$SCRIPT"
