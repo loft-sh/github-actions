@@ -68,7 +68,15 @@ git tag -f <action-name>/v1
 git push origin <action-name>/v1 --force
 ```
 
-Exception: `release-notification` uses legacy repo-wide `v1` tag.
+Advancing this tag IS the release. Callers pin the tag, not `main`, so a fix merged
+to a shared action ships only when you move its tag to the merged commit. Skip this
+and the fix strands on `main` while callers keep running the old code (pin drift:
+DEVOPS-1126, DEVOPS-923).
+
+`release-notification` uses the action-scoped `release-notification/v2` tag as a
+coordination tag: the `notify-release.yaml` wrapper and its inner composite both
+resolve at `@release-notification/v2`, so advancing that one tag moves them together.
+(A legacy repo-wide `v1` tag predates this; callers no longer use it.)
 
 Referenced as:
 ```yaml
