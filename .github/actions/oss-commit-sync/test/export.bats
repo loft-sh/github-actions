@@ -266,9 +266,11 @@ Monorepo-Commit: $M0"
 
 @test "migration: align-tree removes excluded-path leftovers and seeds the trailer" {
   # Pre-migration OSS carries a producer workflow that staging does not have,
-  # the exclude list covers it, and OSS has no trailers yet. Reproduces the
-  # rehearsal finding: with an exclude-aware align, the migration run was a
-  # green no-op that seeded nothing.
+  # the exclude list covers it, and OSS has no trailers yet. align-tree must
+  # act on this state even though the only drift is in excluded paths: if
+  # the exclude-aware assertion also gated the alignment, this run would be
+  # a green no-op that deletes nothing and seeds no trailer, leaving every
+  # subsequent export unable to find a resume point.
   rm -rf "$OSS_REMOTE" "$ROOT/ossseed"
   git init -q --bare "$OSS_REMOTE"
   git init -q "$ROOT/ossseed"
@@ -283,9 +285,10 @@ Monorepo-Commit: $M0"
   )
   seed_oss=$(oss_tip)
 
-  # Run with NO git identity in the environment, like a bare CI runner: the
-  # alignment commit-tree must not depend on the fixture's exported idents
-  # (rehearsal caught "empty ident name" here).
+  # Run with NO git identity in the environment. CI runners have no GECOS
+  # name for git to derive an ident from, so the alignment commit-tree dies
+  # with "empty ident name" unless the action supplies author defaults; the
+  # fixture's exported idents must not mask that.
   SEED_MONOREPO_COMMIT="$M0" SEED_OSS_COMMIT="$seed_oss" \
     EXCLUDE_PATHS=".github/workflows/release.yaml" ALIGN_TREE=true \
     run env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL \
