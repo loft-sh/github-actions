@@ -1,5 +1,12 @@
 #!/usr/bin/env bats
 # Tests for action.sh.
+#
+# Fixtures use an obviously-fake version (v9.9.9, not a real vcluster-pro
+# release line) and a fake image/repo (example-org/...), never real
+# ghcr.io/loft-sh/* names or plausible real version numbers, so nobody
+# mistakes test data for a real artifact.
+
+bats_require_minimum_version 1.5.0
 
 SCRIPT="$BATS_TEST_DIRNAME/../src/action.sh"
 
@@ -10,11 +17,11 @@ setup() {
   setup_gh_mock
   setup_docker_mock
   export GH_TOKEN="fake-token"
-  export INPUT_VERSION="v0.37.1"
-  export INPUT_IMAGES='[{"image":"ghcr.io/loft-sh/vcluster-pro"},{"image":"ghcr.io/loft-sh/vcluster-pro","suffix":"-fips"}]'
-  export INPUT_OSS_REPO="loft-sh/vcluster"
+  export INPUT_VERSION="v9.9.9"
+  export INPUT_IMAGES='[{"image":"ghcr.io/example-org/example-image"},{"image":"ghcr.io/example-org/example-image","suffix":"-fips"}]'
+  export INPUT_OSS_REPO="example-org/example-repo"
   export INPUT_DRY_RUN="false"
-  export GH_MOCK_KNOWN_RELEASES="loft-sh/vcluster:v0.37.1"
+  export GH_MOCK_KNOWN_RELEASES="example-org/example-repo:v9.9.9"
 }
 
 teardown() {
@@ -26,12 +33,12 @@ teardown() {
   run "$SCRIPT"
   [ "$status" -eq 0 ]
 
-  grep -qF 'CREATE ghcr.io/loft-sh/vcluster-pro:latest ghcr.io/loft-sh/vcluster-pro:v0.37.1' "$DOCKER_MOCK_CALLS"
-  grep -qF 'CREATE ghcr.io/loft-sh/vcluster-pro:0 ghcr.io/loft-sh/vcluster-pro:v0.37.1' "$DOCKER_MOCK_CALLS"
-  grep -qF 'CREATE ghcr.io/loft-sh/vcluster-pro:0.37 ghcr.io/loft-sh/vcluster-pro:v0.37.1' "$DOCKER_MOCK_CALLS"
-  grep -qF 'CREATE ghcr.io/loft-sh/vcluster-pro:latest-fips ghcr.io/loft-sh/vcluster-pro:v0.37.1-fips' "$DOCKER_MOCK_CALLS"
-  grep -qF 'CREATE ghcr.io/loft-sh/vcluster-pro:0-fips ghcr.io/loft-sh/vcluster-pro:v0.37.1-fips' "$DOCKER_MOCK_CALLS"
-  grep -qF 'CREATE ghcr.io/loft-sh/vcluster-pro:0.37-fips ghcr.io/loft-sh/vcluster-pro:v0.37.1-fips' "$DOCKER_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:latest ghcr.io/example-org/example-image:v9.9.9' "$DOCKER_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9 ghcr.io/example-org/example-image:v9.9.9' "$DOCKER_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9.9 ghcr.io/example-org/example-image:v9.9.9' "$DOCKER_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:latest-fips ghcr.io/example-org/example-image:v9.9.9-fips' "$DOCKER_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9-fips ghcr.io/example-org/example-image:v9.9.9-fips' "$DOCKER_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9.9-fips ghcr.io/example-org/example-image:v9.9.9-fips' "$DOCKER_MOCK_CALLS"
   [ "$(wc -l < "$DOCKER_MOCK_CALLS")" -eq 6 ]
 }
 
@@ -39,12 +46,12 @@ teardown() {
   run "$SCRIPT"
   [ "$status" -eq 0 ]
 
-  grep -qF 'VIEW loft-sh/vcluster v0.37.1' "$GH_MOCK_CALLS"
-  grep -qF -- 'EDIT loft-sh/vcluster v0.37.1 --prerelease=false --latest' "$GH_MOCK_CALLS"
+  grep -qF 'VIEW example-org/example-repo v9.9.9' "$GH_MOCK_CALLS"
+  grep -qF -- 'EDIT example-org/example-repo v9.9.9 --prerelease=false --latest' "$GH_MOCK_CALLS"
 }
 
 @test "non-stable version (has a suffix) -> no-op, no docker or gh calls" {
-  export INPUT_VERSION="v0.37.1-rc.1"
+  export INPUT_VERSION="v9.9.9-rc.1"
   run "$SCRIPT"
   [ "$status" -eq 0 ]
   [ ! -s "$DOCKER_MOCK_CALLS" ]
@@ -55,9 +62,9 @@ teardown() {
   export GH_MOCK_KNOWN_RELEASES=""
   run "$SCRIPT"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"no v0.37.1 release found on loft-sh/vcluster"* ]]
-  grep -qF 'VIEW loft-sh/vcluster v0.37.1' "$GH_MOCK_CALLS"
-  ! grep -q '^EDIT ' "$GH_MOCK_CALLS"
+  [[ "$output" == *"no v9.9.9 release found on example-org/example-repo"* ]]
+  grep -qF 'VIEW example-org/example-repo v9.9.9' "$GH_MOCK_CALLS"
+  run ! grep -q '^EDIT ' "$GH_MOCK_CALLS"
   [ "$(wc -l < "$DOCKER_MOCK_CALLS")" -eq 6 ]
 }
 
@@ -72,7 +79,7 @@ teardown() {
   export INPUT_DRY_RUN="true"
   run "$SCRIPT"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"[dry-run] docker buildx imagetools create --tag ghcr.io/loft-sh/vcluster-pro:latest ghcr.io/loft-sh/vcluster-pro:v0.37.1"* ]]
+  [[ "$output" == *"[dry-run] docker buildx imagetools create --tag ghcr.io/example-org/example-image:latest ghcr.io/example-org/example-image:v9.9.9"* ]]
   [ ! -s "$DOCKER_MOCK_CALLS" ]
 }
 
@@ -80,12 +87,12 @@ teardown() {
   export INPUT_DRY_RUN="true"
   run "$SCRIPT"
   [ "$status" -eq 0 ]
-  grep -qF 'VIEW loft-sh/vcluster v0.37.1' "$GH_MOCK_CALLS"
-  ! grep -q '^EDIT ' "$GH_MOCK_CALLS"
+  grep -qF 'VIEW example-org/example-repo v9.9.9' "$GH_MOCK_CALLS"
+  run ! grep -q '^EDIT ' "$GH_MOCK_CALLS"
 }
 
 @test "missing image field in an entry -> fails before any docker call" {
-  export INPUT_IMAGES='[{"image":"ghcr.io/loft-sh/vcluster-pro"},{"suffix":"-fips"}]'
+  export INPUT_IMAGES='[{"image":"ghcr.io/example-org/example-image"},{"suffix":"-fips"}]'
   run "$SCRIPT"
   [ "$status" -ne 0 ]
   [ ! -s "$DOCKER_MOCK_CALLS" ]
