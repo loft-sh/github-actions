@@ -40,10 +40,17 @@ die() {
 # Walk <ref> first-parent, newest first, and print "<commit-sha> <value>" for
 # the first commit carrying the trailer. Prints nothing when none is found.
 # With several same-key trailers on one commit the newest (last) value wins.
+#
+# The awk consumer must NOT `exit` on the first match: closing the pipe early
+# while `git log` is still writing a large history makes git receive SIGPIPE,
+# and under `set -o pipefail` that surfaces as exit 141 (git's SIGPIPE
+# handling is build-dependent, so this only bites on big repos on some
+# runners). Instead it reads the whole first-parent stream and keeps only the
+# first (newest) match. The first-parent log is bounded and cheap to stream.
 newest_trailer_entry() {
   local ref="$1" key="$2"
   git log --first-parent --format="%H%x09%(trailers:key=${key},valueonly,separator=%x09)" "$ref" \
-    | awk -F'\t' 'NF >= 2 && $NF != "" { print $1 " " $NF; exit }'
+    | awk -F'\t' 'found { next } NF >= 2 && $NF != "" { print $1 " " $NF; found = 1 }'
 }
 
 # all_trailer_entries <ref> <key>
