@@ -120,6 +120,23 @@ teardown() {
   grep -qF -- 'EDIT example-org/example-repo v9.9.9 --prerelease=false --latest' "$GH_MOCK_CALLS"
 }
 
+@test "backport across minor lines (same major) -> still skips :latest/:major" {
+  # Same shape as: promoting v0.35.6 after v0.36.0 already exists - a
+  # same-major, older-minor patch. Distinct from the other backport test,
+  # which only exercises a major-version jump (v9.9.9 vs v10.0.0); sort -V's
+  # minor-component comparison is a separate thing to get right.
+  export INPUT_VERSION="v9.35.6"
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.36.0","isPrerelease":false}]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"not the newest stable release on example-org/example-caller-repo"* ]]
+
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9.35 ghcr.io/example-org/example-image:v9.35.6' "$DOCKER_MOCK_CALLS"
+  run ! grep -qF ':latest ' "$DOCKER_MOCK_CALLS"
+  run ! grep -qF ':9 ' "$DOCKER_MOCK_CALLS"
+  [ "$(grep -c '^CREATE ' "$DOCKER_MOCK_CALLS")" -eq 2 ]
+}
+
 @test "backport on oss-repo -> paired release unsets prerelease but omits --latest" {
   set_release_list "$INPUT_OSS_REPO" '[{"tagName":"v10.0.0","isPrerelease":false}]'
   run "$SCRIPT"
