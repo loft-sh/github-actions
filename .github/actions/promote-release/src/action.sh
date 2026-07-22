@@ -26,11 +26,18 @@
 #                     be promoted. Empty (default) skips this step.
 #   INPUT_DRY_RUN    "true" prints the planned retags/promotion without
 #                     executing them. Default "false".
+#
+# GITHUB_REPOSITORY (owner/repo of the caller, set automatically by Actions)
+# is used to detect a backport/patch promotion: if VERSION isn't the newest
+# stable release on that repo, :latest/:{major} are left alone (only
+# :{major}.{minor}, which is scoped to VERSION's own line, still advances) so
+# promoting an older line's patch can never move :latest backwards.
 set -euo pipefail
 
 : "${GH_TOKEN:?GH_TOKEN required}"
 : "${INPUT_VERSION:?version required}"
 : "${INPUT_IMAGES:?images required}"
+: "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY required (set automatically by GitHub Actions)}"
 
 VERSION="${INPUT_VERSION}"
 OSS_REPO="${INPUT_OSS_REPO-}"
@@ -56,13 +63,49 @@ run() {
   fi
 }
 
-# Validate every entry before making any changes, so a config typo can't
-# leave the images partially retagged.
+# True if VERSION is the newest stable (non-prerelease) release known on
+# $1 - i.e. safe to move that repo's :latest/--latest pointer to VERSION.
+# No prior stable releases at all is treated as "yes" (first-ever
+# promotion). A failure to even LIST releases is NOT treated as "no prior
+# releases" - that would fail open on exactly the downgrade this check
+# exists to prevent - so it hard-errors instead, matching the existing
+# Homebrew-tap downgrade guard's fail-closed precedent (release.yaml
+# check_latest_stable).
+is_latest_stable() {
+  local repo="$1" raw max
+  if ! raw=$(gh release list --repo "${repo}" --json tagName,isPrerelease --limit 100 2>&1); then
+    echo "::error::failed to list releases on ${repo} to check backport/patch ordering: ${raw}" >&2
+    exit 1
+  fi
+  max=$(jq -r '[.[] | select(.isPrerelease == false) | .tagName][]' <<<"${raw}" \
+    | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+    | sort -V | tail -1)
+  [ -z "${max}" ] && return 0
+  [ "$(printf '%s\n%s\n' "${VERSION}" "${max}" | sort -V | tail -1)" = "${VERSION}" ]
+}
+
+ADVANCE_LATEST_MAJOR=true
+if ! is_latest_stable "${GITHUB_REPOSITORY}"; then
+  ADVANCE_LATEST_MAJOR=false
+  echo "::notice::${VERSION} is not the newest stable release on ${GITHUB_REPOSITORY} (backport/patch promotion); skipping :latest/:${MAJOR} so they aren't moved backwards. :${MAJOR}.${MINOR} still advances."
+fi
+
+# Validate every entry - and that its source manifest actually exists at
+# VERSION - before making any changes, so a config typo or a suffix variant
+# (e.g. -fips) that wasn't built for this version can't leave earlier
+# entries retagged while a later one fails. Skipped under dry-run, since
+# nothing has been pushed to inspect yet in a rehearsal.
 IMAGE_COUNT=$(jq -r 'length' <<<"${INPUT_IMAGES}")
 for ((i = 0; i < IMAGE_COUNT; i++)); do
-  image=$(jq -r ".[$i].image // empty" <<<"${INPUT_IMAGES}")
+  entry=$(jq -c ".[$i]" <<<"${INPUT_IMAGES}")
+  image=$(jq -r '.image // empty' <<<"${entry}")
+  suffix=$(jq -r '.suffix // ""' <<<"${entry}")
   if [[ -z "${image}" ]]; then
-    echo "::error::images[$i] is missing required \"image\" field: $(jq -c ".[$i]" <<<"${INPUT_IMAGES}")" >&2
+    echo "::error::images[$i] is missing required \"image\" field: ${entry}" >&2
+    exit 1
+  fi
+  if [[ "${DRY_RUN}" != "true" ]] && ! docker buildx imagetools inspect "${image}:${VERSION}${suffix}" >/dev/null 2>&1; then
+    echo "::error::source manifest ${image}:${VERSION}${suffix} does not exist; refusing to start retagging" >&2
     exit 1
   fi
 done
@@ -75,7 +118,9 @@ for ((i = 0; i < IMAGE_COUNT; i++)); do
   suffix=$(jq -r '.suffix // ""' <<<"${entry}")
 
   src="${image}:${VERSION}${suffix}"
-  for moving in latest "${MAJOR}" "${MAJOR}.${MINOR}"; do
+  moving_tags=("${MAJOR}.${MINOR}")
+  [[ "${ADVANCE_LATEST_MAJOR}" == "true" ]] && moving_tags=(latest "${MAJOR}" "${MAJOR}.${MINOR}")
+  for moving in "${moving_tags[@]}"; do
     dest="${image}:${moving}${suffix}"
     echo "Retagging ${dest} -> ${src}"
     run docker buildx imagetools create --tag "${dest}" "${src}"
@@ -86,8 +131,18 @@ done
 
 if [[ -n "${OSS_REPO}" ]]; then
   if gh release view "${VERSION}" --repo "${OSS_REPO}" >/dev/null 2>&1; then
-    echo "Promoting ${OSS_REPO}@${VERSION}: unset prerelease, set latest"
-    run gh release edit "${VERSION}" --repo "${OSS_REPO}" --prerelease=false --latest
+    edit_args=(--prerelease=false)
+    latest_note=""
+    if is_latest_stable "${OSS_REPO}"; then
+      edit_args+=(--latest)
+      latest_note=", set latest"
+    else
+      echo "::notice::${VERSION} is not the newest stable release on ${OSS_REPO} (backport/patch promotion); unsetting pre-release but not moving Latest."
+    fi
+    echo "Promoting ${OSS_REPO}@${VERSION}: unset prerelease${latest_note}"
+    if ! run gh release edit "${VERSION}" --repo "${OSS_REPO}" "${edit_args[@]}"; then
+      echo "::warning::gh release edit failed for ${OSS_REPO}@${VERSION}; docker retags are already complete. Promote manually: gh release edit ${VERSION} --repo ${OSS_REPO} ${edit_args[*]}"
+    fi
   else
     echo "::warning::no ${VERSION} release found on ${OSS_REPO}; skipping its promotion"
   fi

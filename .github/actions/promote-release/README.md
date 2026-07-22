@@ -18,6 +18,14 @@ Only acts on a stable `vX.Y.Z` version (no prerelease suffix); any other shape
 is a no-op, since moving tags and "latest" promotion aren't meaningful for
 `-rc`/`-alpha`/`-next` cuts.
 
+**Backport-safe:** before advancing `:latest`/`:{major}` (or `--latest` on
+`oss-repo`), the action checks whether `version` is actually the newest
+stable release on the caller's own repo (`GITHUB_REPOSITORY`, set
+automatically by Actions) / on `oss-repo`. Promoting an older line's patch
+after a newer stable is already `:latest` only advances `:{major}.{minor}`
+(scoped to that line) — never `:latest`/`:{major}` backwards. A failure to
+even list releases fails the run closed rather than risk a silent downgrade.
+
 ## Inputs
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
@@ -49,7 +57,7 @@ jobs:
       contents: read
     steps:
       - name: Promote release
-        uses: loft-sh/github-actions/.github/actions/promote-release@<sha> # promote-release/v1
+        uses: loft-sh/github-actions/.github/actions/promote-release@promote-release/v1
         with:
           version: ${{ github.event.release.tag_name }}
           oss-repo: loft-sh/vcluster

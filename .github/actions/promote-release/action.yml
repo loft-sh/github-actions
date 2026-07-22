@@ -16,6 +16,15 @@ description: |
   Only acts on a stable `vX.Y.Z` version (no prerelease suffix); any other
   shape is a no-op, since moving tags and "latest" promotion aren't meaningful
   for -rc/-alpha/-next cuts.
+
+  Backport-safe: before advancing `:latest`/`:{major}` (or `--latest` on
+  oss-repo), checks whether `version` is actually the newest stable release
+  on the caller's own repo (`GITHUB_REPOSITORY`, set automatically by
+  Actions) / on `oss-repo` respectively. Promoting an older line's patch
+  after a newer stable is already `:latest` only advances `:{major}.{minor}`
+  (scoped to that line), never `:latest`/`:{major}` backwards. A failure to
+  even list releases fails the run closed rather than risking a silent
+  downgrade.
 inputs:
   version:
     description: 'The promoted release tag, e.g. v0.37.1.'
