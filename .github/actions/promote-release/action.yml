@@ -25,6 +25,15 @@ description: |
   (scoped to that line), never `:latest`/`:{major}` backwards. A failure to
   even list releases fails the run closed rather than risking a silent
   downgrade.
+
+  Optionally also promotes a Homebrew tap: a metadata patch, not a rebuild.
+  A formula's per-platform sha256 values are exactly what's already in
+  oss-repo's `version` release `checksums.txt` (already published, already
+  cosign-signed), so nothing is re-hashed - only the version line and each
+  url/sha256 pair are rewritten in place, with everything else in the
+  formula preserved byte-for-byte. Skipped entirely (not partially) on a
+  backport/patch promotion - a formula has no line-scoped equivalent to
+  `:{major}.{minor}`.
 inputs:
   version:
     description: 'The promoted release tag, e.g. v0.37.1.'
@@ -47,6 +56,14 @@ inputs:
   docker-username:
     description: 'Username paired with github-token for the GHCR login (GHCR checks the token, but docker/login-action requires a username value).'
     required: true
+  homebrew-tap-repo:
+    description: 'owner/repo of a Homebrew tap to promote (e.g. loft-sh/homebrew-tap). Requires oss-repo to be set, since checksums come from its release. Leave empty to skip.'
+    required: false
+    default: ''
+  homebrew-formula-paths:
+    description: 'JSON array of formula file paths within homebrew-tap-repo to update, e.g. ["Formula/vcluster.rb"]. Required if homebrew-tap-repo is set.'
+    required: false
+    default: '[]'
   dry-run:
     description: '"true" prints the planned retags/promotion without executing them.'
     required: false
@@ -68,6 +85,8 @@ runs:
         INPUT_VERSION: ${{ inputs.version }}
         INPUT_IMAGES: ${{ inputs.images }}
         INPUT_OSS_REPO: ${{ inputs.oss-repo }}
+        INPUT_HOMEBREW_TAP_REPO: ${{ inputs.homebrew-tap-repo }}
+        INPUT_HOMEBREW_FORMULA_PATHS: ${{ inputs.homebrew-formula-paths }}
         INPUT_DRY_RUN: ${{ inputs.dry-run }}
       run: ${{ github.action_path }}/src/action.sh
 branding:

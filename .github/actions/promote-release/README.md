@@ -26,18 +26,30 @@ after a newer stable is already `:latest` only advances `:{major}.{minor}`
 (scoped to that line) — never `:latest`/`:{major}` backwards. A failure to
 even list releases fails the run closed rather than risk a silent downgrade.
 
+Optionally also promotes a Homebrew tap (`homebrew-tap-repo` +
+`homebrew-formula-paths`) — a metadata patch, not a rebuild. A formula's
+per-platform `sha256` values are exactly what's already in `oss-repo`'s
+`version` release `checksums.txt` (already published, already cosign-signed),
+so nothing is re-hashed; only the `version` line and each `url`/`sha256` pair
+are rewritten in place, with everything else in the formula (deps, install
+blocks, `test do`) preserved byte-for-byte. Same backport rule applies, but
+as an all-or-nothing skip — a formula has no line-scoped equivalent to
+`:{major}.{minor}`.
+
 ## Inputs
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-|      INPUT      |  TYPE  | REQUIRED |  DEFAULT  |                                                                                                                                       DESCRIPTION                                                                                                                                       |
-|-----------------|--------|----------|-----------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| docker-username | string |   true   |           |                                                                          Username paired with github-token for the <br>GHCR login (GHCR checks the token, but docker/login-action requires a username value).                                                                           |
-|     dry-run     | string |  false   | `"false"` |                                                                                                         "true" prints the planned retags/promotion without <br>executing them.                                                                                                          |
-|  github-token   | string |   true   |           |                                                                                                       Token with GHCR write:packages, and contents:write <br>on oss-repo if set.                                                                                                        |
-|     images      | string |   true   |           | JSON array of image entries to <br>retag, each `{"image": "ghcr.io/loft-sh/x", "suffix": ""}` (suffix optional, default <br>""). For each entry, copies `<image>:<version><suffix>` <br>to `<image>:latest<suffix>`, `<image>:<major><suffix>`, and `<image>:<major>.<minor><suffix>`.  |
-|    oss-repo     | string |  false   |           |                                                                            owner/repo whose matching <version> release should <br>also be promoted (prerelease unset, latest set). Leave empty <br>to skip.                                                                             |
-|     version     | string |   true   |           |                                                                                                                         The promoted release tag, e.g. v0.37.1.                                                                                                                         |
+|         INPUT          |  TYPE  | REQUIRED |  DEFAULT  |                                                                                                                                       DESCRIPTION                                                                                                                                       |
+|------------------------|--------|----------|-----------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|    docker-username     | string |   true   |           |                                                                          Username paired with github-token for the <br>GHCR login (GHCR checks the token, but docker/login-action requires a username value).                                                                           |
+|        dry-run         | string |  false   | `"false"` |                                                                                                         "true" prints the planned retags/promotion without <br>executing them.                                                                                                          |
+|      github-token      | string |   true   |           |                                                                                                       Token with GHCR write:packages, and contents:write <br>on oss-repo if set.                                                                                                        |
+| homebrew-formula-paths | string |  false   |  `"[]"`   |                                                                    JSON array of formula file paths <br>within homebrew-tap-repo to update, e.g. ["Formula/vcluster.rb"]. <br>Required if homebrew-tap-repo is set.                                                                     |
+|   homebrew-tap-repo    | string |  false   |           |                                                       owner/repo of a Homebrew tap to <br>promote (e.g. loft-sh/homebrew-tap). Requires oss-repo to be <br>set, since checksums come from its <br>release. Leave empty to skip.                                                         |
+|         images         | string |   true   |           | JSON array of image entries to <br>retag, each `{"image": "ghcr.io/loft-sh/x", "suffix": ""}` (suffix optional, default <br>""). For each entry, copies `<image>:<version><suffix>` <br>to `<image>:latest<suffix>`, `<image>:<major><suffix>`, and `<image>:<major>.<minor><suffix>`.  |
+|        oss-repo        | string |  false   |           |                                                                            owner/repo whose matching <version> release should <br>also be promoted (prerelease unset, latest set). Leave empty <br>to skip.                                                                             |
+|        version         | string |   true   |           |                                                                                                                         The promoted release tag, e.g. v0.37.1.                                                                                                                         |
 
 <!-- AUTO-DOC-INPUT:END -->
 
@@ -71,6 +83,9 @@ jobs:
               {"image": "ghcr.io/loft-sh/vcluster-oss"},
               {"image": "ghcr.io/loft-sh/vcluster-cli"}
             ]
+          homebrew-tap-repo: loft-sh/homebrew-tap
+          homebrew-formula-paths: |
+            ["Formula/vcluster.rb", "Formula/vcluster-experimental.rb"]
 ```
 
 ### Why this needs a build-time gating change too
@@ -95,6 +110,19 @@ log in separately.
 If set, and a release matching `version` exists on `oss-repo`, it is edited
 to `--prerelease=false --latest`. If no matching release exists, this step is
 skipped with a warning — it does not fail the docker retagging.
+
+### homebrew-tap-repo
+
+Requires `oss-repo` to be set — the formula's checksums come from
+`oss-repo`'s `version` release `checksums.txt`, matched to each formula's
+existing `url` lines by artifact filename (e.g. `vcluster-darwin-amd64`).
+`github-token` needs `contents: write` on `homebrew-tap-repo` (via the
+GitHub Contents API, not a git clone/push). Each formula's `version` line and
+matched `url`/`sha256` pairs are rewritten; an artifact with no matching
+checksum keeps its previous `sha256` and logs a warning rather than failing.
+Failures here (checksums download, contents fetch, or the update itself) warn
+and skip — they never fail the run, since the docker retags (and `oss-repo`
+promotion, if configured) have already succeeded by this point.
 
 ## Testing
 

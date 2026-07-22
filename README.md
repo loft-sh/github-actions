@@ -675,7 +675,9 @@ jobs:
 - `version` (required): the promoted release tag, e.g. `v0.37.1`
 - `images` (required): JSON array of `{"image": "...", "suffix": ""}` entries to retag
 - `oss-repo` (optional): `owner/repo` whose matching release should also be promoted; empty skips this
-- `github-token` (required): needs GHCR `write:packages`, and `contents:write` on `oss-repo` if set
+- `homebrew-tap-repo` (optional): `owner/repo` of a Homebrew tap to promote (metadata patch from `oss-repo`'s checksums, not a rebuild); requires `oss-repo`
+- `homebrew-formula-paths` (optional): JSON array of formula paths within `homebrew-tap-repo` to update
+- `github-token` (required): needs GHCR `write:packages`, `contents:write` on `oss-repo` if set, and `contents:write` on `homebrew-tap-repo` if set
 - `dry-run` (optional, default: `"false"`): preview without executing
 
 See [promote-release README](./.github/actions/promote-release/README.md) for

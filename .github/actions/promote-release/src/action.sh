@@ -23,7 +23,17 @@
 #
 # Optional env:
 #   INPUT_OSS_REPO   owner/repo whose matching <version> release should also
-#                     be promoted. Empty (default) skips this step.
+#                     be promoted. Empty (default) skips this step. Required
+#                     if INPUT_HOMEBREW_TAP_REPO is set (checksums for the
+#                     tap come from this repo's <version> release).
+#   INPUT_HOMEBREW_TAP_REPO
+#                    owner/repo of a Homebrew tap to promote (e.g.
+#                     loft-sh/homebrew-tap). Empty (default) skips this step.
+#   INPUT_HOMEBREW_FORMULA_PATHS
+#                    JSON array of formula file paths within
+#                     INPUT_HOMEBREW_TAP_REPO to update, e.g.
+#                     ["Formula/vcluster.rb"]. Required if
+#                     INPUT_HOMEBREW_TAP_REPO is set.
 #   INPUT_DRY_RUN    "true" prints the planned retags/promotion without
 #                     executing them. Default "false".
 #
@@ -32,6 +42,14 @@
 # stable release on that repo, :latest/:{major} are left alone (only
 # :{major}.{minor}, which is scoped to VERSION's own line, still advances) so
 # promoting an older line's patch can never move :latest backwards.
+#
+# Homebrew promotion is a metadata patch, not a rebuild: a formula's per-
+# platform sha256 values are exactly what's already in oss-repo's <version>
+# release checksums.txt (already published, already cosign-signed), so
+# there's nothing to re-hash. Only the version line and each url/sha256
+# pair are rewritten in place - everything else in the formula (deps,
+# install blocks, test block) is preserved byte-for-byte, so the patch can't
+# drift from whatever template shape generated the file.
 set -euo pipefail
 
 : "${GH_TOKEN:?GH_TOKEN required}"
@@ -41,7 +59,20 @@ set -euo pipefail
 
 VERSION="${INPUT_VERSION}"
 OSS_REPO="${INPUT_OSS_REPO-}"
+HOMEBREW_TAP_REPO="${INPUT_HOMEBREW_TAP_REPO-}"
+HOMEBREW_FORMULA_PATHS="${INPUT_HOMEBREW_FORMULA_PATHS:-[]}"
 DRY_RUN="${INPUT_DRY_RUN:-false}"
+
+if [[ -n "${HOMEBREW_TAP_REPO}" ]]; then
+  if [[ -z "${OSS_REPO}" ]]; then
+    echo "::error::homebrew-tap-repo requires oss-repo to be set (checksums come from oss-repo's release)" >&2
+    exit 1
+  fi
+  if ! jq -e 'type == "array" and length > 0' >/dev/null 2>&1 <<<"${HOMEBREW_FORMULA_PATHS}"; then
+    echo "::error::homebrew-formula-paths must be a non-empty JSON array when homebrew-tap-repo is set, got: ${HOMEBREW_FORMULA_PATHS}" >&2
+    exit 1
+  fi
+fi
 
 if ! jq -e 'type == "array" and length > 0' >/dev/null 2>&1 <<<"${INPUT_IMAGES}"; then
   echo "::error::images must be a non-empty JSON array, got: ${INPUT_IMAGES}" >&2
@@ -148,6 +179,103 @@ if [[ -n "${OSS_REPO}" ]]; then
   fi
 else
   echo "No oss-repo configured; skipping paired release promotion"
+fi
+
+# --- Homebrew tap --------------------------------------------------------
+#
+# Patches an existing formula file in place rather than re-templating it:
+# swap the version and every url's tag segment (one sed pass, since every
+# platform in a formula shares the same tag), then for each artifact found
+# in the file, rewrite the sha256 on the line immediately following its url
+# - the value comes straight from oss-repo's already-published, already-
+# signed checksums.txt, never re-hashed. Everything else in the file
+# (deps, install blocks, test block) is untouched byte-for-byte.
+
+# Rewrites $2 (a local copy of the formula) to point at $1 (the promoted
+# version), using checksums from $3 (a local copy of oss-repo's
+# checksums.txt). Skips (warns, returns 0) rather than fails on any error,
+# since Homebrew promotion is advisory - the docker retags (and oss-repo
+# promotion, if configured) already succeeded by the time this runs.
+patch_homebrew_formula() {
+  local new_tag="$1" content_file="$2" checksums_file="$3" tap_repo="$4" formula_path="$5"
+  local old_tag artifact new_sha
+
+  old_tag=$(grep -oP 'download/\K[^/]+' "${content_file}" | head -1)
+  if [[ -z "${old_tag}" ]]; then
+    echo "::warning::no download URL found in ${tap_repo}/${formula_path}; skipping"
+    return 0
+  fi
+
+  sed -i "s|download/${old_tag}/|download/${new_tag}/|g" "${content_file}"
+
+  while IFS= read -r artifact; do
+    [[ -z "${artifact}" ]] && continue
+    new_sha=$(awk -v a="${artifact}" '$2==a {print $1}' "${checksums_file}")
+    if [[ -z "${new_sha}" ]]; then
+      echo "::warning::${tap_repo}/${formula_path}: no checksum for ${artifact} in ${OSS_REPO}@${new_tag}'s checksums.txt; leaving its sha256 untouched"
+      continue
+    fi
+    awk -v artifact="${artifact}" -v new_sha="${new_sha}" '
+      $0 ~ ("/" artifact "\"$") {
+        print
+        getline
+        sub(/sha256 "[^"]+"/, "sha256 \"" new_sha "\"")
+        print
+        next
+      }
+      { print }
+    ' "${content_file}" > "${content_file}.next"
+    mv "${content_file}.next" "${content_file}"
+  done < <(grep -oP "download/${new_tag}/\K[^\"]+" "${content_file}")
+
+  sed -i -E "s|(version \")[^\"]*(\")|\1${new_tag#v}\2|" "${content_file}"
+}
+
+promote_homebrew_formula() {
+  local tap_repo="$1" formula_path="$2" checksums_file="$3"
+  local get_raw current_sha content_file new_content_b64
+
+  if ! get_raw=$(gh api "repos/${tap_repo}/contents/${formula_path}" 2>&1); then
+    echo "::warning::failed to fetch ${tap_repo}/${formula_path}; skipping: ${get_raw}"
+    return 0
+  fi
+  current_sha=$(jq -r '.sha' <<<"${get_raw}")
+  content_file=$(mktemp)
+  jq -r '.content' <<<"${get_raw}" | base64 -d > "${content_file}"
+
+  patch_homebrew_formula "${VERSION}" "${content_file}" "${checksums_file}" "${tap_repo}" "${formula_path}"
+
+  echo "Updating ${tap_repo}/${formula_path} -> ${VERSION}"
+  if [[ "${DRY_RUN}" == "true" ]]; then
+    echo "[dry-run] gh api -X PUT repos/${tap_repo}/contents/${formula_path} (sha=${current_sha})"
+    return 0
+  fi
+  new_content_b64=$(base64 -w0 "${content_file}")
+  if ! gh api -X PUT "repos/${tap_repo}/contents/${formula_path}" \
+      -f message="chore: bump ${formula_path} to ${VERSION}" \
+      -f content="${new_content_b64}" \
+      -f sha="${current_sha}" >/dev/null; then
+    echo "::warning::failed to update ${tap_repo}/${formula_path} to ${VERSION}; docker retags (and oss-repo promotion, if configured) already succeeded. Manual fix: patch the formula and gh api -X PUT repos/${tap_repo}/contents/${formula_path}."
+  fi
+}
+
+if [[ -n "${HOMEBREW_TAP_REPO}" ]]; then
+  if ! is_latest_stable "${OSS_REPO}"; then
+    echo "::notice::${VERSION} is not the newest stable release on ${OSS_REPO} (backport/patch promotion); skipping Homebrew tap promotion entirely - a formula has no line-scoped equivalent to :{major}.{minor}."
+  else
+    checksums_file=$(mktemp)
+    if ! gh release download "${VERSION}" --repo "${OSS_REPO}" -p 'checksums.txt' -O "${checksums_file}" --clobber 2>&1; then
+      echo "::warning::failed to download checksums.txt from ${OSS_REPO}@${VERSION}; skipping Homebrew tap promotion"
+    else
+      formula_count=$(jq -r 'length' <<<"${HOMEBREW_FORMULA_PATHS}")
+      for ((i = 0; i < formula_count; i++)); do
+        formula_path=$(jq -r ".[$i]" <<<"${HOMEBREW_FORMULA_PATHS}")
+        promote_homebrew_formula "${HOMEBREW_TAP_REPO}" "${formula_path}" "${checksums_file}"
+      done
+    fi
+  fi
+else
+  echo "No homebrew-tap-repo configured; skipping Homebrew tap promotion"
 fi
 
 echo "Promotion of ${VERSION} complete."
