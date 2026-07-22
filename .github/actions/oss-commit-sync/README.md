@@ -68,10 +68,17 @@ caller pushes the branch and opens/updates the sync PR.
   non-zero with `conflict-sha` set and a clean worktree.
 - The checkout must be at the base branch (`branch` input) with full history.
 
-**The sync PR must be rebase-merged** (never squash), or per-commit
-authorship and the trailers are destroyed on the base branch. Have the
-automation enable auto-merge with rebase rather than trusting habit. If a
-maintainer needs to fix up a sync PR, they must add new commits (without an
+**Merge the sync PR with rebase, never squash.** Squashing destroys the
+per-commit authorship of external contributions on the base branch, which is
+the whole point of the replay. It does NOT corrupt the sync, though: OSS
+history is append-only and already holds the real commits, and the state
+self-heals — squashed-away trailers make the externals look unabsorbed, but
+the export guard classifies them as benign (content present) and the next
+import re-skips them as no-ops (regression-tested in
+`test/squash-tolerance.bats`). The damage is limited to monorepo blame and
+contributor credit, so treat rebase-merge as review policy rather than
+wiring auto-merge (which some compliance postures disallow). If a maintainer
+needs to fix up a sync PR, they must add new commits (without an
 `Oss-Commit` trailer), never amend the replayed ones; amendments are caught
 later by the export convergence assertion.
 
