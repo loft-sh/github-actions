@@ -49,6 +49,9 @@ outputs:
   diverged:
     description: "Export: true when OSS has external commits not yet absorbed and the run failed closed."
     value: ${{ steps.sync.outputs.diverged }}
+  push-rejected:
+    description: "Export: true when the push to the OSS branch was rejected by branch protection / a ruleset (the sync identity is not a bypass actor)."
+    value: ${{ steps.sync.outputs.push-rejected }}
   exported-count:
     description: "Export: number of commits created on the OSS branch (including an alignment commit, if any)."
     value: ${{ steps.sync.outputs.exported-count }}
