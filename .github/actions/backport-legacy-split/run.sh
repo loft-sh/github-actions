@@ -129,6 +129,30 @@ SHORT="$(git rev-parse --short "$COMMIT")"
 BACKPORT_BRANCH="backport/${TARGET_BRANCH}/${SHORT}"
 emit backport-branch "$BACKPORT_BRANCH"
 
+# Human-readable PR metadata, sourced from the monorepo commit itself (CWD is a
+# full-history monorepo checkout). Computed once -- side-independent.
+#   SUBJECT    The merge/squash commit subject, reused verbatim in the PR title so
+#              a legacy backport reads like its source ("[v0.36] fix: ... (#1234)")
+#              instead of a bare SHA.
+#   SOURCE_REPO owner/repo of the monorepo (the repo the source PR lives in), parsed
+#              from origin. Used to fully-qualify the PR reference (owner/repo#N) so
+#              it links correctly even on the OSS half, whose target repo differs
+#              from the monorepo. Empty (e.g. tests, no origin) -> bare "#N".
+#
+# Linear linking is deliberately NOT done here: link-backport-prs owns it (resolve
+# the source PR's parent issue -> match the per-release-line "[X.Y] Copy of ..."
+# sub-issue -> append "Fixes <sub-issue>"). A "resolves <PARENT-KEY>" here would
+# both duplicate that and close the WRONG issue (the parent, not the line's
+# sub-issue). See the README note on the legacy-linking gap.
+SUBJECT="$(git log -1 --format=%s "$SHA")"
+SOURCE_REPO="$( { git config --get remote.origin.url 2>/dev/null || true; } \
+  | sed -E 's#^git@[^:]+:##; s#^https?://[^/]+/##; s#\.git$##' )"
+SRC_PR_REF=""
+if [ -n "${PR_NUMBER:-}" ]; then
+  SRC_PR_REF="#${PR_NUMBER}"
+  [ -n "$SOURCE_REPO" ] && SRC_PR_REF="${SOURCE_REPO}#${PR_NUMBER}"
+fi
+
 # --- diff range ------------------------------------------------------------
 # We backport what the PR changed. Deriving that from the merge commit alone is
 # unreliable: COMMIT^ is the base only for a squash/merge-commit; a rebase-merge
@@ -319,9 +343,21 @@ Applied with merge conflicts that need manual resolution."
   echo "${side}: pushed ${BACKPORT_BRANCH} -> ${slug:-the target repo}"
 
   if [ "$CREATE_PR" = "true" ]; then
-    local title body
-    title="[${TARGET_BRANCH}] backport ${SHORT} (${side})"
-    body="Automated backport of \`${SHA}\` (${side} half) onto \`${TARGET_BRANCH}\`."
+    local title body origin
+    # Read like the source commit: "[v0.36] fix: ... (#1234) (pro)" -- the subject
+    # verbatim, the target line, and the side (which repo/half this PR is).
+    title="[${TARGET_BRANCH}] ${SUBJECT} (${side})"
+    # Reference the source by PR when known (fully-qualified so it links from the
+    # OSS repo too), else by the immutable monorepo commit.
+    if [ -n "$SRC_PR_REF" ]; then
+      origin="${SRC_PR_REF}"
+    else
+      origin="commit \`${SHA}\`"
+    fi
+    body="Backport of ${origin} to \`${TARGET_BRANCH}\` (${side} half).
+
+### Backported Commits:
+- ${SHORT} ${SUBJECT}"
     local -a create_args=(--repo "$slug" --head "$BACKPORT_BRANCH" --base "$TARGET_BRANCH" --title "$title")
     if [ "$conflicts" = true ]; then
       # Open as a DRAFT so it cannot be auto-merged: the committed conflict

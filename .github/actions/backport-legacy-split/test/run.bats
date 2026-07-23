@@ -110,6 +110,12 @@ STUB
 
 output_value() { grep "^$1=" "$GITHUB_OUTPUT" | tail -n1 | cut -d= -f2-; }
 
+# The fake `gh` logs each argv token on its own line. A single-line flag's value
+# is the token right after it; --body is passed last and spans multiple lines, so
+# its value is everything after the "--body" line to EOF (one create call/test).
+create_arg()  { grep -A1 -Fx -- "$1" "$GH_CREATE_LOG" | tail -n1; }
+create_body() { awk 'f{print} /^--body$/{f=1}' "$GH_CREATE_LOG"; }
+
 # comment-body is emitted with the GITHUB_OUTPUT heredoc form (it's multi-line),
 # so output_value can't read it -- extract the block between the delimiters.
 comment_body() {
@@ -446,6 +452,28 @@ short() { git -C "$MONO" rev-parse --short HEAD; }
   grep -q '^create$' "$GH_CREATE_LOG"
   run grep -Fxq -- --draft "$GH_CREATE_LOG"
   [ "$status" -ne 0 ]                   # clean PR is NOT a draft
+}
+
+@test "create-pr: title and body carry the commit subject, not a bare SHA" {
+  install_fake_gh
+  cd "$MONO"
+  printf 'line1\nOSS\nline3\n' > "$PFX/app.go"
+  git commit -qam "fix: the thing (#1234)"
+  local sha; sha="$(git -C "$MONO" rev-parse HEAD)"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+
+  # Title reads like the source: "[<target>] <subject> (<side>)" -- subject
+  # verbatim, NOT the old "backport <short-sha>".
+  [ "$(create_arg --title)" = "[v0.35] fix: the thing (#1234) (oss)" ]
+  [[ "$(create_arg --title)" != *"backport ${sha:0:7}"* ]]
+
+  # Body references the source commit and lists it under a readable heading.
+  local body; body="$(create_body)"
+  [[ "$body" == *"Backport of commit \`$sha\` to \`v0.35\` (oss half)."* ]]
+  [[ "$body" == *"### Backported Commits:"* ]]
+  [[ "$body" == *"fix: the thing (#1234)"* ]]
 }
 
 @test "create-pr: an existing open PR is detected and the side is skipped" {
