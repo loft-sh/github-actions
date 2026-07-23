@@ -65,7 +65,7 @@ inputs:
     required: false
     default: '[]'
   dry-run:
-    description: '"true" prints the planned retags/promotion without executing them.'
+    description: 'Fail-closed: a real promotion runs only on an exact "false" (the default, so the release:released trigger still promotes for real). Any other value ("true", a typo, etc.) is a dry-run that only prints the planned retags/promotion.'
     required: false
     default: 'false'
 runs:

@@ -22,9 +22,13 @@ is a no-op, since moving tags and "latest" promotion aren't meaningful for
 `oss-repo`), the action checks whether `version` is actually the newest
 stable release on the caller's own repo (`GITHUB_REPOSITORY`, set
 automatically by Actions) / on `oss-repo`. Promoting an older line's patch
-after a newer stable is already `:latest` only advances `:{major}.{minor}`
-(scoped to that line) — never `:latest`/`:{major}` backwards. A failure to
-even list releases fails the run closed rather than risk a silent downgrade.
+after a newer stable is already `:latest` skips `:latest`/`:{major}`, so they
+never move backwards. `:{major}.{minor}` is scoped to its own line and gets
+its own check: it advances only when `version` is the newest stable *within
+that `{major}.{minor}` line*, so an out-of-order same-line promotion (e.g.
+un-checking pre-release on `v9.9.5` after `v9.9.6` already moved `:9.9`) can't
+regress it either. A failure to even list releases fails the run closed rather
+than risk a silent downgrade.
 
 Optionally also promotes a Homebrew tap (`homebrew-tap-repo` +
 `homebrew-formula-paths`) — a metadata patch, not a rebuild. A formula's

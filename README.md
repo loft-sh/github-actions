@@ -656,9 +656,13 @@ on:
 jobs:
   promote:
     runs-on: ubuntu-latest
-    permissions:
-      packages: write
-      contents: read
+    # This action authenticates entirely with the `github-token` PAT below — the
+    # GHCR login and every `gh` call use it, not the workflow's GITHUB_TOKEN — so
+    # no job `permissions:` block is needed here. Scope the PAT itself: GHCR
+    # `write:packages`, plus `contents:write` on `oss-repo` and any
+    # `homebrew-tap-repo` (cross-repo writes require a PAT regardless of
+    # workflow permissions). Do NOT swap in `secrets.GITHUB_TOKEN` — it can't
+    # write the other repos and the promotion would silently no-op.
     steps:
       - uses: loft-sh/github-actions/.github/actions/promote-release@promote-release/v1
         with:

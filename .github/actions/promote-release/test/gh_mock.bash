@@ -82,7 +82,10 @@ if [ "$subcommand" = "release" ]; then
       ;;
     list)
       printf 'LIST %s\n' "$repo" >> "$GH_MOCK_CALLS"
-      if [ "${GH_MOCK_LIST_FAIL:-0}" = "1" ]; then
+      # GH_MOCK_LIST_FAIL=1 fails every list; GH_MOCK_LIST_FAIL_REPO=<repo>
+      # fails the list only for that one repo (so a test can fail the oss-repo
+      # list while the caller-repo list still succeeds).
+      if [ "${GH_MOCK_LIST_FAIL:-0}" = "1" ] || [ "${GH_MOCK_LIST_FAIL_REPO:-}" = "$repo" ]; then
         echo "mock gh: forced release list failure" >&2
         exit 1
       fi
@@ -151,6 +154,13 @@ if [ "$subcommand" = "api" ]; then
       fi
       shavar="GH_MOCK_CONTENTS_SHA_$(sanitize "$path")"
       sha="${!shavar:-fakesha}"
+      # GH_MOCK_CONTENTS_BAD_B64=1: return a valid sha but an undecodable
+      # content payload, so the script's base64 -d fails (exercises the
+      # decode guard).
+      if [ "${GH_MOCK_CONTENTS_BAD_B64:-0}" = "1" ]; then
+        printf '{"sha":"%s","content":"not@@valid@@base64"}\n' "$sha"
+        exit 0
+      fi
       b64=$(base64 -w0 "$src")
       printf '{"sha":"%s","content":"%s"}\n' "$sha" "$b64"
       exit 0
