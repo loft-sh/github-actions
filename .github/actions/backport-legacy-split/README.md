@@ -85,6 +85,21 @@ or renamed on the legacy branch, so its preimage isn't in the target index),
 nothing is staged and the run **fails loudly** with an actionable error rather
 than pushing an empty backport.
 
+## PR title and body
+
+The opened PR reads like its source rather than a bare SHA:
+
+- **Title** — `[<target>] <commit subject> (<side>)`, e.g.
+  `[v0.36] fix: CRD sync race (#3993) (pro)`. The subject is the monorepo
+  merge/squash commit subject, taken verbatim.
+- **Body** — references the source (the PR when `pr-number` is set,
+  fully-qualified as `owner/repo#N` so the reference links from the OSS repo too;
+  otherwise the monorepo commit SHA) and lists the backported commit under a
+  `### Backported Commits:` heading.
+
+Linear linking is intentionally **not** put in the body — see the Linear note
+below.
+
 ## Inputs
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
