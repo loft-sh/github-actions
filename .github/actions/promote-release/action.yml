@@ -1,0 +1,94 @@
+name: Promote release
+description: |
+  Retags the moving docker tags (:latest, :{major}, :{major}.{minor}, and any
+  configured suffix variant e.g. -fips) onto the digest of an already
+  published, already signed version tag -- a manifest copy, never a rebuild,
+  so cosign signatures (OCI referrers, digest-scoped) stay valid with no
+  re-signing. Optionally also promotes the paired public release in a
+  companion repo (unsets prerelease, sets latest).
+
+  Wire this from `on: release: types: [released]` on the repo that owns the
+  moving tags. That event only fires when a human -- not GITHUB_TOKEN/a bot --
+  flips a release from pre-release to a full release (verified live for
+  DEVOPS-1083); a bot-authored release publish never triggers it, so there is
+  no risk of the build itself re-entering this action.
+
+  Only acts on a stable `vX.Y.Z` version (no prerelease suffix); any other
+  shape is a no-op, since moving tags and "latest" promotion aren't meaningful
+  for -rc/-alpha/-next cuts.
+
+  Backport-safe: before advancing `:latest`/`:{major}` (or `--latest` on
+  oss-repo), checks whether `version` is actually the newest stable release
+  on the caller's own repo (`GITHUB_REPOSITORY`, set automatically by
+  Actions) / on `oss-repo` respectively. Promoting an older line's patch
+  after a newer stable is already `:latest` only advances `:{major}.{minor}`
+  (scoped to that line), never `:latest`/`:{major}` backwards. A failure to
+  even list releases fails the run closed rather than risking a silent
+  downgrade.
+
+  Optionally also promotes a Homebrew tap: a metadata patch, not a rebuild.
+  A formula's per-platform sha256 values are exactly what's already in
+  oss-repo's `version` release `checksums.txt` (already published, already
+  cosign-signed), so nothing is re-hashed - only the version line and each
+  url/sha256 pair are rewritten in place, with everything else in the
+  formula preserved byte-for-byte. Skipped entirely (not partially) on a
+  backport/patch promotion - a formula has no line-scoped equivalent to
+  `:{major}.{minor}`.
+inputs:
+  version:
+    description: 'The promoted release tag, e.g. v0.37.1.'
+    required: true
+  images:
+    description: |
+      JSON array of image entries to retag, each
+      `{"image": "ghcr.io/loft-sh/x", "suffix": ""}` (suffix optional, default
+      ""). For each entry, copies `<image>:<version><suffix>` to
+      `<image>:latest<suffix>`, `<image>:<major><suffix>`, and
+      `<image>:<major>.<minor><suffix>`.
+    required: true
+  oss-repo:
+    description: 'owner/repo whose matching <version> release should also be promoted (prerelease unset, latest set). Leave empty to skip.'
+    required: false
+    default: ''
+  github-token:
+    description: 'Token with GHCR write:packages, and contents:write on oss-repo and homebrew-tap-repo if set.'
+    required: true
+  docker-username:
+    description: 'Username paired with github-token for the GHCR login (GHCR checks the token, but docker/login-action requires a username value).'
+    required: true
+  homebrew-tap-repo:
+    description: 'owner/repo of a Homebrew tap to promote (e.g. loft-sh/homebrew-tap). Requires oss-repo to be set, since checksums come from its release. Leave empty to skip.'
+    required: false
+    default: ''
+  homebrew-formula-paths:
+    description: 'JSON array of formula file paths within homebrew-tap-repo to update, e.g. ["Formula/vcluster.rb"]. Required if homebrew-tap-repo is set.'
+    required: false
+    default: '[]'
+  dry-run:
+    description: 'Fail-closed: a real promotion runs only on an exact "false" (the default, so the release:released trigger still promotes for real). Any other value ("true", a typo, etc.) is a dry-run that only prints the planned retags/promotion.'
+    required: false
+    default: 'false'
+runs:
+  using: composite
+  steps:
+    - name: Log in to GHCR
+      if: inputs.dry-run != 'true'
+      uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+      with:
+        registry: ghcr.io
+        username: ${{ inputs.docker-username }}
+        password: ${{ inputs.github-token }}
+    - name: Promote release
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        INPUT_VERSION: ${{ inputs.version }}
+        INPUT_IMAGES: ${{ inputs.images }}
+        INPUT_OSS_REPO: ${{ inputs.oss-repo }}
+        INPUT_HOMEBREW_TAP_REPO: ${{ inputs.homebrew-tap-repo }}
+        INPUT_HOMEBREW_FORMULA_PATHS: ${{ inputs.homebrew-formula-paths }}
+        INPUT_DRY_RUN: ${{ inputs.dry-run }}
+      run: ${{ github.action_path }}/src/action.sh
+branding:
+  icon: 'upload-cloud'
+  color: 'orange'

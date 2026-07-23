@@ -11,6 +11,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Test govulncheck: `make test-govulncheck`
 - Build linear-release-sync binary: `make build-linear-release-sync`
 - Lint workflows: `make lint` (requires actionlint and zizmor)
+- Regenerate docs from `action.yml` / workflow YAML: `make generate-docs`
+
+**Before pushing any commit, run `make generate-docs` and include any regenerated docs in the commit.** CI runs `make check-docs` and fails on drift, so an `action.yml` input/output change pushed without regenerated docs will red the build.
 
 ## Code Style Guidelines
 - See [docs/CONVENTIONS.md](docs/CONVENTIONS.md) for pipeline constraints and conventions

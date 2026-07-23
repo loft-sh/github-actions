@@ -633,6 +633,60 @@ jobs:
 
 **Note:** The `ref` input was removed — the caller owns `actions/checkout` and checks out the desired ref directly.
 
+### Promote Release
+
+Retags the moving docker tags (`:latest`, `:{major}`, `:{major}.{minor}`, and
+any configured suffix variant such as `-fips`) onto the digest of an already
+published, already signed version tag via `docker buildx imagetools create` —
+a manifest copy, never a rebuild, so cosign signatures stay valid with no
+re-signing. Optionally also promotes a paired public release in a companion
+repo. Wire from `on: release: types: [released]`, which only fires when a
+human (not `GITHUB_TOKEN`/a bot) flips a release from pre-release to full —
+verified live for DEVOPS-1083. Only acts on a stable `vX.Y.Z` version.
+
+**Location:** `.github/actions/promote-release`
+
+**Usage:**
+
+```yaml
+on:
+  release:
+    types: [released]
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    # This action authenticates entirely with the `github-token` PAT below — the
+    # GHCR login and every `gh` call use it, not the workflow's GITHUB_TOKEN — so
+    # no job `permissions:` block is needed here. Scope the PAT itself: GHCR
+    # `write:packages`, plus `contents:write` on `oss-repo` and any
+    # `homebrew-tap-repo` (cross-repo writes require a PAT regardless of
+    # workflow permissions). Do NOT swap in `secrets.GITHUB_TOKEN` — it can't
+    # write the other repos and the promotion would silently no-op.
+    steps:
+      - uses: loft-sh/github-actions/.github/actions/promote-release@promote-release/v1
+        with:
+          version: ${{ github.event.release.tag_name }}
+          oss-repo: loft-sh/vcluster
+          github-token: ${{ secrets.GH_ACCESS_TOKEN }}
+          docker-username: ${{ secrets.DOCKER_USERNAME }}
+          images: |
+            [{"image": "ghcr.io/loft-sh/vcluster-pro"}]
+```
+
+**Inputs:**
+
+- `version` (required): the promoted release tag, e.g. `v0.37.1`
+- `images` (required): JSON array of `{"image": "...", "suffix": ""}` entries to retag
+- `oss-repo` (optional): `owner/repo` whose matching release should also be promoted; empty skips this
+- `homebrew-tap-repo` (optional): `owner/repo` of a Homebrew tap to promote (metadata patch from `oss-repo`'s checksums, not a rebuild); requires `oss-repo`
+- `homebrew-formula-paths` (optional): JSON array of formula paths within `homebrew-tap-repo` to update
+- `github-token` (required): needs GHCR `write:packages`, `contents:write` on `oss-repo` if set, and `contents:write` on `homebrew-tap-repo` if set
+- `dry-run` (optional, default: `"false"`): preview without executing
+
+See [promote-release README](./.github/actions/promote-release/README.md) for
+the build-time gating change this depends on and the full contract.
+
 ### Govulncheck
 
 Runs [govulncheck](https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck)
