@@ -286,6 +286,7 @@ teardown() {
   run "$SCRIPT"
   [ "$status" -eq 0 ]
   [[ "$output" == *"[dry-run] crane tag ghcr.io/example-org/example-image:v9.9.9 latest"* ]]
+  [[ "$output" == *"[dry-run] crane tag ghcr.io/example-org/example-image:v9.9.9-fips latest-fips"* ]]
   [ ! -s "$CRANE_MOCK_CALLS" ]
 }
 
