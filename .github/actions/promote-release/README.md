@@ -144,5 +144,5 @@ promotion, if configured) have already succeeded by this point.
 make test-promote-release
 ```
 
-Runs the bats suite in `test/` against `src/action.sh` with stubbed `docker`
+Runs the bats suite in `test/` against `src/action.sh` with stubbed `crane`
 and `gh` on `PATH`.
