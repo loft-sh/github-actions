@@ -7,6 +7,11 @@
 // prefix (for example "[0.34] Copy of ENGCP-906"), and appends "Fixes <id>" to
 // that backport PR's body so the sub-issue is closed when the backport merges.
 //
+// After a title match it also verifies the release attached to the sub-issue:
+// a missing release or a release on a different line than the backport target
+// produces a remedy warning, because a title match alone cannot catch a
+// sub-issue attached to the wrong release. Verification never blocks linking.
+//
 // It is advisory: any failure is logged as a warning and the process still
 // exits 0 so it never blocks the backport workflow.
 package main
@@ -49,6 +54,13 @@ type issueWithChildren struct {
 type issueFamily struct {
 	issueWithChildren
 	Parent *issueWithChildren `json:"parent"`
+}
+
+// releaseRef is a minimal Linear release attached to an issue. Version is
+// nullable in Linear's schema, so it decodes to "" when unset.
+type releaseRef struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
 }
 
 func main() {
@@ -142,6 +154,11 @@ func run() error {
 			}.emit()
 			continue
 		}
+
+		// A title match alone cannot catch a sub-issue attached to the wrong
+		// release, so verify the attachment. Advisory in every outcome: the
+		// Fixes-line linking below proceeds unchanged.
+		verifyRelease(linearToken, sub, version, target)
 
 		headBranch := backportHeadBranch(target, *sourcePR)
 		bp, err := findBackportPR(ctx, gh, *repoOwner, *repoName, headBranch, target)
@@ -252,6 +269,73 @@ func familyCandidates(f issueFamily) []issueRef {
 	}
 	out := []issueRef{f.issueRef}
 	return append(out, f.Children.Nodes...)
+}
+
+var leadingVersionRe = regexp.MustCompile(`^\s*v?(\d+)\.(\d+)`)
+
+// lineFromVersionString extracts the X.Y release line from the leading version
+// in a string. "0.33.5 - Security Only" -> "0.33", "v1.2.3" -> "1.2",
+// "abc123" -> "".
+func lineFromVersionString(s string) string {
+	m := leadingVersionRe.FindStringSubmatch(s)
+	if len(m) < 3 {
+		return ""
+	}
+	return m[1] + "." + m[2]
+}
+
+// releaseLine derives a release's X.Y line: from the version field when it is
+// set and parseable, else from the leading version in the release name. Empty
+// when neither carries a version (e.g. a commit-hash version and a free-form
+// name).
+func releaseLine(r releaseRef) string {
+	if line := lineFromVersionString(r.Version); line != "" {
+		return line
+	}
+	return lineFromVersionString(r.Name)
+}
+
+// verifyReleaseAttachment checks that a matched sub-issue carries a release on
+// the backport target's line. It returns nil when any attached release matches
+// the line, and a remedyWarning naming the fix otherwise. Pure so the three
+// outcomes are testable without HTTP.
+func verifyReleaseAttachment(sub issueRef, releases []releaseRef, line, target string) *remedyWarning {
+	if len(releases) == 0 {
+		return &remedyWarning{
+			problem: fmt.Sprintf("sub-issue %s matched backport target %s by title but has no release attached", sub.Identifier, target),
+			remedy:  fmt.Sprintf("attach the %s line's In Progress release to %s", line, sub.Identifier),
+		}
+	}
+	var attached []string
+	for _, r := range releases {
+		rl := releaseLine(r)
+		if rl == line {
+			return nil
+		}
+		if rl == "" {
+			rl = fmt.Sprintf("%q (no parseable version)", r.Name)
+		}
+		attached = append(attached, rl)
+	}
+	return &remedyWarning{
+		problem: fmt.Sprintf("sub-issue %s matched backport target %s by title but its attached release is on line %s, not %s", sub.Identifier, target, strings.Join(attached, ", "), line),
+		remedy:  fmt.Sprintf("attach the %s release to %s, or fix the sub-issue title if the release attachment is the correct one", line, sub.Identifier),
+	}
+}
+
+// verifyRelease fetches the releases attached to a matched sub-issue and emits
+// a remedy warning when none is on the backport target's line. When the
+// releases query itself fails (API shape drift, permissions), it degrades to a
+// single plain warning; linking always proceeds.
+func verifyRelease(token string, sub issueRef, line, target string) {
+	releases, err := getIssueReleases(token, sub.ID)
+	if err != nil {
+		warnf("could not verify the release attached to %s (linking continues): %v", sub.Identifier, err)
+		return
+	}
+	if w := verifyReleaseAttachment(sub, releases, line, target); w != nil {
+		w.emit()
+	}
 }
 
 var fixesRe = regexp.MustCompile(`(?i)\b(fix(es|ed)?|close[sd]?|resolve[sd]?)\s+#?`)
@@ -394,6 +478,34 @@ func getFamilyByID(token, id string) (*issueFamily, error) {
 	}
 	f := resp.Data.Issue
 	return &f, nil
+}
+
+// getIssueReleases returns the releases attached to a Linear issue.
+func getIssueReleases(token, id string) ([]releaseRef, error) {
+	const q = `query($id: String!) {
+  issue(id: $id) {
+    releases { nodes { name version } }
+  }
+}`
+	var resp struct {
+		Data struct {
+			Issue struct {
+				Releases struct {
+					Nodes []releaseRef `json:"nodes"`
+				} `json:"releases"`
+			} `json:"issue"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := linearGraphQL(token, q, map[string]any{"id": id}, &resp); err != nil {
+		return nil, err
+	}
+	if len(resp.Errors) > 0 {
+		return nil, fmt.Errorf("linear: %s", resp.Errors[0].Message)
+	}
+	return resp.Data.Issue.Releases.Nodes, nil
 }
 
 func linearGraphQL(token, query string, variables map[string]any, out any) error {

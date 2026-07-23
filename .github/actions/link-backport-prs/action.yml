@@ -1,5 +1,5 @@
 name: 'Link Backport PRs to Linear'
-description: 'Links sorenlouv-created backport PRs to the matching Linear sub-issue by adding "Fixes <id>" to the backport PR body'
+description: 'Links sorenlouv-created backport PRs to the matching Linear sub-issue by adding "Fixes <id>" to the backport PR body, and verifies the sub-issue carries a release on the backport target line'
 
 inputs:
   source-pr:
@@ -15,7 +15,7 @@ inputs:
     description: 'GitHub token with permission to read and edit pull requests (must be the same PAT that created the backport PRs)'
     required: true
   linear-token:
-    description: 'Linear API token for resolving the issue family. Optional: the step always exits 0, so callers can adopt the backport workflow before a token is wired up. When it is empty but the source PR carries backport labels, the step emits a warning naming the missing secret instead of silently doing nothing.'
+    description: 'Linear API token for resolving the issue family and verifying release attachments. Optional: the step always exits 0, so callers can adopt the backport workflow before a token is wired up. When it is empty but the source PR carries backport labels, the step emits a warning naming the missing secret instead of silently doing nothing.'
     required: false
     default: ''
   label-prefix:
