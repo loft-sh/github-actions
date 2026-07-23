@@ -476,6 +476,39 @@ short() { git -C "$MONO" rev-parse --short HEAD; }
   [[ "$body" == *"fix: the thing (#1234)"* ]]
 }
 
+@test "create-pr: PR reference is fully-qualified as owner/repo#N from origin" {
+  install_fake_gh
+  cd "$MONO"
+  # A PR head fetched via PR_NUMBER, plus a real GitHub-style origin so the
+  # SOURCE_REPO parser has a URL to strip to owner/repo. insteadOf rewrites the
+  # actual fetch to a local bare repo (hermetic), while `git config --get
+  # remote.origin.url` still returns the unrewritten https URL the parser reads.
+  git checkout -q -b prhead
+  printf 'line1\nOSS\nline3\n' > "$PFX/app.go"; git commit -qam c1
+  local prhead; prhead="$(git rev-parse HEAD)"
+  git checkout -q main
+  printf 'line1\nOSS\nline3\n' > "$PFX/app.go"; git commit -qam "squash (#1)"
+  local mergec; mergec="$(git rev-parse HEAD)"
+
+  local origin="$ROOT/origin-src.git"
+  git init -q --bare "$origin"
+  git push -q "$origin" main
+  git push -q "$origin" "$prhead:refs/pull/1/head"
+  git remote add origin "https://github.com/loft-sh/vcluster-pro.git"
+  git config "url.$origin.insteadOf" "https://github.com/loft-sh/vcluster-pro.git"
+
+  COMMIT="$mergec" PR_NUMBER=1 run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value oss-pushed)" = "true" ]
+
+  # Body references the source PR fully-qualified (owner/repo#N), so it links
+  # from the OSS repo too -- not a bare "#1" (which would resolve wrongly there)
+  # nor the local origin path.
+  local body; body="$(create_body)"
+  [[ "$body" == *"Backport of loft-sh/vcluster-pro#1 to \`v0.35\` (oss half)."* ]]
+  [[ "$body" != *"Backport of #1 "* ]]
+}
+
 @test "create-pr: an existing open PR is detected and the side is skipped" {
   install_fake_gh
   export GH_PRLIST=exists
