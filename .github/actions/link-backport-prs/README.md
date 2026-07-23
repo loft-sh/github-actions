@@ -12,7 +12,9 @@ When a merged source PR carries `backport-to-<branch>` labels, the [sorenlouv ba
 
 The match is by title prefix, not milestone: the `[X.Y] Copy of ...` sub-issues created for a backport family do not reliably carry a patch milestone, so the title is the dependable key.
 
-It is advisory and idempotent: it never fails the backport job (every error is a warning and it exits 0), it skips entirely when no `linear-token` is provided, and re-runs do not add duplicate `Fixes` lines.
+It is advisory and idempotent: it never fails the backport job (every problem is a warning and it exits 0) and re-runs do not add duplicate `Fixes` lines.
+
+Every skip that a human can fix is loud. When a source PR carries backport labels but linking hits a dead end, the action emits a GitHub `::warning::` annotation and a job-summary line naming the remedy. This covers an empty `linear-token` (fix the repository secret), an unresolved parent Linear issue (attach the PR to its issue), a release line with no matching `[X.Y]` sub-issue (create or rename the sub-issue), and a backport PR that sorenlouv never opened (backport it manually after the conflict). A source PR with no backport labels stays a plain notice, since there is nothing to fix. The step always publishes a `linked-count` output, 0 when it skips.
 
 ## Usage
 
@@ -45,22 +47,26 @@ The `github-token` must be the same PAT that created the backport PRs (a PAT, no
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-|    INPUT     |  TYPE  | REQUIRED |     DEFAULT      |                                                                                                                                  DESCRIPTION                                                                                                                                  |
-|--------------|--------|----------|------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-|   dry-run    | string |  false   |    `"false"`     |                                                                                                                   Log intended edits without applying them                                                                                                                    |
-| github-token | string |   true   |                  |                                                                             GitHub token with permission to read <br>and edit pull requests (must be the same PAT that created the backport PRs)                                                                              |
-| label-prefix | string |  false   | `"backport-to-"` |                                                                                                              Prefix of the backport labels on <br>the source PR                                                                                                               |
-| linear-token | string |  false   |                  | Linear API token for resolving the <br>issue family. Optional by design: this <br>is an advisory step, so when <br>empty the action no-ops and exits <br>0 instead of failing, letting callers <br>adopt the shared backport workflow before <br>a Linear token is wired up.  |
-|  repo-name   | string |   true   |                  |                                                                                                                          The name of the repository                                                                                                                           |
-|  repo-owner  | string |   true   |                  |                                                                                                                          The owner of the repository                                                                                                                          |
-|  source-pr   | string |   true   |                  |                                                                                                        The merged source pull request number <br>that was backported                                                                                                          |
+|    INPUT     |  TYPE  | REQUIRED |     DEFAULT      |                                                                                                                                                                  DESCRIPTION                                                                                                                                                                  |
+|--------------|--------|----------|------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|   dry-run    | string |  false   |    `"false"`     |                                                                                                                                                   Log intended edits without applying them                                                                                                                                                    |
+| github-token | string |   true   |                  |                                                                                                             GitHub token with permission to read <br>and edit pull requests (must be the same PAT that created the backport PRs)                                                                                                              |
+| label-prefix | string |  false   | `"backport-to-"` |                                                                                                                                              Prefix of the backport labels on <br>the source PR                                                                                                                                               |
+| linear-token | string |  false   |                  | Linear API token for resolving the <br>issue family. Optional: the step always <br>exits 0, so callers can adopt <br>the backport workflow before a token <br>is wired up. When it is <br>empty but the source PR carries <br>backport labels, the step emits a <br>warning naming the missing secret instead <br>of silently doing nothing.  |
+|  repo-name   | string |   true   |                  |                                                                                                                                                          The name of the repository                                                                                                                                                           |
+|  repo-owner  | string |   true   |                  |                                                                                                                                                          The owner of the repository                                                                                                                                                          |
+|  source-pr   | string |   true   |                  |                                                                                                                                        The merged source pull request number <br>that was backported                                                                                                                                          |
 
 <!-- AUTO-DOC-INPUT:END -->
 
 ## Outputs
 
 <!-- AUTO-DOC-OUTPUT:START - Do not remove or modify this section -->
-No outputs.
+
+|    OUTPUT    |  TYPE  |                                   DESCRIPTION                                    |
+|--------------|--------|----------------------------------------------------------------------------------|
+| linked-count | string | Number of backport PRs linked to <br>a Linear sub-issue (0 when the step skips)  |
+
 <!-- AUTO-DOC-OUTPUT:END -->
 
 ## Development
@@ -75,4 +81,4 @@ Run the unit tests:
 make test-link-backport-prs
 ```
 
-The tests cover the pure matching logic: release-line extraction from a target branch, title-prefix matching (`[0.34]` and `[v0.34]`), sub-issue selection within an issue family, idempotency of the `Fixes` line, and identifier extraction fallback.
+The tests cover the pure matching logic (release-line extraction from a target branch, title-prefix matching for `[0.34]` and `[v0.34]`, sub-issue selection within an issue family, idempotency of the `Fixes` line, and identifier extraction fallback), plus the remedy-warning rendering and the `linked-count` / job-summary writers.
