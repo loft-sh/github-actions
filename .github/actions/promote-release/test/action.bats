@@ -143,6 +143,20 @@ teardown() {
   grep -qF -- 'EDIT example-org/example-repo v9.9.9 --prerelease=false --latest' "$GH_MOCK_CALLS"
 }
 
+@test "newest stable over a non-empty prior-stable history -> advances :latest/:major" {
+  # The happy path above drives is_latest_stable with an empty release list,
+  # so it only exercises the `[ -z "${max}" ]` short-circuit. This is the real
+  # forward-promotion case: a prior stable exists and VERSION is newer, so the
+  # `sort -V | tail -1` comparison must resolve true and :latest still advances.
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.9.8","isPrerelease":false}]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+
+  grep -qF 'CREATE ghcr.io/example-org/example-image:latest ghcr.io/example-org/example-image:v9.9.9' "$DOCKER_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9 ghcr.io/example-org/example-image:v9.9.9' "$DOCKER_MOCK_CALLS"
+  [ "$(grep -c '^CREATE ' "$DOCKER_MOCK_CALLS")" -eq 6 ]
+}
+
 @test "non-stable version (has a suffix) -> no-op, no docker or gh calls" {
   export INPUT_VERSION="v9.9.9-rc.1"
   run "$SCRIPT"
@@ -373,6 +387,13 @@ teardown() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"skipping Homebrew tap promotion entirely"* ]]
   run ! grep -q '^DOWNLOAD \|^API ' "$GH_MOCK_CALLS"
+
+  # Skipping Homebrew is all-or-nothing: everything else still proceeds. The
+  # caller repo's history is empty here (docker fully advances), and OSS_REPO
+  # is the backport (prerelease unset, but no --latest).
+  [ "$(grep -c '^CREATE ' "$DOCKER_MOCK_CALLS")" -eq 6 ]
+  grep -qF -- 'EDIT example-org/example-repo v9.9.9 --prerelease=false' "$GH_MOCK_CALLS"
+  run ! grep -qF -- '--latest' "$GH_MOCK_CALLS"
 }
 
 @test "homebrew-tap-repo without oss-repo -> fails fast" {
@@ -451,6 +472,17 @@ teardown() {
   [ "$status" -eq 0 ]
   grep -qF 'API PUT repos/example-org/example-tap/contents/Formula/vcluster.rb sha=fakesha' "$GH_MOCK_CALLS"
   grep -qF 'API PUT repos/example-org/example-tap/contents/Formula/vcluster-experimental.rb sha=fakesha' "$GH_MOCK_CALLS"
+
+  # Assert the second formula's committed body too, not just that a PUT fired -
+  # a per-formula loop that diverged for formula #2 (wrong version, URL, or
+  # sha256) would otherwise pass undetected.
+  put_out="$(put_output_path 'repos/example-org/example-tap/contents/Formula/vcluster-experimental.rb')"
+  [ -f "$put_out" ]
+  grep -qF 'version "9.9.9"' "$put_out"
+  grep -qF 'https://github.com/example-org/example-repo/releases/download/v9.9.9/vcluster-darwin-amd64' "$put_out"
+  grep -qF 'https://github.com/example-org/example-repo/releases/download/v9.9.9/vcluster-linux-amd64' "$put_out"
+  grep -qF 'sha256 "cccc111111111111111111111111111111111111111111111111111111cccc"' "$put_out"
+  grep -qF 'sha256 "dddd222222222222222222222222222222222222222222222222222222dddd"' "$put_out"
 }
 
 @test "homebrew tap -> missing checksum for an artifact warns, leaves its sha256 untouched" {

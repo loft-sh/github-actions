@@ -51,7 +51,7 @@ inputs:
     required: false
     default: ''
   github-token:
-    description: 'Token with GHCR write:packages, and contents:write on oss-repo if set.'
+    description: 'Token with GHCR write:packages, and contents:write on oss-repo and homebrew-tap-repo if set.'
     required: true
   docker-username:
     description: 'Username paired with github-token for the GHCR login (GHCR checks the token, but docker/login-action requires a username value).'

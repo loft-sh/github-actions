@@ -12,8 +12,9 @@
 #
 # Required env:
 #   GH_TOKEN        Token with GHCR write:packages, and contents:write on
-#                    INPUT_OSS_REPO if set. Docker login happens in the
-#                    calling action.yml step, before this script runs.
+#                    INPUT_OSS_REPO and INPUT_HOMEBREW_TAP_REPO if set. Docker
+#                    login happens in the calling action.yml step, before this
+#                    script runs.
 #   INPUT_VERSION    The promoted release tag, e.g. v0.37.1.
 #   INPUT_IMAGES     JSON array of image entries to retag, each
 #                    {"image": "ghcr.io/loft-sh/x", "suffix": ""} (suffix
@@ -160,14 +161,23 @@ done
 
 # --- Paired public release ----------------------------------------------
 
+# Whether VERSION is the newest stable on OSS_REPO. Computed once, in the
+# block below, and reused by the Homebrew section - so the advisory Homebrew
+# step doesn't fire a second `gh release list` (that duplicated the work and,
+# via is_latest_stable's fail-closed exit, could hard-fail the whole run for a
+# transient list blip after everything else already succeeded). "" means we
+# never got to compute it (no matching oss-repo release).
+OSS_IS_LATEST=""
 if [[ -n "${OSS_REPO}" ]]; then
   if gh release view "${VERSION}" --repo "${OSS_REPO}" >/dev/null 2>&1; then
     edit_args=(--prerelease=false)
     latest_note=""
     if is_latest_stable "${OSS_REPO}"; then
+      OSS_IS_LATEST=true
       edit_args+=(--latest)
       latest_note=", set latest"
     else
+      OSS_IS_LATEST=false
       echo "::notice::${VERSION} is not the newest stable release on ${OSS_REPO} (backport/patch promotion); unsetting pre-release but not moving Latest."
     fi
     echo "Promoting ${OSS_REPO}@${VERSION}: unset prerelease${latest_note}"
@@ -200,7 +210,10 @@ patch_homebrew_formula() {
   local new_tag="$1" content_file="$2" checksums_file="$3" tap_repo="$4" formula_path="$5"
   local old_tag artifact new_sha
 
-  old_tag=$(grep -oP 'download/\K[^/]+' "${content_file}" | head -1)
+  # `|| true`: under `set -euo pipefail` a no-match `grep` (exit 1) would
+  # propagate through the pipe and kill the run before the warn-and-skip
+  # guard below can handle it - the opposite of this advisory step's contract.
+  old_tag=$(grep -oP 'download/\K[^/]+' "${content_file}" | head -1 || true)
   if [[ -z "${old_tag}" ]]; then
     echo "::warning::no download URL found in ${tap_repo}/${formula_path}; skipping"
     return 0
@@ -239,7 +252,15 @@ promote_homebrew_formula() {
     echo "::warning::failed to fetch ${tap_repo}/${formula_path}; skipping: ${get_raw}"
     return 0
   fi
-  current_sha=$(jq -r '.sha' <<<"${get_raw}")
+  # `// empty` (not a bare `.sha`): jq renders a missing/null field as the
+  # literal string "null", which is non-empty and would sail into `-f sha=`
+  # on the PUT below and 422. Guard it here so an unexpected response
+  # warn-skips instead of silently leaving the formula unpatched.
+  current_sha=$(jq -r '.sha // empty' <<<"${get_raw}")
+  if [[ -z "${current_sha}" ]]; then
+    echo "::warning::unexpected API response for ${tap_repo}/${formula_path} (missing sha field); skipping"
+    return 0
+  fi
   content_file=$(mktemp)
   jq -r '.content' <<<"${get_raw}" | base64 -d > "${content_file}"
 
@@ -255,13 +276,17 @@ promote_homebrew_formula() {
       -f message="chore: bump ${formula_path} to ${VERSION}" \
       -f content="${new_content_b64}" \
       -f sha="${current_sha}" >/dev/null; then
-    echo "::warning::failed to update ${tap_repo}/${formula_path} to ${VERSION}; docker retags (and oss-repo promotion, if configured) already succeeded. Manual fix: patch the formula and gh api -X PUT repos/${tap_repo}/contents/${formula_path}."
+    echo "::warning::failed to update ${tap_repo}/${formula_path} to ${VERSION}; docker retags (and oss-repo promotion, if configured) already succeeded. Re-run this action to retry the tap update - it is idempotent (imagetools create and the formula patch both re-apply cleanly)."
   fi
 }
 
 if [[ -n "${HOMEBREW_TAP_REPO}" ]]; then
-  if ! is_latest_stable "${OSS_REPO}"; then
+  if [[ "${OSS_IS_LATEST}" == "false" ]]; then
     echo "::notice::${VERSION} is not the newest stable release on ${OSS_REPO} (backport/patch promotion); skipping Homebrew tap promotion entirely - a formula has no line-scoped equivalent to :{major}.{minor}."
+  elif [[ "${OSS_IS_LATEST}" != "true" ]]; then
+    # Only reachable when the oss-repo release wasn't found above (already
+    # warned); without it there are no published checksums to patch from.
+    echo "::warning::no ${VERSION} release on ${OSS_REPO} to source checksums from; skipping Homebrew tap promotion"
   else
     checksums_file=$(mktemp)
     if ! gh release download "${VERSION}" --repo "${OSS_REPO}" -p 'checksums.txt' -O "${checksums_file}" --clobber 2>&1; then
