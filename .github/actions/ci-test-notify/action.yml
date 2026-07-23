@@ -8,7 +8,7 @@ inputs:
     description: 'Test suite name for the header (e.g. "E2E Ginkgo Nightly Tests"). Keep under ~130 chars — Slack header blocks have a 150-char limit and the status suffix takes ~15 chars.'
     required: true
   status:
-    description: 'Run status, typically `needs.<job>.result` or `job.status`. `success` and `failure` notify; `cancelled` and `skipped` are treated as no-ops and send nothing.'
+    description: 'Run status, typically `needs.<job>.result` or `job.status`. `success` and `failure` notify; `cancelled` and `skipped` are treated as no-ops and send nothing. Use `info` for a standalone informational notice (e.g. a deploy) that always notifies with no pass/fail suffix.'
     required: true
   details:
     description: 'Markdown text appended after the build URL (test results, versions, artifact links, etc.)'
