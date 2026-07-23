@@ -105,6 +105,118 @@ func TestFamilyCandidates(t *testing.T) {
 	}
 }
 
+func TestLineFromVersionString(t *testing.T) {
+	cases := map[string]string{
+		"0.33.5":                 "0.33",
+		"v0.33.5":                "0.33",
+		"0.33.5 - Security Only": "0.33", // release name with a suffix
+		"v1.2.3":                 "1.2",
+		"4.2":                    "4.2",
+		"  0.34.1":               "0.34", // leading whitespace
+		"abc123":                 "",     // short commit hash
+		"Security Only 0.33.5":   "",     // version must lead the string
+		"":                       "",
+		"v1":                     "",
+	}
+	for in, want := range cases {
+		if got := lineFromVersionString(in); got != want {
+			t.Errorf("lineFromVersionString(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestReleaseLine(t *testing.T) {
+	cases := []struct {
+		name    string
+		release releaseRef
+		want    string
+	}{
+		{"version field wins", releaseRef{Name: "0.35.0 - wrong", Version: "0.33.5"}, "0.33"},
+		{"version field with v prefix", releaseRef{Name: "", Version: "v1.2.3"}, "1.2"},
+		{"name fallback when version unset", releaseRef{Name: "0.33.5", Version: ""}, "0.33"},
+		{"security-only suffix in name", releaseRef{Name: "0.33.5 - Security Only", Version: ""}, "0.33"},
+		{"name fallback when version unparseable", releaseRef{Name: "0.34.2", Version: "abc123"}, "0.34"},
+		{"neither parseable", releaseRef{Name: "Q3 hardening", Version: "abc123"}, ""},
+		{"both empty", releaseRef{}, ""},
+	}
+	for _, c := range cases {
+		if got := releaseLine(c.release); got != c.want {
+			t.Errorf("%s: releaseLine(%+v) = %q, want %q", c.name, c.release, got, c.want)
+		}
+	}
+}
+
+func TestVerifyReleaseAttachment(t *testing.T) {
+	sub := issueRef{ID: "uuid-913", Identifier: "ENGCP-913", Title: "[0.33] Copy of ENGCP-906"}
+
+	cases := []struct {
+		name       string
+		releases   []releaseRef
+		line       string
+		wantWarn   bool
+		wantRemedy string // substring the remedy must contain, when warning
+	}{
+		{
+			name:       "no release attached warns with attach remedy",
+			releases:   nil,
+			line:       "0.33",
+			wantWarn:   true,
+			wantRemedy: "attach the 0.33 line's In Progress release to ENGCP-913",
+		},
+		{
+			name:       "mismatched release line warns",
+			releases:   []releaseRef{{Name: "0.34.2", Version: "0.34.2"}},
+			line:       "0.33",
+			wantWarn:   true,
+			wantRemedy: "attach the 0.33 release to ENGCP-913",
+		},
+		{
+			name:     "matching release via version field is silent",
+			releases: []releaseRef{{Name: "0.33.5 - Security Only", Version: "0.33.5"}},
+			line:     "0.33",
+			wantWarn: false,
+		},
+		{
+			name:     "matching release via name fallback is silent",
+			releases: []releaseRef{{Name: "0.33.5 - Security Only", Version: ""}},
+			line:     "0.33",
+			wantWarn: false,
+		},
+		{
+			name:     "any matching release among several is silent",
+			releases: []releaseRef{{Name: "0.34.0"}, {Name: "0.33.5"}},
+			line:     "0.33",
+			wantWarn: false,
+		},
+		{
+			name:       "unparseable release still warns on mismatch",
+			releases:   []releaseRef{{Name: "Q3 hardening", Version: "abc123"}},
+			line:       "0.33",
+			wantWarn:   true,
+			wantRemedy: "fix the sub-issue title",
+		},
+	}
+	for _, c := range cases {
+		w := verifyReleaseAttachment(sub, c.releases, c.line, "v"+c.line)
+		if got := w != nil; got != c.wantWarn {
+			t.Errorf("%s: warning = %v, want %v (warning: %+v)", c.name, got, c.wantWarn, w)
+			continue
+		}
+		if w == nil {
+			continue
+		}
+		if !strings.Contains(w.remedy, c.wantRemedy) {
+			t.Errorf("%s: remedy %q does not contain %q", c.name, w.remedy, c.wantRemedy)
+		}
+		if !strings.Contains(w.problem, "ENGCP-913") {
+			t.Errorf("%s: problem %q should name the sub-issue", c.name, w.problem)
+		}
+		if strings.Contains(w.annotation(), "\n") {
+			t.Errorf("%s: annotation must be single-line, got %q", c.name, w.annotation())
+		}
+	}
+}
+
 func TestBodyReferencesIssue(t *testing.T) {
 	cases := []struct {
 		body, id string
