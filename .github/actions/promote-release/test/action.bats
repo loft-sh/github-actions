@@ -11,7 +11,7 @@ bats_require_minimum_version 1.5.0
 SCRIPT="$BATS_TEST_DIRNAME/../src/action.sh"
 
 load gh_mock
-load docker_mock
+load crane_mock
 
 # Sets GH_MOCK_RELEASE_LIST_<repo> so is_latest_stable() sees a release
 # history for that repo (see gh_mock.bash for the varname sanitization).
@@ -160,7 +160,7 @@ CHECKSUMS
 
 setup() {
   setup_gh_mock
-  setup_docker_mock
+  setup_crane_mock
   export GH_TOKEN="fake-token"
   export GITHUB_REPOSITORY="example-org/example-caller-repo"
   export INPUT_VERSION="v9.9.9"
@@ -176,7 +176,7 @@ setup() {
 
 teardown() {
   teardown_gh_mock
-  teardown_docker_mock
+  teardown_crane_mock
   rm -rf "$FIXTURES_DIR"
 }
 
@@ -184,13 +184,32 @@ teardown() {
   run "$SCRIPT"
   [ "$status" -eq 0 ]
 
-  grep -qF 'CREATE ghcr.io/example-org/example-image:latest ghcr.io/example-org/example-image:v9.9.9' "$DOCKER_MOCK_CALLS"
-  grep -qF 'CREATE ghcr.io/example-org/example-image:9 ghcr.io/example-org/example-image:v9.9.9' "$DOCKER_MOCK_CALLS"
-  grep -qF 'CREATE ghcr.io/example-org/example-image:9.9 ghcr.io/example-org/example-image:v9.9.9' "$DOCKER_MOCK_CALLS"
-  grep -qF 'CREATE ghcr.io/example-org/example-image:latest-fips ghcr.io/example-org/example-image:v9.9.9-fips' "$DOCKER_MOCK_CALLS"
-  grep -qF 'CREATE ghcr.io/example-org/example-image:9-fips ghcr.io/example-org/example-image:v9.9.9-fips' "$DOCKER_MOCK_CALLS"
-  grep -qF 'CREATE ghcr.io/example-org/example-image:9.9-fips ghcr.io/example-org/example-image:v9.9.9-fips' "$DOCKER_MOCK_CALLS"
-  [ "$(grep -c '^CREATE ' "$DOCKER_MOCK_CALLS")" -eq 6 ]
+  grep -qF 'CREATE ghcr.io/example-org/example-image:latest ghcr.io/example-org/example-image:v9.9.9' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9 ghcr.io/example-org/example-image:v9.9.9' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9.9 ghcr.io/example-org/example-image:v9.9.9' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:latest-fips ghcr.io/example-org/example-image:v9.9.9-fips' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9-fips ghcr.io/example-org/example-image:v9.9.9-fips' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9.9-fips ghcr.io/example-org/example-image:v9.9.9-fips' "$CRANE_MOCK_CALLS"
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 6 ]
+}
+
+@test "per-arch suffix entries -> retag per-arch moving tags from the per-arch version source" {
+  # DEVOPS-1083: the per-arch moving tags (latest-amd64, latest-fips-arm64v8,
+  # ...) are promoted purely as suffix entries -- each copies the bare
+  # single-platform source <image>:<version><suffix> onto its moving tags.
+  # crane makes this digest-preserving (imagetools would not); here we assert
+  # the retag targets are wired correctly for the per-arch suffixes.
+  export INPUT_IMAGES='[{"image":"ghcr.io/example-org/example-image","suffix":"-amd64"},{"image":"ghcr.io/example-org/example-image","suffix":"-fips-arm64v8"}]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+
+  grep -qF 'CREATE ghcr.io/example-org/example-image:latest-amd64 ghcr.io/example-org/example-image:v9.9.9-amd64' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9-amd64 ghcr.io/example-org/example-image:v9.9.9-amd64' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9.9-amd64 ghcr.io/example-org/example-image:v9.9.9-amd64' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:latest-fips-arm64v8 ghcr.io/example-org/example-image:v9.9.9-fips-arm64v8' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9-fips-arm64v8 ghcr.io/example-org/example-image:v9.9.9-fips-arm64v8' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9.9-fips-arm64v8 ghcr.io/example-org/example-image:v9.9.9-fips-arm64v8' "$CRANE_MOCK_CALLS"
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 6 ]
 }
 
 @test "happy path -> promotes the paired oss-repo release" {
@@ -210,16 +229,16 @@ teardown() {
   run "$SCRIPT"
   [ "$status" -eq 0 ]
 
-  grep -qF 'CREATE ghcr.io/example-org/example-image:latest ghcr.io/example-org/example-image:v9.9.9' "$DOCKER_MOCK_CALLS"
-  grep -qF 'CREATE ghcr.io/example-org/example-image:9 ghcr.io/example-org/example-image:v9.9.9' "$DOCKER_MOCK_CALLS"
-  [ "$(grep -c '^CREATE ' "$DOCKER_MOCK_CALLS")" -eq 6 ]
+  grep -qF 'CREATE ghcr.io/example-org/example-image:latest ghcr.io/example-org/example-image:v9.9.9' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9 ghcr.io/example-org/example-image:v9.9.9' "$CRANE_MOCK_CALLS"
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 6 ]
 }
 
 @test "non-stable version (has a suffix) -> no-op, no docker or gh calls" {
   export INPUT_VERSION="v9.9.9-rc.1"
   run "$SCRIPT"
   [ "$status" -eq 0 ]
-  [ ! -s "$DOCKER_MOCK_CALLS" ]
+  [ ! -s "$CRANE_MOCK_CALLS" ]
   [ ! -s "$GH_MOCK_CALLS" ]
 }
 
@@ -238,7 +257,7 @@ teardown() {
     run "$SCRIPT"
     [ "$status" -eq 0 ]
     [[ "$output" == *"is not a stable vX.Y.Z release"* ]]
-    [ ! -s "$DOCKER_MOCK_CALLS" ]
+    [ ! -s "$CRANE_MOCK_CALLS" ]
     [ ! -s "$GH_MOCK_CALLS" ]
   done
 }
@@ -250,7 +269,7 @@ teardown() {
   [[ "$output" == *"no v9.9.9 release found on example-org/example-repo"* ]]
   grep -qF 'VIEW example-org/example-repo v9.9.9' "$GH_MOCK_CALLS"
   run ! grep -q '^EDIT ' "$GH_MOCK_CALLS"
-  [ "$(grep -c '^CREATE ' "$DOCKER_MOCK_CALLS")" -eq 6 ]
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 6 ]
 }
 
 @test "empty oss-repo -> skips the paired release entirely" {
@@ -266,8 +285,9 @@ teardown() {
   export INPUT_DRY_RUN="true"
   run "$SCRIPT"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"[dry-run] docker buildx imagetools create --tag ghcr.io/example-org/example-image:latest ghcr.io/example-org/example-image:v9.9.9"* ]]
-  [ ! -s "$DOCKER_MOCK_CALLS" ]
+  [[ "$output" == *"[dry-run] crane tag ghcr.io/example-org/example-image:v9.9.9 latest"* ]]
+  [[ "$output" == *"[dry-run] crane tag ghcr.io/example-org/example-image:v9.9.9-fips latest-fips"* ]]
+  [ ! -s "$CRANE_MOCK_CALLS" ]
 }
 
 @test "fail-closed dry-run -> any value that isn't exactly 'false' makes no real mutations" {
@@ -275,12 +295,12 @@ teardown() {
   # meaning to PREVIEW must never trigger a real GHCR retag / release flip.
   # Only an exact (case-insensitive) "false" promotes for real.
   for value in "true" "True" "TRUE" "yes" "1" "flase" "false " " false"; do
-    : > "$DOCKER_MOCK_CALLS"
+    : > "$CRANE_MOCK_CALLS"
     : > "$GH_MOCK_CALLS"
     export INPUT_DRY_RUN="$value"
     run "$SCRIPT"
     [ "$status" -eq 0 ]
-    [ "$(grep -c '^CREATE ' "$DOCKER_MOCK_CALLS")" -eq 0 ]
+    [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 0 ]
     run ! grep -q '^EDIT ' "$GH_MOCK_CALLS"
   done
 }
@@ -290,7 +310,7 @@ teardown() {
   run "$SCRIPT"
   [ "$status" -eq 0 ]
   [[ "$output" == *"unrecognized dry-run value 'ture'"* ]]
-  [ "$(grep -c '^CREATE ' "$DOCKER_MOCK_CALLS")" -eq 0 ]
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 0 ]
 }
 
 @test "fail-closed dry-run -> exact 'false' (and case variants) promotes for real" {
@@ -298,11 +318,11 @@ teardown() {
   # case-insensitive match means FALSE/False also cut for real rather than
   # silently degrading to a no-op.
   for value in "false" "False" "FALSE"; do
-    : > "$DOCKER_MOCK_CALLS"
+    : > "$CRANE_MOCK_CALLS"
     export INPUT_DRY_RUN="$value"
     run "$SCRIPT"
     [ "$status" -eq 0 ]
-    [ "$(grep -c '^CREATE ' "$DOCKER_MOCK_CALLS")" -eq 6 ]
+    [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 6 ]
   done
 }
 
@@ -320,11 +340,11 @@ teardown() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"not the newest stable release on example-org/example-caller-repo"* ]]
 
-  grep -qF 'CREATE ghcr.io/example-org/example-image:9.9 ghcr.io/example-org/example-image:v9.9.9' "$DOCKER_MOCK_CALLS"
-  grep -qF 'CREATE ghcr.io/example-org/example-image:9.9-fips ghcr.io/example-org/example-image:v9.9.9-fips' "$DOCKER_MOCK_CALLS"
-  run ! grep -qF ':latest ' "$DOCKER_MOCK_CALLS"
-  run ! grep -qF ':9 ' "$DOCKER_MOCK_CALLS"
-  [ "$(grep -c '^CREATE ' "$DOCKER_MOCK_CALLS")" -eq 2 ]
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9.9 ghcr.io/example-org/example-image:v9.9.9' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9.9-fips ghcr.io/example-org/example-image:v9.9.9-fips' "$CRANE_MOCK_CALLS"
+  run ! grep -qF ':latest ' "$CRANE_MOCK_CALLS"
+  run ! grep -qF ':9 ' "$CRANE_MOCK_CALLS"
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 2 ]
 
   # A different repo's history (oss-repo) is unaffected by the caller repo's:
   # the paired release still gets --latest.
@@ -342,10 +362,10 @@ teardown() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"not the newest stable release on example-org/example-caller-repo"* ]]
 
-  grep -qF 'CREATE ghcr.io/example-org/example-image:9.35 ghcr.io/example-org/example-image:v9.35.6' "$DOCKER_MOCK_CALLS"
-  run ! grep -qF ':latest ' "$DOCKER_MOCK_CALLS"
-  run ! grep -qF ':9 ' "$DOCKER_MOCK_CALLS"
-  [ "$(grep -c '^CREATE ' "$DOCKER_MOCK_CALLS")" -eq 2 ]
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9.35 ghcr.io/example-org/example-image:v9.35.6' "$CRANE_MOCK_CALLS"
+  run ! grep -qF ':latest ' "$CRANE_MOCK_CALLS"
+  run ! grep -qF ':9 ' "$CRANE_MOCK_CALLS"
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 2 ]
 }
 
 @test "same-minor out-of-order promotion -> skips :major.minor so the line tag can't regress" {
@@ -359,7 +379,7 @@ teardown() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"is not the newest stable release in the 9.9 line"* ]]
   [[ "$output" == *"no moving tags to advance"* ]]
-  [ "$(grep -c '^CREATE ' "$DOCKER_MOCK_CALLS")" -eq 0 ]
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 0 ]
 }
 
 @test "newest within its own line but not overall -> advances only :major.minor" {
@@ -369,10 +389,10 @@ teardown() {
   set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.9.8","isPrerelease":false},{"tagName":"v10.0.0","isPrerelease":false}]'
   run "$SCRIPT"
   [ "$status" -eq 0 ]
-  grep -qF 'CREATE ghcr.io/example-org/example-image:9.9 ghcr.io/example-org/example-image:v9.9.9' "$DOCKER_MOCK_CALLS"
-  run ! grep -qF ':latest ' "$DOCKER_MOCK_CALLS"
-  run ! grep -qF ':9 ' "$DOCKER_MOCK_CALLS"
-  [ "$(grep -c '^CREATE ' "$DOCKER_MOCK_CALLS")" -eq 2 ]
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9.9 ghcr.io/example-org/example-image:v9.9.9' "$CRANE_MOCK_CALLS"
+  run ! grep -qF ':latest ' "$CRANE_MOCK_CALLS"
+  run ! grep -qF ':9 ' "$CRANE_MOCK_CALLS"
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 2 ]
 }
 
 @test "backport on oss-repo -> paired release unsets prerelease but omits --latest" {
@@ -385,7 +405,7 @@ teardown() {
   run ! grep -qF -- '--latest' "$GH_MOCK_CALLS"
 
   # The caller repo's own history is unaffected: docker tags fully advance.
-  [ "$(grep -c '^CREATE ' "$DOCKER_MOCK_CALLS")" -eq 6 ]
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 6 ]
 }
 
 @test "oss-repo list failure (post-retag) -> soft-skips --latest, does not hard-fail the run" {
@@ -398,7 +418,7 @@ teardown() {
   run "$SCRIPT"
   [ "$status" -eq 0 ]
   [[ "$output" == *"skipping the advisory --latest promotion"* ]]
-  [ "$(grep -c '^CREATE ' "$DOCKER_MOCK_CALLS")" -eq 6 ]
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 6 ]
   grep -qF -- 'EDIT example-org/example-repo v9.9.9 --prerelease=false' "$GH_MOCK_CALLS"
   run ! grep -qF -- '--latest' "$GH_MOCK_CALLS"
 }
@@ -411,7 +431,7 @@ teardown() {
   run "$SCRIPT"
   [ "$status" -ne 0 ]
   [[ "$output" == *"failed to list releases on example-org/example-caller-repo"* ]]
-  [ "$(grep -c '^CREATE ' "$DOCKER_MOCK_CALLS")" -eq 0 ]
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 0 ]
 }
 
 @test "gh release list failure -> fails closed, does not treat it as no prior releases" {
@@ -419,29 +439,29 @@ teardown() {
   run "$SCRIPT"
   [ "$status" -ne 0 ]
   [[ "$output" == *"failed to list releases on example-org/example-caller-repo"* ]]
-  [ "$(grep -c '^CREATE ' "$DOCKER_MOCK_CALLS")" -eq 0 ]
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 0 ]
 }
 
 @test "missing source manifest for a suffix variant -> fails before any create call" {
-  export DOCKER_MOCK_MISSING="ghcr.io/example-org/example-image:v9.9.9-fips"
+  export CRANE_MOCK_MISSING="ghcr.io/example-org/example-image:v9.9.9-fips"
   run "$SCRIPT"
   [ "$status" -ne 0 ]
   [[ "$output" == *"source manifest ghcr.io/example-org/example-image:v9.9.9-fips does not exist"* ]]
-  [ "$(grep -c '^CREATE ' "$DOCKER_MOCK_CALLS")" -eq 0 ]
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 0 ]
 }
 
 @test "missing image field in an entry -> fails before any create call" {
   export INPUT_IMAGES='[{"image":"ghcr.io/example-org/example-image"},{"suffix":"-fips"}]'
   run "$SCRIPT"
   [ "$status" -ne 0 ]
-  [ "$(grep -c '^CREATE ' "$DOCKER_MOCK_CALLS")" -eq 0 ]
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 0 ]
 }
 
 @test "malformed images JSON -> fails fast, no calls" {
   export INPUT_IMAGES='not json'
   run "$SCRIPT"
   [ "$status" -ne 0 ]
-  [ ! -s "$DOCKER_MOCK_CALLS" ]
+  [ ! -s "$CRANE_MOCK_CALLS" ]
 }
 
 @test "empty images array -> fails fast" {
@@ -454,14 +474,14 @@ teardown() {
   unset GH_TOKEN
   run "$SCRIPT"
   [ "$status" -ne 0 ]
-  [ ! -s "$DOCKER_MOCK_CALLS" ]
+  [ ! -s "$CRANE_MOCK_CALLS" ]
 }
 
 @test "missing GITHUB_REPOSITORY -> fail fast, no calls" {
   unset GITHUB_REPOSITORY
   run "$SCRIPT"
   [ "$status" -ne 0 ]
-  [ ! -s "$DOCKER_MOCK_CALLS" ]
+  [ ! -s "$CRANE_MOCK_CALLS" ]
 }
 
 @test "missing version -> fail fast" {
@@ -470,11 +490,11 @@ teardown() {
   [ "$status" -ne 0 ]
 }
 
-@test "docker push failure -> aborts on the first create call" {
-  export DOCKER_MOCK_FAIL=1
+@test "crane retag failure -> aborts on the first create call" {
+  export CRANE_MOCK_FAIL=1
   run "$SCRIPT"
   [ "$status" -ne 0 ]
-  [ "$(grep -c '^CREATE ' "$DOCKER_MOCK_CALLS")" -eq 1 ]
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 1 ]
 }
 
 @test "gh release edit failure -> warns but does not fail the run (docker retags already done)" {
@@ -482,7 +502,7 @@ teardown() {
   run "$SCRIPT"
   [ "$status" -eq 0 ]
   [[ "$output" == *"::warning::gh release edit failed for example-org/example-repo@v9.9.9"* ]]
-  [ "$(grep -c '^CREATE ' "$DOCKER_MOCK_CALLS")" -eq 6 ]
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 6 ]
 }
 
 @test "homebrew tap -> not configured by default, no download/api calls" {
@@ -538,7 +558,7 @@ teardown() {
   # Skipping Homebrew is all-or-nothing: everything else still proceeds. The
   # caller repo's history is empty here (docker fully advances), and OSS_REPO
   # is the backport (prerelease unset, but no --latest).
-  [ "$(grep -c '^CREATE ' "$DOCKER_MOCK_CALLS")" -eq 6 ]
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 6 ]
   grep -qF -- 'EDIT example-org/example-repo v9.9.9 --prerelease=false' "$GH_MOCK_CALLS"
   run ! grep -qF -- '--latest' "$GH_MOCK_CALLS"
 }
@@ -550,7 +570,7 @@ teardown() {
   run "$SCRIPT"
   [ "$status" -ne 0 ]
   [[ "$output" == *"homebrew-tap-repo requires oss-repo"* ]]
-  [ "$(grep -c '^CREATE ' "$DOCKER_MOCK_CALLS")" -eq 0 ]
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 0 ]
 }
 
 @test "homebrew-tap-repo without homebrew-formula-paths -> fails fast" {
@@ -558,7 +578,7 @@ teardown() {
   run "$SCRIPT"
   [ "$status" -ne 0 ]
   [[ "$output" == *"homebrew-formula-paths must be a non-empty JSON array"* ]]
-  [ "$(grep -c '^CREATE ' "$DOCKER_MOCK_CALLS")" -eq 0 ]
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 0 ]
 }
 
 @test "homebrew tap -> checksums download failure warns, skips homebrew, run still succeeds" {
@@ -569,7 +589,7 @@ teardown() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"failed to download checksums.txt"* ]]
   run ! grep -q '^API ' "$GH_MOCK_CALLS"
-  [ "$(grep -c '^CREATE ' "$DOCKER_MOCK_CALLS")" -eq 6 ]
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 6 ]
 }
 
 @test "homebrew tap -> contents GET failure warns, skips that formula" {
@@ -601,7 +621,7 @@ teardown() {
   [[ "$output" != *"(backport/patch promotion); skipping Homebrew"* ]]
   # No tap write, no checksums pulled - but everything upstream still ran.
   run ! grep -q '^API PUT\|^DOWNLOAD ' "$GH_MOCK_CALLS"
-  [ "$(grep -c '^CREATE ' "$DOCKER_MOCK_CALLS")" -eq 6 ]
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 6 ]
   grep -qF -- 'EDIT example-org/example-repo v9.9.9 --prerelease=false' "$GH_MOCK_CALLS"
   run ! grep -qF -- '--latest' "$GH_MOCK_CALLS"
 }
@@ -616,7 +636,7 @@ teardown() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"failed to decode example-org/example-tap/Formula/vcluster.rb contents"* ]]
   run ! grep -q '^API PUT' "$GH_MOCK_CALLS"
-  [ "$(grep -c '^CREATE ' "$DOCKER_MOCK_CALLS")" -eq 6 ]
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 6 ]
 }
 
 @test "homebrew tap -> contents PUT failure warns but does not fail the run" {
@@ -756,5 +776,5 @@ RUBY
   grep -qF 'version "9.0.0"' "$put_out"
   grep -qF 'download/not-a-version/vcluster-darwin-amd64' "$put_out"
   run ! grep -qF 'download/v9.9.9/' "$put_out"
-  [ "$(grep -c '^CREATE ' "$DOCKER_MOCK_CALLS")" -eq 6 ]
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 6 ]
 }
