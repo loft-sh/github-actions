@@ -52,9 +52,14 @@ type issueFamily struct {
 }
 
 func main() {
+	// Workflow commands (::notice::, ::warning::) are only parsed when they
+	// start the line, so drop log's default date/time prefix; otherwise the
+	// annotations never surface in the run.
+	log.SetFlags(0)
 	if err := run(); err != nil {
 		// Advisory tool: surface the problem but never fail the backport job.
 		warnf("link-backport-prs: %v", err)
+		writeLinkedCount(0)
 	}
 }
 
@@ -75,13 +80,6 @@ func run() error {
 		return fmt.Errorf("GITHUB_TOKEN is required")
 	}
 
-	linearToken := os.Getenv("LINEAR_TOKEN")
-	if linearToken == "" {
-		// No Linear token wired up by the caller: nothing to do, not an error.
-		noticef("LINEAR_TOKEN not provided, skipping Linear sub-issue linking")
-		return nil
-	}
-
 	ctx := context.Background()
 	gh, err := github.NewClient(github.WithAuthToken(githubToken))
 	if err != nil {
@@ -93,15 +91,36 @@ func run() error {
 		return fmt.Errorf("get source PR #%d: %w", *sourcePR, err)
 	}
 
+	// A source PR without backport labels has nothing to link and nothing to
+	// fix, so it stays a plain notice.
 	targets := backportTargets(src.Labels, *labelPrefix)
 	if len(targets) == 0 {
 		noticef("source PR #%d has no %s* labels, nothing to link", *sourcePR, *labelPrefix)
+		writeLinkedCount(0)
+		return nil
+	}
+
+	// Backport labels are present, so every skip from here on hides a link that
+	// should have happened. The empty-token case is the silent no-op from the
+	// production rollout (DEVOPS-1060): a missing or misnamed secret looked
+	// identical to the feature being off. Make it loud, with the fix.
+	linearToken := os.Getenv("LINEAR_TOKEN")
+	if linearToken == "" {
+		remedyWarning{
+			problem: fmt.Sprintf("source PR #%d carries %d backport label(s) but linear-token is empty, so no backport PR was linked to its Linear sub-issue", *sourcePR, len(targets)),
+			remedy:  "set the backport workflow's linear-token secret to a valid Linear API token (verify the caller's `secrets: linear-token:` maps to an existing repository secret)",
+		}.emit()
+		writeLinkedCount(0)
 		return nil
 	}
 
 	family := resolveFamily(linearToken, src)
 	if family == nil {
-		warnf("could not resolve a Linear issue for source PR #%d (no attachment, no identifier in branch/body)", *sourcePR)
+		remedyWarning{
+			problem: fmt.Sprintf("could not resolve a Linear issue for source PR #%d (no attachment, and no TEAM-123 identifier in its branch or body), so its %d backport target(s) were not linked", *sourcePR, len(targets)),
+			remedy:  "attach the source PR to its Linear issue, or include the issue identifier in the PR branch name or body",
+		}.emit()
+		writeLinkedCount(0)
 		return nil
 	}
 	candidates := familyCandidates(*family)
@@ -117,7 +136,10 @@ func run() error {
 
 		sub, ok := matchSubIssue(candidates, version)
 		if !ok {
-			warnf("no sub-issue with a [%s] title prefix found under %s for backport to %s", version, family.Identifier, target)
+			remedyWarning{
+				problem: fmt.Sprintf("no sub-issue with a [%s] title prefix found under %s for backport to %s", version, family.Identifier, target),
+				remedy:  fmt.Sprintf("create or rename a sub-issue under %s so its title starts with [%s]", family.Identifier, version),
+			}.emit()
 			continue
 		}
 
@@ -128,7 +150,10 @@ func run() error {
 			continue
 		}
 		if bp == nil {
-			warnf("no backport PR found for %s (base %s); sorenlouv may have skipped it (conflict/no commits)", headBranch, target)
+			remedyWarning{
+				problem: fmt.Sprintf("no backport PR found for %s (base %s); sorenlouv likely skipped it after a merge conflict or empty diff", headBranch, target),
+				remedy:  fmt.Sprintf("backport to %s manually and add 'Fixes %s' to that PR's body", target, sub.Identifier),
+			}.emit()
 			continue
 		}
 
@@ -153,12 +178,7 @@ func run() error {
 	}
 
 	noticef("link-backport-prs: linked %d of %d backport target(s)", linked, len(targets))
-	if out := os.Getenv("GITHUB_OUTPUT"); out != "" {
-		if f, err := os.OpenFile(out, os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
-			fmt.Fprintf(f, "linked-count=%d\n", linked)
-			f.Close()
-		}
-	}
+	writeLinkedCount(linked)
 	return nil
 }
 
@@ -404,10 +424,61 @@ func linearGraphQL(token, query string, variables map[string]any, out any) error
 	return json.Unmarshal(body, out)
 }
 
+// remedyWarning is a skip a human can fix. It renders to both a ::warning::
+// annotation (surfaced in the run's annotations) and a job-summary bullet, so a
+// skipped link is impossible to miss and always states how to fix it. Emitting
+// one never fails the job: the step stays advisory.
+type remedyWarning struct {
+	problem string // what was skipped and why
+	remedy  string // the concrete action that makes the link happen
+}
+
+func (w remedyWarning) annotation() string {
+	return fmt.Sprintf("%s. Remedy: %s", w.problem, w.remedy)
+}
+
+func (w remedyWarning) summaryLine() string {
+	return fmt.Sprintf("- ⚠️ %s\n  - **Remedy:** %s", w.problem, w.remedy)
+}
+
+func (w remedyWarning) emit() {
+	warnf("%s", w.annotation())
+	summaryf("%s", w.summaryLine())
+}
+
 func noticef(format string, args ...any) {
 	log.Printf("::notice::"+format, args...)
 }
 
 func warnf(format string, args ...any) {
 	log.Printf("::warning::"+format, args...)
+}
+
+// summaryf appends a markdown line to the GitHub job summary. Advisory: when
+// $GITHUB_STEP_SUMMARY is unset (local runs) or unwritable, it is a no-op.
+func summaryf(format string, args ...any) {
+	appendToEnvFile("GITHUB_STEP_SUMMARY", fmt.Sprintf(format, args...))
+}
+
+// writeLinkedCount publishes the linked-count step output declared in
+// action.yml. It is written on every exit path (0 when the step skips) so
+// callers always read a number.
+func writeLinkedCount(n int) {
+	appendToEnvFile("GITHUB_OUTPUT", fmt.Sprintf("linked-count=%d", n))
+}
+
+// appendToEnvFile appends one line to the file named by envVar, if that
+// variable is set. Backs both $GITHUB_OUTPUT and $GITHUB_STEP_SUMMARY; write
+// failures are ignored so the advisory step never fails the backport job.
+func appendToEnvFile(envVar, line string) {
+	path := os.Getenv(envVar)
+	if path == "" {
+		return
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintln(f, line)
 }

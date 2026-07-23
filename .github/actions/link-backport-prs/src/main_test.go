@@ -1,6 +1,11 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
 
 func TestVersionFromBranch(t *testing.T) {
 	cases := map[string]string{
@@ -164,4 +169,94 @@ func TestBackportTargetsFromNames(t *testing.T) {
 			t.Fatalf("got %v, want %v", got, want)
 		}
 	}
+}
+
+func TestRemedyWarningRendering(t *testing.T) {
+	w := remedyWarning{problem: "no backport PR found for X", remedy: "backport X manually"}
+
+	// The annotation is a single line so GitHub renders it as one ::warning::.
+	got := w.annotation()
+	want := "no backport PR found for X. Remedy: backport X manually"
+	if got != want {
+		t.Errorf("annotation() = %q, want %q", got, want)
+	}
+	if strings.Contains(got, "\n") {
+		t.Errorf("annotation() must be single-line, got %q", got)
+	}
+
+	// The summary line is a markdown bullet naming the remedy.
+	line := w.summaryLine()
+	if !strings.HasPrefix(line, "- ") {
+		t.Errorf("summaryLine() should be a markdown bullet, got %q", line)
+	}
+	if !strings.Contains(line, w.problem) || !strings.Contains(line, w.remedy) {
+		t.Errorf("summaryLine() should name both problem and remedy, got %q", line)
+	}
+	if !strings.Contains(line, "Remedy:") {
+		t.Errorf("summaryLine() should label the remedy, got %q", line)
+	}
+}
+
+func TestWriteLinkedCount(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "output")
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GITHUB_OUTPUT", path)
+
+	writeLinkedCount(3)
+
+	got := readFile(t, path)
+	if got != "linked-count=3\n" {
+		t.Errorf("GITHUB_OUTPUT = %q, want %q", got, "linked-count=3\n")
+	}
+}
+
+func TestWriteLinkedCountZeroOnSkip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "output")
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GITHUB_OUTPUT", path)
+
+	// A skip path publishes 0 so callers always read a number.
+	writeLinkedCount(0)
+
+	if got := readFile(t, path); got != "linked-count=0\n" {
+		t.Errorf("GITHUB_OUTPUT = %q, want %q", got, "linked-count=0\n")
+	}
+}
+
+func TestSummaryfAppends(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "summary")
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GITHUB_STEP_SUMMARY", path)
+
+	summaryf("- first")
+	summaryf("- second")
+
+	if got := readFile(t, path); got != "- first\n- second\n" {
+		t.Errorf("GITHUB_STEP_SUMMARY = %q, want %q", got, "- first\n- second\n")
+	}
+}
+
+func TestAppendToEnvFileUnsetIsNoop(t *testing.T) {
+	// When the variable is unset (a local run, no Actions environment), writing
+	// must be a harmless no-op, never a panic or error.
+	t.Setenv("GITHUB_OUTPUT", "")
+	if err := os.Unsetenv("GITHUB_OUTPUT"); err != nil {
+		t.Fatal(err)
+	}
+	writeLinkedCount(1) // must not panic
+}
+
+func readFile(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(b)
 }
