@@ -1,10 +1,19 @@
 #!/usr/bin/env bash
 # Promote a just-published stable release: retag docker moving tags onto the
 # version's already-published, already-signed manifest (a digest-preserving
-# copy via `docker buildx imagetools create`, never a rebuild -- cosign
-# signatures are digest-scoped OCI referrers, so the copy stays verifiable
-# with no re-signing), and optionally flip a paired public release off
-# pre-release + onto latest.
+# retag via `crane tag`, never a rebuild -- cosign signatures are
+# digest-scoped OCI referrers, so the copy stays verifiable with no
+# re-signing), and optionally flip a paired public release off pre-release +
+# onto latest.
+#
+# `crane tag`, not `docker buildx imagetools create`: imagetools is
+# digest-preserving only when the source is already a multi-arch index. For a
+# bare single-platform manifest (a per-arch tag like :vX.Y.Z-amd64) it wraps
+# the manifest in a NEW index, changing the digest and orphaning the
+# digest-scoped cosign signature. `crane tag` re-points a tag at the exact
+# same manifest digest for both single-platform manifests and indexes, so it
+# covers the whole moving-tag matrix -- including the per-arch tags -- without
+# breaking signatures. (Verified live, DEVOPS-1083.)
 #
 # Only acts on a stable vX.Y.Z version; any other shape (has a "-" suffix) is
 # a no-op, since moving tags and "latest" promotion aren't meaningful for
@@ -197,7 +206,7 @@ for ((i = 0; i < IMAGE_COUNT; i++)); do
     echo "::error::images[$i] is missing required \"image\" field: ${entry}" >&2
     exit 1
   fi
-  if [[ "${DRY_RUN}" != "true" ]] && ! docker buildx imagetools inspect "${image}:${VERSION}${suffix}" >/dev/null 2>&1; then
+  if [[ "${DRY_RUN}" != "true" ]] && ! crane digest "${image}:${VERSION}${suffix}" >/dev/null 2>&1; then
     echo "::error::source manifest ${image}:${VERSION}${suffix} does not exist; refusing to start retagging" >&2
     exit 1
   fi
@@ -221,7 +230,10 @@ for ((i = 0; i < IMAGE_COUNT; i++)); do
   for moving in "${moving_tags[@]}"; do
     dest="${image}:${moving}${suffix}"
     echo "Retagging ${dest} -> ${src}"
-    run docker buildx imagetools create --tag "${dest}" "${src}"
+    # crane tag SRC NEWTAG re-points NEWTAG (in SRC's repo) at SRC's exact
+    # manifest digest -- digest-preserving for both single-platform manifests
+    # and indexes, so per-arch moving tags stay cosign-verifiable (see header).
+    run crane tag "${src}" "${moving}${suffix}"
   done
 done
 
@@ -406,7 +418,7 @@ promote_homebrew_formula() {
       -f message="chore: bump ${formula_path} to ${VERSION}" \
       -f content="${new_content_b64}" \
       -f sha="${current_sha}" >/dev/null; then
-    echo "::warning::failed to update ${tap_repo}/${formula_path} to ${VERSION}; docker retags (and oss-repo promotion, if configured) already succeeded. Re-run this action to retry the tap update - it is idempotent (imagetools create and the formula patch both re-apply cleanly)."
+    echo "::warning::failed to update ${tap_repo}/${formula_path} to ${VERSION}; docker retags (and oss-repo promotion, if configured) already succeeded. Re-run this action to retry the tap update - it is idempotent (crane tag and the formula patch both re-apply cleanly)."
   fi
 }
 

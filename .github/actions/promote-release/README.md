@@ -1,12 +1,21 @@
 # Promote Release
 
 Retags the moving docker tags (`:latest`, `:{major}`, `:{major}.{minor}`, and
-any configured suffix variant such as `-fips`) onto the digest of an already
-published, already signed version tag — a manifest copy via
-`docker buildx imagetools create`, never a rebuild, so cosign signatures (OCI
-referrers, digest-scoped) stay valid with no re-signing. Optionally also
+any configured suffix variant such as `-fips`, `-amd64`, `-fips-arm64v8`) onto
+the digest of an already published, already signed version tag — a
+digest-preserving retag via `crane tag`, never a rebuild, so cosign signatures
+(OCI referrers, digest-scoped) stay valid with no re-signing. Optionally also
 promotes a paired public release in a companion repo (unsets `prerelease`,
 sets `latest`).
+
+`crane tag` is used rather than `docker buildx imagetools create`: imagetools
+is digest-preserving only when the source is already a multi-arch index. For a
+bare single-platform manifest (a per-arch tag such as `:{version}-amd64`) it
+wraps the manifest in a **new** index, changing its digest and orphaning the
+digest-scoped cosign signature. `crane tag` re-points a tag at the exact same
+manifest digest for both single-platform manifests and indexes, so it covers
+the whole moving-tag matrix — including the per-arch tags — without breaking
+signatures.
 
 Wire this from `on: release: types: [released]` on the repo that owns the
 moving tags. That event only fires when a human — not `GITHUB_TOKEN`/a bot —
@@ -44,16 +53,16 @@ as an all-or-nothing skip — a formula has no line-scoped equivalent to
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-|         INPUT          |  TYPE  | REQUIRED |  DEFAULT  |                                                                                                                                       DESCRIPTION                                                                                                                                       |
-|------------------------|--------|----------|-----------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-|    docker-username     | string |   true   |           |                                                                          Username paired with github-token for the <br>GHCR login (GHCR checks the token, but docker/login-action requires a username value).                                                                           |
-|        dry-run         | string |  false   | `"false"` |                   Fail-closed: a real promotion runs only <br>on an exact "false" (the default, so the release:released trigger still promotes for real). Any <br>other value ("true", a typo, etc.) is a dry-run <br>that only prints the planned retags/promotion.                    |
-|      github-token      | string |   true   |           |                                                                                            Token with GHCR write:packages, and contents:write <br>on oss-repo and homebrew-tap-repo if set.                                                                                             |
-| homebrew-formula-paths | string |  false   |  `"[]"`   |                                                                    JSON array of formula file paths <br>within homebrew-tap-repo to update, e.g. ["Formula/vcluster.rb"]. <br>Required if homebrew-tap-repo is set.                                                                     |
-|   homebrew-tap-repo    | string |  false   |           |                                                       owner/repo of a Homebrew tap to <br>promote (e.g. loft-sh/homebrew-tap). Requires oss-repo to be <br>set, since checksums come from its <br>release. Leave empty to skip.                                                         |
-|         images         | string |   true   |           | JSON array of image entries to <br>retag, each `{"image": "ghcr.io/loft-sh/x", "suffix": ""}` (suffix optional, default <br>""). For each entry, copies `<image>:<version><suffix>` <br>to `<image>:latest<suffix>`, `<image>:<major><suffix>`, and `<image>:<major>.<minor><suffix>`.  |
-|        oss-repo        | string |  false   |           |                                                                            owner/repo whose matching <version> release should <br>also be promoted (prerelease unset, latest set). Leave empty <br>to skip.                                                                             |
-|        version         | string |   true   |           |                                                                                                                         The promoted release tag, e.g. v0.37.1.                                                                                                                         |
+|         INPUT          |  TYPE  | REQUIRED |  DEFAULT  |                                                                                                                                                                                                                                                                              DESCRIPTION                                                                                                                                                                                                                                                                               |
+|------------------------|--------|----------|-----------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|    docker-username     | string |   true   |           |                                                                                                                                                                                                                 Username paired with github-token for the <br>GHCR login (GHCR checks the token, but docker/login-action requires a username value).                                                                                                                                                                                                                   |
+|        dry-run         | string |  false   | `"false"` |                                                                                                                                                          Fail-closed: a real promotion runs only <br>on an exact "false" (the default, so the release:released trigger still promotes for real). Any <br>other value ("true", a typo, etc.) is a dry-run <br>that only prints the planned retags/promotion.                                                                                                                                                            |
+|      github-token      | string |   true   |           |                                                                                                                                                                                                                                   Token with GHCR write:packages, and contents:write <br>on oss-repo and homebrew-tap-repo if set.                                                                                                                                                                                                                                     |
+| homebrew-formula-paths | string |  false   |  `"[]"`   |                                                                                                                                                                                                           JSON array of formula file paths <br>within homebrew-tap-repo to update, e.g. ["Formula/vcluster.rb"]. <br>Required if homebrew-tap-repo is set.                                                                                                                                                                                                             |
+|   homebrew-tap-repo    | string |  false   |           |                                                                                                                                                                                               owner/repo of a Homebrew tap to <br>promote (e.g. loft-sh/homebrew-tap). Requires oss-repo to be <br>set, since checksums come from its <br>release. Leave empty to skip.                                                                                                                                                                                                |
+|         images         | string |   true   |           | JSON array of image entries to <br>retag, each `{"image": "ghcr.io/loft-sh/x", "suffix": ""}` (suffix optional, default <br>""). For each entry, copies `<image>:<version><suffix>` <br>to `<image>:latest<suffix>`, `<image>:<major><suffix>`, and `<image>:<major>.<minor><suffix>`. The <br>suffix is also how per-arch moving <br>tags are promoted: an entry with <br>suffix `-amd64` retags `<image>:<version>-amd64` (a bare single-platform manifest) to <br>`<image>:latest-amd64` etc. crane preserves its digest, <br>so its cosign signature stays valid.  |
+|        oss-repo        | string |  false   |           |                                                                                                                                                                                                                   owner/repo whose matching <version> release should <br>also be promoted (prerelease unset, latest set). Leave empty <br>to skip.                                                                                                                                                                                                                     |
+|        version         | string |   true   |           |                                                                                                                                                                                                                                                                The promoted release tag, e.g. v0.37.1.                                                                                                                                                                                                                                                                 |
 
 <!-- AUTO-DOC-INPUT:END -->
 
@@ -103,11 +112,12 @@ make — otherwise `release: types: [released]` never fires for a stable cut.
 
 ### GHCR login
 
-`docker buildx imagetools create` needs to push to GHCR. `action.yml` already
-includes a `docker/login-action` step using `docker-username` + `github-token`
-(GHCR checks the token; `docker/login-action` still requires a username
-value), skipped automatically when `dry-run: true` — callers don't need to
-log in separately.
+`crane tag` needs to push to GHCR. `action.yml` includes a `docker/login-action`
+step using `docker-username` + `github-token` (GHCR checks the token;
+`docker/login-action` still requires a username value); crane reads the docker
+config that step writes, so no separate crane login is needed. The login is
+skipped automatically when `dry-run: true`. `action.yml` also installs crane
+(`imjasonh/setup-crane`), so callers don't need to install it themselves.
 
 ### oss-repo
 
