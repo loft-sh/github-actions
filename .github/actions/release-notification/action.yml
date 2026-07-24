@@ -68,7 +68,7 @@ runs:
         echo "base_branch=$BRANCH" >> "$GITHUB_OUTPUT"
     - name: Post release notification
       if: inputs.status == 'success'
-      uses: slackapi/slack-github-action@45a88b9581bfab2566dc881e2cd66d334e621e2c  # v3.0.3
+      uses: slackapi/slack-github-action@0d95c9a7becc1e6e297d76df9bc735c44f4cbcbc  # v3.0.5
       with:
         errors: true
         webhook-type: incoming-webhook
@@ -123,7 +123,7 @@ runs:
         esac
     - name: Post release failure notification
       if: inputs.status != 'success'
-      uses: slackapi/slack-github-action@45a88b9581bfab2566dc881e2cd66d334e621e2c  # v3.0.3
+      uses: slackapi/slack-github-action@0d95c9a7becc1e6e297d76df9bc735c44f4cbcbc  # v3.0.5
       with:
         errors: true
         webhook-type: incoming-webhook
