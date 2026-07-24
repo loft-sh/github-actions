@@ -72,7 +72,7 @@ runs:
     # (script 2>/dev/null || rm -f CLAUDE.md) on every run.
     - name: Checkout PR head
       if: steps.cfg.outputs.proceed == 'true' && inputs.provider == 'anthropic'
-      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       with:
         ref: ${{ github.event.pull_request.head.sha }}
         fetch-depth: 0
@@ -95,7 +95,7 @@ runs:
 
     - name: Claude PR review
       if: steps.cfg.outputs.proceed == 'true' && inputs.provider == 'anthropic'
-      uses: anthropics/claude-code-action@f4fb5c6cdccc1ee7af63692f5d08d56efaa64cc8 # v1.0.121
+      uses: anthropics/claude-code-action@e0cf66d1d257526b5d07f141838c338921cb8455 # v1.0.182
       with:
         anthropic_api_key: ${{ inputs.anthropic-api-key }} # zizmor: ignore[secrets-outside-env] -- API key passed via composite input, not a repo secret
         github_token: ${{ inputs.github-token }}
@@ -131,7 +131,7 @@ runs:
     # root, and clobbering it breaks GitHub's late-stage action resolution.
     - name: Checkout PR head (openai)
       if: steps.cfg.outputs.proceed == 'true' && inputs.provider == 'openai'
-      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       with:
         ref: ${{ github.event.pull_request.head.sha }}
         fetch-depth: 0
@@ -144,7 +144,7 @@ runs:
     - name: Codex PR review
       id: codex
       if: steps.cfg.outputs.proceed == 'true' && inputs.provider == 'openai'
-      uses: openai/codex-action@e0fdf01220eb9a88167c4898839d273e3f2609d1 # v1.8
+      uses: openai/codex-action@52fe01ec70a42f454c9d2ebd47598f9fd6893d56 # v1.11
       with:
         openai-api-key: ${{ inputs.openai-api-key }} # zizmor: ignore[secrets-outside-env] -- API key passed via composite input, not a repo secret
         model: ${{ steps.cfg.outputs.model }}
