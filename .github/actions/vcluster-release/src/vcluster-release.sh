@@ -67,6 +67,28 @@ normalize_version() {
   printf '%s\n' "$v"
 }
 
+# validate_version <version> - hard-fail anything that is not our tag shape.
+# Runs AFTER normalize_version, so a recoverable paste (missing v, capitalized V,
+# stray whitespace) has already been repaired and only genuinely malformed input
+# reaches here. Deliberately STRICTER than semver, because the value is used
+# verbatim as a git tag and every downstream consumer assumes vMAJOR.MINOR.PATCH:
+#   vX.Y     would create a tag colliding with the vX.Y release BRANCH, leaving an
+#            ambiguous ref that git resolves with a warning.
+#   vX.Y.Z.N is not semver at all.
+#   0.37.1   bare semver is valid to node-semver but cannot be promoted
+#            (promote-release matches ^v[0-9]+\.[0-9]+\.[0-9]+$) nor resolved by
+#            the Go module proxy; normalize_version has already fixed it by here.
+# Build metadata (+meta) is rejected too: no consumer in the pipeline handles it.
+# The prerelease body is only shape-checked here - classify_suffix decides which
+# suffixes are actually routable, and is fail-closed on unknown ones.
+validate_version() {
+  local v="$1"
+  if [[ ! "$v" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+    echo "::error::version '${v}' is not a valid release version. Expected vMAJOR.MINOR.PATCH with an optional prerelease suffix, e.g. v0.37.1, v0.37.0-rc.1, v0.37.0-next.internal.3." >&2
+    return 1
+  fi
+}
+
 # parse_major_minor <version> -> "MAJOR MINOR"
 # Accepts v-prefixed or bare, with or without patch/prerelease:
 #   v0.35.4-rc.1 -> "0 35", v1.0 -> "1 0". Fails loudly on garbage.
@@ -344,6 +366,11 @@ main() {
   if [[ "$version" != "$raw_version" ]]; then
     echo "::notice::normalized version '${raw_version}' -> '${version}'"
   fi
+  # Gate on the canonical value, before any branch is read or tag created. This
+  # is the single validation point for EVERY release line: legacy cuts fan out
+  # from here too, so their branch-local release.yaml never sees a malformed
+  # version even though it carries no gate of its own.
+  validate_version "$version" || exit 1
   # Fail closed: only an explicit, unambiguous "false" cuts for real. Any other
   # value (empty, typo, "yes", "1", wrong case, stray whitespace) stays in
   # dry-run, so a misconfigured caller can never accidentally fire a real

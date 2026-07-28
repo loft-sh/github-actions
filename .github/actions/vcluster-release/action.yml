@@ -30,10 +30,14 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Validate version
-      uses: loft-sh/github-actions/.github/actions/semver-validation@6b5890feaccd82f7c0999ccf10a425cd0844dee0 # semver-validation/v1
-      with:
-        version: ${{ inputs.version }}
+    # Version validation lives in the script (validate_version), not here. This
+    # step used to call semver-validation with no `id:` and no gate, so its
+    # result was discarded and a malformed version went on to be tagged
+    # (DEVOPS-798). It also could not be ordered correctly: running before the
+    # script, it saw the RAW input and would reject a recoverable paste such as
+    # "V0.37.1" that normalize_version repairs. In-script validation runs after
+    # normalization, is stricter than semver (the leading v and a patch
+    # component are required), and is covered by the bats suite.
     - name: Cut release
       shell: bash
       env:
