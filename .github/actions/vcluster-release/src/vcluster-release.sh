@@ -47,6 +47,48 @@ TRIGGERED_BY="${TRIGGERED_BY:-}"
 # Pure helpers (no network) - the routing brain, exhaustively unit-tested.
 # ---------------------------------------------------------------------------
 
+# normalize_version <raw> -> canonical vX.Y.Z[-suffix]
+# Operators paste versions from Linear, Slack and release notes, where the
+# leading v is inconsistent and a stray space survives a copy. The routing
+# helpers below already tolerate both spellings (parse_major_minor strips an
+# optional v), but the raw string is used VERBATIM as the tag name and as the
+# double-cut probe key - so an un-normalized "0.37.1" would create a v-less tag
+# AND sail past guard_not_released, which probes for "v0.37.1" and gets a 404.
+# That silently re-releases an already-shipped version, and the resulting tag can
+# never be promoted (promote-release requires ^v[0-9]+\.[0-9]+\.[0-9]+$) nor be
+# resolved by the Go module proxy, which requires the v. Normalizing here, before
+# anything reads the value, makes both spellings land on the same canonical tag.
+normalize_version() {
+  local v="$1"
+  v="${v#"${v%%[![:space:]]*}"}"    # strip leading whitespace
+  v="${v%"${v##*[![:space:]]}"}"    # strip trailing whitespace
+  [[ "$v" == V* ]] && v="v${v#V}"   # accept a capitalized V
+  [[ "$v" == v* ]] || v="v${v}"     # supply the leading v when missing
+  printf '%s\n' "$v"
+}
+
+# validate_version <version> - hard-fail anything that is not our tag shape.
+# Runs AFTER normalize_version, so a recoverable paste (missing v, capitalized V,
+# stray whitespace) has already been repaired and only genuinely malformed input
+# reaches here. Deliberately STRICTER than semver, because the value is used
+# verbatim as a git tag and every downstream consumer assumes vMAJOR.MINOR.PATCH:
+#   vX.Y     would create a tag colliding with the vX.Y release BRANCH, leaving an
+#            ambiguous ref that git resolves with a warning.
+#   vX.Y.Z.N is not semver at all.
+#   0.37.1   bare semver is valid to node-semver but cannot be promoted
+#            (promote-release matches ^v[0-9]+\.[0-9]+\.[0-9]+$) nor resolved by
+#            the Go module proxy; normalize_version has already fixed it by here.
+# Build metadata (+meta) is rejected too: no consumer in the pipeline handles it.
+# The prerelease body is only shape-checked here - classify_suffix decides which
+# suffixes are actually routable, and is fail-closed on unknown ones.
+validate_version() {
+  local v="$1"
+  if [[ ! "$v" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+    echo "::error::version '${v}' is not a valid release version. Expected vMAJOR.MINOR.PATCH with an optional prerelease suffix, e.g. v0.37.1, v0.37.0-rc.1, v0.37.0-next.internal.3." >&2
+    return 1
+  fi
+}
+
 # parse_major_minor <version> -> "MAJOR MINOR"
 # Accepts v-prefixed or bare, with or without patch/prerelease:
 #   v0.35.4-rc.1 -> "0 35", v1.0 -> "1 0". Fails loudly on garbage.
@@ -316,7 +358,19 @@ cut_feature_prerelease() {
 }
 
 main() {
-  local version="${INPUT_VERSION:?INPUT_VERSION is required}" era line raw_dry_run
+  local raw_version="${INPUT_VERSION:?INPUT_VERSION is required}" version era line raw_dry_run
+  # Canonicalize before ANY consumer sees it: the tag name, the double-cut probe
+  # and every routing decision must all agree on one spelling. Echo the rewrite
+  # so the run log shows exactly which tag is about to be created.
+  version="$(normalize_version "$raw_version")"
+  if [[ "$version" != "$raw_version" ]]; then
+    echo "::notice::normalized version '${raw_version}' -> '${version}'"
+  fi
+  # Gate on the canonical value, before any branch is read or tag created. This
+  # is the single validation point for EVERY release line: legacy cuts fan out
+  # from here too, so their branch-local release.yaml never sees a malformed
+  # version even though it carries no gate of its own.
+  validate_version "$version" || exit 1
   # Fail closed: only an explicit, unambiguous "false" cuts for real. Any other
   # value (empty, typo, "yes", "1", wrong case, stray whitespace) stays in
   # dry-run, so a misconfigured caller can never accidentally fire a real
