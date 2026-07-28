@@ -86,6 +86,82 @@ EOF
   chmod +x "${STUB_DIR}/gh"
 }
 
+# ---- normalize_version (pure) ----
+
+@test "normalize_version: bare version gains the leading v" {
+  run normalize_version "0.37.1"
+  [ "$status" -eq 0 ]
+  [ "$output" = "v0.37.1" ]
+}
+
+@test "normalize_version: already-canonical version is untouched" {
+  run normalize_version "v0.37.1"
+  [ "$output" = "v0.37.1" ]
+}
+
+@test "normalize_version: prerelease suffixes survive normalization" {
+  run normalize_version "0.37.0-rc.1"
+  [ "$output" = "v0.37.0-rc.1" ]
+  run normalize_version "0.37.0-next.internal.3"
+  [ "$output" = "v0.37.0-next.internal.3" ]
+}
+
+@test "normalize_version: capitalized V is accepted" {
+  run normalize_version "V0.37.1"
+  [ "$output" = "v0.37.1" ]
+}
+
+@test "normalize_version: surrounding whitespace from a paste is stripped" {
+  run normalize_version "  v0.37.1  "
+  [ "$output" = "v0.37.1" ]
+  run normalize_version "	0.37.1 "
+  [ "$output" = "v0.37.1" ]
+}
+
+@test "normalize_version: does not eat a v inside the version" {
+  # only a LEADING v is structural; nothing else may be rewritten
+  run normalize_version "0.37.0-preview.1"
+  [ "$output" = "v0.37.0-preview.1" ]
+}
+
+# ---- main: a bare version routes and tags identically to the v-prefixed one ----
+
+@test "main: bare version is normalized before tagging and dispatch" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.37"
+  INPUT_VERSION="0.37.1" INPUT_DRY_RUN="true" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"normalized version '0.37.1' -> 'v0.37.1'"* ]]
+  [[ "$output" == *"ref=refs/tags/v0.37.1"* ]]
+  [[ "$output" != *"refs/tags/0.37.1 "* ]]
+  [[ "$output" == *"gh workflow run release.yaml --repo loft-sh/vcluster-pro --ref v0.37.1"* ]]
+}
+
+@test "main: a bare version does NOT bypass the double-cut guard" {
+  # The regression this normalization exists to prevent: probing for "0.37.1"
+  # 404s while "v0.37.1" is already shipped, silently re-releasing it.
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.37"
+  export GH_STUB_RELEASES="loft-sh/vcluster-pro:v0.37.1"
+  INPUT_VERSION="0.37.1" INPUT_DRY_RUN="true" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"release v0.37.1 already exists"* ]]
+}
+
+@test "main: bare legacy version tags both repos with the v-prefixed tag" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.36 loft-sh/vcluster-pro:v0.36"
+  INPUT_VERSION="0.36.5" INPUT_DRY_RUN="true" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"ref=refs/tags/v0.36.5 -f sha=<v0.36 head>"* ]]
+  [[ "$output" == *"--repo loft-sh/vcluster --ref v0.36.5"* ]]
+  [[ "$output" == *"--repo loft-sh/vcluster-pro --ref v0.36.5"* ]]
+}
+
+@test "main: a canonical version logs no normalization notice" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.37"
+  INPUT_VERSION="v0.37.1" INPUT_DRY_RUN="true" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"normalized version"* ]]
+}
+
 # ---- parse_major_minor (pure) ----
 
 @test "parse_major_minor: v-prefixed patch+prerelease -> major minor" {
