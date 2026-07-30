@@ -15,7 +15,7 @@ inputs:
     description: "Branch to sync (same name on both repos, usually github.ref_name)."
     required: true
   github-token:
-    description: "Token with read (import) or write (export) access to the OSS repo. Used to build the remote URL; never logged."
+    description: "Token used to build the OSS remote URL; never logged. Export needs write access to the OSS repo; import and health only read, so give health the least-privileged token that can fetch the OSS branch (github.token suffices for a public OSS repo) rather than a write-capable PAT."
     required: true
   oss-default-branch:
     description: "OSS default branch used to anchor newly created release-line branches. Export only."
