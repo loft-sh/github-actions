@@ -111,8 +111,12 @@ last_body() {
   [ "$(jq -r '.bypass_actors | length' <<<"$body")" = "2" ]
   [ "$(jq -r '.bypass_actors[0].actor_id' <<<"$body")" = "16898535" ]
   [ "$(jq -r '.bypass_actors[1].actor_id' <<<"$body")" = "10706830" ]
-  [ "$(jq -r '[.bypass_actors[].actor_type] | unique | .[0]' <<<"$body")" = "Team" ]
-  [ "$(jq -r '[.bypass_actors[].bypass_mode] | unique | .[0]' <<<"$body")" = "always" ]
+  # Assert each actor explicitly: a `unique | .[0]` check would pass a mixed set
+  # (jq's unique sorts, so ["Team","User"][0] is still "Team").
+  [ "$(jq -r '.bypass_actors[0].actor_type' <<<"$body")" = "Team" ]
+  [ "$(jq -r '.bypass_actors[1].actor_type' <<<"$body")" = "Team" ]
+  [ "$(jq -r '.bypass_actors[0].bypass_mode' <<<"$body")" = "always" ]
+  [ "$(jq -r '.bypass_actors[1].bypass_mode' <<<"$body")" = "always" ]
 }
 
 @test "freeze accepts several comma-separated extra bypass teams, in order" {
