@@ -62,7 +62,12 @@ if ! git_scrubbed fetch --quiet "$OSS_REMOTE" "refs/heads/${BRANCH}"; then
   echo "::warning::Could not fetch OSS branch ${BRANCH}; skipping the sync health report."
   exit 0
 fi
-OSS_TIP="$(git rev-parse FETCH_HEAD)"
+# Guarded like everything else here: an unguarded assignment would trip `set -e`
+# and exit non-zero, breaking the never-fail contract this script documents.
+if ! OSS_TIP="$(git rev-parse FETCH_HEAD)"; then
+  echo "::warning::Could not resolve FETCH_HEAD after fetching OSS ${BRANCH}; skipping the sync health report."
+  exit 0
+fi
 
 build_excludes
 
@@ -120,7 +125,15 @@ if [ -n "$ANCHOR" ]; then
     while read -r E; do
       [ -n "$E" ] || continue
       has_trailer "$E" "$MONOREPO_TRAILER" && continue
-      [ -z "$(git diff-tree --no-commit-id --name-only -r "$E" -- . ${excludes[@]+"${excludes[@]}"})" ] && continue
+      # Captured for the same reason as the outer rev-list: an unguarded failure
+      # here yields empty output, which reads as "touches only excluded paths"
+      # and drops the commit from the backlog with no degraded signal.
+      if ! diff_files="$(git diff-tree --no-commit-id --name-only -r "$E" -- . ${excludes[@]+"${excludes[@]}"})"; then
+        degraded=true
+        echo "::warning::Could not diff OSS commit ${E}; pending-count may be understated."
+        continue
+      fi
+      [ -z "$diff_files" ] && continue
       external_is_benign "$E" && continue
       pending=$((pending + 1))
       [ -z "$first_pending" ] && first_pending="$E"
@@ -143,7 +156,15 @@ squashed_list=()
 if entries="$(all_trailer_entries HEAD "$OSS_TRAILER")"; then
   while read -r M value; do
     [ -n "$value" ] || continue
-    if [ -z "$(git log -1 --format="%(trailers:key=${OSS_TRAILER},valueonly)" "$M" | tr -d '[:space:]')" ]; then
+    # Guarded in the other direction from the pending loop: an unguarded failure
+    # yields empty output, which here reads as "git could not see the trailer",
+    # i.e. a squash, and would raise a false policy alarm against a clean commit.
+    if ! parsed="$(git log -1 --format="%(trailers:key=${OSS_TRAILER},valueonly)" "$M")"; then
+      degraded=true
+      echo "::warning::Could not read the trailer block of ${M}; squashed-trailer-count may be understated."
+      continue
+    fi
+    if [ -z "$(printf '%s' "$parsed" | tr -d '[:space:]')" ]; then
       squashed=$((squashed + 1))
       squashed_list+=("$M")
     fi

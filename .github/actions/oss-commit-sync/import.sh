@@ -12,7 +12,7 @@ set -euo pipefail
 # trailers survive on the base branch.
 #
 # Resume point: the recorded Oss-Commit trailer that reaches farthest along OSS
-# history (see import_resume_point). SEED_OSS_COMMIT acts as a floor on it, so
+# history (see resolve_import_anchor). SEED_OSS_COMMIT acts as a floor on it, so
 # an operator can re-anchor a sync whose trailer state was damaged without
 # rewriting history. Commits whose diff is empty after path exclusion (touched
 # only excluded producer workflows) are skipped without a marker commit: the

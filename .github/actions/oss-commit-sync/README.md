@@ -163,7 +163,10 @@ reports is a broken pipeline waiting to happen — it surfaces the drift a green
 run hides. Never commits, pushes, or opens anything, and **never exits non-zero**:
 an advisory check must not red the base-branch push job, so a failed fetch or git
 call warns, sets `degraded=true`, and returns 0 with whatever it could determine.
-Gate on `degraded`, not on the job result. Wire it to `push` on the base branch.
+Gate on `degraded`, not on the job result. Wire it to `push` on the base branch,
+**with `continue-on-error: true`**: the in-script guarantee holds only as long as
+no unhandled `set -e`/`set -u` trip slips in, and CLAUDE.md's never-hard-fail
+rule for advisory workflows names the flag as the final safety net.
 
 It resolves the anchor through the same `lib.sh` helper the import uses, seed
 floor and content healing included, so the report cannot drift from what the
@@ -270,6 +273,7 @@ it sees that.
 # Health: on push to the base branch; report only, never fails the job.
 - uses: loft-sh/github-actions/.github/actions/oss-commit-sync@oss-commit-sync/v1
   id: health
+  continue-on-error: true   # advisory: must never block the push job
   with:
     direction: health
     subtree-prefix: staging/github.com/loft-sh/vcluster

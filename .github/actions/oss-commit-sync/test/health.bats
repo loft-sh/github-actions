@@ -113,6 +113,46 @@ Co-authored-by: alice <alice@contributor.example>"
   [[ "$output" == *"seed-oss-commit"* ]]
 }
 
+@test "an unreachable OSS remote warns and exits 0, never reds the caller" {
+  # The most likely real failure (network, expired token, renamed branch). An
+  # advisory check must not block a push to the base branch over it.
+  OSS_REMOTE="$ROOT/does-not-exist.git" run bash "$HEALTH"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"::warning::"* ]]
+  [[ "$output" != *"::error::"* ]]
+}
+
+@test "a failing git producer degrades instead of reporting a clean backlog" {
+  external_commit ext.go "one" "feat: alice first" >/dev/null
+
+  # Fails ONLY diff-tree, so the outer rev-list still succeeds and the loop runs.
+  # That isolates the per-commit producer: unguarded, its empty output reads as
+  # "touches only excluded paths" and drops the commit from the backlog with no
+  # degraded signal, so health reports pending-count=0 because git broke.
+  # The real binary is resolved to an absolute path FIRST, otherwise the shim
+  # re-resolves `git` through the patched PATH and recurses forever.
+  real_git="$(command -v git)"
+  mkdir -p "$ROOT/bin"
+  cat > "$ROOT/bin/git" <<WRAP
+#!/usr/bin/env bash
+for a in "\$@"; do
+  case "\$a" in
+    diff-tree) exit 128 ;;
+  esac
+done
+exec "$real_git" "\$@"
+WRAP
+  chmod +x "$ROOT/bin/git"
+
+  PATH="$ROOT/bin:$PATH" run bash "$HEALTH"
+  # Never fails the caller ...
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"::error::"* ]]
+  # ... but says so, instead of issuing a clean bill of health it cannot support.
+  [ "$(output_value degraded)" = "true" ]
+  [[ "$output" == *"::warning::"* ]]
+}
+
 @test "the step summary records the findings" {
   external_commit ext.go "one" "feat: alice first" >/dev/null
   run bash "$HEALTH"
