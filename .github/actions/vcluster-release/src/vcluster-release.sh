@@ -50,6 +50,14 @@ PRO_OWNER="${PRO_REPO%%/*}"
 # poll has to outlast a full e2e run plus the merge.
 BUMP_WAIT_ATTEMPTS="${BUMP_WAIT_ATTEMPTS:-480}"
 BUMP_WAIT_SLEEP_SECONDS="${BUMP_WAIT_SLEEP_SECONDS:-15}"
+# Consecutive poll API failures tolerated before the wait fails fast: a blip
+# keeps polling, a sustained auth/repo failure aborts with the real cause
+# instead of silently waiting out the full timeout.
+BUMP_WAIT_MAX_API_FAILURES="${BUMP_WAIT_MAX_API_FAILURES:-5}"
+# jq filter reducing the pulls list to "<state>|<merged_at>" for the newest PR;
+# a null (no PR yet) collapses to "none|" via the // fallbacks so parsing never
+# errors. Extracted so the bats suite can validate the exact expression.
+BUMP_PR_JQ='.[0] | "\(.state // "none")|\(.merged_at // "")"'
 # The human who invoked cut-release. Forwarded to the monorepo-era release.yaml
 # (-f triggered_by=...) so the Slack banner attributes the person, not the bot
 # PAT that dispatches the build. Only passed on paths whose release.yaml declares
@@ -328,8 +336,11 @@ dispatch() {
 #
 # Honors DRY_RUN: prints the dispatch and the PR it would wait on, mutates
 # nothing. The bump branch name is the contract shared with the pro
-# release-bump-vcluster.yaml (which creates it) and auto-approve-bot-prs.yaml
-# (which auto-merges branches matching chore/*/bump-vcluster-*).
+# release-bump-vcluster.yaml (which creates it) and this poll's head= filter.
+# auto-approve-bot-prs enables auto-merge for the PR via the vcluster-pro
+# caller's branch-scoped `if:` (chore/*/bump-vcluster-*) PLUS the action's own
+# eligibility gate (trusted author loft-bot + a chore-prefixed PR *title*) --
+# the branch match alone is not auto-approve's merge lever.
 bump_pro_dependency() {
   local version="$1" line="$2"
   local bump_branch="chore/${line}/bump-vcluster-${version}"
@@ -349,22 +360,47 @@ bump_pro_dependency() {
 # timeout aborts the cut, so pro is never tagged against an un-bumped go.mod. A
 # still-absent PR (the dispatched workflow has not opened it yet) is a normal
 # early state, so keep polling until it appears.
+#
+# A "closed" state only aborts once the PR has been seen "open" during THIS
+# wait. On the documented re-run recovery a previous closed PR is still the
+# newest ?state=all match for the ~1-2 min until the fresh workflow opens a new
+# one; without this guard the first poll would abort every re-run. Sustained
+# API failures (bad token/repo, not a transient blip) also abort, so a real
+# auth error surfaces with its own cause instead of the generic timeout.
 wait_for_bump_merge() {
-  local bump_branch="$1" base="$2" i tuple state merged
+  local bump_branch="$1" base="$2" i out rc tuple state merged
+  local seen_open="false" fails=0
   for (( i = 1; i <= BUMP_WAIT_ATTEMPTS; i++ )); do
-    # .[0] is the newest PR for this head+base; null (no PR yet) collapses to
-    # "none|" via the // fallbacks, so parsing never errors on an empty result.
-    tuple="$(gh api "repos/${PRO_REPO}/pulls?head=${PRO_OWNER}:${bump_branch}&base=${base}&state=all" \
-      --jq '.[0] | "\(.state // "none")|\(.merged_at // "")"' 2>/dev/null || true)"
+    rc=0
+    out="$(gh api "repos/${PRO_REPO}/pulls?head=${PRO_OWNER}:${bump_branch}&base=${base}&state=all" \
+      --jq "$BUMP_PR_JQ" 2>&1)" || rc=$?
+    if (( rc != 0 )); then
+      fails=$(( fails + 1 ))
+      echo "::warning::bump-merge poll attempt ${i}: GitHub API call failed (${fails}/${BUMP_WAIT_MAX_API_FAILURES}): $(printf '%s' "$out" | tr '\n' ' ')"
+      if (( fails >= BUMP_WAIT_MAX_API_FAILURES )); then
+        echo "::error::${BUMP_WAIT_MAX_API_FAILURES} consecutive GitHub API failures polling ${PRO_REPO} pulls (head=${PRO_OWNER}:${bump_branch}); check the token scopes and repo, not the bump workflow." >&2
+        exit 1
+      fi
+      sleep "${BUMP_WAIT_SLEEP_SECONDS}"
+      continue
+    fi
+    fails=0
+    tuple="$out"
     state="${tuple%%|*}"
     merged="${tuple#*|}"
     if [[ -n "$merged" ]]; then
       echo "::notice::bump PR ${bump_branch} merged into ${base} (${merged})."
       return 0
     fi
-    if [[ "$state" == "closed" ]]; then
+    [[ "$state" == "open" ]] && seen_open="true"
+    if [[ "$state" == "closed" && "$seen_open" == "true" ]]; then
       echo "::error::bump PR ${bump_branch} was closed without merging; aborting the cut so pro is not tagged against an un-bumped go.mod." >&2
       exit 1
+    fi
+    # Periodic heartbeat so an operator watching a stuck cut can tell a healthy
+    # poll from a silent hang.
+    if (( i % 12 == 0 )); then
+      echo "::notice::bump-merge poll: attempt ${i}/${BUMP_WAIT_ATTEMPTS} (~$(( i * BUMP_WAIT_SLEEP_SECONDS / 60 )) min), PR state=${state}, still waiting for merge."
     fi
     sleep "${BUMP_WAIT_SLEEP_SECONDS}"
   done

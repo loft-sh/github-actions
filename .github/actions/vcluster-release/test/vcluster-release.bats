@@ -77,15 +77,20 @@ if [[ "$sub" == "api" ]]; then
     repos/*/git/refs/heads/*)
       echo "deadbeefcafe"; exit 0 ;;
     repos/*/pulls*)
-      # Emulate `gh api <pulls> --jq '.[0] | "\(.state)|\(.merged_at)"'`. The stub
-      # replaces gh (no real jq), so echo the exact tuple wait_for_bump_merge
-      # parses. GH_STUB_BUMP_PR selects the PR state; default merged so the happy
-      # path needs no extra setup. A merged PR is state=closed with merged_at set.
+      # Emulate `gh api <pulls> --jq "$BUMP_PR_JQ"`. The stub replaces gh (no
+      # real jq), so echo the exact tuple wait_for_bump_merge parses. A merged
+      # PR is state=closed with merged_at set. GH_STUB_BUMP_PR selects the mode;
+      # default merged so the happy path needs no extra setup. Multi-step modes
+      # count invocations in a per-test state file next to the stub.
+      _cf="$(dirname "$0")/pulls_calls"
+      _n=0; [ -f "$_cf" ] && _n="$(cat "$_cf")"; _n=$(( _n + 1 )); echo "$_n" > "$_cf"
       case "${GH_STUB_BUMP_PR:-merged}" in
-        merged) echo "closed|2026-01-02T03:04:05Z" ;;
-        closed) echo "closed|" ;;
-        open)   echo "open|" ;;
-        *)      echo "none|" ;;
+        merged)           echo "closed|2026-01-02T03:04:05Z" ;;
+        closed)           echo "closed|" ;;            # pre-existing closed, never seen open (re-run case)
+        open)             echo "open|" ;;
+        open_then_closed) if [ "$_n" -le 1 ]; then echo "open|"; else echo "closed|"; fi ;;
+        fail)             exit 1 ;;                     # simulate a gh api failure
+        *)                echo "none|" ;;
       esac
       exit 0 ;;
     *)
@@ -545,15 +550,28 @@ EOF
   [ "$merged" -lt "$pro_tag" ]
 }
 
-@test "legacy non-dry-run: a bump PR closed without merging aborts before tagging pro" {
+@test "legacy non-dry-run: a bump PR closed after being open aborts before tagging pro" {
   export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
-  export GH_STUB_BUMP_PR="closed"
+  export GH_STUB_BUMP_PR="open_then_closed"
   INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run main
   [ "$status" -ne 0 ]
   [[ "$output" == *"closed without merging"* ]]
   # Pro is never tagged and OSS is never dispatched against an un-bumped go.mod.
   [[ "$output" != *"created tag v0.35.4 in loft-sh/vcluster-pro "* ]]
   [[ "$output" != *"dispatched release.yaml in loft-sh/vcluster "* ]]
+}
+
+@test "legacy non-dry-run: a pre-existing closed PR (re-run) is NOT a false abort" {
+  # Recovery re-run: a previous closed PR is the newest ?state=all match until
+  # the fresh workflow opens a new one. Never having been seen open, it must not
+  # trip the closed-abort; the wait keeps polling and times out instead.
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  export GH_STUB_BUMP_PR="closed"
+  export BUMP_WAIT_ATTEMPTS=3
+  INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"timed out"* ]]
+  [[ "$output" != *"closed without merging"* ]]
 }
 
 @test "legacy non-dry-run: a bump PR that never merges times out and aborts" {
@@ -564,6 +582,30 @@ EOF
   [ "$status" -ne 0 ]
   [[ "$output" == *"timed out"* ]]
   [[ "$output" != *"created tag v0.35.4 in loft-sh/vcluster-pro "* ]]
+}
+
+@test "legacy non-dry-run: sustained poll API failures abort fast with an auth pointer" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  export GH_STUB_BUMP_PR="fail"
+  export BUMP_WAIT_MAX_API_FAILURES=3
+  INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"consecutive GitHub API failures"* ]]
+  [[ "$output" != *"timed out"* ]]
+  [[ "$output" != *"created tag v0.35.4 in loft-sh/vcluster-pro "* ]]
+}
+
+@test "bump-merge poll jq filter extracts state|merged_at from real JSON" {
+  # The gh stub echoes a pre-parsed tuple, so the real BUMP_PR_JQ expression is
+  # otherwise untested. Pipe real JSON through it (using the actual jq binary)
+  # so a field rename or broken // fallback is caught.
+  run bash -c "printf '%s' '[{\"state\":\"closed\",\"merged_at\":\"2026-01-02T03:04:05Z\"}]' | jq -r '${BUMP_PR_JQ}'"
+  [ "$status" -eq 0 ]
+  [ "$output" = "closed|2026-01-02T03:04:05Z" ]
+  # Empty result (no PR yet) must collapse to "none|", never error.
+  run bash -c "printf '%s' '[]' | jq -r '${BUMP_PR_JQ}'"
+  [ "$status" -eq 0 ]
+  [ "$output" = "none|" ]
 }
 
 @test "monorepo non-dry-run: reaches the mutating pro-only path" {
