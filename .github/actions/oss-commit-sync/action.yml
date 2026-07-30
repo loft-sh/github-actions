@@ -67,6 +67,9 @@ outputs:
   skipped-count:
     description: "Import: number of external commits considered but not replayed, because they touch only excluded paths or their content is already in the subtree."
     value: ${{ steps.sync.outputs.skipped-count }}
+  healed-count:
+    description: "Import: number of OSS commits the anchor advanced over because the subtree already held their content while no readable Oss-Commit trailer recorded them. Non-zero means trailers are being lost during merge."
+    value: ${{ steps.sync.outputs.healed-count }}
   conflict-sha:
     description: "Import: the OSS commit that failed the 3-way apply, when the run failed on a conflict."
     value: ${{ steps.sync.outputs.conflict-sha }}
@@ -77,13 +80,16 @@ outputs:
     description: "Health: true when the subtree already holds the OSS branch tip content (ignoring exclude-paths)."
     value: ${{ steps.sync.outputs.converged }}
   anchor:
-    description: "Health: the OSS commit the import would resume from, or empty when no readable anchor is reachable."
+    description: "Health: the OSS commit the import will resume from, after content healing. Empty only when neither a trailer nor the subtree content identifies one."
     value: ${{ steps.sync.outputs.anchor }}
+  recorded-anchor:
+    description: "Health: the anchor the Oss-Commit trailers actually record, before content healing. Behind `anchor` when trailers have been lost."
+    value: ${{ steps.sync.outputs.recorded-anchor }}
   stale-anchor:
-    description: "Health: true when OSS commits already present in the subtree sit between the anchor and the OSS tip, so every import re-walks them."
+    description: "Health: true when the recorded trailers lag the subtree content. The import heals this itself; it means the affected external commits carry no recorded provenance on the base branch."
     value: ${{ steps.sync.outputs.stale-anchor }}
   suggested-anchor:
-    description: "Health: the seed-oss-commit value that re-anchors the sync; empty when the anchor is current."
+    description: "Health: the content-derived anchor, i.e. what the import heals to. Empty when the trailers are current."
     value: ${{ steps.sync.outputs.suggested-anchor }}
   pending-count:
     description: "Health: number of OSS commits genuinely waiting to be imported."

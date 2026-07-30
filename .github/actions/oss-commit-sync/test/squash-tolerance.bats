@@ -131,6 +131,34 @@ Co-authored-by: alice <alice@contributor.example>"
   [ -z "$(output_value conflict-sha)" ]
 }
 
+@test "a lost trailer heals from content while pending commits still import" {
+  # The case that would otherwise need an operator repair: the trailer recording
+  # E1 is gone entirely, so no message scan can recover it. The subtree content
+  # is the surviving evidence that E1 landed, and the anchor is derived from it.
+  # Crucially, healing must not swallow E2: the anchor advances only as far as
+  # the subtree content proves, and genuinely pending work is still replayed.
+  E1=$(external_commit pkg/app.go "first-external-version" "fix: first external edit")
+  bash "$IMPORT"
+  squash_merge_pr_branch "chore: sync from oss (#42)"
+
+  E2=$(external_commit pkg/app.go "second-external-version" "test: follow-up on the same lines")
+
+  git -C "$MONO" switch -q main
+  run bash "$IMPORT"
+  [ "$status" -eq 0 ]
+  [ -z "$(output_value conflict-sha)" ]
+  # Anchor healed over E1 ...
+  [ "$(output_value healed-count)" = "1" ]
+  # ... and E2 was still imported, with its authorship and trailer intact.
+  [ "$(output_value replayed-count)" = "1" ]
+  [ "$(output_value has-changes)" = "true" ]
+  cd "$MONO"
+  git switch -q automation/sync-from-oss-main
+  [ "$(cat "$PFX/pkg/app.go")" = "second-external-version" ]
+  [ "$(git log -1 --format=%an)" = "alice" ]
+  [ "$(git log -1 --format=%B | grep '^Oss-Commit:' | awk '{print $2}')" = "$E2" ]
+}
+
 @test "an out-of-order trailer cannot drag the anchor backwards" {
   # Anchor selection takes the recorded import that reaches FARTHEST along OSS
   # history, not the one on the newest monorepo commit. Those differ whenever a

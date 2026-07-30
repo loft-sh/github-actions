@@ -20,12 +20,16 @@ set -euo pipefail
 # the next run is idempotent and free. This deliberately avoids --allow-empty
 # marker commits, whose survival across GitHub's rebase-merge is not guaranteed.
 #
-# Before walking anything, the subtree is compared against the OSS tip: when it
-# already holds the tip content there is provably nothing to import and the run
-# exits green without replaying. That is the backstop for a stale anchor, which
-# would otherwise re-walk commits already in the subtree and hard-fail as soon
-# as one of them stopped applying as a no-op, a later OSS commit having since
-# touched the same lines.
+# The anchor then heals itself from content: it advances to the newest OSS commit
+# whose content the subtree already holds. A trailer is a *record* of an import,
+# but the subtree tree is *evidence* of one, and evidence survives a squash, a
+# hand-edited message, or a hand-made import that forgot the trailer. Damaged
+# trailer state therefore repairs itself on every run, with no marker commit and
+# no operator action. Without it the redundant range is re-walked every run,
+# which is invisible while each commit still applies as a no-op and then becomes
+# a hard conflict once a later OSS commit touches the same lines as an earlier
+# one. Commits after the healed anchor are still imported normally, so nothing is
+# skipped silently.
 #
 # Diff replay (not tree snapshots) means an external commit never reverts
 # monorepo changes that have not been exported yet: only the external
@@ -42,8 +46,8 @@ set -euo pipefail
 # EXCLUDE_PATHS (newline-separated paths relative to the OSS repo root),
 # PR_BRANCH (default automation/sync-from-oss-<branch>), GITHUB_OUTPUT.
 #
-# Outputs: has-changes, replayed-count, skipped-count, conflict-sha,
-# pr-branch.
+# Outputs: has-changes, replayed-count, skipped-count, healed-count,
+# conflict-sha, pr-branch.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -60,6 +64,7 @@ cd "$(git rev-parse --show-toplevel)"
 emit has-changes false
 emit replayed-count 0
 emit skipped-count 0
+emit healed-count 0
 emit conflict-sha ""
 emit pr-branch "$PR_BRANCH"
 
@@ -83,23 +88,6 @@ if [ -n "$SEED_OSS_COMMIT" ] && git cat-file -e "${SEED_OSS_COMMIT}^{commit}" 2>
   fi
 fi
 
-# --- nothing-to-import fast path ---------------------------------------------
-
-# Convergence is a statement about content, so it holds regardless of what the
-# trailer state says, which makes it the one check a damaged anchor cannot
-# defeat. Deliberately evaluated before the anchor is *required*: with the
-# subtree already at the OSS tip there is nothing a replay could add, so a
-# broken anchor must not turn "nothing to do" into a red pipeline.
-if subtree_converged "$OSS_TIP"; then
-  # Report the collapsed range rather than a bare 0, so a stale anchor shows up
-  # as work being skipped every run instead of looking like a quiet no-op.
-  if [ -n "$RESUME" ]; then
-    emit skipped-count "$(git rev-list --count --first-parent "${RESUME}..${OSS_TIP}")"
-  fi
-  echo "${SUBTREE_PREFIX} already holds OSS ${BRANCH} at ${OSS_TIP}; nothing to import"
-  exit 0
-fi
-
 if [ -z "$RESUME" ]; then
   if [ "$resume_saw_candidate" = "true" ]; then
     die "no ${OSS_TRAILER} trailer on ${BRANCH} points at a commit reachable from OSS ${BRANCH} tip; history may have been rewritten on OSS"
@@ -112,6 +100,32 @@ git cat-file -e "${RESUME}^{commit}" \
 git merge-base --is-ancestor "$RESUME" "$OSS_TIP" \
   || die "resume point ${RESUME} is not an ancestor of OSS ${BRANCH} tip; history may have been rewritten on OSS"
 
+# --- heal the anchor from content -------------------------------------------
+
+# The recorded anchor can be behind reality: a squash-orphaned trailer, a
+# hand-edited message, a hand-made import that forgot the trailer. Rather than
+# ask an operator to repair the record, derive the truth from the subtree, which
+# is evidence no message edit can destroy, and advance the anchor to the newest
+# OSS commit the subtree already matches.
+#
+# Without this, the redundant range gets re-walked every run. That is invisible
+# while each commit still applies as a no-op, then becomes a hard conflict the
+# moment a later OSS commit touches the same lines as an earlier one.
+healed=0
+HEALED="$(content_anchor "$RESUME" "$OSS_TIP")"
+if [ -n "$HEALED" ]; then
+  healed="$(git rev-list --count --first-parent "${RESUME}..${HEALED}")"
+  echo "::notice::Anchor healed from content: ${RESUME} -> ${HEALED} (${healed} OSS commit(s) already present in ${SUBTREE_PREFIX} but not recorded by a readable ${OSS_TRAILER} trailer)."
+  RESUME="$HEALED"
+fi
+emit healed-count "$healed"
+
+if [ "$RESUME" = "$OSS_TIP" ]; then
+  emit skipped-count "$healed"
+  echo "${SUBTREE_PREFIX} already holds OSS ${BRANCH} at ${OSS_TIP}; nothing to import"
+  exit 0
+fi
+
 # --- replay onto a fresh PR branch -------------------------------------------
 
 # The PR branch is rebuilt from the base tip every run: re-replaying the same
@@ -120,7 +134,9 @@ git merge-base --is-ancestor "$RESUME" "$OSS_TIP" \
 git switch --quiet -C "$PR_BRANCH"
 
 replayed=0
-skipped=0
+# Seeded with the healed range: those commits were considered and not replayed,
+# which is exactly what skipped-count reports.
+skipped="$healed"
 while read -r E; do
   [ -n "$E" ] || continue
   ensure_not_merge "$E"

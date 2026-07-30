@@ -163,17 +163,46 @@ external_is_benign() {
   return 0
 }
 
-# subtree_converged <oss-tip>
-# True when the subtree at HEAD already holds exactly the OSS tip content
-# (ignoring EXCLUDE_PATHS). Nothing can then be imported: whatever the recorded
-# anchor says, every commit up to the tip is already represented in the
-# subtree, so a replay could only produce no-ops or spurious conflicts.
+# subtree_matches <oss-sha>
+# True when the subtree at HEAD holds exactly that OSS commit's content
+# (ignoring EXCLUDE_PATHS). Everything up to that commit is then already
+# represented in the subtree, whatever the recorded trailers say.
 #
 # Reads SUBTREE_PREFIX and the `excludes` array.
-subtree_converged() {
-  local oss_tip="$1" staging_tree
+subtree_matches() {
+  local oss_sha="$1" staging_tree
   staging_tree="$(git rev-parse "HEAD:${SUBTREE_PREFIX}")" || return 1
-  git diff --quiet "$oss_tip" "$staging_tree" -- . ${excludes[@]+"${excludes[@]}"}
+  git diff --quiet "$oss_sha" "$staging_tree" -- . ${excludes[@]+"${excludes[@]}"}
+}
+
+# content_anchor <resume> <oss-tip>
+# Print the newest OSS commit in <resume>..<oss-tip> whose content the subtree
+# already holds, or nothing when there is none.
+#
+# This is what makes the anchor self-healing. A trailer is a *record* of an
+# import, but the subtree tree is *evidence* of it, and evidence cannot be lost
+# by a squash, a hand-edited message, or a hand-made import that forgot the
+# trailer. Advancing the anchor to the newest commit the subtree already matches
+# therefore repairs damaged trailer state on every run, with no marker commit,
+# no repair PR, and no operator action.
+#
+# Safe by construction: if the subtree equals commit C's content, replaying
+# anything up to C could only produce a no-op or a spurious conflict against a
+# later change that is also already present. Commits after C are untouched and
+# still imported normally, so nothing is ever skipped silently.
+#
+# Walks newest-first and returns the first match, so the common healthy case
+# (subtree already at the tip) costs one comparison.
+content_anchor() {
+  local resume="$1" oss_tip="$2" c
+  while read -r c; do
+    [ -n "$c" ] || continue
+    if subtree_matches "$c"; then
+      echo "$c"
+      return 0
+    fi
+  done < <(git rev-list --first-parent "${resume}..${oss_tip}")
+  return 0
 }
 
 # import_resume_point <oss-tip>

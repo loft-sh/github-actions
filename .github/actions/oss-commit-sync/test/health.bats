@@ -45,9 +45,10 @@ squash_merge_pr_branch() {
   [ -z "$(output_value suggested-anchor)" ]
 }
 
-@test "a stale anchor is reported with the seed-oss-commit that repairs it" {
+@test "trailers lagging the content are reported as lost provenance, not an outage" {
   # Absorb an external, then drop the trailer entirely: the content is in
-  # staging but nothing records it, so every import re-walks the commit.
+  # staging but nothing records it. The import heals from content, so the sync
+  # is fine; what is lost is the recorded provenance of that commit.
   E1=$(external_commit ext1.go "one" "feat: alice first")
   bash "$IMPORT"
   squash_merge_pr_branch "chore: sync from oss (#42)"
@@ -55,15 +56,18 @@ squash_merge_pr_branch() {
   run bash "$HEALTH"
   [ "$status" -eq 0 ]
   [ "$(output_value stale-anchor)" = "true" ]
-  [ "$(output_value suggested-anchor)" = "$E1" ]
+  [ "$(output_value recorded-anchor)" = "$O0" ]
+  [ "$(output_value anchor)" = "$E1" ]
   [ "$(output_value redundant-count)" = "1" ]
   [ "$(output_value pending-count)" = "0" ]
-  [[ "$output" == *"stale"* ]]
+  # Reported as a notice, not a warning: nothing is broken.
+  [[ "$output" == *"heals"* ]]
 }
 
-@test "the anchor is only advanced over a LEADING run of redundant commits" {
-  # redundant, then pending, then redundant: advancing past the pending commit
-  # would silently drop it from the import, so the suggestion must stop short.
+@test "the healed anchor stops at the newest commit the subtree matches" {
+  # Absorbed-but-unrecorded, then a genuinely pending commit. The anchor may
+  # advance to the former only; advancing past the pending commit would drop it
+  # from the import silently.
   E1=$(external_commit ext1.go "one" "feat: alice first")
   bash "$IMPORT"
   squash_merge_pr_branch "chore: sync from oss (#42)"
@@ -72,7 +76,7 @@ squash_merge_pr_branch() {
   run bash "$HEALTH"
   [ "$status" -eq 0 ]
   [ "$(output_value stale-anchor)" = "true" ]
-  [ "$(output_value suggested-anchor)" = "$E1" ]
+  [ "$(output_value anchor)" = "$E1" ]
   [ "$(output_value pending-count)" = "1" ]
 }
 
