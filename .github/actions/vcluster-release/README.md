@@ -49,12 +49,20 @@ constant (`v0.37`):
 
 | Era | Versions | Fan-out |
 |-----|----------|---------|
-| legacy | `< v0.37` | `-rc`/stable only, from the `vX.Y` branch in **both** repos; tag both, dispatch `loft-sh/vcluster` **first**, then `loft-sh/vcluster-pro`. |
+| legacy | `< v0.37` | `-rc`/stable only, from the `vX.Y` branch in **both** repos; tag OSS, bump the vendored OSS dependency on the pro `vX.Y` branch (auto-merged PR), tag pro, then dispatch `loft-sh/vcluster` **first** and `loft-sh/vcluster-pro`. |
 | monorepo | `>= v0.37` | Tag the suffix-resolved branch in `loft-sh/vcluster-pro`, dispatch `loft-sh/vcluster-pro` only. |
 
 `v0.36` is the last legacy line (two-repo dance); `v0.37` is the first
 merged/monorepo line. Numeric compare matters: `v0.9` sorts *below* `v0.37`
 (legacy), and `v1.0` lands in the monorepo era.
+
+On the legacy path the vendored `github.com/loft-sh/vcluster` dependency on the
+pro `vX.Y` branch is bumped to the freshly created OSS tag *during* the cut: the
+action dispatches the pro `release-bump-vcluster.yaml` workflow, which opens a
+`loft-bot` PR (`chore/<line>/bump-vcluster-<version>`) that `auto-approve-bot-prs`
+auto-merges, and the cut blocks on that merge before tagging pro. This replaces
+the manual release-prep bump that used to precede a legacy cut, so pro always
+builds against the OSS code being co-released.
 
 ## Guards
 
@@ -72,10 +80,17 @@ merged/monorepo line. Numeric compare matters: `v0.9` sorts *below* `v0.37`
 
 ## Partial-failure recovery
 
-The legacy path (tag OSS → tag pro → dispatch OSS → dispatch pro) is **not
-atomic**. If a run dies partway, read the log to see how far it got before
-recovering, so an interrupted cut is not mistaken for a genuine double-cut:
+The legacy path (tag OSS → bump+merge pro → tag pro → dispatch OSS → dispatch
+pro) is **not atomic**. If a run dies partway, read the log to see how far it
+got before recovering, so an interrupted cut is not mistaken for a genuine
+double-cut:
 
+- **Failed during the pro bump** (the log shows the bump dispatch / merge-wait
+  but the cut aborted before tagging pro — a closed-unmerged bump PR or a merge
+  timeout): only the OSS tag exists and nothing has been dispatched. Delete the
+  OSS tag, resolve why the bump PR did not merge (inspect the
+  `release-bump-vcluster.yaml` run and `auto-approve-bot-prs`), then re-run the
+  action.
 - **Failed during tagging** (one repo tagged, the other not, nothing dispatched):
   delete the orphaned tag and re-run the action. Nothing has been built yet.
 - **Failed after the OSS dispatch** (the log shows the `::notice::` that

@@ -103,6 +103,39 @@ last_body() {
   grep -q '^ruleset-id=12345$' "$GITHUB_OUTPUT"
 }
 
+@test "freeze adds an extra bypass team alongside the primary" {
+  export INPUT_EXTRA_BYPASS_TEAM_IDS="10706830"
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  body="$(last_body)"
+  [ "$(jq -r '.bypass_actors | length' <<<"$body")" = "2" ]
+  [ "$(jq -r '.bypass_actors[0].actor_id' <<<"$body")" = "16898535" ]
+  [ "$(jq -r '.bypass_actors[1].actor_id' <<<"$body")" = "10706830" ]
+  # Assert each actor explicitly: a `unique | .[0]` check would pass a mixed set
+  # (jq's unique sorts, so ["Team","User"][0] is still "Team").
+  [ "$(jq -r '.bypass_actors[0].actor_type' <<<"$body")" = "Team" ]
+  [ "$(jq -r '.bypass_actors[1].actor_type' <<<"$body")" = "Team" ]
+  [ "$(jq -r '.bypass_actors[0].bypass_mode' <<<"$body")" = "always" ]
+  [ "$(jq -r '.bypass_actors[1].bypass_mode' <<<"$body")" = "always" ]
+}
+
+@test "freeze accepts several comma-separated extra bypass teams, in order" {
+  export INPUT_EXTRA_BYPASS_TEAM_IDS="10706830,222"
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  body="$(last_body)"
+  [ "$(jq -r '.bypass_actors | length' <<<"$body")" = "3" ]
+  [ "$(jq -r '[.bypass_actors[].actor_id] | join(",")' <<<"$body")" = "16898535,10706830,222" ]
+}
+
+@test "freeze with a non-numeric extra bypass team id fails, no write call" {
+  export INPUT_EXTRA_BYPASS_TEAM_IDS="eng-loft-bot-only"
+  run "$SCRIPT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"numeric"* ]]
+  ! grep -qE '^(POST|PUT) ' "$GH_MOCK_CALLS"
+}
+
 @test "freeze defaults enforcement to active" {
   run "$SCRIPT"
   [ "$status" -eq 0 ]
