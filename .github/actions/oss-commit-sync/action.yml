@@ -26,7 +26,7 @@ inputs:
     required: false
     default: ""
   seed-oss-commit:
-    description: "OSS commit anchor for the first run: paired with seed-monorepo-commit on export. On import it is a floor on the resume point, so a damaged anchor can be re-anchored without rewriting history; the health direction reports the value to use."
+    description: "OSS commit anchor for the first run: paired with seed-monorepo-commit on export. On import it is a floor on the resume point; the health direction applies the same floor so both agree. Rarely needed, since the import heals a damaged anchor from subtree content: only when there is no readable Oss-Commit trailer AND no subtree content matching any OSS commit."
     required: false
     default: ""
   align-tree:
@@ -100,6 +100,9 @@ outputs:
   squashed-trailer-count:
     description: "Health: number of sync commits whose Oss-Commit trailer GitHub's squash-merge orphaned from the trailer block."
     value: ${{ steps.sync.outputs.squashed-trailer-count }}
+  degraded:
+    description: "Health: true when a git or network step failed and some figures in this report are therefore incomplete. The health direction never exits non-zero, so gate on this rather than on the job result."
+    value: ${{ steps.sync.outputs.degraded }}
 
 runs:
   using: "composite"

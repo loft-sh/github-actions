@@ -78,45 +78,27 @@ build_excludes
 
 # --- resume point ------------------------------------------------------------
 
-RESUME="$(import_resume_point "$OSS_TIP")"
+# Called plainly, never in a command substitution: the results come back in
+# globals, which a subshell would discard. Fails closed on a git error rather
+# than resuming from a half-resolved anchor.
+resolve_import_anchor "$OSS_TIP" \
+  || die "failed to resolve the import anchor for OSS ${BRANCH} (git error); refusing to import from an unknown point"
+RESUME="$IMPORT_ANCHOR"
+healed="$IMPORT_ANCHOR_HEALED"
 
-# SEED_OSS_COMMIT is a floor, not just a first-run fallback: re-anchoring a
-# damaged sync must not require rewriting history on the base branch.
-if [ -n "$SEED_OSS_COMMIT" ] && git cat-file -e "${SEED_OSS_COMMIT}^{commit}" 2>/dev/null; then
-  if [ -z "$RESUME" ] || git merge-base --is-ancestor "$RESUME" "$SEED_OSS_COMMIT"; then
-    RESUME="$SEED_OSS_COMMIT"
-  fi
+if [ "$IMPORT_ANCHOR_SEED_BAD" = "true" ]; then
+  die "SEED_OSS_COMMIT ${SEED_OSS_COMMIT} is not a commit reachable from OSS ${BRANCH} tip"
 fi
 
 if [ -z "$RESUME" ]; then
-  if [ "$resume_saw_candidate" = "true" ]; then
+  if [ "$IMPORT_ANCHOR_SAW_TRAILER" = "true" ]; then
     die "no ${OSS_TRAILER} trailer on ${BRANCH} points at a commit reachable from OSS ${BRANCH} tip; history may have been rewritten on OSS"
   fi
   die "no ${OSS_TRAILER} trailer found on ${BRANCH} and no SEED_OSS_COMMIT provided for the first run"
 fi
 
-git cat-file -e "${RESUME}^{commit}" \
-  || die "resume point ${RESUME} is not a commit (bad trailer or seed?)"
-git merge-base --is-ancestor "$RESUME" "$OSS_TIP" \
-  || die "resume point ${RESUME} is not an ancestor of OSS ${BRANCH} tip; history may have been rewritten on OSS"
-
-# --- heal the anchor from content -------------------------------------------
-
-# The recorded anchor can be behind reality: a squash-orphaned trailer, a
-# hand-edited message, a hand-made import that forgot the trailer. Rather than
-# ask an operator to repair the record, derive the truth from the subtree, which
-# is evidence no message edit can destroy, and advance the anchor to the newest
-# OSS commit the subtree already matches.
-#
-# Without this, the redundant range gets re-walked every run. That is invisible
-# while each commit still applies as a no-op, then becomes a hard conflict the
-# moment a later OSS commit touches the same lines as an earlier one.
-healed=0
-HEALED="$(content_anchor "$RESUME" "$OSS_TIP")"
-if [ -n "$HEALED" ]; then
-  healed="$(git rev-list --count --first-parent "${RESUME}..${HEALED}")"
-  echo "::notice::Anchor healed from content: ${RESUME} -> ${HEALED} (${healed} OSS commit(s) already present in ${SUBTREE_PREFIX} but not recorded by a readable ${OSS_TRAILER} trailer)."
-  RESUME="$HEALED"
+if [ "$healed" -gt 0 ]; then
+  echo "::notice::Anchor healed from content: ${IMPORT_ANCHOR_RECORDED:-none} -> ${RESUME} (${healed} OSS commit(s) already present in ${SUBTREE_PREFIX} but not recorded by a readable ${OSS_TRAILER} trailer)."
 fi
 emit healed-count "$healed"
 

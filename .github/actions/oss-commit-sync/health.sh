@@ -28,7 +28,11 @@ set -euo pipefail
 # Optional env: EXCLUDE_PATHS, GITHUB_OUTPUT, GITHUB_STEP_SUMMARY.
 #
 # Outputs: converged, anchor, recorded-anchor, stale-anchor, suggested-anchor,
-# pending-count, redundant-count, squashed-trailer-count.
+# pending-count, redundant-count, squashed-trailer-count, degraded.
+#
+# Never exits non-zero: an advisory check must not red the caller's job. When a
+# git or network step fails it warns, sets degraded=true, and returns 0 with
+# whatever it could determine.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -49,9 +53,15 @@ emit suggested-anchor ""
 emit pending-count 0
 emit redundant-count 0
 emit squashed-trailer-count 0
+emit degraded false
 
-git_scrubbed fetch --quiet "$OSS_REMOTE" "refs/heads/${BRANCH}" \
-  || die "failed to fetch OSS branch ${BRANCH}"
+# An advisory check must not red the caller's job. A transient network failure,
+# an expired token, or a renamed OSS branch degrades to a warning: we would
+# rather lose one report than block a push to the base branch.
+if ! git_scrubbed fetch --quiet "$OSS_REMOTE" "refs/heads/${BRANCH}"; then
+  echo "::warning::Could not fetch OSS branch ${BRANCH}; skipping the sync health report."
+  exit 0
+fi
 OSS_TIP="$(git rev-parse FETCH_HEAD)"
 
 build_excludes
@@ -62,17 +72,22 @@ if subtree_matches "$OSS_TIP"; then
 fi
 emit converged "$converged"
 
-RECORDED="$(import_resume_point "$OSS_TIP")"
-
-# Report the anchor the import will actually use, i.e. after content healing,
-# so the two directions never disagree about where the sync stands.
-ANCHOR="$RECORDED"
-if [ -n "$RECORDED" ]; then
-  healed="$(content_anchor "$RECORDED" "$OSS_TIP")"
-  [ -n "$healed" ] && ANCHOR="$healed"
+# The same resolution the import performs, seed floor and healing included, so
+# the two directions cannot disagree about where the sync stands. That matters
+# most in the damaged-state cases this report exists to diagnose.
+degraded=false
+if ! resolve_import_anchor "$OSS_TIP"; then
+  degraded=true
+  echo "::warning::Could not resolve the import anchor (git error); the anchor figures below are incomplete."
 fi
+ANCHOR="$IMPORT_ANCHOR"
+RECORDED="$IMPORT_ANCHOR_RECORDED"
 emit anchor "$ANCHOR"
 emit recorded-anchor "$RECORDED"
+
+if [ "$IMPORT_ANCHOR_SEED_BAD" = "true" ]; then
+  echo "::warning::SEED_OSS_COMMIT ${SEED_OSS_COMMIT} is not a commit reachable from OSS ${BRANCH} tip; the import would reject it."
+fi
 
 # --- how far the recorded trailers lag behind the content -------------------
 
@@ -80,10 +95,9 @@ emit recorded-anchor "$RECORDED"
 # an outage: trailers are being lost somewhere (a squash, a hand-edited message,
 # a hand-made import), and until that stops, each run re-derives the anchor and
 # the affected external commits carry no recorded provenance.
-redundant=0
+redundant="$IMPORT_ANCHOR_HEALED"
 stale=false
-if [ -n "$RECORDED" ] && [ "$ANCHOR" != "$RECORDED" ]; then
-  redundant="$(git rev-list --count --first-parent "${RECORDED}..${ANCHOR}")"
+if [ "$redundant" -gt 0 ]; then
   stale=true
   emit suggested-anchor "$ANCHOR"
 fi
@@ -98,14 +112,23 @@ emit stale-anchor "$stale"
 pending=0
 first_pending=""
 if [ -n "$ANCHOR" ]; then
-  while read -r E; do
-    [ -n "$E" ] || continue
-    has_trailer "$E" "$MONOREPO_TRAILER" && continue
-    [ -z "$(git diff-tree --no-commit-id --name-only -r "$E" -- . ${excludes[@]+"${excludes[@]}"})" ] && continue
-    external_is_benign "$E" && continue
-    pending=$((pending + 1))
-    [ -z "$first_pending" ] && first_pending="$E"
-  done < <(git rev-list --reverse --first-parent "${ANCHOR}..${OSS_TIP}")
+  # Captured, not piped from a process substitution: `set -e` cannot see a
+  # producer failure inside `done < <(...)`, so the loop would run zero times and
+  # this check would report a clean backlog because git broke. Reporting "clean"
+  # on error is the one thing a health check must never do.
+  if pending_shas="$(git rev-list --reverse --first-parent "${ANCHOR}..${OSS_TIP}")"; then
+    while read -r E; do
+      [ -n "$E" ] || continue
+      has_trailer "$E" "$MONOREPO_TRAILER" && continue
+      [ -z "$(git diff-tree --no-commit-id --name-only -r "$E" -- . ${excludes[@]+"${excludes[@]}"})" ] && continue
+      external_is_benign "$E" && continue
+      pending=$((pending + 1))
+      [ -z "$first_pending" ] && first_pending="$E"
+    done <<< "$pending_shas"
+  else
+    degraded=true
+    echo "::warning::Could not list OSS commits in ${ANCHOR}..${OSS_TIP}; pending-count is not reliable in this run."
+  fi
 fi
 emit pending-count "$pending"
 
@@ -115,16 +138,22 @@ emit pending-count "$pending"
 # block does not is the fingerprint of a squash-merged sync PR.
 squashed=0
 squashed_list=()
-if [ -n "$ANCHOR" ]; then
+# Same capture-first reason as the pending loop: a broken producer must not read
+# as "no policy violations".
+if entries="$(all_trailer_entries HEAD "$OSS_TRAILER")"; then
   while read -r M value; do
     [ -n "$value" ] || continue
     if [ -z "$(git log -1 --format="%(trailers:key=${OSS_TRAILER},valueonly)" "$M" | tr -d '[:space:]')" ]; then
       squashed=$((squashed + 1))
       squashed_list+=("$M")
     fi
-  done < <(all_trailer_entries HEAD "$OSS_TRAILER")
+  done <<< "$entries"
+else
+  degraded=true
+  echo "::warning::Could not read ${OSS_TRAILER} trailers from ${BRANCH}; squashed-trailer-count is not reliable in this run."
 fi
 emit squashed-trailer-count "$squashed"
+emit degraded "$degraded"
 
 # --- report ------------------------------------------------------------------
 

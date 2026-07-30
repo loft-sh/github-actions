@@ -15,16 +15,6 @@ teardown() {
   teardown_fixture
 }
 
-squash_merge_pr_branch() {
-  local msg="$1"
-  (
-    cd "$MONO"
-    git switch -q main
-    git merge --squash -q "automation/sync-from-oss-main"
-    git commit -qm "$msg"
-  )
-}
-
 @test "a converged sync reports healthy" {
   run bash "$HEALTH"
   [ "$status" -eq 0 ]

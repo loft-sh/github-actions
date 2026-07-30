@@ -146,7 +146,13 @@ build_excludes() {
 #
 # Reads SUBTREE_PREFIX and the `excludes` array; compares against HEAD.
 external_is_benign() {
-  local s="$1" status path blob_oss blob_staging
+  local s="$1" status path blob_oss blob_staging changes
+  # Captured rather than piped from a process substitution: this function
+  # answers "already present, safe to skip", so a producer failure invisible to
+  # `set -e` would run the loop zero times and return "benign", silently
+  # skipping a commit that actually needed importing. Fail closed instead.
+  changes="$(git diff-tree --no-commit-id --name-status -r "$s" -- . ${excludes[@]+"${excludes[@]}"})" \
+    || return 1
   while IFS=$'\t' read -r status path; do
     [ -n "$path" ] || continue
     if [ "$status" = "D" ]; then
@@ -159,7 +165,7 @@ external_is_benign() {
     blob_oss="$(git rev-parse --quiet --verify "${s}:${path}" 2>/dev/null)" || return 1
     blob_staging="$(git rev-parse --quiet --verify "HEAD:${SUBTREE_PREFIX}/${path}" 2>/dev/null)" || return 1
     [ "$blob_oss" = "$blob_staging" ] || return 1
-  done < <(git diff-tree --no-commit-id --name-status -r "$s" -- . ${excludes[@]+"${excludes[@]}"})
+  done <<< "$changes"
   return 0
 }
 
@@ -194,45 +200,93 @@ subtree_matches() {
 # Walks newest-first and returns the first match, so the common healthy case
 # (subtree already at the tip) costs one comparison.
 content_anchor() {
-  local resume="$1" oss_tip="$2" c
+  local resume="$1" oss_tip="$2" c candidates
+  # Returns non-zero on a git failure so callers can choose: the import must
+  # fail closed, the advisory health report must degrade to a warning.
+  candidates="$(git rev-list --first-parent "${resume}..${oss_tip}")" || return 1
   while read -r c; do
     [ -n "$c" ] || continue
     if subtree_matches "$c"; then
       echo "$c"
       return 0
     fi
-  done < <(git rev-list --first-parent "${resume}..${oss_tip}")
+  done <<< "$candidates"
   return 0
 }
 
-# import_resume_point <oss-tip>
-# Print the OSS commit the import should resume from, or nothing when no
-# recorded anchor is usable. Sets the global `resume_saw_candidate` to true when
-# at least one Oss-Commit trailer was found, so callers can tell "never synced"
-# from "recorded anchor no longer reachable on OSS".
+# resolve_import_anchor <oss-tip>
+# The single definition of where an import resumes. Both the import and the
+# health direction call it, so the two can never disagree about where the sync
+# stands, which matters most in exactly the damaged-state cases health exists to
+# diagnose.
 #
-# The anchor is the recorded import that reaches FARTHEST along OSS history,
-# not simply the one on the newest monorepo commit. Those differ when a trailer
-# is lost (a hand-rewritten squash message) or when an older OSS commit is
-# imported by hand after a newer one. Taking the newest commit's trailer would
-# then move the anchor BACKWARDS and re-walk commits already in the subtree,
-# which fails the moment one of them no longer applies as a no-op.
-import_resume_point() {
-  local oss_tip="$1" best="" candidate
-  resume_saw_candidate=false
+# Results are returned in globals rather than on stdout, and the function MUST
+# therefore be called plainly, never in a command substitution: a subshell would
+# discard every one of them. Returns non-zero only when git itself failed, so
+# the import can fail closed while the advisory health report degrades.
+#
+#   IMPORT_ANCHOR           where to resume (after seed floor and healing);
+#                           empty when nothing identifies a starting point
+#   IMPORT_ANCHOR_RECORDED  what the trailers alone record, before healing
+#   IMPORT_ANCHOR_HEALED    how many commits healing advanced over
+#   IMPORT_ANCHOR_SAW_TRAILER  true when any Oss-Commit trailer exists, so
+#                           callers can tell "never synced" from "recorded
+#                           anchor no longer reachable on OSS"
+#   IMPORT_ANCHOR_SEED_BAD  true when SEED_OSS_COMMIT was set but is not a
+#                           commit reachable from the OSS tip
+#
+# Resolution order:
+#  1. the recorded import that reaches FARTHEST along OSS history, not the one on
+#     the newest monorepo commit. Those differ when a trailer is lost or when an
+#     older OSS commit is imported by hand after a newer one; taking the newest
+#     would move the anchor BACKWARDS and re-walk commits already in the subtree.
+#  2. SEED_OSS_COMMIT as a floor, so an operator can re-anchor without rewriting
+#     history.
+#  3. content healing (see content_anchor), which reconciles the record against
+#     the evidence in the subtree.
+resolve_import_anchor() {
+  local oss_tip="$1" best="" candidate entries healed
+  IMPORT_ANCHOR=""
+  IMPORT_ANCHOR_RECORDED=""
+  IMPORT_ANCHOR_HEALED=0
+  IMPORT_ANCHOR_SAW_TRAILER=false
+  IMPORT_ANCHOR_SEED_BAD=false
+
+  # Captured first so a failing producer is observed: inside `done < <(...)` a
+  # non-zero exit is invisible to `set -e`, and the loop would just run zero
+  # times and report "no anchor" as if the branch had never synced.
+  entries="$(all_trailer_entries HEAD "$OSS_TRAILER")" || return 1
+
   while read -r _ candidate; do
     [ -n "$candidate" ] || continue
-    resume_saw_candidate=true
+    IMPORT_ANCHOR_SAW_TRAILER=true
     git cat-file -e "${candidate}^{commit}" 2>/dev/null || continue
     git merge-base --is-ancestor "$candidate" "$oss_tip" 2>/dev/null || continue
     if [ -z "$best" ] || git merge-base --is-ancestor "$best" "$candidate"; then
       best="$candidate"
     fi
-  done < <(all_trailer_entries HEAD "$OSS_TRAILER")
-  # "no usable anchor" is a normal first-run answer, not an error: returning
-  # non-zero here would abort the caller's `x="$(import_resume_point ...)"`
-  # assignment under `set -e` before it can fall back to the seed.
-  [ -n "$best" ] && echo "$best"
+  done <<< "$entries"
+  IMPORT_ANCHOR_RECORDED="$best"
+
+  if [ -n "${SEED_OSS_COMMIT:-}" ]; then
+    if git cat-file -e "${SEED_OSS_COMMIT}^{commit}" 2>/dev/null \
+      && git merge-base --is-ancestor "$SEED_OSS_COMMIT" "$oss_tip" 2>/dev/null; then
+      if [ -z "$best" ] || git merge-base --is-ancestor "$best" "$SEED_OSS_COMMIT"; then
+        best="$SEED_OSS_COMMIT"
+      fi
+    else
+      IMPORT_ANCHOR_SEED_BAD=true
+    fi
+  fi
+
+  [ -n "$best" ] || return 0
+
+  healed="$(content_anchor "$best" "$oss_tip")" || return 1
+  if [ -n "$healed" ] && [ "$healed" != "$best" ]; then
+    IMPORT_ANCHOR_HEALED="$(git rev-list --count --first-parent "${best}..${healed}")"
+    best="$healed"
+  fi
+  IMPORT_ANCHOR="$best"
   return 0
 }
 

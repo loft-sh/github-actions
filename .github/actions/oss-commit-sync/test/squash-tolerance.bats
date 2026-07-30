@@ -21,18 +21,6 @@ teardown() {
   teardown_fixture
 }
 
-# Simulate the GitHub "Squash and merge" button: one commit on the base with
-# the PR branch's combined diff and a caller-provided message.
-squash_merge_pr_branch() {
-  local msg="$1"
-  (
-    cd "$MONO"
-    git switch -q main
-    git merge --squash -q "automation/sync-from-oss-main"
-    git commit -qm "$msg"
-  )
-}
-
 @test "squash WITHOUT trailers self-heals: export benign+no-op, import re-skips" {
   external_commit ext1.go "one" "feat: alice first"
   external_commit ext2.go "two" "feat: alice second"
