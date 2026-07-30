@@ -3,7 +3,7 @@ description: "Bidirectional per-commit sync between a monorepo subtree and a dow
 
 inputs:
   direction:
-    description: "export (monorepo subtree -> OSS branch) or import (external OSS commits -> PR branch under the subtree)."
+    description: "export (monorepo subtree -> OSS branch), import (external OSS commits -> PR branch under the subtree), or health (read-only report on anchor staleness and squash-orphaned trailers)."
     required: true
   subtree-prefix:
     description: "Path of the subtree within this repo, e.g. staging/github.com/loft-sh/vcluster. Requires a full-history checkout (fetch-depth: 0)."
@@ -26,7 +26,7 @@ inputs:
     required: false
     default: ""
   seed-oss-commit:
-    description: "OSS commit anchor for the first run: paired with seed-monorepo-commit on export; the import resume point when the base branch has no Oss-Commit trailer yet."
+    description: "OSS commit anchor for the first run: paired with seed-monorepo-commit on export. On import it is a floor on the resume point, so a damaged anchor can be re-anchored without rewriting history; the health direction reports the value to use."
     required: false
     default: ""
   align-tree:
@@ -65,7 +65,7 @@ outputs:
     description: "Import: number of external commits replayed."
     value: ${{ steps.sync.outputs.replayed-count }}
   skipped-count:
-    description: "Import: number of external commits skipped because they touch only excluded paths."
+    description: "Import: number of external commits considered but not replayed, because they touch only excluded paths or their content is already in the subtree."
     value: ${{ steps.sync.outputs.skipped-count }}
   conflict-sha:
     description: "Import: the OSS commit that failed the 3-way apply, when the run failed on a conflict."
@@ -73,6 +73,27 @@ outputs:
   pr-branch:
     description: "Import: the local branch holding the replayed commits."
     value: ${{ steps.sync.outputs.pr-branch }}
+  converged:
+    description: "Health: true when the subtree already holds the OSS branch tip content (ignoring exclude-paths)."
+    value: ${{ steps.sync.outputs.converged }}
+  anchor:
+    description: "Health: the OSS commit the import would resume from, or empty when no readable anchor is reachable."
+    value: ${{ steps.sync.outputs.anchor }}
+  stale-anchor:
+    description: "Health: true when OSS commits already present in the subtree sit between the anchor and the OSS tip, so every import re-walks them."
+    value: ${{ steps.sync.outputs.stale-anchor }}
+  suggested-anchor:
+    description: "Health: the seed-oss-commit value that re-anchors the sync; empty when the anchor is current."
+    value: ${{ steps.sync.outputs.suggested-anchor }}
+  pending-count:
+    description: "Health: number of OSS commits genuinely waiting to be imported."
+    value: ${{ steps.sync.outputs.pending-count }}
+  redundant-count:
+    description: "Health: number of OSS commits re-walked on every import because the anchor is behind them."
+    value: ${{ steps.sync.outputs.redundant-count }}
+  squashed-trailer-count:
+    description: "Health: number of sync commits whose Oss-Commit trailer GitHub's squash-merge orphaned from the trailer block."
+    value: ${{ steps.sync.outputs.squashed-trailer-count }}
 
 runs:
   using: "composite"

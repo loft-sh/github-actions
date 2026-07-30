@@ -57,37 +57,7 @@ GITHUB_OUTPUT="${GITHUB_OUTPUT:-/dev/null}"
 
 cd "$(git rev-parse --show-toplevel)"
 
-excludes=()
-while IFS= read -r p; do
-  [ -n "$p" ] && excludes+=(":(exclude)${p}")
-done <<< "$EXCLUDE_PATHS"
-
-# external_is_benign <oss-sha>
-# True when the commit's post-image (minus EXCLUDE_PATHS) is already present
-# in the subtree, so mirroring on top of it cannot lose content. Covers the
-# two externals the import direction deliberately skips without a trailer:
-# excluded-paths-only commits, and changes that landed identically on both
-# sides (import applied them as a no-op). Renames are inspected without -M so
-# they decompose into delete+add and get checked path by path. A false
-# "benign" cannot corrupt the mirror: the convergence assertion still fails
-# the run before pushing if OSS actually holds content the subtree lacks.
-external_is_benign() {
-  local s="$1" status path blob_oss blob_staging
-  while IFS=$'\t' read -r status path; do
-    [ -n "$path" ] || continue
-    if [ "$status" = "D" ]; then
-      # Deletion is benign only if the path is gone from staging too.
-      if git cat-file -e "HEAD:${SUBTREE_PREFIX}/${path}" 2>/dev/null; then
-        return 1
-      fi
-      continue
-    fi
-    blob_oss="$(git rev-parse --quiet --verify "${s}:${path}" 2>/dev/null)" || return 1
-    blob_staging="$(git rev-parse --quiet --verify "HEAD:${SUBTREE_PREFIX}/${path}" 2>/dev/null)" || return 1
-    [ "$blob_oss" = "$blob_staging" ] || return 1
-  done < <(git diff-tree --no-commit-id --name-status -r "$s" -- . ${excludes[@]+"${excludes[@]}"})
-  return 0
-}
+build_excludes
 
 emit diverged false
 emit pushed false
