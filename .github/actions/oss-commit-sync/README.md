@@ -86,9 +86,34 @@ on the OSS default branch), then the branch-only commits are replayed.
 ### `direction: import` (external OSS commits → PR branch)
 
 Replays every first-parent OSS commit after the resume point that we did not
-create onto a freshly rebuilt PR branch, re-rooted under `subtree-prefix`.
-The resume point is the newest `Oss-Commit` trailer on the base branch. The
+create onto a freshly rebuilt PR branch, re-rooted under `subtree-prefix`. The
 caller pushes the branch and opens/updates the sync PR.
+
+The resume point is the recorded `Oss-Commit` trailer that reaches **farthest
+along OSS history**, not the one on the newest base-branch commit. Those differ
+whenever a later commit records an earlier import (a hand-written re-import, a
+repaired trailer), and taking the newest would move the anchor backwards and
+re-walk commits already in the subtree.
+
+**The anchor then heals itself from content.** It advances to the newest OSS
+commit whose content the subtree already holds. A trailer is a *record* of an
+import; the subtree tree is *evidence* of one, and evidence survives what
+records do not — a squash, a hand-edited message, a hand-made import that
+forgot the trailer. So damaged trailer state repairs itself on every run, with
+no marker commit, no repair PR, and no operator action. `healed-count` reports
+how far it moved; non-zero means trailers are being lost somewhere.
+
+This is safe by construction rather than by heuristic: if the subtree equals
+commit `C`'s content, replaying anything up to `C` could only produce a no-op or
+a spurious conflict against a later change that is also already present.
+Commits after `C` are untouched and imported normally, so healing never swallows
+pending work. Without it, the redundant range is re-walked every run — invisible
+while each commit still applies as a no-op, then a hard conflict the moment a
+later OSS commit touches the same lines as an earlier one.
+
+`seed-oss-commit` remains a floor on the anchor, for the one state healing
+cannot resolve: no readable trailer *and* no subtree content matching any OSS
+commit, i.e. a sync that has never run or whose subtree was rewritten.
 
 - `exclude-paths` drops OSS-only paths (producer workflows) from every
   replayed diff. A commit whose diff becomes empty is skipped without a
@@ -103,37 +128,90 @@ caller pushes the branch and opens/updates the sync PR.
   non-zero with `conflict-sha` set and a clean worktree.
 - The checkout must be at the base branch (`branch` input) with full history.
 
-**Merge the sync PR with rebase, never squash.** Squashing destroys the
-per-commit authorship of external contributions on the base branch, which is
-the whole point of the replay. It does NOT corrupt the sync, though: OSS
-history is append-only and already holds the real commits, and the state
-self-heals — squashed-away trailers make the externals look unabsorbed, but
-the export guard classifies them as benign (content present) and the next
-import re-skips them as no-ops (regression-tested in
-`test/squash-tolerance.bats`). The damage is limited to monorepo blame and
-contributor credit, so treat rebase-merge as review policy rather than
-wiring auto-merge (which some compliance postures disallow). If a maintainer
-needs to fix up a sync PR, they must add new commits (without an
-`Oss-Commit` trailer), never amend the replayed ones; amendments are caught
-later by the export convergence assertion.
+**Merge the sync PR with rebase, never squash.** Squashing collapses the
+per-commit authorship of external contributions on the base branch, which is the
+whole point of the replay. Treat rebase-merge as review policy rather than
+wiring auto-merge (which some compliance postures disallow), and use
+`direction: health` to detect violations after the fact.
+
+A squash does not corrupt the sync, but only because the anchor is defended
+against it in three places. GitHub's squash appends `Co-authored-by:` as a *new
+paragraph*, which pushes an `Oss-Commit` trailer out of the block git's own
+`%(trailers)` parser reads. The trailer stays in the message verbatim while
+becoming invisible to that parser, so the anchor freezes and every import
+re-walks commits already in the subtree — silently, for as long as each
+re-walked patch still applies as a no-op, then as a hard conflict once a later
+OSS commit touches the same lines. The three defenses, all regression-tested in
+`test/squash-tolerance.bats`:
+
+- the trailer lookup scans the **whole commit message**, not just git's trailer
+  block, so a squash-orphaned trailer is still read (the value must be a bare
+  commit sha at column 0, which is what keeps prose from matching)
+- the anchor is the farthest-reaching recorded import, so a trailer lost
+  outright cannot drag it backwards
+- the anchor heals from subtree content, so even a trailer destroyed beyond
+  recovery costs nothing but the provenance record
+
+If a maintainer needs to fix up a sync PR, they must add new commits (without an
+`Oss-Commit` trailer), never amend the replayed ones; amendments are caught later
+by the export convergence assertion.
+
+### `direction: health` (read-only hygiene report)
+
+For hygiene, not outages. Because the import heals its own anchor, nothing this
+reports is a broken pipeline waiting to happen — it surfaces the drift a green
+run hides. Never commits, pushes, or opens anything, and **never exits non-zero**:
+an advisory check must not red the base-branch push job, so a failed fetch or git
+call warns, sets `degraded=true`, and returns 0 with whatever it could determine.
+Gate on `degraded`, not on the job result. Wire it to `push` on the base branch,
+**with `continue-on-error: true`**: the in-script guarantee holds only as long as
+no unhandled `set -e`/`set -u` trip slips in, and CLAUDE.md's never-hard-fail
+rule for advisory workflows names the flag as the final safety net.
+
+It resolves the anchor through the same `lib.sh` helper the import uses, seed
+floor and content healing included, so the report cannot drift from what the
+import would actually do — which is precisely the damaged state it exists to
+describe.
+
+- **Trailers lagging content.** `stale-anchor` with `recorded-anchor` (what the
+  trailers say) against `anchor` (what the import will use). Not an action item
+  for the sync, which heals itself, but the affected external commits carry no
+  recorded provenance on the base branch, and something is losing trailers.
+- **Squash-merged sync PRs.** `squashed-trailer-count` counts commits whose
+  trailer the whole-message scan finds but git's trailer block does not, which is
+  the fingerprint of a squash. This is the actionable one: it is the cause of the
+  lag above, and the lost per-commit authorship cannot be recovered after the
+  fact. Enforce rebase-merge.
+- **Backlog.** `pending-count` is how many OSS commits genuinely await import.
+
+There is deliberately no repair commit or repair PR, because there is nothing
+left for one to fix: the anchor is derived from content on every run, so the
+state repairs itself before it can matter. A marker commit would also be a poor
+mechanism for it — its diff is empty, so it survives neither a PR nor a
+rebase-merge reliably, and pushing one straight to a protected base branch is
+what the same posture that rules out auto-merge also rules out.
+
+`seed-oss-commit` covers the single state healing cannot: no readable trailer
+*and* no subtree content matching any OSS commit. `health` warns explicitly when
+it sees that.
 
 ## Inputs
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-|        INPUT         |  TYPE  | REQUIRED |  DEFAULT  |                                                                                                                                       DESCRIPTION                                                                                                                                       |
-|----------------------|--------|----------|-----------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-|      align-tree      | string |  false   | `"false"` |                             Export only: when the post-replay OSS <br>tree differs from the staging tree, <br>append one snapshot alignment commit instead <br>of failing. Append-only escape hatch; use <br>for migration or after manual reconciliation.                              |
-|        branch        | string |   true   |           |                                                                                                           Branch to sync (same name on both repos, usually github.ref_name).                                                                                                            |
-|      direction       | string |   true   |           |                                                                                        export (monorepo subtree -> OSS branch) or import (external OSS commits -> PR branch under the subtree).                                                                                         |
-|    exclude-paths     | string |  false   |           | Newline-separated paths (relative to the OSS repo root) that are never <br>mirrored, e.g. producer workflows. Import drops <br>them from replayed diffs; export ignores <br>them in the divergence guard and <br>the convergence assertion. Pass the same <br>list to both directions.  |
-|     github-token     | string |   true   |           |                                                                               Token with read (import) or write <br>(export) access to the OSS repo. <br>Used to build the remote URL; <br>never logged.                                                                                |
-|  oss-default-branch  | string |  false   | `"main"`  |                                                                                                OSS default branch used to anchor <br>newly created release-line branches. Export only.                                                                                                  |
-|       oss-repo       | string |   true   |           |                                                                                                          Downstream OSS repository as owner/repo, e.g. <br>loft-sh/vcluster.                                                                                                            |
-|      pr-branch       | string |  false   |           |                                                                                 Import only: local branch the replayed <br>commits are created on. Defaults to <br>automation/sync-from-oss-<branch>.                                                                                   |
-| seed-monorepo-commit | string |  false   |           |                                                               Monorepo commit to resume from when <br>the OSS branch has no Monorepo-Commit <br>trailer yet (first export run). Must be paired <br>with seed-oss-commit.                                                                |
-|   seed-oss-commit    | string |  false   |           |                                                      OSS commit anchor for the first <br>run: paired with seed-monorepo-commit on export; <br>the import resume point when the <br>base branch has no Oss-Commit trailer <br>yet.                                                       |
-|    subtree-prefix    | string |   true   |           |                                                                       Path of the subtree within this <br>repo, e.g. staging/github.com/loft-sh/vcluster. Requires a full-history <br>checkout (fetch-depth: 0).                                                                        |
+|        INPUT         |  TYPE  | REQUIRED |  DEFAULT  |                                                                                                                                                                                                 DESCRIPTION                                                                                                                                                                                                  |
+|----------------------|--------|----------|-----------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|      align-tree      | string |  false   | `"false"` |                                                                                       Export only: when the post-replay OSS <br>tree differs from the staging tree, <br>append one snapshot alignment commit instead <br>of failing. Append-only escape hatch; use <br>for migration or after manual reconciliation.                                                                                         |
+|        branch        | string |   true   |           |                                                                                                                                                                     Branch to sync (same name on both repos, usually github.ref_name).                                                                                                                                                                       |
+|      direction       | string |   true   |           |                                                                                                          export (monorepo subtree -> OSS branch), import (external OSS commits -> PR branch under the subtree), or health <br>(read-only report on anchor staleness and squash-orphaned trailers).                                                                                                           |
+|    exclude-paths     | string |  false   |           |                                                           Newline-separated paths (relative to the OSS repo root) that are never <br>mirrored, e.g. producer workflows. Import drops <br>them from replayed diffs; export ignores <br>them in the divergence guard and <br>the convergence assertion. Pass the same <br>list to both directions.                                                             |
+|     github-token     | string |   true   |           |                                                                                                                                         Token with read (import) or write <br>(export) access to the OSS repo. <br>Used to build the remote URL; <br>never logged.                                                                                                                                           |
+|  oss-default-branch  | string |  false   | `"main"`  |                                                                                                                                                           OSS default branch used to anchor <br>newly created release-line branches. Export only.                                                                                                                                                            |
+|       oss-repo       | string |   true   |           |                                                                                                                                                                     Downstream OSS repository as owner/repo, e.g. <br>loft-sh/vcluster.                                                                                                                                                                      |
+|      pr-branch       | string |  false   |           |                                                                                                                                            Import only: local branch the replayed <br>commits are created on. Defaults to <br>automation/sync-from-oss-<branch>.                                                                                                                                             |
+| seed-monorepo-commit | string |  false   |           |                                                                                                                         Monorepo commit to resume from when <br>the OSS branch has no Monorepo-Commit <br>trailer yet (first export run). Must be paired <br>with seed-oss-commit.                                                                                                                           |
+|   seed-oss-commit    | string |  false   |           | OSS commit anchor for the first <br>run: paired with seed-monorepo-commit on export. <br>On import it is a floor <br>on the resume point; the health <br>direction applies the same floor so <br>both agree. Rarely needed, since the <br>import heals a damaged anchor from <br>subtree content: only when there is <br>no readable Oss-Commit trailer AND no <br>subtree content matching any OSS commit.  |
+|    subtree-prefix    | string |   true   |           |                                                                                                                                 Path of the subtree within this <br>repo, e.g. staging/github.com/loft-sh/vcluster. Requires a full-history <br>checkout (fetch-depth: 0).                                                                                                                                   |
 
 <!-- AUTO-DOC-INPUT:END -->
 
@@ -141,18 +219,28 @@ later by the export convergence assertion.
 
 <!-- AUTO-DOC-OUTPUT:START - Do not remove or modify this section -->
 
-|     OUTPUT     |  TYPE  |                                                                  DESCRIPTION                                                                   |
-|----------------|--------|------------------------------------------------------------------------------------------------------------------------------------------------|
-|  conflict-sha  | string |                        Import: the OSS commit that failed <br>the 3-way apply, when the run <br>failed on a conflict.                          |
-|    diverged    | string |                        Export: true when OSS has external <br>commits not yet absorbed and the <br>run failed closed.                          |
-| exported-count | string |                       Export: number of commits created on <br>the OSS branch (including an alignment commit, if any).                         |
-|  has-changes   | string |                            Import: true when at least one <br>external commit was replayed onto the <br>PR branch.                             |
-|    oss-tip     | string |                                                 Export: the OSS branch tip after <br>the run.                                                  |
-|   pr-branch    | string |                                          Import: the local branch holding the <br>replayed commits.                                            |
-| push-rejected  | string | Export: true when the push to <br>the OSS branch was rejected by <br>branch protection / a ruleset (the sync identity is not a bypass actor).  |
-|     pushed     | string |                                         Export: true when commits were pushed <br>to the OSS branch.                                           |
-| replayed-count | string |                                                  Import: number of external commits replayed.                                                  |
-| skipped-count  | string |                            Import: number of external commits skipped <br>because they touch only excluded paths.                              |
+|         OUTPUT         |  TYPE  |                                                                                                             DESCRIPTION                                                                                                             |
+|------------------------|--------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|         anchor         | string |                                  Health: the OSS commit the import <br>will resume from, after content healing. <br>Empty only when neither a trailer <br>nor the subtree content identifies one.                                   |
+|      conflict-sha      | string |                                                                   Import: the OSS commit that failed <br>the 3-way apply, when the run <br>failed on a conflict.                                                                    |
+|       converged        | string |                                                              Health: true when the subtree already <br>holds the OSS branch tip content <br>(ignoring exclude-paths).                                                               |
+|        degraded        | string |       Health: true when a git or <br>network step failed and some figures <br>in this report are therefore incomplete. <br>The health direction never exits non-zero, <br>so gate on this rather than <br>on the job result.        |
+|        diverged        | string |                                                                   Export: true when OSS has external <br>commits not yet absorbed and the <br>run failed closed.                                                                    |
+|     exported-count     | string |                                                                  Export: number of commits created on <br>the OSS branch (including an alignment commit, if any).                                                                   |
+|      has-changes       | string |                                                                      Import: true when at least one <br>external commit was replayed onto the <br>PR branch.                                                                        |
+|      healed-count      | string | Import: number of OSS commits the <br>anchor advanced over because the subtree <br>already held their content while no <br>readable Oss-Commit trailer recorded them. Non-zero <br>means trailers are being lost during <br>merge.  |
+|        oss-tip         | string |                                                                                           Export: the OSS branch tip after <br>the run.                                                                                             |
+|     pending-count      | string |                                                                                Health: number of OSS commits genuinely <br>waiting to be imported.                                                                                  |
+|       pr-branch        | string |                                                                                     Import: the local branch holding the <br>replayed commits.                                                                                      |
+|     push-rejected      | string |                                           Export: true when the push to <br>the OSS branch was rejected by <br>branch protection / a ruleset (the sync identity is not a bypass actor).                                             |
+|         pushed         | string |                                                                                    Export: true when commits were pushed <br>to the OSS branch.                                                                                     |
+|    recorded-anchor     | string |                                             Health: the anchor the Oss-Commit trailers <br>actually record, before content healing. Behind <br>`anchor` when trailers have been lost.                                               |
+|    redundant-count     | string |                                                                 Health: number of OSS commits re-walked <br>on every import because the anchor <br>is behind them.                                                                  |
+|     replayed-count     | string |                                                                                            Import: number of external commits replayed.                                                                                             |
+|     skipped-count      | string |                                   Import: number of external commits considered <br>but not replayed, because they touch <br>only excluded paths or their content <br>is already in the subtree.                                    |
+| squashed-trailer-count | string |                                                       Health: number of sync commits whose <br>Oss-Commit trailer GitHub's squash-merge orphaned from <br>the trailer block.                                                        |
+|      stale-anchor      | string |               Health: true when the recorded trailers <br>lag the subtree content. The import <br>heals this itself; it means the <br>affected external commits carry no recorded <br>provenance on the base branch.                |
+|    suggested-anchor    | string |                                                          Health: the content-derived anchor, i.e. what <br>the import heals to. Empty when <br>the trailers are current.                                                            |
 
 <!-- AUTO-DOC-OUTPUT:END -->
 
@@ -181,6 +269,17 @@ later by the export convergence assertion.
     exclude-paths: |
       .github/workflows/release.yaml
       .github/workflows/push-head-images.yaml
+
+# Health: on push to the base branch; report only, never fails the job.
+- uses: loft-sh/github-actions/.github/actions/oss-commit-sync@oss-commit-sync/v1
+  id: health
+  continue-on-error: true   # advisory: must never block the push job
+  with:
+    direction: health
+    subtree-prefix: staging/github.com/loft-sh/vcluster
+    oss-repo: loft-sh/vcluster
+    branch: ${{ github.ref_name }}
+    github-token: ${{ secrets.GH_ACCESS_TOKEN }}
 ```
 
 Requires `fetch-depth: 0` on the checkout: resume points and loop guards are

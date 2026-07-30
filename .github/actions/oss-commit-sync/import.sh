@@ -11,12 +11,25 @@ set -euo pipefail
 # updates the sync PR; the PR must be rebase-merged so per-commit history and
 # trailers survive on the base branch.
 #
-# Resume point: the newest Oss-Commit trailer on the base branch. Commits
-# whose diff is empty after path exclusion (touched only excluded producer
-# workflows) are skipped without a marker commit: the skip decision is
-# deterministic from the commit itself, so re-walking them on the next run is
-# idempotent and free. This deliberately avoids --allow-empty marker commits,
-# whose survival across GitHub's rebase-merge is not guaranteed.
+# Resume point: the recorded Oss-Commit trailer that reaches farthest along OSS
+# history (see resolve_import_anchor). SEED_OSS_COMMIT acts as a floor on it, so
+# an operator can re-anchor a sync whose trailer state was damaged without
+# rewriting history. Commits whose diff is empty after path exclusion (touched
+# only excluded producer workflows) are skipped without a marker commit: the
+# skip decision is deterministic from the commit itself, so re-walking them on
+# the next run is idempotent and free. This deliberately avoids --allow-empty
+# marker commits, whose survival across GitHub's rebase-merge is not guaranteed.
+#
+# The anchor then heals itself from content: it advances to the newest OSS commit
+# whose content the subtree already holds. A trailer is a *record* of an import,
+# but the subtree tree is *evidence* of one, and evidence survives a squash, a
+# hand-edited message, or a hand-made import that forgot the trailer. Damaged
+# trailer state therefore repairs itself on every run, with no marker commit and
+# no operator action. Without it the redundant range is re-walked every run,
+# which is invisible while each commit still applies as a no-op and then becomes
+# a hard conflict once a later OSS commit touches the same lines as an earlier
+# one. Commits after the healed anchor are still imported normally, so nothing is
+# skipped silently.
 #
 # Diff replay (not tree snapshots) means an external commit never reverts
 # monorepo changes that have not been exported yet: only the external
@@ -29,12 +42,12 @@ set -euo pipefail
 #
 # Required env: SUBTREE_PREFIX, OSS_REMOTE, BRANCH.
 # Optional env: SEED_OSS_COMMIT (first run, when the base branch has no
-# Oss-Commit trailer yet), EXCLUDE_PATHS (newline-separated paths relative to
-# the OSS repo root), PR_BRANCH (default automation/sync-from-oss-<branch>),
-# GITHUB_OUTPUT.
+# Oss-Commit trailer yet; also a floor on a recorded anchor),
+# EXCLUDE_PATHS (newline-separated paths relative to the OSS repo root),
+# PR_BRANCH (default automation/sync-from-oss-<branch>), GITHUB_OUTPUT.
 #
-# Outputs: has-changes, replayed-count, skipped-count, conflict-sha,
-# pr-branch.
+# Outputs: has-changes, replayed-count, skipped-count, healed-count,
+# conflict-sha, pr-branch.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -51,6 +64,7 @@ cd "$(git rev-parse --show-toplevel)"
 emit has-changes false
 emit replayed-count 0
 emit skipped-count 0
+emit healed-count 0
 emit conflict-sha ""
 emit pr-branch "$PR_BRANCH"
 
@@ -58,28 +72,41 @@ git_scrubbed fetch --quiet "$OSS_REMOTE" "refs/heads/${BRANCH}" \
   || die "failed to fetch OSS branch ${BRANCH}"
 OSS_TIP="$(git rev-parse FETCH_HEAD)"
 
+# --- build exclude pathspecs ------------------------------------------------
+
+build_excludes
+
 # --- resume point ------------------------------------------------------------
 
-entry="$(newest_trailer_entry HEAD "$OSS_TRAILER")"
-if [ -n "$entry" ]; then
-  RESUME="${entry#* }"
-elif [ -n "$SEED_OSS_COMMIT" ]; then
-  RESUME="$SEED_OSS_COMMIT"
-else
+# Called plainly, never in a command substitution: the results come back in
+# globals, which a subshell would discard. Fails closed on a git error rather
+# than resuming from a half-resolved anchor.
+resolve_import_anchor "$OSS_TIP" \
+  || die "failed to resolve the import anchor for OSS ${BRANCH} (git error); refusing to import from an unknown point"
+RESUME="$IMPORT_ANCHOR"
+healed="$IMPORT_ANCHOR_HEALED"
+
+if [ "$IMPORT_ANCHOR_SEED_BAD" = "true" ]; then
+  die "SEED_OSS_COMMIT ${SEED_OSS_COMMIT} is not a commit reachable from OSS ${BRANCH} tip"
+fi
+
+if [ -z "$RESUME" ]; then
+  if [ "$IMPORT_ANCHOR_SAW_TRAILER" = "true" ]; then
+    die "no ${OSS_TRAILER} trailer on ${BRANCH} points at a commit reachable from OSS ${BRANCH} tip; history may have been rewritten on OSS"
+  fi
   die "no ${OSS_TRAILER} trailer found on ${BRANCH} and no SEED_OSS_COMMIT provided for the first run"
 fi
 
-git cat-file -e "${RESUME}^{commit}" \
-  || die "resume point ${RESUME} is not a commit (bad trailer or seed?)"
-git merge-base --is-ancestor "$RESUME" "$OSS_TIP" \
-  || die "resume point ${RESUME} is not an ancestor of OSS ${BRANCH} tip; history may have been rewritten on OSS"
+if [ "$healed" -gt 0 ]; then
+  echo "::notice::Anchor healed from content: ${IMPORT_ANCHOR_RECORDED:-none} -> ${RESUME} (${healed} OSS commit(s) already present in ${SUBTREE_PREFIX} but not recorded by a readable ${OSS_TRAILER} trailer)."
+fi
+emit healed-count "$healed"
 
-# --- build exclude pathspecs ------------------------------------------------
-
-excludes=()
-while IFS= read -r p; do
-  [ -n "$p" ] && excludes+=(":(exclude)${p}")
-done <<< "$EXCLUDE_PATHS"
+if [ "$RESUME" = "$OSS_TIP" ]; then
+  emit skipped-count "$healed"
+  echo "${SUBTREE_PREFIX} already holds OSS ${BRANCH} at ${OSS_TIP}; nothing to import"
+  exit 0
+fi
 
 # --- replay onto a fresh PR branch -------------------------------------------
 
@@ -89,7 +116,9 @@ done <<< "$EXCLUDE_PATHS"
 git switch --quiet -C "$PR_BRANCH"
 
 replayed=0
-skipped=0
+# Seeded with the healed range: those commits were considered and not replayed,
+# which is exactly what skipped-count reports.
+skipped="$healed"
 while read -r E; do
   [ -n "$E" ] || continue
   ensure_not_merge "$E"
@@ -103,11 +132,20 @@ while read -r E; do
     echo "Skipping ${E} (touches only excluded paths)"
     continue
   fi
+  # Checked before applying, not after: a commit whose post-image is already in
+  # the subtree contributes nothing, and replaying it can only produce a no-op
+  # or a spurious conflict with a LATER change that is also already present. A
+  # stale anchor therefore degrades to skipped work instead of a red pipeline.
+  if external_is_benign "$E"; then
+    skipped=$((skipped + 1))
+    echo "Skipping ${E} (content already in ${SUBTREE_PREFIX})"
+    continue
+  fi
   if ! printf '%s\n' "$patch" | git apply --3way --directory="$SUBTREE_PREFIX" --whitespace=nowarn; then
     git reset --hard --quiet
     git clean -fdq -- "$SUBTREE_PREFIX"
     emit conflict-sha "$E"
-    die "conflict replaying OSS commit ${E} into ${SUBTREE_PREFIX}; resolve manually (export any pending monorepo changes first, then re-run)"
+    die "conflict replaying OSS commit ${E} into ${SUBTREE_PREFIX}; resolve manually (export any pending monorepo changes first, then re-run). If ${E} is in fact already present under a different shape, re-anchor with seed-oss-commit instead of resolving by hand."
   fi
   git add -A -- "$SUBTREE_PREFIX"
   # A non-empty patch can still apply as a no-op when the same change already

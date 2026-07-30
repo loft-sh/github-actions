@@ -139,10 +139,41 @@ teardown() {
 
   run bash "$IMPORT"
   [ "$status" -ne 0 ]  # no trailer, no seed -> refuse
+  # Assert the DIAGNOSIS, not just the exit code. A bare non-zero check also
+  # passes when the script dies of an unbound variable before reaching this
+  # branch, which is how a `set -u` crash hid here: the operator then gets a raw
+  # bash error and no ::error:: annotation telling them to pass seed-oss-commit.
+  [[ "$output" == *"::error::"* ]]
+  [[ "$output" == *"SEED_OSS_COMMIT"* ]]
+  [[ "$output" != *"unbound variable"* ]]
 
   SEED_OSS_COMMIT="$O0" run bash "$IMPORT"
   [ "$status" -eq 0 ]
   [ "$(output_value replayed-count)" = "1" ]
+}
+
+@test "a seed pointing outside OSS history is rejected with a clear error" {
+  external_commit ext.go "external" "feat: external contribution" >/dev/null
+  # A monorepo commit is a valid object but not reachable from the OSS tip.
+  SEED_OSS_COMMIT="$M0" run bash "$IMPORT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"not a commit reachable from OSS"* ]]
+}
+
+@test "the seed acts as a floor on a recorded anchor, not only a fallback" {
+  # A recorded anchor exists and the operator seeds a LATER point: the seed wins,
+  # so re-anchoring never requires rewriting history on the base branch.
+  E1=$(external_commit ext1.go "one" "feat: alice first")
+  E2=$(external_commit ext2.go "two" "feat: alice second")
+
+  SEED_OSS_COMMIT="$E1" run bash "$IMPORT"
+  [ "$status" -eq 0 ]
+  # Resumed from E1, so only E2 is replayed and E1 is never walked.
+  [ "$(output_value replayed-count)" = "1" ]
+  cd "$MONO"
+  git switch -q automation/sync-from-oss-main
+  [ "$(git log -1 --format=%B | grep '^Oss-Commit:' | awk '{print $2}')" = "$E2" ]
+  [ ! -f "$PFX/ext1.go" ]
 }
 
 @test "merge commit on OSS fails closed" {

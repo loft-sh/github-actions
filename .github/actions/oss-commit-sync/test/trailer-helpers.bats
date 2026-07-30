@@ -1,7 +1,14 @@
 #!/usr/bin/env bats
-# Unit tests for lib.sh trailer helpers, incl. the large-history SIGPIPE
-# regression: newest_trailer_entry must not close the git-log pipe early
-# (exit 141 under pipefail on big repos, build-dependent).
+# Unit tests for lib.sh trailer lookup.
+#
+# Two regressions are pinned here:
+#
+#   * the large-history SIGPIPE one: newest_trailer_entry must not close the
+#     git-log pipe early (exit 141 under pipefail on big repos, build-dependent)
+#
+#   * the squash-orphaned-trailer one: GitHub's "Squash and merge" appends
+#     "Co-authored-by:" as a new paragraph, which moves our trailer out of the
+#     block git's own %(trailers) parser reads. The lookup must still find it.
 
 setup() {
   ROOT=$(mktemp -d); export ROOT
@@ -11,19 +18,25 @@ setup() {
   # shellcheck disable=SC1090
   source "$BATS_TEST_DIRNAME/../lib.sh"
   git init -q "$ROOT/r"; cd "$ROOT/r"
+
+  # Trailer values are always commit shas, which is the shape the lookup keys
+  # on; use realistic ones rather than placeholder words.
+  OLD_SHA=1111111111111111111111111111111111111111
+  NEW_SHA=2222222222222222222222222222222222222222
+  OTHER_SHA=3333333333333333333333333333333333333333
 }
 teardown() { rm -rf "$ROOT"; }
 
 @test "newest_trailer_entry returns the newest match" {
   git commit -q --allow-empty -m "old
 
-Monorepo-Commit: oldsha"
+Monorepo-Commit: $OLD_SHA"
   git commit -q --allow-empty -m "new
 
-Monorepo-Commit: newsha"
+Monorepo-Commit: $NEW_SHA"
   run newest_trailer_entry HEAD Monorepo-Commit
   [ "$status" -eq 0 ]
-  [ "$(echo "$output" | awk '{print $2}')" = "newsha" ]
+  [ "$(echo "$output" | awk '{print $2}')" = "$NEW_SHA" ]
 }
 
 @test "newest_trailer_entry is empty when no trailer present" {
@@ -31,6 +44,103 @@ Monorepo-Commit: newsha"
   run newest_trailer_entry HEAD Monorepo-Commit
   [ "$status" -eq 0 ]
   [ -z "$output" ]
+}
+
+@test "trailer orphaned by a squash-appended Co-authored-by paragraph is found" {
+  # Exactly what GitHub's squash-merge produced on vcluster-pro main: our
+  # trailer, a blank line, then the co-author block. git's %(trailers) sees only
+  # the last paragraph and misses Oss-Commit entirely.
+  git commit -q --allow-empty -m "fix: something (#4037) (#2113)
+
+body text
+
+Oss-Commit: $NEW_SHA
+
+Co-authored-by: Florian <f@example.com>"
+
+  # Confirm the premise: git's own parser really does not see it.
+  [ -z "$(git log -1 --format='%(trailers:key=Oss-Commit,valueonly)' HEAD | tr -d '[:space:]')" ]
+
+  run trailer_value HEAD Oss-Commit
+  [ "$status" -eq 0 ]
+  [ "$output" = "$NEW_SHA" ]
+
+  run has_trailer HEAD Oss-Commit
+  [ "$status" -eq 0 ]
+}
+
+@test "prose mentioning a trailer key is not matched" {
+  git commit -q --allow-empty -m "docs: explain the sync
+
+Each replayed commit gets an Oss-Commit: <sha> trailer appended, and the
+importer reads Oss-Commit trailers to find its resume point.
+
+Signed-off-by: t <t@t>"
+  run trailer_value HEAD Oss-Commit
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "an indented trailer line is not matched" {
+  # Quoted/indented message bodies (a reply, a code block) must not be read as
+  # sync state; a real trailer always starts at column 0.
+  git commit -q --allow-empty -m "chore: quote a message
+
+    Oss-Commit: $OTHER_SHA"
+  run trailer_value HEAD Oss-Commit
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "key match is case-insensitive, like git's own trailer parsing" {
+  git commit -q --allow-empty -m "chore: lowercase key
+
+oss-commit: $NEW_SHA"
+  run trailer_value HEAD Oss-Commit
+  [ "$status" -eq 0 ]
+  [ "$output" = "$NEW_SHA" ]
+}
+
+@test "several same-key lines on one commit: the last one wins" {
+  # GitHub's default squash message concatenates the branch's commit messages,
+  # so the newest import trailer is the last occurrence.
+  git commit -q --allow-empty -m "chore: sync from oss (#42)
+
+feat: first
+
+Oss-Commit: $OLD_SHA
+
+feat: second
+
+Oss-Commit: $NEW_SHA"
+  run trailer_value HEAD Oss-Commit
+  [ "$status" -eq 0 ]
+  [ "$output" = "$NEW_SHA" ]
+}
+
+@test "all_trailer_entries lists every carrier newest first" {
+  git commit -q --allow-empty -m "one
+
+Oss-Commit: $OLD_SHA"
+  git commit -q --allow-empty -m "two
+
+Oss-Commit: $NEW_SHA
+
+Co-authored-by: someone <s@example.com>"
+  run all_trailer_entries HEAD Oss-Commit
+  [ "$status" -eq 0 ]
+  [ "$(echo "$output" | wc -l)" -eq 2 ]
+  [ "$(echo "$output" | awk 'NR==1 {print $2}')" = "$NEW_SHA" ]
+  [ "$(echo "$output" | awk 'NR==2 {print $2}')" = "$OLD_SHA" ]
+}
+
+@test "an abbreviated hand-written trailer is still read" {
+  git commit -q --allow-empty -m "chore: hand-written import
+
+Oss-Commit: 7b20042"
+  run trailer_value HEAD Oss-Commit
+  [ "$status" -eq 0 ]
+  [ "$output" = "7b20042" ]
 }
 
 @test "newest_trailer_entry survives a large history under pipefail (SIGPIPE regression)" {
@@ -42,10 +152,10 @@ Monorepo-Commit: newsha"
   for i in $(seq 1 2500); do prev=$(git commit-tree "$et" -p "$prev" -m "c$i"); done
   head=$(git commit-tree "$et" -p "$prev" -m "newest
 
-Monorepo-Commit: TARGETSHA")
+Monorepo-Commit: $NEW_SHA")
   git update-ref refs/heads/main "$head"
   set -o pipefail
   run newest_trailer_entry main Monorepo-Commit
   [ "$status" -eq 0 ]
-  [ "$(echo "$output" | awk '{print $2}')" = "TARGETSHA" ]
+  [ "$(echo "$output" | awk '{print $2}')" = "$NEW_SHA" ]
 }

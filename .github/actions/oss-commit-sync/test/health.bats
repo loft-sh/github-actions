@@ -1,0 +1,162 @@
+#!/usr/bin/env bats
+# The health direction is read-only: it reports drift that a green export or
+# import run does not surface, and must never commit, push, or fail the caller.
+
+load helpers
+
+setup() {
+  setup_fixture
+  HEALTH="$BATS_TEST_DIRNAME/../health.sh"
+  export GITHUB_STEP_SUMMARY="$ROOT/summary.md"
+  : > "$GITHUB_STEP_SUMMARY"
+}
+
+teardown() {
+  teardown_fixture
+}
+
+@test "a converged sync reports healthy" {
+  run bash "$HEALTH"
+  [ "$status" -eq 0 ]
+  [ "$(output_value converged)" = "true" ]
+  [ "$(output_value anchor)" = "$O0" ]
+  [ "$(output_value stale-anchor)" = "false" ]
+  [ "$(output_value pending-count)" = "0" ]
+  [ "$(output_value squashed-trailer-count)" = "0" ]
+}
+
+@test "pending externals are counted, not flagged as staleness" {
+  external_commit ext.go "one" "feat: alice first" >/dev/null
+  run bash "$HEALTH"
+  [ "$status" -eq 0 ]
+  [ "$(output_value converged)" = "false" ]
+  [ "$(output_value pending-count)" = "1" ]
+  [ "$(output_value stale-anchor)" = "false" ]
+  [ -z "$(output_value suggested-anchor)" ]
+}
+
+@test "trailers lagging the content are reported as lost provenance, not an outage" {
+  # Absorb an external, then drop the trailer entirely: the content is in
+  # staging but nothing records it. The import heals from content, so the sync
+  # is fine; what is lost is the recorded provenance of that commit.
+  E1=$(external_commit ext1.go "one" "feat: alice first")
+  bash "$IMPORT"
+  squash_merge_pr_branch "chore: sync from oss (#42)"
+
+  run bash "$HEALTH"
+  [ "$status" -eq 0 ]
+  [ "$(output_value stale-anchor)" = "true" ]
+  [ "$(output_value recorded-anchor)" = "$O0" ]
+  [ "$(output_value anchor)" = "$E1" ]
+  [ "$(output_value redundant-count)" = "1" ]
+  [ "$(output_value pending-count)" = "0" ]
+  # Reported as a notice, not a warning: nothing is broken.
+  [[ "$output" == *"heals"* ]]
+}
+
+@test "the healed anchor stops at the newest commit the subtree matches" {
+  # Absorbed-but-unrecorded, then a genuinely pending commit. The anchor may
+  # advance to the former only; advancing past the pending commit would drop it
+  # from the import silently.
+  E1=$(external_commit ext1.go "one" "feat: alice first")
+  bash "$IMPORT"
+  squash_merge_pr_branch "chore: sync from oss (#42)"
+  external_commit ext2.go "two" "feat: alice second (pending)" >/dev/null
+
+  run bash "$HEALTH"
+  [ "$status" -eq 0 ]
+  [ "$(output_value stale-anchor)" = "true" ]
+  [ "$(output_value anchor)" = "$E1" ]
+  [ "$(output_value pending-count)" = "1" ]
+}
+
+@test "a squash-orphaned trailer is reported even though the sync still reads it" {
+  E1=$(external_commit ext1.go "one" "feat: alice first")
+  bash "$IMPORT"
+  squash_merge_pr_branch "feat: alice first (#42)
+
+Oss-Commit: $E1
+
+Co-authored-by: alice <alice@contributor.example>"
+
+  run bash "$HEALTH"
+  [ "$status" -eq 0 ]
+  # The anchor is intact, so the sync is functionally fine ...
+  [ "$(output_value anchor)" = "$E1" ]
+  [ "$(output_value stale-anchor)" = "false" ]
+  # ... but the merge policy was violated and authorship was collapsed.
+  [ "$(output_value squashed-trailer-count)" = "1" ]
+  [[ "$output" == *"Rebase and merge"* ]]
+}
+
+@test "health never mutates the repository" {
+  external_commit ext.go "one" "feat: alice first" >/dev/null
+  before_head="$(git -C "$MONO" rev-parse HEAD)"
+  before_oss="$(oss_tip)"
+  before_branches="$(git -C "$MONO" for-each-ref --format='%(refname)' refs/heads)"
+
+  run bash "$HEALTH"
+  [ "$status" -eq 0 ]
+  [ "$(git -C "$MONO" rev-parse HEAD)" = "$before_head" ]
+  [ "$(oss_tip)" = "$before_oss" ]
+  [ "$(git -C "$MONO" for-each-ref --format='%(refname)' refs/heads)" = "$before_branches" ]
+  [ -z "$(git -C "$MONO" status --porcelain)" ]
+}
+
+@test "a missing anchor is warned about, not fatal" {
+  git -C "$MONO" reset -q --hard "$M0"
+  external_commit ext.go "one" "feat: alice first" >/dev/null
+
+  run bash "$HEALTH"
+  [ "$status" -eq 0 ]
+  [ -z "$(output_value anchor)" ]
+  [[ "$output" == *"seed-oss-commit"* ]]
+}
+
+@test "an unreachable OSS remote warns and exits 0, never reds the caller" {
+  # The most likely real failure (network, expired token, renamed branch). An
+  # advisory check must not block a push to the base branch over it.
+  OSS_REMOTE="$ROOT/does-not-exist.git" run bash "$HEALTH"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"::warning::"* ]]
+  [[ "$output" != *"::error::"* ]]
+}
+
+@test "a failing git producer degrades instead of reporting a clean backlog" {
+  external_commit ext.go "one" "feat: alice first" >/dev/null
+
+  # Fails ONLY diff-tree, so the outer rev-list still succeeds and the loop runs.
+  # That isolates the per-commit producer: unguarded, its empty output reads as
+  # "touches only excluded paths" and drops the commit from the backlog with no
+  # degraded signal, so health reports pending-count=0 because git broke.
+  # The real binary is resolved to an absolute path FIRST, otherwise the shim
+  # re-resolves `git` through the patched PATH and recurses forever.
+  real_git="$(command -v git)"
+  mkdir -p "$ROOT/bin"
+  cat > "$ROOT/bin/git" <<WRAP
+#!/usr/bin/env bash
+for a in "\$@"; do
+  case "\$a" in
+    diff-tree) exit 128 ;;
+  esac
+done
+exec "$real_git" "\$@"
+WRAP
+  chmod +x "$ROOT/bin/git"
+
+  PATH="$ROOT/bin:$PATH" run bash "$HEALTH"
+  # Never fails the caller ...
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"::error::"* ]]
+  # ... but says so, instead of issuing a clean bill of health it cannot support.
+  [ "$(output_value degraded)" = "true" ]
+  [[ "$output" == *"::warning::"* ]]
+}
+
+@test "the step summary records the findings" {
+  external_commit ext.go "one" "feat: alice first" >/dev/null
+  run bash "$HEALTH"
+  [ "$status" -eq 0 ]
+  grep -q "OSS sync health" "$GITHUB_STEP_SUMMARY"
+  grep -q "Commits pending import | 1" "$GITHUB_STEP_SUMMARY"
+}

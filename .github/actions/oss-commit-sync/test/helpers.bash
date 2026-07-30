@@ -100,6 +100,21 @@ external_commit() {
   git -C "$OSS_REMOTE" rev-parse main
 }
 
+# squash_merge_pr_branch <commit-message> — simulate GitHub's "Squash and merge"
+# button on the sync PR: one commit on the base branch carrying the PR branch's
+# combined diff and a caller-provided message. Callers pass the message shape
+# they are testing, notably GitHub's habit of appending a Co-authored-by
+# paragraph after any trailer the branch already wrote.
+squash_merge_pr_branch() {
+  local msg="$1"
+  (
+    cd "$MONO"
+    git switch -q main
+    git merge --squash -q "automation/sync-from-oss-main"
+    git commit -qm "$msg"
+  )
+}
+
 # absorb_external — run the real import + simulate a rebase-merge (FF) of the
 # sync PR, i.e. the state after a from-oss PR landed on main.
 absorb_external() {
