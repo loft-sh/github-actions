@@ -464,16 +464,67 @@ short() { git -C "$MONO" rev-parse --short HEAD; }
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
 
-  # Title reads like the source: "[<target>] <subject> (<side>)" -- subject
-  # verbatim, NOT the old "backport <short-sha>".
-  [ "$(create_arg --title)" = "[v0.35] fix: the thing (#1234) (oss)" ]
+  # Title reads like the source: "<subject> (backport <target> <side>)" --
+  # subject verbatim and FIRST, NOT the old "backport <short-sha>".
+  [ "$(create_arg --title)" = "fix: the thing (#1234) (backport v0.35 oss)" ]
   [[ "$(create_arg --title)" != *"backport ${sha:0:7}"* ]]
+
+  # The PUSHED COMMIT subject must match the title. GitHub squashes with
+  # squash_merge_commit_title=COMMIT_OR_PR_TITLE, so for a single-commit PR --
+  # always the case here -- this subject, not the title, is what lands on the
+  # release branch. It must therefore be conventional too; the old
+  # "backport: <sha> to <target>" form was not ("backport" is not a valid type).
+  local br; br="$(output_value backport-branch)"
+  local pushed_subject
+  pushed_subject="$(git --git-dir="$OSS_REMOTE" log -1 --format=%s "$br")"
+  [ "$pushed_subject" = "fix: the thing (#1234) (backport v0.35 oss)" ]
+  [ "$pushed_subject" = "$(create_arg --title)" ]
+
+  # The sha and the half stay available in the commit body.
+  local pushed_body
+  pushed_body="$(git --git-dir="$OSS_REMOTE" log -1 --format=%b "$br")"
+  [[ "$pushed_body" == *"$sha"* ]]
+  [[ "$pushed_body" == *"oss half"* ]]
 
   # Body references the source commit and lists it under a readable heading.
   local body; body="$(create_body)"
   [[ "$body" == *"Backport of commit \`$sha\` to \`v0.35\` (oss half)."* ]]
   [[ "$body" == *"### Backported Commits:"* ]]
   [[ "$body" == *"fix: the thing (#1234)"* ]]
+}
+
+@test "create-pr: the pro side gets the same conventional title and commit subject" {
+  install_fake_gh
+  cd "$MONO"
+  printf 'pro change\n' > pro.go
+  git add pro.go
+  git commit -qm "feat(cli): pro thing (#42)"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value route)" = "pro-only" ]
+
+  [ "$(create_arg --title)" = "feat(cli): pro thing (#42) (backport v0.35 pro)" ]
+  local br; br="$(output_value backport-branch)"
+  [ "$(git --git-dir="$PRO_REMOTE" log -1 --format=%s "$br")" = "feat(cli): pro thing (#42) (backport v0.35 pro)" ]
+}
+
+@test "create-pr: a non-conventional source subject is carried verbatim, not prefixed" {
+  install_fake_gh
+  cd "$MONO"
+  printf 'line1\nOSS\nline3\n' > "$PFX/app.go"
+  git commit -qam "Update the deps"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+
+  # The action does not invent a type for a subject that never had one -- that is
+  # a source-side problem fixed by linting PR titles, not here. What it must not
+  # do is re-introduce a leading "[v0.35]", which would make even a conventional
+  # subject invalid.
+  [ "$(create_arg --title)" = "Update the deps (backport v0.35 oss)" ]
+  local br; br="$(output_value backport-branch)"
+  [ "$(git --git-dir="$OSS_REMOTE" log -1 --format=%s "$br")" = "Update the deps (backport v0.35 oss)" ]
 }
 
 @test "create-pr: PR reference is fully-qualified as owner/repo#N from origin" {
