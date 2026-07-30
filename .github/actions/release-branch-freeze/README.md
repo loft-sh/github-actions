@@ -106,6 +106,12 @@ The bypass team is referenced by numeric id (find it with
 `gh api orgs/<org>/teams/<slug> --jq .id`), so the token needs no org-read
 permission at run time.
 
+Pass `extra-bypass-team-ids` (comma-separated numeric ids) to allow more teams
+to merge during the freeze — for example a release-automation bot team, so
+`loft-bot` can still land release PRs while a line is frozen. Individual user
+accounts cannot be ruleset bypass actors, so a bot must bypass via a team it
+belongs to.
+
 ## Enforcement modes
 
 | Mode | Effect |

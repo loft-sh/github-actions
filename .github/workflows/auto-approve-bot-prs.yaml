@@ -15,6 +15,18 @@ on:
         description: 'Enable auto-merge after approval'
         type: boolean
         default: false
+      wait-max-attempts:
+        description: 'Max polling attempts waiting for other CI checks (raise this when a slow required check, e.g. e2e, gates the PR).'
+        type: string
+        default: '90'
+      wait-min-attempts:
+        description: 'Minimum polls before ci_green=true is allowed.'
+        type: string
+        default: '12'
+      wait-sleep-seconds:
+        description: 'Seconds between polling attempts.'
+        type: string
+        default: '10'
     secrets:
       gh-access-token:
         description: 'GitHub PAT for approving PRs (must be different identity from PR author)'
@@ -44,4 +56,7 @@ jobs:
           trusted-authors: ${{ inputs.trusted-authors }}
           merge-method: ${{ inputs.merge-method }}
           auto-merge: ${{ inputs.auto-merge }}
+          wait-max-attempts: ${{ inputs.wait-max-attempts }}
+          wait-min-attempts: ${{ inputs.wait-min-attempts }}
+          wait-sleep-seconds: ${{ inputs.wait-sleep-seconds }}
           github-token: ${{ secrets.gh-access-token }} # zizmor: ignore[secrets-outside-env] -- PAT passed via workflow_call, not a repo secret

@@ -28,6 +28,14 @@ inputs:
       Numeric GitHub team id allowed to merge during the freeze (required for
       freeze). Find it with: gh api orgs/<org>/teams/<slug> --jq .id
     required: false
+  extra-bypass-team-ids:
+    description: |
+      Optional comma-separated numeric team ids added to the freeze bypass
+      alongside bypass-team-id (e.g. a release-automation bot team so loft-bot
+      can merge during a freeze). Individual users cannot be ruleset bypass
+      actors, so a bot must bypass via a team it belongs to.
+    required: false
+    default: ''
   enforcement:
     description: 'active | evaluate | disabled. evaluate is a dry run that logs would-be blocks without blocking. Default active.'
     required: false
@@ -51,6 +59,7 @@ runs:
         INPUT_REPOSITORY: ${{ inputs.repository }}
         INPUT_BRANCH: ${{ inputs.branch }}
         INPUT_BYPASS_TEAM_ID: ${{ inputs.bypass-team-id }}
+        INPUT_EXTRA_BYPASS_TEAM_IDS: ${{ inputs.extra-bypass-team-ids }}
         INPUT_ENFORCEMENT: ${{ inputs.enforcement }}
         INPUT_RULESET_NAME: ${{ inputs.ruleset-name }}
       run: ${{ github.action_path }}/src/freeze.sh

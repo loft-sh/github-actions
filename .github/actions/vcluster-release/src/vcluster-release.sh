@@ -36,6 +36,20 @@ CUTOVER="${CUTOVER:-v0.37}"
 OSS_REPO="${OSS_REPO:-loft-sh/vcluster}"
 PRO_REPO="${PRO_REPO:-loft-sh/vcluster-pro}"
 WORKFLOW="${WORKFLOW:-release.yaml}"
+# Legacy-line pro dependency bump. During a legacy cut, after the OSS tag is
+# created, this workflow is dispatched on the pro default branch to bump the
+# vendored github.com/loft-sh/vcluster dependency on the pro release branch to
+# the new tag and open a loft-bot PR; auto-approve-bot-prs merges it. The
+# WAIT_* bounds bound the poll for that merge and are overridable so the bats
+# suite drives the poll without real sleeps.
+BUMP_WORKFLOW="${BUMP_WORKFLOW:-release-bump-vcluster.yaml}"
+PRO_DEFAULT_BRANCH="${PRO_DEFAULT_BRANCH:-main}"
+PRO_OWNER="${PRO_REPO%%/*}"
+# ~120 min ceiling (480 x 15s). Must exceed the bot's own CI wait: the bump PR
+# triggers e2e and auto-approve-bot-prs only merges once e2e is green, so this
+# poll has to outlast a full e2e run plus the merge.
+BUMP_WAIT_ATTEMPTS="${BUMP_WAIT_ATTEMPTS:-480}"
+BUMP_WAIT_SLEEP_SECONDS="${BUMP_WAIT_SLEEP_SECONDS:-15}"
 # The human who invoked cut-release. Forwarded to the monorepo-era release.yaml
 # (-f triggered_by=...) so the Slack banner attributes the person, not the bot
 # PAT that dispatches the build. Only passed on paths whose release.yaml declares
@@ -305,6 +319,59 @@ dispatch() {
 # Orchestration
 # ---------------------------------------------------------------------------
 
+# bump_pro_dependency <version> <line> - dispatch the pro release-bump workflow
+# to open a loft-bot PR bumping the vendored github.com/loft-sh/vcluster
+# dependency on the <line> branch to <version>, then block until
+# auto-approve-bot-prs merges it. Replaces the manual "release-prep" PR that
+# used to precede a legacy cut, so the pro tag created next builds against the
+# OSS code being co-released.
+#
+# Honors DRY_RUN: prints the dispatch and the PR it would wait on, mutates
+# nothing. The bump branch name is the contract shared with the pro
+# release-bump-vcluster.yaml (which creates it) and auto-approve-bot-prs.yaml
+# (which auto-merges branches matching chore/*/bump-vcluster-*).
+bump_pro_dependency() {
+  local version="$1" line="$2"
+  local bump_branch="chore/${line}/bump-vcluster-${version}"
+  if [[ "${DRY_RUN:-true}" == "true" ]]; then
+    echo "[dry-run] gh workflow run ${BUMP_WORKFLOW} --repo ${PRO_REPO} --ref ${PRO_DEFAULT_BRANCH} -f version=${version} -f branch=${line}"
+    echo "[dry-run] would wait for PR ${PRO_OWNER}:${bump_branch} -> ${line} to merge, then tag ${PRO_REPO}@${line}"
+    return 0
+  fi
+  echo "::notice::dispatching ${BUMP_WORKFLOW} to bump ${PRO_REPO}@${line} to ${version}"
+  gh workflow run "${BUMP_WORKFLOW}" --repo "${PRO_REPO}" --ref "${PRO_DEFAULT_BRANCH}" \
+    -f version="${version}" -f branch="${line}"
+  wait_for_bump_merge "${bump_branch}" "${line}"
+}
+
+# wait_for_bump_merge <bump_branch> <base> - block until the bump PR (head
+# <bump_branch> into <base>) is merged. Fail closed: a closed-unmerged PR or a
+# timeout aborts the cut, so pro is never tagged against an un-bumped go.mod. A
+# still-absent PR (the dispatched workflow has not opened it yet) is a normal
+# early state, so keep polling until it appears.
+wait_for_bump_merge() {
+  local bump_branch="$1" base="$2" i tuple state merged
+  for (( i = 1; i <= BUMP_WAIT_ATTEMPTS; i++ )); do
+    # .[0] is the newest PR for this head+base; null (no PR yet) collapses to
+    # "none|" via the // fallbacks, so parsing never errors on an empty result.
+    tuple="$(gh api "repos/${PRO_REPO}/pulls?head=${PRO_OWNER}:${bump_branch}&base=${base}&state=all" \
+      --jq '.[0] | "\(.state // "none")|\(.merged_at // "")"' 2>/dev/null || true)"
+    state="${tuple%%|*}"
+    merged="${tuple#*|}"
+    if [[ -n "$merged" ]]; then
+      echo "::notice::bump PR ${bump_branch} merged into ${base} (${merged})."
+      return 0
+    fi
+    if [[ "$state" == "closed" ]]; then
+      echo "::error::bump PR ${bump_branch} was closed without merging; aborting the cut so pro is not tagged against an un-bumped go.mod." >&2
+      exit 1
+    fi
+    sleep "${BUMP_WAIT_SLEEP_SECONDS}"
+  done
+  echo "::error::timed out after $(( BUMP_WAIT_ATTEMPTS * BUMP_WAIT_SLEEP_SECONDS ))s waiting for bump PR ${bump_branch} -> ${base} to merge. Inspect the ${BUMP_WORKFLOW} run and auto-approve-bot-prs on ${PRO_REPO}, then recover per the README." >&2
+  exit 1
+}
+
 cut_legacy() {
   local version="$1" line="$2"
   echo "Routing ${version} -> legacy (line ${line}); dispatch order: ${OSS_REPO} then ${PRO_REPO}"
@@ -313,16 +380,23 @@ cut_legacy() {
   require_branch "$PRO_REPO" "$line"
   guard_not_released "$OSS_REPO" "$version"
   guard_not_released "$PRO_REPO" "$version"
-  # Tag both, then dispatch OSS first so the OSS release exists for pro's
-  # standalone upload (pro's builder still waits/retries for it).
+  # Tag OSS first so `go get github.com/loft-sh/vcluster@${version}` resolves the
+  # freshly cut tag during the pro dependency bump below.
   create_tag "$OSS_REPO" "$line" "$version"
+  # Bump the vendored OSS dependency on the pro release branch to the tag just
+  # created and wait for the auto-merged PR to land, so the pro tag/build below
+  # ships the OSS code being co-released. Automates the old manual release-prep PR.
+  bump_pro_dependency "$version" "$line"
+  # Tag pro at the now-bumped branch head. Both tags still precede either
+  # dispatch, preserving the tag-before-dispatch invariant.
   create_tag "$PRO_REPO" "$line" "$version"
   dispatch "$OSS_REPO" "$version"
   # OSS is now building. This sequence is non-atomic: if the pro dispatch below
   # fails, the correct recovery is to dispatch pro ONLY. Deleting the tags and
-  # re-running this action would re-dispatch (and rebuild) OSS. Emit the true
-  # progress state so a partial failure is diagnosable from the run log rather
-  # than misread as a plain double-cut. See README > Partial-failure recovery.
+  # re-running this action would re-dispatch (and rebuild) OSS and re-open the
+  # bump PR. Emit the true progress state so a partial failure is diagnosable
+  # from the run log rather than misread as a plain double-cut. See README >
+  # Partial-failure recovery.
   if [[ "${DRY_RUN:-true}" != "true" ]]; then
     echo "::notice::${OSS_REPO} dispatched for ${version}. If the ${PRO_REPO} dispatch below fails, recover by dispatching ${PRO_REPO} only - do NOT delete tags and re-run this action (that re-dispatches OSS)."
   fi

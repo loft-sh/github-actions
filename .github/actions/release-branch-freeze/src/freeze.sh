@@ -59,10 +59,25 @@ case "$INPUT_OPERATION" in
   freeze)
     : "${INPUT_BRANCH:?branch required for freeze}"
     : "${INPUT_BYPASS_TEAM_ID:?bypass-team-id required for freeze}"
-    if ! [[ "$INPUT_BYPASS_TEAM_ID" =~ ^[0-9]+$ ]]; then
-      echo "::error::bypass-team-id must be numeric (got: ${INPUT_BYPASS_TEAM_ID})"
-      exit 1
+    # The freeze bypass is one or more teams: the primary bypass-team-id plus any
+    # comma-separated extra-bypass-team-ids (e.g. a release-automation bot team,
+    # so loft-bot can still merge during a freeze). Individual users cannot be
+    # ruleset bypass actors, so a bot bypasses via a team it belongs to.
+    BYPASS_TEAM_IDS="$INPUT_BYPASS_TEAM_ID"
+    if [ -n "${INPUT_EXTRA_BYPASS_TEAM_IDS:-}" ]; then
+      BYPASS_TEAM_IDS="${BYPASS_TEAM_IDS},${INPUT_EXTRA_BYPASS_TEAM_IDS}"
     fi
+    # Validate every id is numeric before jq's tonumber sees it.
+    IFS=',' read -ra _bypass_ids <<<"$BYPASS_TEAM_IDS"
+    for _id in "${_bypass_ids[@]}"; do
+      if ! [[ "$_id" =~ ^[0-9]+$ ]]; then
+        echo "::error::bypass team ids must be numeric (got: ${_id})"
+        exit 1
+      fi
+    done
+    # One Team bypass actor per id.
+    BYPASS_ACTORS="$(jq -cn --arg ids "$BYPASS_TEAM_IDS" \
+      '$ids | split(",") | map({ actor_type: "Team", actor_id: (. | tonumber), bypass_mode: "always" })')"
     ENFORCEMENT="${INPUT_ENFORCEMENT:-active}"
     case "$ENFORCEMENT" in
       active | evaluate | disabled) ;;
@@ -77,14 +92,14 @@ case "$INPUT_OPERATION" in
       --arg name "$RULESET_NAME" \
       --arg ref "refs/heads/${BRANCH}" \
       --arg enforcement "$ENFORCEMENT" \
-      --argjson team_id "$INPUT_BYPASS_TEAM_ID" \
+      --argjson actors "$BYPASS_ACTORS" \
       '{
         name: $name,
         target: "branch",
         enforcement: $enforcement,
         conditions: { ref_name: { include: [ $ref ], exclude: [] } },
         rules: [ { type: "update" } ],
-        bypass_actors: [ { actor_type: "Team", actor_id: $team_id, bypass_mode: "always" } ]
+        bypass_actors: $actors
       }')
 
     RID="$(find_ruleset_id)"
@@ -100,7 +115,7 @@ case "$INPUT_OPERATION" in
       fi
     fi
     write_output "ruleset-id" "$RID"
-    echo "::notice::freeze ${ENFORCEMENT}: only team ${INPUT_BYPASS_TEAM_ID} may merge into ${BRANCH} on ${REPO}"
+    echo "::notice::freeze ${ENFORCEMENT}: only teams ${BYPASS_TEAM_IDS} may merge into ${BRANCH} on ${REPO}"
     ;;
   unfreeze)
     RID="$(find_ruleset_id)"

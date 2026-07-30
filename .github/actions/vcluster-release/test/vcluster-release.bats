@@ -12,6 +12,9 @@ setup() {
   STUB_DIR="$(mktemp -d)"
   PATH="${STUB_DIR}:${PATH}"
   install_gh_stub
+
+  # The pro bump merge-wait polls a stubbed PR; drive it with no real sleeps.
+  export BUMP_WAIT_SLEEP_SECONDS=0
 }
 
 teardown() {
@@ -73,6 +76,18 @@ if [[ "$sub" == "api" ]]; then
       emit_status 1 tags ;;
     repos/*/git/refs/heads/*)
       echo "deadbeefcafe"; exit 0 ;;
+    repos/*/pulls*)
+      # Emulate `gh api <pulls> --jq '.[0] | "\(.state)|\(.merged_at)"'`. The stub
+      # replaces gh (no real jq), so echo the exact tuple wait_for_bump_merge
+      # parses. GH_STUB_BUMP_PR selects the PR state; default merged so the happy
+      # path needs no extra setup. A merged PR is state=closed with merged_at set.
+      case "${GH_STUB_BUMP_PR:-merged}" in
+        merged) echo "closed|2026-01-02T03:04:05Z" ;;
+        closed) echo "closed|" ;;
+        open)   echo "open|" ;;
+        *)      echo "none|" ;;
+      esac
+      exit 0 ;;
     *)
       # POST repos/<repo>/git/refs and anything else: succeed.
       exit 0 ;;
@@ -358,6 +373,22 @@ EOF
   [[ "$output" != *"dispatched release.yaml"* ]]
 }
 
+@test "legacy dry-run: prints the pro bump dispatch + merge-wait between the two tags, mutates nothing" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="true" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[dry-run] gh workflow run release-bump-vcluster.yaml --repo loft-sh/vcluster-pro --ref main -f version=v0.35.4 -f branch=v0.35"* ]]
+  [[ "$output" == *"would wait for PR loft-sh:chore/v0.35/bump-vcluster-v0.35.4 -> v0.35 to merge"* ]]
+  # Order: OSS tag POST -> bump dispatch -> pro tag POST (go get needs the OSS
+  # tag first; pro is tagged only after the bump).
+  oss_tag=$(printf '%s\n' "$output" | grep -n 'repos/loft-sh/vcluster/git/refs' | head -1 | cut -d: -f1)
+  bump=$(printf '%s\n' "$output" | grep -n 'gh workflow run release-bump-vcluster.yaml' | head -1 | cut -d: -f1)
+  pro_tag=$(printf '%s\n' "$output" | grep -n 'repos/loft-sh/vcluster-pro/git/refs' | head -1 | cut -d: -f1)
+  [ -n "$oss_tag" ] && [ -n "$bump" ] && [ -n "$pro_tag" ]
+  [ "$oss_tag" -lt "$bump" ]
+  [ "$bump" -lt "$pro_tag" ]
+}
+
 @test "legacy: missing branch in a repo is a hard error" {
   # OSS has the branch, pro does not.
   export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35"
@@ -496,6 +527,43 @@ EOF
   [[ "$output" != *"[dry-run]"* ]]
   # Partial-failure recovery hint fires only on the live path.
   [[ "$output" == *"do NOT delete tags and re-run this action"* ]]
+}
+
+@test "legacy non-dry-run: bumps pro (merged) then tags pro after the merge" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  export GH_STUB_BUMP_PR="merged"
+  INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"dispatching release-bump-vcluster.yaml to bump loft-sh/vcluster-pro@v0.35 to v0.35.4"* ]]
+  [[ "$output" == *"bump PR chore/v0.35/bump-vcluster-v0.35.4 merged into v0.35"* ]]
+  [[ "$output" != *"[dry-run]"* ]]
+  # OSS tag before the merge; pro tag only after it.
+  oss_tag=$(printf '%s\n' "$output" | grep -n 'created tag v0.35.4 in loft-sh/vcluster ' | head -1 | cut -d: -f1)
+  merged=$(printf '%s\n' "$output" | grep -n 'merged into v0.35' | head -1 | cut -d: -f1)
+  pro_tag=$(printf '%s\n' "$output" | grep -n 'created tag v0.35.4 in loft-sh/vcluster-pro ' | head -1 | cut -d: -f1)
+  [ "$oss_tag" -lt "$merged" ]
+  [ "$merged" -lt "$pro_tag" ]
+}
+
+@test "legacy non-dry-run: a bump PR closed without merging aborts before tagging pro" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  export GH_STUB_BUMP_PR="closed"
+  INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"closed without merging"* ]]
+  # Pro is never tagged and OSS is never dispatched against an un-bumped go.mod.
+  [[ "$output" != *"created tag v0.35.4 in loft-sh/vcluster-pro "* ]]
+  [[ "$output" != *"dispatched release.yaml in loft-sh/vcluster "* ]]
+}
+
+@test "legacy non-dry-run: a bump PR that never merges times out and aborts" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  export GH_STUB_BUMP_PR="open"
+  export BUMP_WAIT_ATTEMPTS=3
+  INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"timed out"* ]]
+  [[ "$output" != *"created tag v0.35.4 in loft-sh/vcluster-pro "* ]]
 }
 
 @test "monorepo non-dry-run: reaches the mutating pro-only path" {
