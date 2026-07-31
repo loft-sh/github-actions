@@ -23,28 +23,47 @@ kv() { grep "^$1=" "$GITHUB_OUTPUT" | tail -n1; }
   [ "$(kv proceed)" = "proceed=true" ]
 }
 
-@test "mergeable=false → proceed=false" {
+@test "mergeable=false → proceed=false, reported as a conflict needing a rebase" {
   GH_MOCK_MERGEABLE=false GH_MOCK_APPROVER="loft-bot" run "$SCRIPT"
   [ "$status" -eq 0 ]
   [ "$(kv proceed)" = "proceed=false" ]
+  [[ "$output" == *"::warning::PR #42 has merge conflicts"* ]]
+}
+
+@test "regression: mergeable=false is definitive and must not burn the retry budget" {
+  # jq's `//` used to collapse false into "null", so a conflicted PR looked
+  # like un-computed metadata and re-polled until the budget ran out.
+  # MERGEABLE_MAX_ATTEMPTS=2 here, so a second poll would prove the regression.
+  GH_MOCK_MERGEABLE=false GH_MOCK_APPROVER="loft-bot" run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(grep -c 'pulls/42' "$GH_MOCK_CALLS")" -eq 1 ]
 }
 
 @test "mergeable=null → proceed=false (never treat unknown as clean)" {
   GH_MOCK_MERGEABLE=null GH_MOCK_APPROVER="loft-bot" run "$SCRIPT"
   [ "$status" -eq 0 ]
   [ "$(kv proceed)" = "proceed=false" ]
+  # Distinct from the conflict case above: transient, so a re-run is advised
+  # rather than a rebase.
+  [[ "$output" == *"did not report mergeability"* ]]
+  [[ "$output" == *"transient"* ]]
+  [[ "$output" != *"merge conflicts"* ]]
 }
 
 @test "approver == author → proceed=false (self-review guard)" {
   GH_MOCK_MERGEABLE=true GH_MOCK_APPROVER="dependabot[bot]" run "$SCRIPT"
   [ "$status" -eq 0 ]
   [ "$(kv proceed)" = "proceed=false" ]
+  [[ "$output" == *"::error::the approving identity"* ]]
+  [[ "$output" == *"self-approval"* ]]
 }
 
-@test "empty approver → proceed=false" {
+@test "empty approver → proceed=false, reported as a token problem not self-approval" {
   GH_MOCK_MERGEABLE=true GH_MOCK_APPROVER="" run "$SCRIPT"
   [ "$status" -eq 0 ]
   [ "$(kv proceed)" = "proceed=false" ]
+  [[ "$output" == *"::error::could not resolve the authenticated user"* ]]
+  [[ "$output" != *"self-approval"* ]]
 }
 
 @test "missing PR_NUMBER fails" {

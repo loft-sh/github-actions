@@ -8,11 +8,11 @@ on:
         type: string
         default: 'renovate[bot],loft-bot,github-actions[bot]'
       merge-method:
-        description: 'Merge method for auto-merge (squash, merge, rebase)'
+        description: 'Merge method (squash, merge, rebase)'
         type: string
         default: 'squash'
       auto-merge:
-        description: 'Enable auto-merge after approval'
+        description: 'Merge the PR after approving it, directly where possible.'
         type: boolean
         default: false
       wait-max-attempts:

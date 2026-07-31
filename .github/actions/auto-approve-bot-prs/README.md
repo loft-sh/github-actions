@@ -75,16 +75,38 @@ which is routinely minutes after the floor expires — the bail then discards a
 rerun that was still coming. That stalled the `v0.34.7` cut
 (vcluster-pro#2155): floor expired 12:49:45, replacement registered 12:51:41.
 
+## Merging
+
+With `auto-merge: true` the action tries a **plain merge first**, and uses
+GitHub's auto-merge queue (`--auto`) only as a fallback.
+
+By the time the merge step runs, every other check is already green and the PR
+is approved, so there is normally nothing left for the queue to wait on.
+`--auto` additionally requires the repository's `allow_auto_merge` setting,
+which is invisible from here and silently turns the merge into a no-op when it
+is off — and a merge that never happens strands whatever is waiting on it (the
+`vcluster-release` orchestrator blocks on exactly this merge during a legacy
+release cut).
+
+`--auto` still has a job: a required check that registered *after* the CI wait
+declared green legitimately refuses a merge right now but can complete later.
+Queueing is the right answer there, so a refused plain merge degrades to it.
+
+A PR that is approved but ends up merged by neither path is annotated at
+**error** level, carrying both underlying `gh` errors, since this is the only
+place that cause is knowable. Re-runs stay quiet: an already-merged PR is
+benign, and a PR closed unmerged is a human decision.
+
 ## Inputs
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
 |       INPUT        |  TYPE  | REQUIRED |                    DEFAULT                     |                                                                                                DESCRIPTION                                                                                                 |
 |--------------------|--------|----------|------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-|     auto-merge     | string |  false   |                   `"false"`                    |                                                                                  Enable GitHub auto-merge after approval                                                                                   |
+|     auto-merge     | string |  false   |                   `"false"`                    |                                                            Merge the PR after approving it, <br>directly where possible. See README "Merging".                                                             |
 |   ci-read-token    | string |  false   |                                                | Token for the read-only CI poll <br>only; defaults to the caller GITHUB_TOKEN, <br>which needs `checks: read` and `statuses: read`. Never <br>the approving PAT. See README "Two <br>tokens, on purpose".  |
 |    github-token    | string |   true   |                                                |                                                     PAT used to read PR state, <br>approve, and enable auto-merge. Must NOT <br>match the PR author.                                                       |
-|    merge-method    | string |  false   |                   `"squash"`                   |                                                                             Merge method for auto-merge (squash|merge|rebase)                                                                              |
+|    merge-method    | string |  false   |                   `"squash"`                   |                                                                                     Merge method (squash|merge|rebase)                                                                                     |
 |  trusted-authors   | string |  false   | `"renovate[bot],loft-bot,github-actions[bot]"` |                                                                                 Comma-separated list of trusted bot logins                                                                                 |
 | wait-max-attempts  | string |  false   |                     `"90"`                     |                                                                           Max polling attempts waiting for other <br>CI checks                                                                             |
 | wait-min-attempts  | string |  false   |                     `"12"`                     |                             Minimum polls before ci_green=true is allowed. <br>Prevents early approval while slow external <br>checks (e.g. Netlify) have not yet registered.                              |

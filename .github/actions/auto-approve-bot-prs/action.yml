@@ -13,11 +13,11 @@ inputs:
     required: false
     default: 'renovate[bot],loft-bot,github-actions[bot]'
   merge-method:
-    description: 'Merge method for auto-merge (squash|merge|rebase)'
+    description: 'Merge method (squash|merge|rebase)'
     required: false
     default: 'squash'
   auto-merge:
-    description: 'Enable GitHub auto-merge after approval'
+    description: 'Merge the PR after approving it, directly where possible. See README "Merging".'
     required: false
     default: 'false'
   github-token:
