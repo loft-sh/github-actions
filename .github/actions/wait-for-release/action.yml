@@ -1,0 +1,63 @@
+name: Wait for release
+description: |
+  Block until a GitHub Release for a given version exists in a given repository,
+  for pipelines where one repo's build consumes a release that another repo's
+  build produces.
+
+  Polling for the release alone cannot tell "the producer is still building"
+  apart from "the producer died half an hour ago". The optional `workflow` input
+  makes the wait status-aware: when the run that produces the release has
+  already concluded failure, cancelled or timed out, the wait fails immediately
+  with that run's URL and the recovery order, instead of spending the whole
+  timeout on a precondition that can never be met.
+inputs:
+  repo:
+    description: 'Repository publishing the release, as owner/name (e.g. loft-sh/vcluster).'
+    required: true
+  version:
+    description: 'Release tag to wait for (e.g. v0.36.1-rc.2).'
+    required: true
+  workflow:
+    description: 'Workflow file in `repo` that produces the release (e.g. release.yaml). When set, a producer run that has already failed fails this wait immediately rather than waiting out the timeout. Omit for a plain presence poll.'
+    required: false
+    default: ''
+  max-attempts:
+    description: 'Polls before giving up. The wall-clock ceiling is max-attempts x interval-seconds.'
+    required: false
+    default: '120'
+  interval-seconds:
+    description: 'Seconds to sleep between polls.'
+    required: false
+    default: '15'
+  max-api-failures:
+    description: 'Consecutive GitHub API failures tolerated before failing. A single blip must never fail a release.'
+    required: false
+    default: '5'
+  github-token:
+    description: 'Token with contents:read on `repo`, plus actions:read when `workflow` is set.'
+    required: true
+outputs:
+  waited-seconds:
+    description: 'Approximate seconds spent waiting before the release appeared.'
+    value: ${{ steps.wait.outputs.waited-seconds }}
+  release-url:
+    description: 'URL of the release that was found.'
+    value: ${{ steps.wait.outputs.release-url }}
+runs:
+  using: composite
+  steps:
+    - name: Wait for release
+      id: wait
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        INPUT_REPO: ${{ inputs.repo }}
+        INPUT_VERSION: ${{ inputs.version }}
+        INPUT_WORKFLOW: ${{ inputs.workflow }}
+        WAIT_MAX_ATTEMPTS: ${{ inputs.max-attempts }}
+        WAIT_INTERVAL_SECONDS: ${{ inputs.interval-seconds }}
+        WAIT_MAX_API_FAILURES: ${{ inputs.max-api-failures }}
+      run: ${{ github.action_path }}/src/wait-for-release.sh
+branding:
+  icon: 'clock'
+  color: 'orange'
