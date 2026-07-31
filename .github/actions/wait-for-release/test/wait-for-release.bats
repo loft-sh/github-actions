@@ -33,6 +33,7 @@ teardown() {
 # A single configurable `gh` stub, driven per-test by env:
 #   GH_STUB_RELEASE_AFTER=N    release becomes present on the Nth lookup (0 = never)
 #   GH_STUB_RELEASE_ERRORS=N   first N lookups fail with a transport error, not a 404
+#   GH_STUB_RELEASE_ERROR_EVERY=N  every Nth lookup fails, interleaved with 404s
 #   GH_STUB_RUN_STATUS         producer run status   (default in_progress)
 #   GH_STUB_RUN_CONCLUSION     producer run conclusion (default empty)
 #   GH_STUB_RUN_URL            producer run url
@@ -55,6 +56,13 @@ if [[ "$sub" == "api" ]]; then
     exit 1
   fi
 
+  # Partial outage: fail every Nth lookup, so errors interleave with clean 404s
+  # and the consecutive counter keeps resetting.
+  if [[ -n "${GH_STUB_RELEASE_ERROR_EVERY:-}" ]] && (( n % GH_STUB_RELEASE_ERROR_EVERY == 0 )); then
+    echo "HTTP 403: API rate limit exceeded" >&2
+    exit 1
+  fi
+
   after="${GH_STUB_RELEASE_AFTER:-0}"
   if (( after > 0 )) && (( n >= after )); then
     echo '{"tag_name":"stub"}'
@@ -73,9 +81,17 @@ if [[ "$sub" == "run" ]]; then
     echo "[]"
     exit 0
   fi
-  printf '[{"status":"%s","conclusion":"%s","url":"%s"}]\n' \
+  # An unconcluded run returns JSON null, not "", and jq -r renders that as the
+  # literal string "null". Emit real null so the script's actual parse path is
+  # what the suite exercises.
+  if [[ -z "${GH_STUB_RUN_CONCLUSION:-}" ]]; then
+    conclusion="null"
+  else
+    conclusion="\"${GH_STUB_RUN_CONCLUSION}\""
+  fi
+  printf '[{"status":"%s","conclusion":%s,"url":"%s"}]\n' \
     "${GH_STUB_RUN_STATUS:-in_progress}" \
-    "${GH_STUB_RUN_CONCLUSION:-}" \
+    "$conclusion" \
     "${GH_STUB_RUN_URL:-https://github.com/loft-sh/vcluster/actions/runs/30495974873}"
   exit 0
 fi
@@ -174,6 +190,20 @@ lookup_count() {
   [[ "$output" == *"already concluded timed_out"* ]]
 }
 
+@test "fails fast when the producer run hit startup_failure" {
+  export GH_STUB_RELEASE_AFTER=0
+  export INPUT_WORKFLOW="release.yaml"
+  export GH_STUB_RUN_STATUS="completed"
+  export GH_STUB_RUN_CONCLUSION="startup_failure"
+  export WAIT_MAX_ATTEMPTS=50
+
+  run bash "$SCRIPT"
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"already concluded startup_failure"* ]]
+  [ "$(lookup_count)" -eq 1 ]
+}
+
 @test "keeps waiting while the producer run is still in progress" {
   export GH_STUB_RELEASE_AFTER=0
   export INPUT_WORKFLOW="release.yaml"
@@ -268,6 +298,33 @@ lookup_count() {
   [ "$(lookup_count)" -eq 3 ]
 }
 
+@test "reports cumulative failures when a partial outage never trips the breaker" {
+  # Every 2nd lookup errors, so the consecutive counter resets on the 404s in
+  # between and never reaches the ceiling. The wait times out (the safe
+  # direction), but the timeout must not read as "the producer was just slow".
+  export GH_STUB_RELEASE_AFTER=0
+  export GH_STUB_RELEASE_ERROR_EVERY=2
+  export WAIT_MAX_ATTEMPTS=6
+  export WAIT_MAX_API_FAILURES=3
+
+  run bash "$SCRIPT"
+
+  [ "$status" -eq 1 ]
+  [[ "$output" != *"giving up after"* ]]
+  [[ "$output" == *"3 of 6 release lookups failed with an API error"* ]]
+  [[ "$output" == *"never appeared"* ]]
+}
+
+@test "reports no API-failure warning on a clean timeout" {
+  export GH_STUB_RELEASE_AFTER=0
+
+  run bash "$SCRIPT"
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"never appeared"* ]]
+  [[ "$output" != *"failed with an API error"* ]]
+}
+
 @test "a clean 404 does not count as an API failure" {
   export GH_STUB_RELEASE_AFTER=0
   export WAIT_MAX_API_FAILURES=2
@@ -318,4 +375,14 @@ lookup_count() {
   run producer_state "loft-sh/vcluster" "release.yaml" "v0.36.1-rc.2"
   [ "$status" -eq 0 ]
   [[ "$output" == "completed|failure|"* ]]
+
+  # An unconcluded run sends JSON null, which jq -r renders as "null". The
+  # script compares conclusions as strings, so this must stay non-terminal.
+  export GH_STUB_RUN_STATUS="in_progress"
+  unset GH_STUB_RUN_CONCLUSION
+  run producer_state "loft-sh/vcluster" "release.yaml" "v0.36.1-rc.2"
+  [ "$status" -eq 0 ]
+  [[ "$output" == "in_progress|null|"* ]]
+  run is_terminal "null"
+  [ "$status" -ne 0 ]
 }

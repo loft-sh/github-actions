@@ -129,7 +129,7 @@ check_producer() {
 }
 
 main() {
-  local attempt rc api_failures=0 waited=0
+  local attempt rc api_failures=0 api_failures_total=0 waited=0
   success_absent=0
 
   echo "waiting for release ${INPUT_VERSION} in ${INPUT_REPO} (up to ${MAX_ATTEMPTS} x ${INTERVAL_SECONDS}s)..."
@@ -151,6 +151,7 @@ main() {
       ;;
     *)
       api_failures=$((api_failures + 1))
+      api_failures_total=$((api_failures_total + 1))
       echo "::warning::attempt ${attempt}/${MAX_ATTEMPTS}: release lookup failed (${api_failures}/${MAX_API_FAILURES} consecutive)"
       if [ "$api_failures" -ge "$MAX_API_FAILURES" ]; then
         echo "::error::giving up after ${api_failures} consecutive API failures looking up ${INPUT_VERSION} in ${INPUT_REPO}"
@@ -169,6 +170,15 @@ main() {
     fi
   done
 
+  # The consecutive counter resets on every clean 404, so a partial outage that
+  # alternates errors with real 404s (intermittent rate-limiting, say) never
+  # trips the circuit breaker and the wait spends its whole budget. That is the
+  # safe direction to fail, but the timeout alone would read as "the producer
+  # was slow" when the truth is "we could barely see the API". Report the
+  # cumulative count so the two are distinguishable.
+  if [ "$api_failures_total" -gt 0 ]; then
+    echo "::warning::${api_failures_total} of ${MAX_ATTEMPTS} release lookups failed with an API error; the API was degraded for part or all of this wait"
+  fi
   echo "::error::release ${INPUT_VERSION} never appeared in ${INPUT_REPO} after ${MAX_ATTEMPTS} attempts (~$((MAX_ATTEMPTS * INTERVAL_SECONDS))s)"
   return 1
 }

@@ -90,7 +90,7 @@ interval-seconds` should comfortably exceed it, because a budget that merely
 | Producer run not found | Keep waiting, since dispatch can lag |
 | Producer lookup errored | Keep waiting, since the release is the authority rather than the producer's health |
 | Release lookup errored | Keep waiting, up to `max-api-failures` consecutive |
-| Attempts exhausted | Fail with the elapsed budget in the message |
+| Attempts exhausted | Fail with the elapsed budget, plus the cumulative API-failure count when any occurred |
 
 Two rules drive the table:
 
@@ -104,6 +104,15 @@ or unreadable producer run never fails the wait, because dispatch lag and API
 blips are normal. Only a run that has definitively finished unsuccessfully is
 grounds to stop, since at that point no amount of waiting can help.
 
+`max-api-failures` counts *consecutive* failures, so one blip can never fail a
+release. The trade-off is that a partial outage which interleaves errors with
+real 404s, intermittent rate-limiting for instance, keeps resetting the counter
+and never trips the breaker. That fails in the safe direction, the wait simply
+times out, but a bare timeout would read as "the producer was slow" when the
+truth is "we could barely see the API". So the timeout also reports the
+cumulative failure count whenever any occurred, which keeps the two
+distinguishable in the log.
+
 ## Permissions
 
 `contents: read` on `repo`, plus `actions: read` when `workflow` is set. For a
@@ -116,6 +125,6 @@ calling repo, so pass a token with read access to the target repo.
 make test-wait-for-release
 ```
 
-17 bats tests, needing no token and no network: a configurable `gh` stub on
+20 bats tests, needing no token and no network: a configurable `gh` stub on
 `PATH` covers each row of the table above, and `WAIT_INTERVAL_SECONDS=0` keeps
 the suite instant while still exercising the real attempt accounting.
