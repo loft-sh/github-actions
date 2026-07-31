@@ -137,6 +137,10 @@ Co-authored-by: alice <alice@contributor.example>"
   [ -z "$(output_value conflict-sha)" ]
   # Anchor healed over E1 ...
   [ "$(output_value healed-count)" = "1" ]
+  # ... classified as a lost record, which is the case worth annotating.
+  [ "$(output_value healed-unrecorded-count)" = "1" ]
+  [ "$(output_value healed-export-count)" = "0" ]
+  [[ "$output" == *"::notice::Anchor healed from content"* ]]
   # ... and E2 was still imported, with its authorship and trailer intact.
   [ "$(output_value replayed-count)" = "1" ]
   [ "$(output_value has-changes)" = "true" ]

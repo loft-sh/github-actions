@@ -214,6 +214,43 @@ content_anchor() {
   return 0
 }
 
+# classify_healed_range <recorded-anchor> <healed-anchor>
+# Split the commits the anchor advanced over into the two cases that produce an
+# identical count but mean opposite things:
+#
+#   exports     commits we created ourselves (Monorepo-Commit trailer). They
+#               never carry an Oss-Commit trailer, because that trailer records
+#               an import and these went the other way. The anchor therefore
+#               trails every export until the next import records a trailer past
+#               them, and healing over them is the steady state, not a fault.
+#   unrecorded  commits with neither trailer: an import whose provenance record
+#               was lost (a squash that dropped the trailer, a hand-made import).
+#               This is the only case worth an annotation.
+#
+# Results in globals HEALED_TOTAL, HEALED_EXPORTS, HEALED_UNRECORDED (the last
+# two sum to the first). Returns non-zero on a git failure so callers can fail
+# closed rather than under-report.
+classify_healed_range() {
+  local from="$1" to="$2" range c
+  HEALED_TOTAL=0
+  HEALED_EXPORTS=0
+  HEALED_UNRECORDED=0
+  # Captured rather than piped from a process substitution: `set -e` cannot see a
+  # producer failure inside `done < <(...)`, so a broken rev-list would run the
+  # loop zero times and report a healed range of nothing.
+  range="$(git rev-list --first-parent "${from}..${to}")" || return 1
+  while read -r c; do
+    [ -n "$c" ] || continue
+    HEALED_TOTAL=$((HEALED_TOTAL + 1))
+    if has_trailer "$c" "$MONOREPO_TRAILER"; then
+      HEALED_EXPORTS=$((HEALED_EXPORTS + 1))
+    else
+      HEALED_UNRECORDED=$((HEALED_UNRECORDED + 1))
+    fi
+  done <<< "$range"
+  return 0
+}
+
 # resolve_import_anchor <oss-tip>
 # The single definition of where an import resumes. Both the import and the
 # health direction call it, so the two can never disagree about where the sync
@@ -229,6 +266,11 @@ content_anchor() {
 #                           empty when nothing identifies a starting point
 #   IMPORT_ANCHOR_RECORDED  what the trailers alone record, before healing
 #   IMPORT_ANCHOR_HEALED    how many commits healing advanced over
+#   IMPORT_ANCHOR_HEALED_EXPORTS     of those, how many we created ourselves
+#                           (Monorepo-Commit trailer); expected, see
+#                           classify_healed_range
+#   IMPORT_ANCHOR_HEALED_UNRECORDED  of those, how many carry neither trailer,
+#                           i.e. imports whose provenance record was lost
 #   IMPORT_ANCHOR_SAW_TRAILER  true when any Oss-Commit trailer exists, so
 #                           callers can tell "never synced" from "recorded
 #                           anchor no longer reachable on OSS"
@@ -249,6 +291,8 @@ resolve_import_anchor() {
   IMPORT_ANCHOR=""
   IMPORT_ANCHOR_RECORDED=""
   IMPORT_ANCHOR_HEALED=0
+  IMPORT_ANCHOR_HEALED_EXPORTS=0
+  IMPORT_ANCHOR_HEALED_UNRECORDED=0
   IMPORT_ANCHOR_SAW_TRAILER=false
   IMPORT_ANCHOR_SEED_BAD=false
 
@@ -283,7 +327,10 @@ resolve_import_anchor() {
 
   healed="$(content_anchor "$best" "$oss_tip")" || return 1
   if [ -n "$healed" ] && [ "$healed" != "$best" ]; then
-    IMPORT_ANCHOR_HEALED="$(git rev-list --count --first-parent "${best}..${healed}")"
+    classify_healed_range "$best" "$healed" || return 1
+    IMPORT_ANCHOR_HEALED="$HEALED_TOTAL"
+    IMPORT_ANCHOR_HEALED_EXPORTS="$HEALED_EXPORTS"
+    IMPORT_ANCHOR_HEALED_UNRECORDED="$HEALED_UNRECORDED"
     best="$healed"
   fi
   IMPORT_ANCHOR="$best"

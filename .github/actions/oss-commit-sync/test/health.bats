@@ -49,9 +49,30 @@ teardown() {
   [ "$(output_value recorded-anchor)" = "$O0" ]
   [ "$(output_value anchor)" = "$E1" ]
   [ "$(output_value redundant-count)" = "1" ]
+  [ "$(output_value redundant-unrecorded-count)" = "1" ]
+  [ "$(output_value redundant-export-count)" = "0" ]
   [ "$(output_value pending-count)" = "0" ]
   # Reported as a notice, not a warning: nothing is broken.
   [[ "$output" == *"heals"* ]]
+}
+
+@test "the anchor trailing our own exports is not staleness" {
+  # The anchor lags by design after every export: the OSS commits we created
+  # carry Monorepo-Commit and never an Oss-Commit trailer, so nothing records
+  # them as imports and nothing should. Flagging this would put a permanent lag
+  # on a healthy sync and bury the unrecorded-import case underneath it.
+  company_commit pkg/app.go "l1-company" "feat: company change" >/dev/null
+  bash "$EXPORT"
+
+  run bash "$HEALTH"
+  [ "$status" -eq 0 ]
+  [ "$(output_value converged)" = "true" ]
+  [ "$(output_value redundant-count)" = "1" ]
+  [ "$(output_value redundant-export-count)" = "1" ]
+  [ "$(output_value redundant-unrecorded-count)" = "0" ]
+  [ "$(output_value stale-anchor)" = "false" ]
+  [ -z "$(output_value suggested-anchor)" ]
+  [ "$(output_value squashed-trailer-count)" = "0" ]
 }
 
 @test "the healed anchor stops at the newest commit the subtree matches" {
