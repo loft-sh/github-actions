@@ -425,6 +425,40 @@ Successor to Subtree Mirror. Bidirectional per-commit sync between a monorepo su
 
 See [oss-commit-sync README](./.github/actions/oss-commit-sync/README.md) for the full contract, safety mechanisms, and migration steps.
 
+### Wait For Release Action
+
+Blocks until a GitHub Release for a version exists in another repository, for pipelines where one repo's build uploads assets into a release that another repo's build creates. Presence polling alone cannot tell "the producer is still building" apart from "the producer already failed", so the optional `workflow` input makes the wait status-aware: a producer run that has already concluded unsuccessfully fails the wait immediately, with that run's URL and the recovery order, instead of spending the whole timeout on a precondition that can never be met.
+
+**Location:** `.github/actions/wait-for-release`
+
+**Usage:**
+
+```yaml
+- uses: loft-sh/github-actions/.github/actions/wait-for-release@wait-for-release/v1
+  with:
+    repo: loft-sh/vcluster
+    version: ${{ steps.get_version.outputs.release_version }}
+    workflow: release.yaml
+    github-token: ${{ secrets.GH_ACCESS_TOKEN }}
+```
+
+**Inputs:**
+
+- `repo` (required): Repository publishing the release, as `<owner>/<repo>`.
+- `version` (required): Release tag to wait for, e.g. `v0.36.1-rc.2`.
+- `workflow` (optional): Workflow file in `repo` that produces the release. Enables fail-fast on an already-failed producer run. Omit for a plain presence poll.
+- `max-attempts` (optional, default `120`): Polls before giving up. Wall-clock ceiling is `max-attempts x interval-seconds`.
+- `interval-seconds` (optional, default `15`): Seconds between polls.
+- `max-api-failures` (optional, default `5`): Consecutive API failures tolerated, so one blip cannot fail a release.
+- `github-token` (required): Token with `contents:read` on `repo`, plus `actions:read` when `workflow` is set.
+
+**Outputs:**
+
+- `waited-seconds`: Approximate seconds spent waiting before the release appeared.
+- `release-url`: URL of the release that was found.
+
+See [wait-for-release README](./.github/actions/wait-for-release/README.md) for the full behaviour table.
+
 ## Available Reusable Workflows
 
 ### Validate Renovate Config
