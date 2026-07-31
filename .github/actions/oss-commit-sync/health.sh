@@ -12,6 +12,9 @@ set -euo pipefail
 #      anchor from the subtree content when the trailers lag, so a lag is
 #      harmless to the sync but means those external commits carry no recorded
 #      provenance on the base branch, and that trailers are being lost somewhere.
+#      Counted only over commits carrying neither trailer: the anchor also trails
+#      our own exports (Monorepo-Commit, never Oss-Commit), which is the steady
+#      state after every export rather than a sign of anything lost.
 #
 #   2. Was a sync PR squash-merged? GitHub's squash appends "Co-authored-by:" as
 #      a new paragraph, which orphans our trailer from the block git's own
@@ -28,7 +31,8 @@ set -euo pipefail
 # Optional env: EXCLUDE_PATHS, GITHUB_OUTPUT, GITHUB_STEP_SUMMARY.
 #
 # Outputs: converged, anchor, recorded-anchor, stale-anchor, suggested-anchor,
-# pending-count, redundant-count, squashed-trailer-count, degraded.
+# pending-count, redundant-count, redundant-export-count,
+# redundant-unrecorded-count, squashed-trailer-count, degraded.
 #
 # Never exits non-zero: an advisory check must not red the caller's job. When a
 # git or network step fails it warns, sets degraded=true, and returns 0 with
@@ -52,6 +56,8 @@ emit stale-anchor false
 emit suggested-anchor ""
 emit pending-count 0
 emit redundant-count 0
+emit redundant-export-count 0
+emit redundant-unrecorded-count 0
 emit squashed-trailer-count 0
 emit degraded false
 
@@ -100,13 +106,23 @@ fi
 # an outage: trailers are being lost somewhere (a squash, a hand-edited message,
 # a hand-made import), and until that stops, each run re-derives the anchor and
 # the affected external commits carry no recorded provenance.
+#
+# Staleness is judged on the unrecorded commits alone. The healed range also
+# holds our own exports, which carry Monorepo-Commit and by design never an
+# Oss-Commit trailer, so the anchor trails every export until the next import
+# records a trailer past it. Counting those as staleness would report a lag on a
+# perfectly healthy sync, permanently, and bury the case that does need a look.
 redundant="$IMPORT_ANCHOR_HEALED"
+redundant_exports="$IMPORT_ANCHOR_HEALED_EXPORTS"
+redundant_unrecorded="$IMPORT_ANCHOR_HEALED_UNRECORDED"
 stale=false
-if [ "$redundant" -gt 0 ]; then
+if [ "$redundant_unrecorded" -gt 0 ]; then
   stale=true
   emit suggested-anchor "$ANCHOR"
 fi
 emit redundant-count "$redundant"
+emit redundant-export-count "$redundant_exports"
+emit redundant-unrecorded-count "$redundant_unrecorded"
 emit stale-anchor "$stale"
 
 # --- genuinely pending externals --------------------------------------------
@@ -189,6 +205,8 @@ emit degraded "$degraded"
   echo "| Recorded by a trailer | \`${RECORDED:-none}\` |"
   echo "| Commits pending import | ${pending} |"
   echo "| Commits the anchor heals over | ${redundant} |"
+  echo "| ... our own exports (expected) | ${redundant_exports} |"
+  echo "| ... imports with no trailer | ${redundant_unrecorded} |"
   echo "| Squash-orphaned trailers | ${squashed} |"
 } >> "$GITHUB_STEP_SUMMARY"
 
@@ -204,17 +222,17 @@ fi
 if [ "$stale" = "true" ]; then
   {
     echo
-    echo "The recorded anchor lags the subtree by ${redundant} commit(s). The import"
-    echo "heals this from content on every run, so nothing is broken and no repair"
-    echo "is needed. It does mean those external commits carry no recorded"
-    echo "provenance on \`${BRANCH}\`, which points at trailers being lost during"
-    echo "merge: check the squash count above."
+    echo "${redundant_unrecorded} external commit(s) are in the subtree with no trailer"
+    echo "recording them. The import heals this from content on every run, so nothing"
+    echo "is broken and no repair is needed. It does mean those commits carry no"
+    echo "recorded provenance on \`${BRANCH}\`, which points at trailers being lost"
+    echo "during merge: check the squash count above."
   } >> "$GITHUB_STEP_SUMMARY"
-  echo "::notice::Recorded anchor ${RECORDED} lags content by ${redundant} commit(s); the import heals to ${ANCHOR} automatically. Provenance for those commits is not recorded on ${BRANCH}."
+  echo "::notice::${redundant_unrecorded} external commit(s) are present in ${SUBTREE_PREFIX} with no readable ${OSS_TRAILER} trailer; the import heals the anchor from ${RECORDED} to ${ANCHOR} automatically, but provenance for those commits is not recorded on ${BRANCH}."
 fi
 
 if [ -n "$first_pending" ]; then
   echo "Oldest OSS commit pending import: ${first_pending}"
 fi
 
-echo "Health: converged=${converged} anchor=${ANCHOR:-none} pending=${pending} redundant=${redundant} squash-orphaned=${squashed}"
+echo "Health: converged=${converged} anchor=${ANCHOR:-none} pending=${pending} redundant=${redundant} (exports=${redundant_exports} unrecorded=${redundant_unrecorded}) squash-orphaned=${squashed}"

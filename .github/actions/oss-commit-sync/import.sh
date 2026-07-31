@@ -29,7 +29,9 @@ set -euo pipefail
 # which is invisible while each commit still applies as a no-op and then becomes
 # a hard conflict once a later OSS commit touches the same lines as an earlier
 # one. Commits after the healed anchor are still imported normally, so nothing is
-# skipped silently.
+# skipped silently. Most of what it heals over is our own exports, which carry
+# Monorepo-Commit and by design never an Oss-Commit trailer, so the counts are
+# reported split: only commits with neither trailer mean a record was lost.
 #
 # Diff replay (not tree snapshots) means an external commit never reverts
 # monorepo changes that have not been exported yet: only the external
@@ -47,7 +49,7 @@ set -euo pipefail
 # PR_BRANCH (default automation/sync-from-oss-<branch>), GITHUB_OUTPUT.
 #
 # Outputs: has-changes, replayed-count, skipped-count, healed-count,
-# conflict-sha, pr-branch.
+# healed-export-count, healed-unrecorded-count, conflict-sha, pr-branch.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -65,6 +67,8 @@ emit has-changes false
 emit replayed-count 0
 emit skipped-count 0
 emit healed-count 0
+emit healed-export-count 0
+emit healed-unrecorded-count 0
 emit conflict-sha ""
 emit pr-branch "$PR_BRANCH"
 
@@ -85,6 +89,8 @@ resolve_import_anchor "$OSS_TIP" \
   || die "failed to resolve the import anchor for OSS ${BRANCH} (git error); refusing to import from an unknown point"
 RESUME="$IMPORT_ANCHOR"
 healed="$IMPORT_ANCHOR_HEALED"
+healed_exports="$IMPORT_ANCHOR_HEALED_EXPORTS"
+healed_unrecorded="$IMPORT_ANCHOR_HEALED_UNRECORDED"
 
 if [ "$IMPORT_ANCHOR_SEED_BAD" = "true" ]; then
   die "SEED_OSS_COMMIT ${SEED_OSS_COMMIT} is not a commit reachable from OSS ${BRANCH} tip"
@@ -97,10 +103,20 @@ if [ -z "$RESUME" ]; then
   die "no ${OSS_TRAILER} trailer found on ${BRANCH} and no SEED_OSS_COMMIT provided for the first run"
 fi
 
-if [ "$healed" -gt 0 ]; then
-  echo "::notice::Anchor healed from content: ${IMPORT_ANCHOR_RECORDED:-none} -> ${RESUME} (${healed} OSS commit(s) already present in ${SUBTREE_PREFIX} but not recorded by a readable ${OSS_TRAILER} trailer)."
+# Only unrecorded commits are a finding. Healing over our own exports is the
+# steady state of a healthy sync: an OSS commit we created carries
+# Monorepo-Commit and never an Oss-Commit trailer, so the anchor trails every
+# export until the next import records a trailer past it. Annotating that as
+# "not recorded by a readable trailer" reads as trailer damage on a run where
+# nothing is wrong, and it fires after every single export.
+if [ "$healed_unrecorded" -gt 0 ]; then
+  echo "::notice::Anchor healed from content: ${IMPORT_ANCHOR_RECORDED:-none} -> ${RESUME} (${healed_unrecorded} OSS commit(s) already present in ${SUBTREE_PREFIX} that no readable ${OSS_TRAILER} trailer records, plus ${healed_exports} of our own export(s)). Those imports lost their provenance record: check the merge method on the sync PRs."
+elif [ "$healed" -gt 0 ]; then
+  echo "Anchor advanced ${IMPORT_ANCHOR_RECORDED:-none} -> ${RESUME} over ${healed} of our own export(s), whose content ${SUBTREE_PREFIX} already holds. Expected after every export; nothing to do."
 fi
 emit healed-count "$healed"
+emit healed-export-count "$healed_exports"
+emit healed-unrecorded-count "$healed_unrecorded"
 
 if [ "$RESUME" = "$OSS_TIP" ]; then
   emit skipped-count "$healed"

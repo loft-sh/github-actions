@@ -101,7 +101,16 @@ import; the subtree tree is *evidence* of one, and evidence survives what
 records do not — a squash, a hand-edited message, a hand-made import that
 forgot the trailer. So damaged trailer state repairs itself on every run, with
 no marker commit, no repair PR, and no operator action. `healed-count` reports
-how far it moved; non-zero means trailers are being lost somewhere.
+how far it moved.
+
+Most of that movement is routine. Every OSS commit we exported carries
+`Monorepo-Commit` and, by design, never an `Oss-Commit` trailer, so the anchor
+trails our own exports until the next import records a trailer past them, and
+healing walks over them on the way. `healed-count` is therefore split:
+`healed-export-count` is that expected part, and `healed-unrecorded-count`
+counts commits carrying **neither** trailer — an import whose provenance record
+was lost. Only the latter is annotated, and only it means trailers are being
+lost somewhere.
 
 This is safe by construction rather than by heuristic: if the subtree equals
 commit `C`'s content, replaying anything up to `C` could only produce a no-op or
@@ -176,7 +185,10 @@ describe.
 - **Trailers lagging content.** `stale-anchor` with `recorded-anchor` (what the
   trailers say) against `anchor` (what the import will use). Not an action item
   for the sync, which heals itself, but the affected external commits carry no
-  recorded provenance on the base branch, and something is losing trailers.
+  recorded provenance on the base branch, and something is losing trailers. It
+  counts `redundant-unrecorded-count` only: `redundant-export-count`, the
+  commits we exported ourselves, lags the anchor after every export and is
+  never a finding.
 - **Squash-merged sync PRs.** `squashed-trailer-count` counts commits whose
   trailer the whole-message scan finds but git's trailer block does not, which is
   the fingerprint of a squash. This is the actionable one: it is the cause of the
@@ -219,28 +231,32 @@ it sees that.
 
 <!-- AUTO-DOC-OUTPUT:START - Do not remove or modify this section -->
 
-|         OUTPUT         |  TYPE  |                                                                                                             DESCRIPTION                                                                                                             |
-|------------------------|--------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-|         anchor         | string |                                  Health: the OSS commit the import <br>will resume from, after content healing. <br>Empty only when neither a trailer <br>nor the subtree content identifies one.                                   |
-|      conflict-sha      | string |                                                                   Import: the OSS commit that failed <br>the 3-way apply, when the run <br>failed on a conflict.                                                                    |
-|       converged        | string |                                                              Health: true when the subtree already <br>holds the OSS branch tip content <br>(ignoring exclude-paths).                                                               |
-|        degraded        | string |       Health: true when a git or <br>network step failed and some figures <br>in this report are therefore incomplete. <br>The health direction never exits non-zero, <br>so gate on this rather than <br>on the job result.        |
-|        diverged        | string |                                                                   Export: true when OSS has external <br>commits not yet absorbed and the <br>run failed closed.                                                                    |
-|     exported-count     | string |                                                                  Export: number of commits created on <br>the OSS branch (including an alignment commit, if any).                                                                   |
-|      has-changes       | string |                                                                      Import: true when at least one <br>external commit was replayed onto the <br>PR branch.                                                                        |
-|      healed-count      | string | Import: number of OSS commits the <br>anchor advanced over because the subtree <br>already held their content while no <br>readable Oss-Commit trailer recorded them. Non-zero <br>means trailers are being lost during <br>merge.  |
-|        oss-tip         | string |                                                                                           Export: the OSS branch tip after <br>the run.                                                                                             |
-|     pending-count      | string |                                                                                Health: number of OSS commits genuinely <br>waiting to be imported.                                                                                  |
-|       pr-branch        | string |                                                                                     Import: the local branch holding the <br>replayed commits.                                                                                      |
-|     push-rejected      | string |                                           Export: true when the push to <br>the OSS branch was rejected by <br>branch protection / a ruleset (the sync identity is not a bypass actor).                                             |
-|         pushed         | string |                                                                                    Export: true when commits were pushed <br>to the OSS branch.                                                                                     |
-|    recorded-anchor     | string |                                             Health: the anchor the Oss-Commit trailers <br>actually record, before content healing. Behind <br>`anchor` when trailers have been lost.                                               |
-|    redundant-count     | string |                                                                 Health: number of OSS commits re-walked <br>on every import because the anchor <br>is behind them.                                                                  |
-|     replayed-count     | string |                                                                                            Import: number of external commits replayed.                                                                                             |
-|     skipped-count      | string |                                   Import: number of external commits considered <br>but not replayed, because they touch <br>only excluded paths or their content <br>is already in the subtree.                                    |
-| squashed-trailer-count | string |                                                       Health: number of sync commits whose <br>Oss-Commit trailer GitHub's squash-merge orphaned from <br>the trailer block.                                                        |
-|      stale-anchor      | string |               Health: true when the recorded trailers <br>lag the subtree content. The import <br>heals this itself; it means the <br>affected external commits carry no recorded <br>provenance on the base branch.                |
-|    suggested-anchor    | string |                                                          Health: the content-derived anchor, i.e. what <br>the import heals to. Empty when <br>the trailers are current.                                                            |
+|           OUTPUT           |  TYPE  |                                                                                                                                      DESCRIPTION                                                                                                                                      |
+|----------------------------|--------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|           anchor           | string |                                                           Health: the OSS commit the import <br>will resume from, after content healing. <br>Empty only when neither a trailer <br>nor the subtree content identifies one.                                                            |
+|        conflict-sha        | string |                                                                                            Import: the OSS commit that failed <br>the 3-way apply, when the run <br>failed on a conflict.                                                                                             |
+|         converged          | string |                                                                                       Health: true when the subtree already <br>holds the OSS branch tip content <br>(ignoring exclude-paths).                                                                                        |
+|          degraded          | string |                                Health: true when a git or <br>network step failed and some figures <br>in this report are therefore incomplete. <br>The health direction never exits non-zero, <br>so gate on this rather than <br>on the job result.                                 |
+|          diverged          | string |                                                                                            Export: true when OSS has external <br>commits not yet absorbed and the <br>run failed closed.                                                                                             |
+|       exported-count       | string |                                                                                           Export: number of commits created on <br>the OSS branch (including an alignment commit, if any).                                                                                            |
+|        has-changes         | string |                                                                                               Import: true when at least one <br>external commit was replayed onto the <br>PR branch.                                                                                                 |
+|        healed-count        | string |                                  Import: number of OSS commits the <br>anchor advanced over because the subtree <br>already held their content. Mostly our <br>own exports; see healed-unrecorded-count for the <br>part that indicates a problem.                                    |
+|    healed-export-count     | string |               Import: of healed-count, the commits we <br>created ourselves (Monorepo-Commit trailer). They never carry <br>an Oss-Commit trailer, so the anchor <br>trails every export until the next <br>import records one past them. Expected, <br>not a finding.                |
+|  healed-unrecorded-count   | string |                                                    Import: of healed-count, the commits carrying <br>neither trailer, i.e. imports whose provenance <br>record was lost. Non-zero means trailers <br>are being lost during merge.                                                     |
+|          oss-tip           | string |                                                                                                                    Export: the OSS branch tip after <br>the run.                                                                                                                      |
+|       pending-count        | string |                                                                                                         Health: number of OSS commits genuinely <br>waiting to be imported.                                                                                                           |
+|         pr-branch          | string |                                                                                                              Import: the local branch holding the <br>replayed commits.                                                                                                               |
+|       push-rejected        | string |                                                                    Export: true when the push to <br>the OSS branch was rejected by <br>branch protection / a ruleset (the sync identity is not a bypass actor).                                                                      |
+|           pushed           | string |                                                                                                             Export: true when commits were pushed <br>to the OSS branch.                                                                                                              |
+|      recorded-anchor       | string |                                                                      Health: the anchor the Oss-Commit trailers <br>actually record, before content healing. Behind <br>`anchor` when trailers have been lost.                                                                        |
+|      redundant-count       | string |                                                                                 Health: number of OSS commits the <br>anchor is behind, i.e. what content <br>healing advances over on every import.                                                                                  |
+|   redundant-export-count   | string |                                                                    Health: of redundant-count, the commits we <br>created ourselves (Monorepo-Commit trailer). Expected after every <br>export, never a finding.                                                                      |
+| redundant-unrecorded-count | string |                                                                       Health: of redundant-count, the external commits <br>carrying no readable Oss-Commit trailer. This <br>is what stale-anchor reports on.                                                                         |
+|       replayed-count       | string |                                                                                                                     Import: number of external commits replayed.                                                                                                                      |
+|       skipped-count        | string |                                                            Import: number of external commits considered <br>but not replayed, because they touch <br>only excluded paths or their content <br>is already in the subtree.                                                             |
+|   squashed-trailer-count   | string |                                                                                Health: number of sync commits whose <br>Oss-Commit trailer GitHub's squash-merge orphaned from <br>the trailer block.                                                                                 |
+|        stale-anchor        | string | Health: true when external commits sit <br>in the subtree with no trailer <br>recording them. The import heals this <br>itself; it means those commits carry <br>no recorded provenance on the base <br>branch. Our own exports lag the <br>anchor by design and never set <br>this.  |
+|      suggested-anchor      | string |                                                                                    Health: the content-derived anchor, i.e. what <br>the import heals to. Empty unless <br>stale-anchor is true.                                                                                      |
 
 <!-- AUTO-DOC-OUTPUT:END -->
 

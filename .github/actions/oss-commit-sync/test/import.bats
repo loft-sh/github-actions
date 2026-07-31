@@ -40,6 +40,44 @@ teardown() {
   [ "$(output_value replayed-count)" = "0" ]
 }
 
+@test "healing over our own exports is not reported as a lost trailer" {
+  # The steady state after any export: the OSS commits we just created are in the
+  # subtree (that is where they came from) and carry Monorepo-Commit, never an
+  # Oss-Commit trailer, so the anchor heals over them on the next import. That is
+  # not trailer damage, and an annotation claiming it is fires after every export
+  # and trains everyone to ignore the one that matters.
+  company_commit pkg/app.go "l1-company" "feat: company change" >/dev/null
+  company_commit pkg/other.go "more" "feat: second company change" >/dev/null
+  bash "$EXPORT"
+
+  run bash "$IMPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value healed-count)" = "2" ]
+  [ "$(output_value healed-export-count)" = "2" ]
+  [ "$(output_value healed-unrecorded-count)" = "0" ]
+  [[ "$output" != *"::notice::"* ]]
+  [[ "$output" == *"our own export"* ]]
+}
+
+@test "a mixed healed range separates our exports from unrecorded imports" {
+  # Both causes at once, which is what production actually looks like: an import
+  # whose trailer a squash dropped, then our own exports on top. The count that
+  # drives the annotation must be the unrecorded one alone.
+  external_commit ext1.go "one" "feat: alice first" >/dev/null
+  bash "$IMPORT"
+  squash_merge_pr_branch "chore: sync from oss (#42)"
+  company_commit pkg/app.go "l1-company" "feat: company change" >/dev/null
+  bash "$EXPORT"
+
+  git -C "$MONO" switch -q main
+  run bash "$IMPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value healed-count)" = "2" ]
+  [ "$(output_value healed-export-count)" = "1" ]
+  [ "$(output_value healed-unrecorded-count)" = "1" ]
+  [[ "$output" == *"::notice::Anchor healed from content"* ]]
+}
+
 @test "exclusion: producer workflow edits are dropped from a mixed commit" {
   external_commit .github/workflows/release.yaml "producer-edit" "chore: producer only" >/dev/null
   # A genuinely mixed commit: excluded workflow + real code in one commit.

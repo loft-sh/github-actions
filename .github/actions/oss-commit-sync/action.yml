@@ -68,8 +68,14 @@ outputs:
     description: "Import: number of external commits considered but not replayed, because they touch only excluded paths or their content is already in the subtree."
     value: ${{ steps.sync.outputs.skipped-count }}
   healed-count:
-    description: "Import: number of OSS commits the anchor advanced over because the subtree already held their content while no readable Oss-Commit trailer recorded them. Non-zero means trailers are being lost during merge."
+    description: "Import: number of OSS commits the anchor advanced over because the subtree already held their content. Mostly our own exports; see healed-unrecorded-count for the part that indicates a problem."
     value: ${{ steps.sync.outputs.healed-count }}
+  healed-export-count:
+    description: "Import: of healed-count, the commits we created ourselves (Monorepo-Commit trailer). They never carry an Oss-Commit trailer, so the anchor trails every export until the next import records one past them. Expected, not a finding."
+    value: ${{ steps.sync.outputs.healed-export-count }}
+  healed-unrecorded-count:
+    description: "Import: of healed-count, the commits carrying neither trailer, i.e. imports whose provenance record was lost. Non-zero means trailers are being lost during merge."
+    value: ${{ steps.sync.outputs.healed-unrecorded-count }}
   conflict-sha:
     description: "Import: the OSS commit that failed the 3-way apply, when the run failed on a conflict."
     value: ${{ steps.sync.outputs.conflict-sha }}
@@ -86,17 +92,23 @@ outputs:
     description: "Health: the anchor the Oss-Commit trailers actually record, before content healing. Behind `anchor` when trailers have been lost."
     value: ${{ steps.sync.outputs.recorded-anchor }}
   stale-anchor:
-    description: "Health: true when the recorded trailers lag the subtree content. The import heals this itself; it means the affected external commits carry no recorded provenance on the base branch."
+    description: "Health: true when external commits sit in the subtree with no trailer recording them. The import heals this itself; it means those commits carry no recorded provenance on the base branch. Our own exports lag the anchor by design and never set this."
     value: ${{ steps.sync.outputs.stale-anchor }}
   suggested-anchor:
-    description: "Health: the content-derived anchor, i.e. what the import heals to. Empty when the trailers are current."
+    description: "Health: the content-derived anchor, i.e. what the import heals to. Empty unless stale-anchor is true."
     value: ${{ steps.sync.outputs.suggested-anchor }}
   pending-count:
     description: "Health: number of OSS commits genuinely waiting to be imported."
     value: ${{ steps.sync.outputs.pending-count }}
   redundant-count:
-    description: "Health: number of OSS commits re-walked on every import because the anchor is behind them."
+    description: "Health: number of OSS commits the anchor is behind, i.e. what content healing advances over on every import."
     value: ${{ steps.sync.outputs.redundant-count }}
+  redundant-export-count:
+    description: "Health: of redundant-count, the commits we created ourselves (Monorepo-Commit trailer). Expected after every export, never a finding."
+    value: ${{ steps.sync.outputs.redundant-export-count }}
+  redundant-unrecorded-count:
+    description: "Health: of redundant-count, the external commits carrying no readable Oss-Commit trailer. This is what stale-anchor reports on."
+    value: ${{ steps.sync.outputs.redundant-unrecorded-count }}
   squashed-trailer-count:
     description: "Health: number of sync commits whose Oss-Commit trailer GitHub's squash-merge orphaned from the trailer block."
     value: ${{ steps.sync.outputs.squashed-trailer-count }}
