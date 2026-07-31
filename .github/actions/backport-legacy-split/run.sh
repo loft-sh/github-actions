@@ -131,9 +131,10 @@ emit backport-branch "$BACKPORT_BRANCH"
 
 # Human-readable PR metadata, sourced from the monorepo commit itself (CWD is a
 # full-history monorepo checkout). Computed once -- side-independent.
-#   SUBJECT    The merge/squash commit subject, reused verbatim in the PR title so
-#              a legacy backport reads like its source ("[v0.36] fix: ... (#1234)")
-#              instead of a bare SHA.
+#   SUBJECT    The merge/squash commit subject, reused verbatim and FIRST in the PR
+#              title so a legacy backport reads like its source
+#              ("fix: ... (#1234) (backport v0.36 pro)") instead of a bare SHA,
+#              and stays a valid conventional commit once squash-merged.
 #   SOURCE_REPO owner/repo of the monorepo (the repo the source PR lives in), parsed
 #              from origin. Used to fully-qualify the PR reference (owner/repo#N) so
 #              it links correctly even on the OSS half, whose target repo differs
@@ -286,7 +287,15 @@ backport_side() {
     echo "::warning::${side}: applied with conflicts; opening a conflicted PR for manual resolution"
   fi
 
-  local msg="backport: ${SHORT} to ${TARGET_BRANCH} (${side})
+  # Mirror the PR title (below), because the COMMIT subject -- not the PR title --
+  # is what lands on the release branch: both target repos set
+  # squash_merge_commit_title=COMMIT_OR_PR_TITLE, and GitHub uses the commit
+  # subject whenever the PR has exactly one commit, which is always the case here
+  # (one commit per side). The old "backport: <sha> to <target>" subject was not a
+  # conventional commit -- "backport" is not a valid type -- and it also defeated
+  # the goreleaser changelog filters, which match subjects like ^docs:/^test:.
+  # Keep the sha and the half in the body, where they cost nothing.
+  local msg="${SUBJECT} (backport ${TARGET_BRANCH} ${side})
 
 Backport of monorepo commit ${SHA} (${side} half) onto ${TARGET_BRANCH}."
   if [ "$conflicts" = true ]; then
@@ -344,9 +353,14 @@ Applied with merge conflicts that need manual resolution."
 
   if [ "$CREATE_PR" = "true" ]; then
     local title body origin
-    # Read like the source commit: "[v0.36] fix: ... (#1234) (pro)" -- the subject
-    # verbatim, the target line, and the side (which repo/half this PR is).
-    title="[${TARGET_BRANCH}] ${SUBJECT} (${side})"
+    # Mirrors the commit subject above: "fix: ... (#1234) (backport v0.36 pro)".
+    # The subject leads so the title is a valid conventional commit for the case
+    # GitHub does use it -- a PR with more than one commit, i.e. once someone
+    # pushes a conflict resolution. A leading "[v0.36]" broke the type prefix.
+    # These land on a public release branch directly (the OSS half is opened
+    # against oss-repo, not mirrored: sync-to-oss only covers >= v0.37) and feed
+    # GitHub's auto-generated release notes, which list PR titles.
+    title="${SUBJECT} (backport ${TARGET_BRANCH} ${side})"
     # Reference the source by PR when known (fully-qualified so it links from the
     # OSS repo too), else by the immutable monorepo commit.
     if [ -n "$SRC_PR_REF" ]; then
