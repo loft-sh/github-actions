@@ -25,11 +25,23 @@ set -o pipefail
 # GH_MOCK_STATUSES_SEQ       → same, for the commit-statuses endpoint.
 # GH_MOCK_CHECK_RUNS_FAIL    → if 'always', /check-runs exits 1 every call.
 # GH_MOCK_STATUSES_FAIL      → if 'always', /status exits 1 every call.
+# GH_MOCK_STDERR             → overrides the stderr text emitted on any forced or
+#                              sequenced failure. Interpreted with printf '%b',
+#                              so tests can inject \r, \n and literal % to
+#                              exercise the log-injection sanitizer. The default
+#                              text is deliberately unchanged so existing
+#                              assertions keep working.
 # GH_MOCK_PR_MERGE_EXIT      → exit code for `gh pr merge`
 # GH_MOCK_PR_MERGE_OUT       → stdout for `gh pr merge`
 # GH_MOCK_CALLS              → path; each invocation appends one line of args
 
 [ -n "${GH_MOCK_CALLS:-}" ] && printf '%s\n' "$*" >> "$GH_MOCK_CALLS"
+
+# emit_err <default-text> - stderr for a simulated failure, overridable so a
+# test can supply realistic multiline gh output or injection payloads.
+emit_err() {
+  printf '%b\n' "${GH_MOCK_STDERR:-$1}" >&2
+}
 
 # Read the Nth line of a sequence file ($1) where N is tracked in $2 (counter
 # file incremented in place). When the sequence is exhausted, the caller falls
@@ -59,13 +71,13 @@ emit_api_response() {
       ;;
     *"/check-runs"*)
       if [ "${GH_MOCK_CHECK_RUNS_FAIL:-}" = "always" ]; then
-        echo "mock: check-runs forced failure" >&2
+        emit_err "mock: check-runs forced failure"
         exit 22
       fi
       local seq
       seq="$(read_sequenced "${GH_MOCK_CHECK_RUNS_SEQ:-}" "${MOCK_DIR:-/tmp}/cr_n")"
       if [ "$seq" = "ERROR" ]; then
-        echo "mock: sequenced check-runs error" >&2
+        emit_err "mock: sequenced check-runs error"
         exit 22
       fi
       if [ -n "$seq" ]; then
@@ -78,13 +90,13 @@ emit_api_response() {
       # Trailing /status (combined) — must come after /check-runs because
       # /check-runs also happens to contain "/runs/" but not "/status".
       if [ "${GH_MOCK_STATUSES_FAIL:-}" = "always" ]; then
-        echo "mock: statuses forced failure" >&2
+        emit_err "mock: statuses forced failure"
         exit 22
       fi
       local seq
       seq="$(read_sequenced "${GH_MOCK_STATUSES_SEQ:-}" "${MOCK_DIR:-/tmp}/st_n")"
       if [ "$seq" = "ERROR" ]; then
-        echo "mock: sequenced statuses error" >&2
+        emit_err "mock: sequenced statuses error"
         exit 22
       fi
       if [ -n "$seq" ]; then

@@ -27,9 +27,15 @@ jobs:
   # job always reports success.
   composite-smoke:
     runs-on: ubuntu-latest
+    # Mirrors the permission set a real caller must declare, so this file is not
+    # a copy-paste source for a broken caller. It does NOT verify the CI poll:
+    # as the comment above says, human-authored PRs stop at the trusted-author
+    # check, so the poll step never runs here. The bats suite is what covers it.
     permissions:
       contents: read
       pull-requests: write
+      checks: read
+      statuses: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:

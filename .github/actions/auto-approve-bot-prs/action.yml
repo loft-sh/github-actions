@@ -1,8 +1,12 @@
 name: Auto-approve bot PRs
 description: |
   Approves PRs from trusted bot authors whose title/branch matches a known
-  safe pattern, after all other CI checks pass. Never hard-fails the job —
-  every failure mode degrades to a notice-level skip.
+  safe pattern, after all other CI checks pass. Once running, no API, parse or
+  permission failure exits non-zero: each degrades to an annotated skip and exit
+  0, and an out-of-range wait input is coerced to its default with a warning.
+  (Missing required env is the one deliberate exception and does exit non-zero.)
+  Outcomes that need a human and raise no other red signal are annotated at error
+  level; that raises an annotation only, never a non-zero exit.
 inputs:
   trusted-authors:
     description: 'Comma-separated list of trusted bot logins'
@@ -19,6 +23,9 @@ inputs:
   github-token:
     description: 'PAT used to read PR state, approve, and enable auto-merge. Must NOT match the PR author.'
     required: true
+  ci-read-token:
+    description: 'Token for the read-only CI poll only; defaults to the caller GITHUB_TOKEN, which needs `checks: read` and `statuses: read`. Never the approving PAT. See README "Two tokens, on purpose".'
+    required: false
   wait-max-attempts:
     description: 'Max polling attempts waiting for other CI checks'
     required: false
@@ -60,7 +67,13 @@ runs:
       id: ci
       shell: bash
       env:
-        GH_TOKEN: ${{ inputs.github-token }}
+        # Deliberately NOT inputs.github-token. See ci-read-token above.
+        # The fallback lives here rather than in an input `default:` because a
+        # default only applies when the input is OMITTED. Our own reusable
+        # workflow always passes the value through from an optional secret, so it
+        # arrives as an explicit empty string when the caller sets nothing, and a
+        # `default:` would not fire. `||` treats empty as falsy and does.
+        GH_TOKEN: ${{ inputs.ci-read-token || github.token }}
         PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         SELF_RUN_ID: ${{ github.run_id }}
         WAIT_MAX_ATTEMPTS: ${{ inputs.wait-max-attempts }}
