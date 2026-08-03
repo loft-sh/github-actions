@@ -25,12 +25,16 @@ inputs:
     description: 'The event action. Pass the github.event.action context.'
     required: false
     default: ''
+  # Descriptions must not contain a literal ${{ }}: the runner parses expressions
+  # in the manifest and rejects the `github` context here ("Unrecognized
+  # named-value"), failing the whole action load. See the README for the exact
+  # caller expressions.
   body-changed:
-    description: 'Whether this edit touched the PR body. Pass "${{ github.event.changes.body != null }}". Omit to keep the legacy body comparison, which misreads a title-only edit as a filter change.'
+    description: 'Whether this edit touched the PR body: pass a null test on github.event.changes.body. Omit to keep the legacy body comparison, which misreads a title-only edit as a filter change.'
     required: false
     default: ''
   base-changed:
-    description: 'Whether this edit retargeted the base branch. Pass "${{ github.event.changes.base != null }}". A retarget is never skippable, because it changes what the suite runs against.'
+    description: 'Whether this edit retargeted the base branch: pass a null test on github.event.changes.base. A retarget is never skippable, because it changes what the suite runs against.'
     required: false
     default: ''
   label-filter-input:

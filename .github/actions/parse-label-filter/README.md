@@ -61,15 +61,15 @@ silent skip.
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-|       INPUT        |  TYPE  | REQUIRED | DEFAULT |                                                                                              DESCRIPTION                                                                                               |
-|--------------------|--------|----------|---------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-|    base-changed    | string |  false   |         |     Whether this edit retargeted the base <br>branch. Pass "${{ github.event.changes.base != null <br>}}". A retarget is never skippable, <br>because it changes what the suite <br>runs against.      |
-|    body-changed    | string |  false   |         | Whether this edit touched the PR <br>body. Pass "${{ github.event.changes.body != null <br>}}". Omit to keep the legacy <br>body comparison, which misreads a title-only <br>edit as a filter change.  |
-|    event-action    | string |  false   |         |                                                                      The event action. Pass the github.event.action <br>context.                                                                       |
-|     event-name     | string |  false   |         |                                                                     The triggering event. Pass the github.event_name <br>context.                                                                      |
-| label-filter-input | string |  false   |         |                     Fallback label filter from a manual <br>dispatch. Pass the ginkgo-label workflow input. <br>Used only when the PR description <br>has no label-filter block.                       |
-|      pr-body       | string |  false   |         |                                                             Current PR description. Pass the github.event.pull_request.body <br>context.                                                               |
-|  previous-pr-body  | string |  false   |         |                                               PR description before an edit. Pass <br>github.event.changes.body.from; only populated on edited events.                                                 |
+|       INPUT        |  TYPE  | REQUIRED | DEFAULT |                                                                                             DESCRIPTION                                                                                              |
+|--------------------|--------|----------|---------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|    base-changed    | string |  false   |         |     Whether this edit retargeted the base <br>branch: pass a null test on <br>github.event.changes.base. A retarget is never skippable, <br>because it changes what the suite <br>runs against.      |
+|    body-changed    | string |  false   |         | Whether this edit touched the PR <br>body: pass a null test on <br>github.event.changes.body. Omit to keep the legacy <br>body comparison, which misreads a title-only <br>edit as a filter change.  |
+|    event-action    | string |  false   |         |                                                                     The event action. Pass the github.event.action <br>context.                                                                      |
+|     event-name     | string |  false   |         |                                                                    The triggering event. Pass the github.event_name <br>context.                                                                     |
+| label-filter-input | string |  false   |         |                    Fallback label filter from a manual <br>dispatch. Pass the ginkgo-label workflow input. <br>Used only when the PR description <br>has no label-filter block.                      |
+|      pr-body       | string |  false   |         |                                                            Current PR description. Pass the github.event.pull_request.body <br>context.                                                              |
+|  previous-pr-body  | string |  false   |         |                                              PR description before an edit. Pass <br>github.event.changes.body.from; only populated on edited events.                                                |
 
 <!-- AUTO-DOC-INPUT:END -->
 
