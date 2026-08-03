@@ -6,7 +6,7 @@ SCRIPT="$BATS_TEST_DIRNAME/../src/parse-label-filter.sh"
 setup() {
   export GITHUB_OUTPUT; GITHUB_OUTPUT="$(mktemp)"
   # Start from a clean slate each test; individual tests set what they need.
-  unset INPUT_PR_BODY INPUT_PREVIOUS_PR_BODY INPUT_EVENT_NAME \
+  unset INPUT_PR_BODY INPUT_PREVIOUS_PR_BODY INPUT_EVENT_NAME INPUT_BODY_CHANGED INPUT_BASE_CHANGED \
     INPUT_EVENT_ACTION INPUT_LABEL_FILTER_INPUT
 }
 
@@ -188,4 +188,144 @@ body_with_filter() {
   [ "$status" -eq 0 ]
   [ "$(kv label-filter)" = "label-filter=db-datasource && aws|| istio" ]
   [ "$(kv skip-edited)" = "skip-edited=true" ]
+}
+
+# ---------------------------------------------------------------------------
+# Which field the edit touched (DEVOPS-1057, raised reviewing vcluster-pro#2156)
+#
+# `edited` fires for the title, the body, the base branch and more, and the
+# payload carries a `changes` key only for what changed. Comparing bodies alone
+# cannot tell a title edit from a body edit, because a non-body edit sends an
+# empty previous-body that reads as "the filter was removed".
+
+# A body shaped like vcluster-pro's PR template, whose label-filter block is
+# pre-filled with `none` — the default shape for a template-following PR, and
+# what makes the legacy misread bite rather than being harmless.
+template_body() {
+  printf '%s\n' '## What' 'stuff' '' '```label-filter' 'none' '```'
+}
+
+@test "title-only edit -> skip=true (body untouched cannot change the filter)" {
+  export INPUT_EVENT_NAME="pull_request"
+  export INPUT_EVENT_ACTION="edited"
+  export INPUT_PR_BODY="$(template_body)"
+  # No changes.body key in the payload, so the caller passes body-changed=false
+  # and previous-pr-body arrives empty.
+  export INPUT_PREVIOUS_PR_BODY=""
+  export INPUT_BODY_CHANGED="false"
+  export INPUT_BASE_CHANGED="false"
+
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv skip-edited)" = "skip-edited=true" ]
+  [[ "$output" == *"description was not touched"* ]]
+}
+
+@test "regression: legacy caller misreads a title-only edit as a filter change" {
+  # Pins the behaviour the new inputs exist to fix, and the reason omitting them
+  # is not merely a style choice. Same event as above from a caller that passes
+  # neither input: "none" is compared against "", so the suite re-runs.
+  export INPUT_EVENT_NAME="pull_request"
+  export INPUT_EVENT_ACTION="edited"
+  export INPUT_PR_BODY="$(template_body)"
+  export INPUT_PREVIOUS_PR_BODY=""
+
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv skip-edited)" = "skip-edited=false" ]
+}
+
+@test "base retarget -> skip=false even though the body did not change" {
+  # A retarget carries changes.base and no changes.body, so body-changed=false.
+  # It must still run: a caller that resolves anything from base_ref (an OSS
+  # branch, a chart line) is now testing a different pairing, and the previous
+  # result does not carry over. This is why one body-changed boolean is not
+  # enough — it would report this as skippable.
+  export INPUT_EVENT_NAME="pull_request"
+  export INPUT_EVENT_ACTION="edited"
+  export INPUT_PR_BODY="$(template_body)"
+  export INPUT_PREVIOUS_PR_BODY=""
+  export INPUT_BODY_CHANGED="false"
+  export INPUT_BASE_CHANGED="true"
+
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv skip-edited)" = "skip-edited=false" ]
+  [[ "$output" == *"retargeted"* ]]
+}
+
+@test "base retarget wins over an unchanged label-filter" {
+  # Ordering check: base is tested before the block comparison, so a simultaneous
+  # base+body edit that leaves the filter identical still runs.
+  export INPUT_EVENT_NAME="pull_request"
+  export INPUT_EVENT_ACTION="edited"
+  export INPUT_PR_BODY="$(template_body)"
+  export INPUT_PREVIOUS_PR_BODY="$(template_body)"
+  export INPUT_BODY_CHANGED="true"
+  export INPUT_BASE_CHANGED="true"
+
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv skip-edited)" = "skip-edited=false" ]
+}
+
+@test "body edit with body-changed=true still compares the blocks" {
+  export INPUT_EVENT_NAME="pull_request"
+  export INPUT_EVENT_ACTION="edited"
+  export INPUT_PR_BODY="$(printf '%s\n' 'bot summary appended' '```label-filter' 'none' '```')"
+  export INPUT_PREVIOUS_PR_BODY="$(template_body)"
+  export INPUT_BODY_CHANGED="true"
+  export INPUT_BASE_CHANGED="false"
+
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv skip-edited)" = "skip-edited=true" ]
+}
+
+@test "body that gained a label-filter block still runs" {
+  # The case that rules out `changes.body.from || pull_request.body` as a caller
+  # workaround: the body genuinely changed FROM empty, so there is a new filter
+  # to honour and skipping would drop the suite the author just requested.
+  export INPUT_EVENT_NAME="pull_request"
+  export INPUT_EVENT_ACTION="edited"
+  export INPUT_PR_BODY="$(printf '%s\n' '```label-filter' 'istio' '```')"
+  export INPUT_PREVIOUS_PR_BODY=""
+  export INPUT_BODY_CHANGED="true"
+  export INPUT_BASE_CHANGED="false"
+
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv label-filter)" = "label-filter=istio" ]
+  [ "$(kv skip-edited)" = "skip-edited=false" ]
+}
+
+@test "the new inputs never make a non-edited event skippable" {
+  # body-changed=false is about an edit, not a licence to skip. A synchronize
+  # carries no changes at all, and a caller wiring these from the payload would
+  # pass false for it.
+  export INPUT_EVENT_NAME="pull_request"
+  export INPUT_EVENT_ACTION="synchronize"
+  export INPUT_PR_BODY="$(template_body)"
+  export INPUT_BODY_CHANGED="false"
+  export INPUT_BASE_CHANGED="false"
+
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv skip-edited)" = "skip-edited=false" ]
+}
+
+@test "unexpected input values fall back to comparing, never to skipping" {
+  # Default-deny on garbage: only the exact string "false" means "body untouched"
+  # and only "true" means "retargeted", so a caller passing an expression that
+  # rendered oddly gets the conservative path rather than a silent skip.
+  export INPUT_EVENT_NAME="pull_request"
+  export INPUT_EVENT_ACTION="edited"
+  export INPUT_PR_BODY="$(template_body)"
+  export INPUT_PREVIOUS_PR_BODY=""
+  export INPUT_BODY_CHANGED="False"
+  export INPUT_BASE_CHANGED="yes"
+
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv skip-edited)" = "skip-edited=false" ]
 }

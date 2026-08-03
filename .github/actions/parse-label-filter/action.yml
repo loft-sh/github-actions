@@ -25,6 +25,14 @@ inputs:
     description: 'The event action. Pass the github.event.action context.'
     required: false
     default: ''
+  body-changed:
+    description: 'Whether this edit touched the PR body. Pass "${{ github.event.changes.body != null }}". Omit to keep the legacy body comparison, which misreads a title-only edit as a filter change.'
+    required: false
+    default: ''
+  base-changed:
+    description: 'Whether this edit retargeted the base branch. Pass "${{ github.event.changes.base != null }}". A retarget is never skippable, because it changes what the suite runs against.'
+    required: false
+    default: ''
   label-filter-input:
     description: 'Fallback label filter from a manual dispatch. Pass the ginkgo-label workflow input. Used only when the PR description has no label-filter block.'
     required: false
@@ -34,7 +42,7 @@ outputs:
     description: 'Resolved Ginkgo label filter: the parsed PR-description block, else the dispatch input, else "pr".'
     value: ${{ steps.parse.outputs.label-filter }}
   skip-edited:
-    description: 'Either "true" or "false". "true" only when this is a pull_request edited event whose label-filter block did not change.'
+    description: 'Either "true" or "false". "true" only when this is a pull_request edited event that cannot have changed what the suite would test: never for a base retarget, always for an edit that did not touch the body, otherwise only when the label-filter block is unchanged.'
     value: ${{ steps.parse.outputs.skip-edited }}
 runs:
   using: composite
@@ -47,6 +55,8 @@ runs:
         INPUT_PREVIOUS_PR_BODY: ${{ inputs.previous-pr-body }}
         INPUT_EVENT_NAME: ${{ inputs.event-name }}
         INPUT_EVENT_ACTION: ${{ inputs.event-action }}
+        INPUT_BODY_CHANGED: ${{ inputs.body-changed }}
+        INPUT_BASE_CHANGED: ${{ inputs.base-changed }}
         INPUT_LABEL_FILTER_INPUT: ${{ inputs.label-filter-input }}
       run: ${{ github.action_path }}/src/parse-label-filter.sh
 branding:
