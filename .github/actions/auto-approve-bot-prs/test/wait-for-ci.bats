@@ -17,6 +17,20 @@ teardown() { rm -f "$GITHUB_OUTPUT"; teardown_gh_mock; }
 
 kv() { grep "^$1=" "$GITHUB_OUTPUT" | tail -n1; }
 
+# assert_no_match <perl-regex> <text> — fail the test if the regex matches.
+#
+# Do NOT write `! grep -q ... <<<"$output"` instead. Bash does not abort on a
+# command whose status is inverted with `!`, so under the `set -e` bats runs test
+# bodies with, a bare negated grep is a no-op unless it happens to be the final
+# line. Two assertions in this file were silently inert that way. A plain
+# function call returning non-zero does abort, so this one actually fails.
+assert_no_match() {
+  if grep -qP -- "$1" <<<"$2"; then
+    printf 'assert_no_match: unexpected match for %s\n' "$1" >&2
+    return 1
+  fi
+}
+
 @test "no check-runs → ci_green=true" {
   GH_MOCK_CHECK_RUNS_JSON='{"check_runs":[]}' run "$SCRIPT"
   [ "$status" -eq 0 ]
@@ -382,13 +396,93 @@ kv() { grep "^$1=" "$GITHUB_OUTPUT" | tail -n1; }
     run "$SCRIPT"
   [ "$status" -eq 0 ]
   [ "$(kv ci_green)" = "ci_green=false" ]
-  # No forged command may appear at the start of any line.
-  ! grep -qE '^::(error|set-output|warning)::(FORGED|name=x)' <<<"$output"
+  # THE guard. A line-anchored grep cannot fail on a CR-delimited payload,
+  # because grep splits on LF only while the runner also splits on CR — so an
+  # unsanitized payload would satisfy '^::error::' checks and the test would
+  # pass while the bug was live. Assert there is no CR in the output at all.
+  assert_no_match '\r' "$output"
+  # Belt and braces for the LF channel, which grep does see.
+  assert_no_match '(?m)^::error::FORGED' "$output"
   # The text is still reported, flattened onto the one annotation line.
   [[ "$output" == *"HTTP 403 nope"* ]]
   [[ "$output" == *"tail"* ]]
   # '%' is escaped so the runner cannot decode %0A/%25 out of API-controlled text.
   [[ "$output" == *"100%25"* ]]
+}
+
+@test "regression: devops-1254 — a check-run NAME cannot forge a workflow command" {
+  # The wider channel, and the one the first fix missed: check-run names and
+  # commit-status contexts are written by whoever posted the check on the head
+  # SHA, not by GitHub, and GitHub documents no character restriction on them.
+  # They reach the failed/cancelled/pending log lines.
+  export WAIT_MAX_ATTEMPTS=1
+  export WAIT_MIN_ATTEMPTS=1
+  GH_MOCK_CHECK_RUNS_JSON="$(printf '{"check_runs":[
+    {"name":"evil\\r::error::INJECTED-VIA-NAME and %%0A%%25","status":"completed","conclusion":"failure","details_url":"https://github.com/o/r/actions/runs/222/job/1"}
+  ]}')" run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv ci_green)" = "ci_green=false" ]
+  assert_no_match '\r' "$output"
+  assert_no_match '(?m)^::error::INJECTED' "$output"
+  # Escaped, not decoded, and the name is still reported for diagnosis.
+  [[ "$output" == *"%250A%2525"* ]]
+  [[ "$output" == *"evil"* ]]
+}
+
+@test "regression: devops-1254 — a pending check NAME is sanitized too" {
+  export WAIT_MAX_ATTEMPTS=1
+  export WAIT_MIN_ATTEMPTS=1
+  GH_MOCK_CHECK_RUNS_JSON="$(printf '{"check_runs":[
+    {"name":"wait\\r::warning::INJECTED-PENDING","status":"in_progress","conclusion":null,"details_url":"https://github.com/o/r/actions/runs/222/job/1"}
+  ]}')" run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  assert_no_match '\r' "$output"
+  assert_no_match '(?m)^::warning::INJECTED' "$output"
+  [[ "$output" == *"pending:"* ]]
+}
+
+@test "regression: devops-1254 — a cancelled check NAME is sanitized too" {
+  export WAIT_MAX_ATTEMPTS=2
+  export WAIT_MIN_ATTEMPTS=1
+  GH_MOCK_CHECK_RUNS_JSON="$(printf '{"check_runs":[
+    {"name":"gone\\r::error::INJECTED-CANCELLED","status":"completed","conclusion":"cancelled","details_url":"https://github.com/o/r/actions/runs/222/job/1"}
+  ]}')" run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv ci_green)" = "ci_green=false" ]
+  assert_no_match '\r' "$output"
+  assert_no_match '(?m)^::error::INJECTED' "$output"
+}
+
+@test "regression: devops-1254 — a non-numeric wait input must not hard-fail the script" {
+  # `sleep "$sleep_seconds"` under set -e exited 1 with no ci_green at all,
+  # which for a direct consumer of the composite is a red job. Inputs are
+  # coerced now, so no caller value can break the exit-0 contract.
+  export WAIT_MAX_ATTEMPTS=1
+  export WAIT_MIN_ATTEMPTS=1
+  export WAIT_SLEEP_SECONDS="not-a-duration"
+  GH_MOCK_CHECK_RUNS_JSON='{"check_runs":[
+    {"name":"e2e","status":"in_progress","conclusion":null,"details_url":"https://github.com/o/r/actions/runs/222/job/1"}
+  ]}' run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv ci_green)" = "ci_green=false" ]
+  [[ "$output" == *"WAIT_SLEEP_SECONDS='not-a-duration' is not a positive integer"* ]]
+}
+
+@test "regression: devops-1254 — the bail reports the FIRST error, not just the last" {
+  # Four real 403s then one malformed response used to report only the parse
+  # error, dropping the actionable fault from the summary.
+  export WAIT_MAX_ATTEMPTS=5
+  export WAIT_MIN_ATTEMPTS=1
+  seq_file="$(mktemp)"
+  printf 'ERROR\nERROR\nERROR\nERROR\n{not json\n' > "$seq_file"
+  GH_MOCK_CHECK_RUNS_SEQ="$seq_file" \
+    GH_MOCK_STDERR='gh: Resource not accessible by integration (HTTP 403)' \
+    run "$SCRIPT"
+  rm -f "$seq_file"
+  [ "$status" -eq 0 ]
+  [ "$(kv ci_green)" = "ci_green=false" ]
+  [[ "$output" == *"Last error: malformed check-runs response"* ]]
+  [[ "$output" == *"first error: gh: Resource not accessible by integration (HTTP 403)"* ]]
 }
 
 @test "regression: devops-1254 — realistic multiline gh 403 is flattened to one line" {
@@ -413,8 +507,12 @@ kv() { grep "^$1=" "$GITHUB_OUTPUT" | tail -n1; }
   [ "$status" -eq 0 ]
   [ "$(kv ci_green)" = "ci_green=false" ]
   [[ "$output" == *"check-runs API failed"* ]]
+  # Positive assertion first: without it, "no high bytes in the output" is
+  # trivially satisfied by an implementation that discards stderr entirely, so
+  # the test would pass against the very code it is meant to guard.
+  [[ "$output" == *"gh: 403"* ]]
   # Non-ascii is dropped rather than truncated mid-character.
-  ! grep -qP '[\x80-\xff]' <<<"$output"
+  assert_no_match '[\x80-\xff]' "$output"
 }
 
 @test "regression: devops-1254 — unusable TMPDIR must not hard-fail the script" {

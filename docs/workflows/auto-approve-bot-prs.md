@@ -2,7 +2,9 @@
 
 Reusable workflow that approves PRs from trusted bot accounts whose
 title or branch matches a known safe pattern. Wraps the composite action
-of the same name with GitHub App token minting and sparse checkout.
+of the same name, adding a sparse checkout of this repo. It does not mint any
+token: the approving PAT is supplied by the caller as the `gh-access-token`
+secret.
 
 ## Inputs
 
@@ -32,7 +34,8 @@ of the same name with GitHub App token minting and sparse checkout.
 
 ## Required caller permissions
 
-The calling job must declare all four:
+Unless the caller supplies the optional `ci-read-token` secret, the calling job
+must declare all four:
 
 ```yaml
 jobs:
