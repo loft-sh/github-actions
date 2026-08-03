@@ -507,6 +507,8 @@ jobs:
     permissions:
       pull-requests: write
       contents: read
+      checks: read      # required — CI poll reads /commits/:sha/check-runs
+      statuses: read    # required — CI poll reads /commits/:sha/status
     uses: loft-sh/github-actions/.github/workflows/auto-approve-bot-prs.yaml@main
     with:
       trusted-authors: 'renovate[bot],loft-bot,github-actions[bot],dependabot[bot]'
@@ -518,6 +520,16 @@ jobs:
 `gh-access-token` must be a PAT whose identity differs from PR authors you want
 to auto-approve (GitHub forbids self-review). When identity matches, the job
 skips gracefully instead of failing.
+
+**`checks: read` and `statuses: read` are not optional on a private repo, and the
+called workflow cannot supply them for you** — GitHub only lets a reusable
+workflow downgrade the caller's `GITHUB_TOKEN` permissions, never elevate them,
+and anything you omit defaults to `none`. Omit them and the CI poll 403s, the
+action default-denies, and the PR is never approved while both the check and the
+job still report success. See
+[`auto-approve-bot-prs/README.md`](.github/actions/auto-approve-bot-prs/README.md)
+for why the approving PAT cannot be used for these reads (fine-grained PATs have
+no Checks permission at all).
 
 **End-to-end coverage:** scenario-level e2e lives in
 [vClusterLabs-Experiments/auto-approve-e2e](https://github.com/vClusterLabs-Experiments/auto-approve-e2e).

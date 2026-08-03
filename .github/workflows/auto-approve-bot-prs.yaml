@@ -31,15 +31,32 @@ on:
       gh-access-token:
         description: 'GitHub PAT for approving PRs (must be different identity from PR author)'
         required: true
+      ci-read-token:
+        description: |
+          Optional. Token for the read-only CI poll, overriding the default of
+          the caller's GITHUB_TOKEN. Only needed as an escape hatch when the
+          caller cannot grant `checks: read` / `statuses: read` (see the job
+          permissions below); pass a classic PAT with `repo` scope or a GitHub
+          App token, both of which can reach the Checks API. A fine-grained PAT
+          cannot, so do NOT pass gh-access-token here.
+        required: false
 
 jobs:
   auto-approve:
     runs-on: ubuntu-latest
     # Skip fork PRs — secrets are not available.
     if: github.event.pull_request.head.repo.full_name == github.repository
+    # checks/statuses are what the CI poll reads via GITHUB_TOKEN. These lines
+    # alone are NOT enough: "the GITHUB_TOKEN permissions passed from the caller
+    # workflow can be only downgraded (not elevated) by the called workflow", and
+    # anything the caller omits defaults to none. Every caller MUST declare
+    # `checks: read` and `statuses: read` too, or the poll 403s on a private repo
+    # and the action default-denies without ever approving. See DEVOPS-1254.
     permissions:
       pull-requests: write
       contents: read
+      checks: read
+      statuses: read
     # Safety net — internal steps already guard every failure mode, but if
     # anything unforeseen slips through this still prevents the job from
     # reporting a hard red check on caller CI.
@@ -60,3 +77,6 @@ jobs:
           wait-min-attempts: ${{ inputs.wait-min-attempts }}
           wait-sleep-seconds: ${{ inputs.wait-sleep-seconds }}
           github-token: ${{ secrets.gh-access-token }} # zizmor: ignore[secrets-outside-env] -- PAT passed via workflow_call, not a repo secret
+          # Empty when the caller does not set it, which falls back to
+          # github.token inside the composite.
+          ci-read-token: ${{ secrets.ci-read-token }} # zizmor: ignore[secrets-outside-env] -- optional token passed via workflow_call
