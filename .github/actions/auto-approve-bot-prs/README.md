@@ -31,6 +31,27 @@ minutes to register their first `pending` signal, the action enforces a
 This prevents early approval against a PR that looks quiet simply because
 slow external checks have not shown up yet.
 
+### Cancelled checks
+
+`cancelled` is neither a pass nor a failure. It is usually GitHub's
+concurrency-group cancellation superseding a run, in which case a replacement
+is on its way and the cancelled attempt should be ignored once the replacement
+registers. So it is held rather than bailed on, and released two ways:
+
+- **Superseded** — a non-completed check-run exists in a **newer check suite**
+  than the cancelled one. A rerun is demonstrably in flight, so the wait
+  continues until it registers (bounded by `wait-max-attempts`). Suite ids are
+  monotonic, which is what makes "newer" observable without `actions: read`.
+- **Final** — no newer suite is running. Past `wait-min-attempts` the
+  cancellation is treated as real (a human pressed cancel) and approval is
+  skipped.
+
+Do not tie this to `wait-min-attempts` alone. A cancelled job queued behind a
+long build in the same workflow cannot be replaced until that build finishes,
+which is routinely minutes after the floor expires — the bail then discards a
+rerun that was still coming. That stalled the `v0.34.7` cut
+(vcluster-pro#2155): floor expired 12:49:45, replacement registered 12:51:41.
+
 ## Inputs
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
