@@ -31,6 +31,29 @@ minutes to register their first `pending` signal, the action enforces a
 This prevents early approval against a PR that looks quiet simply because
 slow external checks have not shown up yet.
 
+### Which attempt counts
+
+GitHub keeps every attempt for a name on the same SHA — reruns, and each
+concurrency-superseded run — so the poll picks one per name. It ranks by
+**information content first, then recency**:
+
+| rank | conclusion | meaning |
+|------|------------|---------|
+| 3 | not completed | verdict not in yet, wait |
+| 2 | success, neutral, failure, timed_out, … | carries a verdict |
+| 1 | skipped, cancelled | carries no verdict about the code |
+
+Recency alone is not safe. A workflow that skips its expensive job on a no-op
+PR-description edit publishes a `skipped` check-run named after the job that
+already **failed** on that SHA, with a later `started_at` — so latest-wins would
+pick `skipped`, count it green, and approve a PR whose suite failed. Ranking
+keeps the failure. A genuine re-run that *succeeds* still clears it, because
+success carries a verdict and recency then decides.
+
+This is not a Checks API artifact and `filter=latest` does not help: that
+dedupes within a check suite, and every run gets its own suite, so the API
+faithfully returns all attempts.
+
 ### Cancelled checks
 
 `cancelled` is neither a pass nor a failure. It is usually GitHub's

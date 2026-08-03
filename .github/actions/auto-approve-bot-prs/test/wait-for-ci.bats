@@ -859,6 +859,80 @@ assert_no_match() {
   assert_no_match 'attempt 3/' "$output"
 }
 
+@test "regression: a skipped rerun must not bury a failure on the same SHA" {
+  # Raised in review of vcluster-pro#2156. A workflow that skips its expensive
+  # job on a no-op PR-description edit (the DEVOPS-1057 gates) publishes a
+  # check-run with the SAME NAME as the job that already failed on this SHA, and
+  # a later started_at. Plain latest-wins dedup then picks `skipped`, which
+  # counts as green, and a PR whose suite genuinely failed becomes approvable.
+  #
+  # Not a Checks API artifact: `filter=latest` dedupes within a check suite and
+  # each run gets its own suite, so the API returns both attempts. The
+  # collapsing was ours.
+  GH_MOCK_CHECK_RUNS_JSON='{"check_runs":[
+    {"name":"E2E Tests","id":100,"status":"completed","conclusion":"failure","started_at":"2026-08-03T13:41:46Z","details_url":"https://github.com/o/r/actions/runs/220/job/1"},
+    {"name":"E2E Tests","id":200,"status":"completed","conclusion":"skipped","started_at":"2026-08-03T13:46:07Z","details_url":"https://github.com/o/r/actions/runs/221/job/1"}
+  ]}' run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv ci_green)" = "ci_green=false" ]
+  [[ "$output" == *"E2E Tests=failure"* ]]
+}
+
+@test "regression: a real re-run that succeeds still clears an earlier failure" {
+  # The other half of the ranking, and the reason a failure cannot simply be
+  # sticky per name: "Re-run failed jobs" on the same SHA is a normal way to
+  # clear a flake on a bump PR. success carries a verdict, so recency decides
+  # between it and the failure, and the newer success wins.
+  GH_MOCK_CHECK_RUNS_JSON='{"check_runs":[
+    {"name":"E2E Tests","id":100,"status":"completed","conclusion":"failure","started_at":"2026-08-03T13:41:46Z","details_url":"https://github.com/o/r/actions/runs/220/job/1"},
+    {"name":"E2E Tests","id":200,"status":"completed","conclusion":"success","started_at":"2026-08-03T13:46:07Z","details_url":"https://github.com/o/r/actions/runs/221/job/1"}
+  ]}' run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv ci_green)" = "ci_green=true" ]
+}
+
+@test "regression: a running rerun outranks an earlier verdict and is waited on" {
+  # A pending attempt means the verdict is not in yet, so it must outrank an
+  # older success — otherwise we would approve against a stale green while the
+  # rerun that supersedes it is still executing. Latest-wins already did this by
+  # started_at, so this pins behaviour the ranking must not break rather than
+  # behaviour it introduces; it passes against the pre-ranking script too.
+  export WAIT_MIN_ATTEMPTS=1
+  export WAIT_MAX_ATTEMPTS=2
+  GH_MOCK_CHECK_RUNS_JSON='{"check_runs":[
+    {"name":"E2E Tests","id":100,"status":"completed","conclusion":"success","started_at":"2026-08-03T13:41:46Z","details_url":"https://github.com/o/r/actions/runs/220/job/1"},
+    {"name":"E2E Tests","id":200,"status":"in_progress","conclusion":null,"started_at":"2026-08-03T13:46:07Z","details_url":"https://github.com/o/r/actions/runs/221/job/1"}
+  ]}' run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv ci_green)" = "ci_green=false" ]
+  [[ "$output" == *"pending: E2E Tests"* ]]
+}
+
+@test "regression: skipped still supersedes cancelled (concurrency replacement)" {
+  # The ranking must not undo the replacement fix: skipped and cancelled both
+  # carry no verdict, so recency alone decides between them and the newer
+  # skipped wins, leaving nothing to block on.
+  GH_MOCK_CHECK_RUNS_JSON='{"check_runs":[
+    {"name":"E2E Istio","id":100,"status":"completed","conclusion":"cancelled","started_at":"2026-08-03T12:47:44Z","details_url":"https://github.com/o/r/actions/runs/220/job/1"},
+    {"name":"E2E Istio","id":200,"status":"completed","conclusion":"skipped","started_at":"2026-08-03T12:51:41Z","details_url":"https://github.com/o/r/actions/runs/221/job/1"}
+  ]}' run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv ci_green)" = "ci_green=true" ]
+}
+
+@test "regression: a failure outranks a LATER cancelled attempt" {
+  # Ordering is by information content first, so a failure is not displaced by a
+  # rerun that was itself cancelled — that rerun produced no verdict, and the
+  # failure is still the last thing this SHA actually proved.
+  GH_MOCK_CHECK_RUNS_JSON='{"check_runs":[
+    {"name":"E2E Tests","id":100,"status":"completed","conclusion":"failure","started_at":"2026-08-03T13:41:46Z","details_url":"https://github.com/o/r/actions/runs/220/job/1"},
+    {"name":"E2E Tests","id":200,"status":"completed","conclusion":"cancelled","started_at":"2026-08-03T13:46:07Z","details_url":"https://github.com/o/r/actions/runs/221/job/1"}
+  ]}' run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv ci_green)" = "ci_green=false" ]
+  [[ "$output" == *"E2E Tests=failure"* ]]
+}
+
 @test "regression: cancelled check-runs with no suite id still bail at the floor" {
   # Not every check-run carries a check_suite (external apps, and every fixture
   # written before this watermark existed). A missing id must read as 0 on both

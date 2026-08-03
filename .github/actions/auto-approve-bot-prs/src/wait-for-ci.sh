@@ -210,13 +210,41 @@ while [ "$attempt" -lt "$max_attempts" ]; do
   # a common case when concurrency-group cancellation and the winning run
   # start within the same second. GitHub allocates check-run IDs
   # monotonically, so the larger id is always the newer attempt.
+  #
+  # "Latest wins" alone lets a `skipped` bury a real failure. A workflow that
+  # skips its expensive job on a no-op PR-description edit (vcluster-pro's e2e
+  # gates on DEVOPS-1057 do exactly this) publishes a check-run named the same as
+  # the job that already FAILED on this SHA, with a later started_at. Dedup then
+  # picks `skipped`, which counts as green below, and a PR whose suite genuinely
+  # failed becomes approvable. Note the Checks API is not the problem here and
+  # `filter=latest` would not help: it dedupes within a check suite, and each run
+  # gets its own suite, so the API faithfully returns every attempt. The
+  # collapsing is ours, so the fix is ours.
+  #
+  # Rank by information content, then recency. `skipped` and `cancelled` carry no
+  # verdict about the code; success/neutral and the failure classes do. So prefer
+  # the latest attempt that actually reached a verdict, and fall back to the
+  # latest attempt overall when none did. A still-running attempt outranks
+  # everything, because a rerun in flight means the verdict is not in yet.
+  #
+  # This ordering is what keeps each case right:
+  #   cancelled then skipped   -> skipped   (concurrency replacement; unblocks)
+  #   cancelled then success   -> success   (ditto)
+  #   failure   then skipped   -> failure   (the bug above; stays blocked)
+  #   failure   then success   -> success   (a real re-run of a flake; unblocks)
+  #   success   then pending   -> pending   (wait for the rerun)
   other=""
   if [ "$poll_errored" -eq 0 ]; then
     if ! other=$(jq_or_fail '
+      def rank:
+        if (.status // "") != "completed" then 3
+        elif ([.conclusion // ""] | inside(["skipped","cancelled"])) then 1
+        else 2
+        end;
       (.check_runs // [])
       | [.[] | select((.details_url // "") | contains("'"$EXCLUDE_PATTERN"'") | not)]
       | group_by(.name // "")
-      | map(sort_by(.started_at // "", .id // 0) | last)
+      | map(sort_by(rank, .started_at // "", .id // 0) | last)
     ' "$runs_raw"); then
       last_error="malformed check-runs response (jq could not parse it)"
       echo "::warning::attempt ${attempt}/${max_attempts}: check-runs jq parse failed"
