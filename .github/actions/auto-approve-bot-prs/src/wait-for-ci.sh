@@ -31,23 +31,88 @@ set -euo pipefail
 : "${PR_HEAD_SHA:?PR_HEAD_SHA required}"
 : "${SELF_RUN_ID:?SELF_RUN_ID required}"
 
+# sanitize_for_log — stdin to a single safe log line on stdout.
+#
+# EVERY externally-controlled string that reaches an `echo` in this script must
+# go through here. Two channels qualify and both are hostile:
+#   - gh's stderr (GitHub-controlled), and
+#   - check-run `.name` / commit-status `.context`, which are written by whoever
+#     posted the check on the head SHA. GitHub documents no character
+#     restriction on them, so they are the *wider* of the two channels.
+#
+# What it defends against:
+#   - CR as well as LF terminates a log line for the runner, so a raw one splits
+#     the output into a NEW line, and a line beginning `::` is parsed as a
+#     workflow command. An attacker naming a check `x<CR>::error::…` would
+#     otherwise forge one. Collapse both, plus TAB, to spaces.
+#   - Other separators the runner or a terminal may treat as breaks (VT, FF, NUL,
+#     DEL, and via the non-ASCII strip: NEL, U+2028, U+2029) are removed.
+#   - Non-ASCII is dropped rather than byte-truncated, so the length cap cannot
+#     split a UTF-8 sequence mid-character.
+#   - `%` is the workflow-command escape introducer, so a literal `%0A`/`%25`
+#     would otherwise be decoded into the annotation. Escaped AFTER the first
+#     cut so that cut cannot bisect an escape we just wrote; a second cut then
+#     bounds the real emitted length, and the trailing-partial strip removes a
+#     `%` or `%2` left dangling by it.
+#   - LC_ALL is pinned on both `tr` calls so an inherited locale cannot defeat
+#     the class matching.
+#
+# Never fails: a subshell abort here would kill the script under `set -e` before
+# it could emit ci_green, which is the same contract violation as a fatal mktemp.
+# Optional arg: max emitted characters (default 300). Escaping runs BEFORE the
+# truncation so the cap bounds the line that is actually emitted rather than a
+# pre-escape length that can then triple; the trailing-partial strip removes a
+# `%` or `%2` the cut may leave dangling. Truncation is marked, because a name
+# severed mid-word reads as a corrupted check name rather than as elision.
+sanitize_for_log() {
+  local max="${1:-300}"
+  { LC_ALL=C tr '\n\r\t' '   ' \
+      | LC_ALL=C tr -cd '\040-\176' \
+      | sed 's/%/%25/g' \
+      | LC_ALL=C awk -v m="$max" '{ if (length($0) > m) printf "%s... (truncated)\n", substr($0, 1, m); else print }' \
+      | sed 's/%2\{0,1\}$//'; } 2>/dev/null || true
+}
+
+# gh_last_error — one-line summary of why the last gh call failed, for logs.
+# Discarding this is how a permanent permission problem masquerades as a
+# transient blip: both produce the identical "API failed" line and the identical
+# default-deny exit, so a misconfigured token is indistinguishable from a bad
+# minute at GitHub. The single most useful case is a 403, which means the
+# CI-read token cannot reach the Checks API.
+gh_last_error() {
+  [ -n "$GH_ERR_FILE" ] || return 0
+  [ -s "$GH_ERR_FILE" ] || return 0
+  sanitize_for_log < "$GH_ERR_FILE"
+}
+
+# safe <string> — sanitize an API-derived value for interpolation into a log line.
+safe() {
+  printf '%s' "${1:-}" | sanitize_for_log
+}
+
 # Coerce rather than trust. A non-numeric value here used to reach `sleep` and
 # `seq` directly and abort the script under `set -e` with no ci_green emitted at
 # all — exit 1, which for a direct consumer of the composite (no
 # continue-on-error in the documented usage) is a red job. The contract is that
 # no input can do that.
+# An upper bound matters as much as the lower one. Without it the accept/reject
+# line was an accident of int64 overflow in `[ -gt ]`, so a plausible fat-finger
+# like 1000000000 was accepted and the loop below then hung with no output at all
+# until GitHub's 6-hour job timeout — a strictly worse version of the stall this
+# script exists to prevent. The length test comes first so overflow never decides.
 numeric_or_default() {
-  local name="$1" value="$2" fallback="$3"
-  if [ -n "$value" ] && [ -z "${value//[0-9]/}" ] && [ "$value" -gt 0 ] 2>/dev/null; then
+  local name="$1" value="$2" fallback="$3" max="$4"
+  if [ -n "$value" ] && [ -z "${value//[0-9]/}" ] && [ "${#value}" -le 9 ] \
+     && [ "$value" -gt 0 ] && [ "$value" -le "$max" ]; then
     printf '%s' "$value"
     return 0
   fi
-  echo "::warning::${name}='${value}' is not a positive integer; using ${fallback}" >&2
+  echo "::warning::${name}='$(safe "$value")' is not an integer in 1..${max}; using ${fallback}" >&2
   printf '%s' "$fallback"
 }
-max_attempts="$(numeric_or_default WAIT_MAX_ATTEMPTS "${WAIT_MAX_ATTEMPTS:-90}" 90)"
-min_attempts="$(numeric_or_default WAIT_MIN_ATTEMPTS "${WAIT_MIN_ATTEMPTS:-12}" 12)"
-sleep_seconds="$(numeric_or_default WAIT_SLEEP_SECONDS "${WAIT_SLEEP_SECONDS:-10}" 10)"
+max_attempts="$(numeric_or_default WAIT_MAX_ATTEMPTS "${WAIT_MAX_ATTEMPTS:-90}" 90 100000)"
+min_attempts="$(numeric_or_default WAIT_MIN_ATTEMPTS "${WAIT_MIN_ATTEMPTS:-12}" 12 100000)"
+sleep_seconds="$(numeric_or_default WAIT_SLEEP_SECONDS "${WAIT_SLEEP_SECONDS:-10}" 10 3600)"
 
 emit() {
   local k="$1" v="$2"
@@ -87,60 +152,6 @@ gh_json() {
   printf '%s' "$body"
 }
 
-# sanitize_for_log — stdin to a single safe log line on stdout.
-#
-# EVERY externally-controlled string that reaches an `echo` in this script must
-# go through here. Two channels qualify and both are hostile:
-#   - gh's stderr (GitHub-controlled), and
-#   - check-run `.name` / commit-status `.context`, which are written by whoever
-#     posted the check on the head SHA. GitHub documents no character
-#     restriction on them, so they are the *wider* of the two channels.
-#
-# What it defends against:
-#   - CR as well as LF terminates a log line for the runner, so a raw one splits
-#     the output into a NEW line, and a line beginning `::` is parsed as a
-#     workflow command. An attacker naming a check `x<CR>::error::…` would
-#     otherwise forge one. Collapse both, plus TAB, to spaces.
-#   - Other separators the runner or a terminal may treat as breaks (VT, FF, NUL,
-#     DEL, and via the non-ASCII strip: NEL, U+2028, U+2029) are removed.
-#   - Non-ASCII is dropped rather than byte-truncated, so the length cap cannot
-#     split a UTF-8 sequence mid-character.
-#   - `%` is the workflow-command escape introducer, so a literal `%0A`/`%25`
-#     would otherwise be decoded into the annotation. Escaped AFTER the first
-#     cut so that cut cannot bisect an escape we just wrote; a second cut then
-#     bounds the real emitted length, and the trailing-partial strip removes a
-#     `%` or `%2` left dangling by it.
-#   - LC_ALL is pinned on both `tr` calls so an inherited locale cannot defeat
-#     the class matching.
-#
-# Never fails: a subshell abort here would kill the script under `set -e` before
-# it could emit ci_green, which is the same contract violation as a fatal mktemp.
-sanitize_for_log() {
-  { LC_ALL=C tr '\n\r\t' '   ' \
-      | LC_ALL=C tr -cd '\040-\176' \
-      | cut -c1-300 \
-      | sed 's/%/%25/g' \
-      | cut -c1-400 \
-      | sed 's/%2\{0,1\}$//'; } 2>/dev/null || true
-}
-
-# gh_last_error — one-line summary of why the last gh call failed, for logs.
-# Discarding this is how a permanent permission problem masquerades as a
-# transient blip: both produce the identical "API failed" line and the identical
-# default-deny exit, so a misconfigured token is indistinguishable from a bad
-# minute at GitHub. The single most useful case is a 403, which means the
-# CI-read token cannot reach the Checks API.
-gh_last_error() {
-  [ -n "$GH_ERR_FILE" ] || return 0
-  [ -s "$GH_ERR_FILE" ] || return 0
-  sanitize_for_log < "$GH_ERR_FILE"
-}
-
-# safe <string> — sanitize an API-derived value for interpolation into a log line.
-safe() {
-  printf '%s' "${1:-}" | sanitize_for_log
-}
-
 # jq_or_fail [jq-flags...] <jq-expr> <json>  — run jq on $json with optional
 # flags (e.g. -r). Returns non-zero on parse failure. Callers must check
 # exit status; silent empty output here is not the same as success.
@@ -165,7 +176,9 @@ last_error=""
 # malformed response would report only the parse error. Keep the first as well.
 first_error=""
 
-for attempt in $(seq 1 "$max_attempts"); do
+attempt=0
+while [ "$attempt" -lt "$max_attempts" ]; do
+  attempt=$(( attempt + 1 ))
   poll_errored=0
   # Reset per poll. Without this, an API error early in the run stays in
   # last_error and gets reported by a LATER jq-parse failure, sending the
@@ -265,11 +278,15 @@ for attempt in $(seq 1 "$max_attempts"); do
     # settle floor, and too many consecutive errors exit non-green.
     consecutive_errors=$(( consecutive_errors + 1 ))
     if [ "$consecutive_errors" -ge "$max_consecutive_errors" ]; then
+      # Only worth printing when it differs, else the same blob appears twice.
+      first_error_clause=""
+      [ -n "$first_error" ] && [ "$first_error" != "$last_error" ] \
+        && first_error_clause="; first error: ${first_error}"
       # ::error:: rather than ::notice::. The job keeps its continue-on-error
       # safety net, so this still cannot turn a caller's CI red, but the run no
       # longer looks clean. Refusing to approve is a real outcome and something
       # downstream may be blocking on the merge that will now never happen.
-      echo "::error::Too many consecutive API errors (${consecutive_errors}); refusing to approve. Last error: ${last_error:-unknown}${first_error:+; first error: ${first_error}}"
+      echo "::error::Too many consecutive API errors (${consecutive_errors}); refusing to approve. Last error: ${last_error:-unknown}${first_error_clause}"
       echo "::error::If that is a 403 or 404 on a private repository, the CI-read token cannot reach the Checks API. Fine-grained PATs have no Checks permission at all. Leave ci-read-token unset so it falls back to GITHUB_TOKEN, and grant 'checks: read' and 'statuses: read' in the CALLER workflow: a reusable workflow can only downgrade the caller's permissions, never add to them."
       emit ci_green false
       exit 0
@@ -277,7 +294,11 @@ for attempt in $(seq 1 "$max_attempts"); do
     sleep "$sleep_seconds"
     continue
   fi
+  # Reset first_error with the streak. Keeping it across a recovered poll is the
+  # F1 misattribution bug one variable over: a 403 that has since resolved would
+  # be reported as the "first error" for a later, unrelated parse-failure streak.
   consecutive_errors=0
+  first_error=""
 
   pending=$(( cr_pending + st_pending ))
   real_failed=$(( cr_real_failed + st_failed ))
@@ -287,7 +308,7 @@ for attempt in $(seq 1 "$max_attempts"); do
   # immediately — these are not transient and won't be replaced.
   if [ "$real_failed" -gt 0 ]; then
     # Sanitized: these carry attacker-settable check names / status contexts.
-    details=$(printf '%s\n%s' "$cr_real_failed_detail" "$st_failed_detail" | awk 'NF' | paste -sd, - | sed 's/,/, /g' | sanitize_for_log)
+    details=$(printf '%s\n%s' "$cr_real_failed_detail" "$st_failed_detail" | awk 'NF' | paste -sd, - | sed 's/,/, /g' | sanitize_for_log 1000)
     echo "::notice::Other CI checks failed; skipping approval. Failing: ${details:-unknown}"
     emit ci_green false
     exit 0
@@ -297,7 +318,10 @@ for attempt in $(seq 1 "$max_attempts"); do
   # Past the settle floor we stop waiting and treat them as final — the
   # replacement should have registered by now if it was ever going to.
   if [ "$cr_cancelled" -gt 0 ] && [ "$attempt" -ge "$min_attempts" ]; then
-    echo "::notice::Cancelled checks did not get replaced within settle period; skipping approval. Cancelled: $(safe "${cr_cancelled_detail:-unknown}")"
+    # ::error:: because a cancelled check is not red anywhere else: unlike the
+    # failed-checks path below, this annotation is the only signal an operator
+    # gets, and a release cut may be blocking on the merge.
+    echo "::error::Cancelled checks did not get replaced within settle period; skipping approval. Cancelled: $(safe "${cr_cancelled_detail:-unknown}")"
     emit ci_green false
     exit 0
   fi
@@ -305,7 +329,7 @@ for attempt in $(seq 1 "$max_attempts"); do
   # Surface which signals we are still waiting on. Helps operators diagnose
   # "why is this job still running?" without enabling step debug logging.
   if [ "$pending" -gt 0 ]; then
-    waiting=$(printf '%s\n%s' "$cr_pending_names" "$st_pending_names" | awk 'NF' | paste -sd, - | sed 's/,/, /g' | sanitize_for_log)
+    waiting=$(printf '%s\n%s' "$cr_pending_names" "$st_pending_names" | awk 'NF' | paste -sd, - | sed 's/,/, /g' | sanitize_for_log 1000)
     echo "  pending: ${waiting:-<unnamed>}"
   fi
   if [ "$cr_cancelled" -gt 0 ]; then
@@ -324,9 +348,12 @@ for attempt in $(seq 1 "$max_attempts"); do
   sleep "$sleep_seconds"
 done
 
+first_error_clause=""
+[ -n "$first_error" ] && [ "$first_error" != "$last_error" ] \
+  && first_error_clause="; first error: ${first_error}"
 # ::error:: for the same reason as the consecutive-error bail: refusing to
 # approve is a real outcome, a release cut may be blocking on the merge, and this
 # is the path taken by errors that never hit max_consecutive_errors in a row (and
 # the only reachable one when a caller sets wait-max-attempts below it).
-echo "::error::Timed out waiting for other CI checks after ${max_attempts} attempts; refusing to approve. Last error: ${last_error:-none (checks were still pending)}${first_error:+; first error: ${first_error}}"
+echo "::error::Timed out waiting for other CI checks after ${max_attempts} attempts; refusing to approve. Last error: ${last_error:-none (checks were still pending)}${first_error_clause}"
 emit ci_green false

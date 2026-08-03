@@ -521,8 +521,8 @@ jobs:
 to auto-approve (GitHub forbids self-review). When identity matches, the job
 skips gracefully instead of failing.
 
-**`checks: read` and `statuses: read` are not optional, and the called workflow
-cannot supply them for you** — GitHub only lets a reusable
+**Unless you pass the `ci-read-token` secret, `checks: read` and `statuses: read`
+are not optional, and the called workflow cannot supply them for you** — GitHub only lets a reusable
 workflow downgrade the caller's `GITHUB_TOKEN` permissions, never elevate them,
 and anything you omit defaults to `none`. Omit them and the CI poll 403s, the
 action default-denies, and the PR is never approved while both the check and the

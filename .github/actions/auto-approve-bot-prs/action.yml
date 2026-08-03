@@ -1,11 +1,12 @@
 name: Auto-approve bot PRs
 description: |
   Approves PRs from trusted bot authors whose title/branch matches a known
-  safe pattern, after all other CI checks pass. No API, parse, permission or
-  input-validation failure exits non-zero: each degrades to an annotated skip
-  and exit 0. Refusing to approve is annotated at error level (it can block a
-  release cut waiting on the merge); that raises an annotation only and never a
-  non-zero exit.
+  safe pattern, after all other CI checks pass. Once running, no API, parse or
+  permission failure exits non-zero: each degrades to an annotated skip and exit
+  0, and an out-of-range wait input is coerced to its default with a warning.
+  (Missing required env is the one deliberate exception and does exit non-zero.)
+  Outcomes that need a human and raise no other red signal are annotated at error
+  level; that raises an annotation only, never a non-zero exit.
 inputs:
   trusted-authors:
     description: 'Comma-separated list of trusted bot logins'
@@ -23,18 +24,7 @@ inputs:
     description: 'PAT used to read PR state, approve, and enable auto-merge. Must NOT match the PR author.'
     required: true
   ci-read-token:
-    description: |
-      Token for the read-only CI polling (check-runs + commit statuses) only.
-      Defaults to the caller's GITHUB_TOKEN, which is what you want: reading CI
-      state needs no distinct identity, and only the approval does, because
-      GitHub forbids self-approval. Do NOT point this at the approving PAT:
-      fine-grained PATs cannot call the Checks API at all (there is no Checks
-      permission to grant), so polling would fail every time and the action would
-      default-deny forever.
-      Unless you set this, the CALLER workflow must grant `checks: read` and
-      `statuses: read` (a reusable workflow cannot add them for you). Supplying
-      a token here bypasses github.token for the poll, so those grants are then
-      not needed.
+    description: 'Token for the read-only CI poll only; defaults to the caller GITHUB_TOKEN, which needs `checks: read` and `statuses: read`. Never the approving PAT. See README "Two tokens, on purpose".'
     required: false
   wait-max-attempts:
     description: 'Max polling attempts waiting for other CI checks'

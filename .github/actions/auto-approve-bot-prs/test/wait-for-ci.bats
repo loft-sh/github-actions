@@ -25,10 +25,15 @@ kv() { grep "^$1=" "$GITHUB_OUTPUT" | tail -n1; }
 # line. Two assertions in this file were silently inert that way. A plain
 # function call returning non-zero does abort, so this one actually fails.
 assert_no_match() {
-  if grep -qP -- "$1" <<<"$2"; then
-    printf 'assert_no_match: unexpected match for %s\n' "$1" >&2
-    return 1
-  fi
+  local rc=0
+  grep -qP -- "$1" <<<"$2" || rc=$?
+  case "$rc" in
+    0) printf 'assert_no_match: unexpected match for %s\n' "$1" >&2; return 1 ;;
+    1) return 0 ;;
+    # grep returns 2 for a malformed pattern. Treating that as "no match" is the
+    # very fail-open shape this helper exists to prevent, so it must fail loudly.
+    *) printf 'assert_no_match: grep error rc=%s for pattern %s\n' "$rc" "$1" >&2; return 1 ;;
+  esac
 }
 
 @test "no check-runs → ci_green=true" {
@@ -439,6 +444,9 @@ assert_no_match() {
   assert_no_match '\r' "$output"
   assert_no_match '(?m)^::warning::INJECTED' "$output"
   [[ "$output" == *"pending:"* ]]
+  # Positive: the ascii part of the name must survive. Without this, a sanitizer
+  # that returned empty would yield "pending: <unnamed>" and still pass.
+  [[ "$output" == *"wait"* ]]
 }
 
 @test "regression: devops-1254 — a cancelled check NAME is sanitized too" {
@@ -451,6 +459,39 @@ assert_no_match() {
   [ "$(kv ci_green)" = "ci_green=false" ]
   assert_no_match '\r' "$output"
   assert_no_match '(?m)^::error::INJECTED' "$output"
+  # Positive: else an empty sanitizer result emits "Cancelled: " and still passes.
+  [[ "$output" == *"gone"* ]]
+}
+
+@test "regression: devops-1254 — a commit-status CONTEXT cannot forge a workflow command" {
+  # The other half of the hostile channel the script's comment names. Both the
+  # check-run and status sides feed the same two log lines, but the NAME tests
+  # only exercise cr_*_detail. Dropping the sanitizer from the status side alone
+  # would ship an injection with a fully green suite.
+  export WAIT_MAX_ATTEMPTS=1
+  export WAIT_MIN_ATTEMPTS=1
+  GH_MOCK_CHECK_RUNS_JSON='{"check_runs":[]}' \
+  GH_MOCK_STATUSES_JSON="$(printf '{"state":"failure","statuses":[
+    {"context":"deploy\\r::error::FORGED-VIA-STATUS-CONTEXT","state":"failure","target_url":"https://netlify.example/x"}
+  ]}')" run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv ci_green)" = "ci_green=false" ]
+  assert_no_match '\r' "$output"
+  assert_no_match '(?m)^::error::FORGED' "$output"
+  [[ "$output" == *"deploy"* ]]
+}
+
+@test "regression: devops-1254 — a pending commit-status CONTEXT is sanitized too" {
+  export WAIT_MAX_ATTEMPTS=1
+  export WAIT_MIN_ATTEMPTS=1
+  GH_MOCK_CHECK_RUNS_JSON='{"check_runs":[]}' \
+  GH_MOCK_STATUSES_JSON="$(printf '{"state":"pending","statuses":[
+    {"context":"queue\\r::warning::FORGED-PENDING-CONTEXT","state":"pending","target_url":"https://netlify.example/x"}
+  ]}')" run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  assert_no_match '\r' "$output"
+  assert_no_match '(?m)^::warning::FORGED' "$output"
+  [[ "$output" == *"queue"* ]]
 }
 
 @test "regression: devops-1254 — a non-numeric wait input must not hard-fail the script" {
@@ -465,7 +506,7 @@ assert_no_match() {
   ]}' run "$SCRIPT"
   [ "$status" -eq 0 ]
   [ "$(kv ci_green)" = "ci_green=false" ]
-  [[ "$output" == *"WAIT_SLEEP_SECONDS='not-a-duration' is not a positive integer"* ]]
+  [[ "$output" == *"WAIT_SLEEP_SECONDS='not-a-duration' is not an integer in 1..3600"* ]]
 }
 
 @test "regression: devops-1254 — the bail reports the FIRST error, not just the last" {
@@ -525,6 +566,91 @@ assert_no_match() {
   [ "$status" -eq 0 ]
   [ "$(kv ci_green)" = "ci_green=true" ]
   [[ "$output" == *"could not allocate a temp file"* ]]
+}
+
+@test "regression: devops-1254 — first_error resets when the error streak resolves" {
+  # Poll 1 errors, poll 2 succeeds, polls 3-7 fail to parse. The bail must not
+  # attribute the streak to the long-resolved 403 from poll 1 — that is the F1
+  # misattribution bug one variable over.
+  export WAIT_MAX_ATTEMPTS=7
+  export WAIT_MIN_ATTEMPTS=6
+  seq_file="$(mktemp)"
+  printf 'ERROR\n{"check_runs":[]}\n{bad\n{bad\n{bad\n{bad\n{bad\n' > "$seq_file"
+  GH_MOCK_CHECK_RUNS_SEQ="$seq_file" \
+    GH_MOCK_STDERR='gh: Resource not accessible by integration (HTTP 403)' \
+    run "$SCRIPT"
+  rm -f "$seq_file"
+  [ "$status" -eq 0 ]
+  [ "$(kv ci_green)" = "ci_green=false" ]
+  [[ "$output" == *"Last error: malformed check-runs response"* ]]
+  assert_no_match 'first error: gh: Resource not accessible' "$output"
+}
+
+@test "regression: devops-1254 — an out-of-range attempt count cannot hang the job" {
+  # A valid but enormous integer used to be accepted (the boundary was int64
+  # overflow in [ -gt ]), and `for attempt in $(seq 1 N)` then had to build the
+  # whole list before the first poll: no output, no ci_green, hang until the
+  # 6-hour job timeout. Strictly worse than the stall this script prevents.
+  export WAIT_MAX_ATTEMPTS=9223372036854775807
+  export WAIT_MIN_ATTEMPTS=1
+  GH_MOCK_CHECK_RUNS_JSON='{"check_runs":[]}' run timeout 60 "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"WAIT_MAX_ATTEMPTS='9223372036854775807' is not an integer in 1..100000"* ]]
+  [ "$(kv ci_green)" = "ci_green=true" ]
+}
+
+@test "regression: devops-1254 — a non-numeric WAIT_MAX_ATTEMPTS is coerced, not fatal" {
+  export WAIT_MAX_ATTEMPTS="lots"
+  export WAIT_MIN_ATTEMPTS=1
+  GH_MOCK_CHECK_RUNS_JSON='{"check_runs":[]}' run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"WAIT_MAX_ATTEMPTS='lots' is not an integer in 1..100000"* ]]
+  [ "$(kv ci_green)" = "ci_green=true" ]
+}
+
+@test "regression: devops-1254 — a non-numeric WAIT_MIN_ATTEMPTS is coerced, not fatal" {
+  export WAIT_MAX_ATTEMPTS=1
+  export WAIT_MIN_ATTEMPTS="soon"
+  GH_MOCK_CHECK_RUNS_JSON='{"check_runs":[]}' run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"WAIT_MIN_ATTEMPTS='soon' is not an integer in 1..100000"* ]]
+}
+
+@test "regression: devops-1254 — a plausible fat-finger attempt count is also rejected" {
+  export WAIT_MAX_ATTEMPTS=1000000000
+  export WAIT_MIN_ATTEMPTS=1
+  GH_MOCK_CHECK_RUNS_JSON='{"check_runs":[]}' run timeout 60 "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"is not an integer in 1..100000"* ]]
+}
+
+@test "regression: devops-1254 — a rejected wait value cannot forge a workflow command" {
+  export WAIT_SLEEP_SECONDS='x\r::error::FORGED-VIA-WAIT-INPUT'
+  export WAIT_MAX_ATTEMPTS=1
+  export WAIT_MIN_ATTEMPTS=1
+  GH_MOCK_CHECK_RUNS_JSON='{"check_runs":[]}' run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  assert_no_match '\r' "$output"
+  assert_no_match '(?m)^::error::FORGED' "$output"
+}
+
+@test "regression: devops-1254 — a long pending list is truncated with a marker, not severed" {
+  # The 300-char cap is right for one hostile string and wrong for a legitimately
+  # long list; this is the line the script's own comment calls out as how an
+  # operator answers "why is this still running?".
+  export WAIT_MAX_ATTEMPTS=1
+  export WAIT_MIN_ATTEMPTS=1
+  json='{"check_runs":['
+  for i in $(seq 1 20); do
+    [ "$i" -gt 1 ] && json="${json},"
+    json="${json}{\"name\":\"a-fairly-long-check-run-name-number-$(printf '%03d' "$i")\",\"status\":\"in_progress\",\"conclusion\":null,\"details_url\":\"https://github.com/o/r/actions/runs/2$i/job/1\"}"
+  done
+  json="${json}]}"
+  GH_MOCK_CHECK_RUNS_JSON="$json" run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  # All 20 survive at the wider list cap, so the diagnostic is actually useful.
+  [[ "$output" == *"number-001"* ]]
+  [[ "$output" == *"number-020"* ]]
 }
 
 @test "regression: devops-1254 — timing out is an ::error::, not a quiet notice" {

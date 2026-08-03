@@ -25,10 +25,10 @@ secret.
 
 <!-- AUTO-DOC-SECRETS:START - Do not remove or modify this section -->
 
-|     SECRET      | REQUIRED |                                                                                                                                                                                                                 DESCRIPTION                                                                                                                                                                                                                 |
-|-----------------|----------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-|  ci-read-token  |  false   | Optional. Token for the read-only CI <br>poll, overriding the default of the <br>caller's GITHUB_TOKEN. Only needed as an <br>escape hatch when the caller cannot <br>grant `checks: read` / `statuses: read` (see the <br>job permissions below); pass a classic <br>PAT with `repo` scope or a <br>GitHub App token, both of which <br>can reach the Checks API. A <br>fine-grained PAT cannot, so do NOT <br>pass gh-access-token here.  |
-| gh-access-token |   true   |                                                                                                                                                                                  GitHub PAT for approving PRs (must be different identity from PR author)                                                                                                                                                                                   |
+|     SECRET      | REQUIRED |                                                                                               DESCRIPTION                                                                                               |
+|-----------------|----------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|  ci-read-token  |  false   | Optional escape hatch for the read-only <br>CI poll when the caller cannot <br>grant `checks: read` / `statuses: read`. Classic PAT <br>with `repo` scope, or an App <br>token. Never gh-access-token.  |
+| gh-access-token |   true   |                                                                GitHub PAT for approving PRs (must be different identity from PR author)                                                                 |
 
 <!-- AUTO-DOC-SECRETS:END -->
 

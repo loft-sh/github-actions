@@ -32,13 +32,7 @@ on:
         description: 'GitHub PAT for approving PRs (must be different identity from PR author)'
         required: true
       ci-read-token:
-        description: |
-          Optional. Token for the read-only CI poll, overriding the default of
-          the caller's GITHUB_TOKEN. Only needed as an escape hatch when the
-          caller cannot grant `checks: read` / `statuses: read` (see the job
-          permissions below); pass a classic PAT with `repo` scope or a GitHub
-          App token, both of which can reach the Checks API. A fine-grained PAT
-          cannot, so do NOT pass gh-access-token here.
+        description: 'Optional escape hatch for the read-only CI poll when the caller cannot grant `checks: read` / `statuses: read`. Classic PAT with `repo` scope, or an App token. Never gh-access-token.'
         required: false
 
 jobs:
@@ -49,9 +43,10 @@ jobs:
     # checks/statuses are what the CI poll reads via GITHUB_TOKEN. These lines
     # alone are NOT enough: "the GITHUB_TOKEN permissions passed from the caller
     # workflow can be only downgraded (not elevated) by the called workflow", and
-    # anything the caller omits defaults to none. Every caller MUST declare
-    # `checks: read` and `statuses: read` too, or the poll 403s on a private repo
-    # and the action default-denies without ever approving. See DEVOPS-1254.
+    # anything the caller omits defaults to none. So unless the caller passes the
+    # ci-read-token secret, it MUST declare `checks: read` and `statuses: read`
+    # itself, or the poll 403s and the action default-denies without ever
+    # approving. See DEVOPS-1254.
     permissions:
       pull-requests: write
       contents: read
