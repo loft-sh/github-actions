@@ -23,9 +23,33 @@ inputs:
     description: 'Is this a pre-release?'
     required: false
     default: 'false'
+  needs_promotion:
+    description: |
+      Set to "true" when the release is published un-promoted and a human still
+      has to promote it (the GitHub "None" label: not a pre-release, not Latest).
+      Adds a line to the banner pointing at the promote workflow, since the
+      release build is the only thing that tells the Release Captain a step is
+      left. Opt-in, so products whose releases ship straight to Latest are
+      unaffected.
+    required: false
+    default: 'false'
+  promote_workflow:
+    description: 'Workflow file in target_repo that performs the promotion. Linked from the banner when needs_promotion is "true".'
+    required: false
+    default: 'promote-release.yaml'
   target_repo:
     description: 'Target repository'
     required: true
+  paired_repo:
+    description: |
+      Second repository that publishes the same version, e.g. the public OSS
+      repo alongside a private product repo. When set, the banner links the
+      release and the changelog for BOTH repos instead of target_repo only - a
+      single link is wrong for a product whose cut produces two releases, and
+      the private one is the less useful of the two for most readers. Leave
+      empty for products that publish a single release.
+    required: false
+    default: ''
   product:
     description: 'Product name (vCluster or vCluster Platform)'
     required: true
@@ -95,14 +119,30 @@ runs:
               fields:
                 - type: mrkdwn
                   text: "*Source Branch:*\n${{ inputs.base_branch || steps.detect_branch.outputs.base_branch || 'main' }}"
+                # Always-present field rather than a conditionally-appended
+                # block: Block Kit payloads here are static YAML, and an empty
+                # element is invalid, so the state is rendered as text instead.
+                - type: mrkdwn
+                  # Fallback is the neutral "Release", never "Latest": callers
+                  # that pass neither flag (e.g. vCluster Platform) have their
+                  # own labelling rules, and claiming Latest for them would be a
+                  # guess.
+                  text: "*GitHub label:*\n${{ (inputs.needs_promotion == 'true' && format('`None` - not Latest yet. <https://github.com/{0}/actions/workflows/{1}|Promote it> to move Latest, the moving image tags and the Homebrew formula.', inputs.target_repo, inputs.promote_workflow)) || (inputs.is_prerelease == 'true' && 'Pre-release') || 'Release' }}"
+            # One cut can publish two releases (e.g. a private product repo plus
+            # its public OSS counterpart), so both the changelog and the release
+            # link render per repo when paired_repo is set. Labelled with the
+            # repo names rather than "View ...", since with two links the useful
+            # information is which repo each one points at. Built with format()
+            # in a single expression because Block Kit payloads here are static
+            # YAML: elements cannot be appended conditionally.
             - type: section
               text:
                 type: mrkdwn
-                text: "*Changes:*\n<https://github.com/${{ inputs.target_repo }}/compare/${{ inputs.previous_tag }}...${{ inputs.version }}|View Full Changelog>"
+                text: "*Changes:*\n${{ inputs.paired_repo != '' && format('<https://github.com/{0}/compare/{1}...{2}|{0}> | <https://github.com/{3}/compare/{1}...{2}|{3}>', inputs.target_repo, inputs.previous_tag, inputs.version, inputs.paired_repo) || format('<https://github.com/{0}/compare/{1}...{2}|View Full Changelog>', inputs.target_repo, inputs.previous_tag, inputs.version) }}"
             - type: context
               elements:
                 - type: mrkdwn
-                  text: "<https://github.com/${{ inputs.target_repo }}/releases/tag/${{ inputs.version }}|View Release>"
+                  text: "${{ inputs.paired_repo != '' && format('Releases: <https://github.com/{0}/releases/tag/{2}|{0}> | <https://github.com/{1}/releases/tag/{2}|{1}>', inputs.target_repo, inputs.paired_repo, inputs.version) || format('<https://github.com/{0}/releases/tag/{1}|View Release>', inputs.target_repo, inputs.version) }}"
     - name: Resolve status text
       id: status_text
       if: inputs.status != 'success'

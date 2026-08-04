@@ -3,8 +3,8 @@
 # version's already-published, already-signed manifest (a digest-preserving
 # retag via `crane tag`, never a rebuild -- cosign signatures are
 # digest-scoped OCI referrers, so the copy stays verifiable with no
-# re-signing), and optionally flip a paired public release off pre-release +
-# onto latest.
+# re-signing), and optionally flip the caller's own release and a paired
+# public release off pre-release + onto latest.
 #
 # `crane tag`, not `docker buildx imagetools create`: imagetools is
 # digest-preserving only when the source is already a multi-arch index. For a
@@ -32,6 +32,12 @@
 #                    <image>:<major><suffix>, and <image>:<major>.<minor><suffix>.
 #
 # Optional env:
+#   INPUT_PROMOTE_SELF
+#                    "true" also promotes the CALLER repo's own <version>
+#                     release (unset pre-release, set Latest). Needed when the
+#                     caller publishes stable cuts with the GitHub "None"
+#                     label, where nothing else ever flips them. Any other
+#                     value (default "false") leaves that release untouched.
 #   INPUT_OSS_REPO   owner/repo whose matching <version> release should also
 #                     be promoted. Empty (default) skips this step. Required
 #                     if INPUT_HOMEBREW_TAP_REPO is set (checksums for the
@@ -45,21 +51,21 @@
 #                     ["Formula/vcluster.rb"]. Required if
 #                     INPUT_HOMEBREW_TAP_REPO is set.
 #   INPUT_DRY_RUN    Fail-closed: a real promotion runs only on an exact
-#                     (case-insensitive) "false" - which is the default, so the
-#                     release:released trigger still promotes for real. ANY
+#                     (case-insensitive) "false" - which is the default, so a
+#                     plain dispatch still promotes for real. ANY
 #                     other value ("true", "yes", "1", a typo, wrong case,
 #                     stray whitespace) is a dry-run that only prints the
 #                     planned retags/promotion, so a caller who meant to
 #                     preview can't accidentally fire a real retag/release flip.
 #
 # GITHUB_REPOSITORY (owner/repo of the caller, set automatically by Actions)
-# is used to detect a backport/patch promotion: if VERSION isn't the newest
-# stable release on that repo, :latest/:{major} are left alone so promoting an
-# older line's patch can never move :latest backwards. :{major}.{minor} is
+# is used to detect a backport/patch promotion: if VERSION is older than the
+# release currently flagged Latest on that repo, :latest/:{major} are left
+# alone so promoting an older line's patch can never move :latest backwards. :{major}.{minor} is
 # scoped to VERSION's own line, so it advances on its own gate: only when
 # VERSION is the newest stable *within its own {major}.{minor} line*. That
-# keeps a same-line out-of-order promotion (e.g. un-checking pre-release on
-# v9.9.5 after v9.9.6 already moved :9.9) from regressing the line tag too.
+# keeps a same-line out-of-order promotion (e.g. promoting v9.9.5 after
+# v9.9.6 already moved :9.9) from regressing the line tag too.
 #
 # Homebrew promotion is a metadata patch, not a rebuild: a formula's per-
 # platform sha256 values are exactly what's already in oss-repo's <version>
@@ -77,10 +83,13 @@ set -euo pipefail
 
 VERSION="${INPUT_VERSION}"
 OSS_REPO="${INPUT_OSS_REPO-}"
+# Enabling a mutation, so only an exact "true" turns it on: a typo leaves the
+# caller's own release untouched rather than flipping it unasked.
+PROMOTE_SELF="${INPUT_PROMOTE_SELF:-false}"
 HOMEBREW_TAP_REPO="${INPUT_HOMEBREW_TAP_REPO-}"
 HOMEBREW_FORMULA_PATHS="${INPUT_HOMEBREW_FORMULA_PATHS:-[]}"
 # Fail closed: real mutations run only on an explicit, unambiguous "false"
-# (the input default, so the auto-promotion trigger still fires for real). Any
+# (the input default, so a plain dispatch still promotes for real). Any
 # other value - "true", "yes", "1", a typo, wrong case, stray whitespace -
 # stays in dry-run, so a caller who meant to preview can never accidentally
 # fire a real GHCR retag or release flip. Mirrors the sibling vcluster-release
@@ -126,14 +135,32 @@ run() {
   fi
 }
 
-# True if VERSION is the newest stable (non-prerelease) release known on
-# $1 - i.e. safe to move that repo's :latest/--latest pointer to VERSION.
-# With $2 set to a "{major}.{minor}" line (e.g. "9.9"), the comparison is
-# restricted to stable releases in that line only, answering "newest within
-# its own minor line?" - which is what gates the line-scoped :{major}.{minor}
-# tag, independently of "newest overall".
-# No prior stable releases (in scope) at all is treated as "yes" (first-ever
-# promotion).
+# True if it is safe to move a pointer on $1 forward to VERSION. What "safe"
+# compares against depends on the scope, because the two pointers this gates
+# have different baselines:
+#
+#   Unscoped ($2 empty) - gates :latest, :{major} and the repo's GitHub Latest
+#     pointer. Baseline is the release currently flagged isLatest, i.e. the
+#     last release a human actually PROMOTED. This must not be "newest
+#     non-prerelease": with release.prerelease: auto a stable cut is published
+#     un-promoted as the GitHub "None" label (not a pre-release, not latest),
+#     so isPrerelease == false no longer means "vetted". Reading vettedness off
+#     that flag would block every promotion behind any newer un-promoted cut,
+#     leaving :latest stale until the newest line happened to be promoted.
+#     The isLatest pointer is the only durable record of what :latest tracks,
+#     so it is the only correct baseline. VERSION == the current isLatest
+#     resolves true, keeping a re-run idempotent (it must still be able to
+#     re-apply retags that failed the first time).
+#
+#   Line-scoped ($2 = "{major}.{minor}", e.g. "9.9") - gates :{major}.{minor}.
+#     GitHub has no per-line equivalent of the isLatest pointer, so this stays
+#     a comparison against the newest stable-shaped release in that line. The
+#     shape filter already excludes -rc/-alpha, and under prerelease: auto the
+#     effect is conservative in the safe direction: if a newer patch in the
+#     same line exists but has not been promoted, the line tag is left alone
+#     (promote that newer patch instead) rather than regressed.
+#
+# No release in scope at all is treated as "yes" (first-ever promotion).
 #
 # Return codes: 0 = newest (advance), 1 = not newest (don't advance).
 # A failure to even LIST releases is NOT treated as "no prior releases" - that
@@ -149,7 +176,7 @@ run() {
 #     main work succeeded without preventing any downgrade (we just skip
 #     --latest, which never moves it backward).
 is_latest_stable() {
-  local repo="$1" line="${2-}" on_fail="${3:-exit}" raw max filter='^v[0-9]+\.[0-9]+\.[0-9]+$'
+  local repo="$1" line="${2-}" on_fail="${3:-exit}" raw max filter
   # --limit must comfortably exceed the repo's lifetime release count: the
   # "empty result => advance" short-circuit below reads an empty list as "no
   # prior release (in scope) ever". For the line-scoped check that's the fail-
@@ -157,20 +184,27 @@ is_latest_stable() {
   # too-small window, the filter finds none, ADVANCE_MINOR flips true, and the
   # line tag gets retagged backward. 1000 is ~a decade of headroom at current
   # cadence; gh paginates up to it in one call.
-  if ! raw=$(gh release list --repo "${repo}" --json tagName,isPrerelease --limit 1000 2>&1); then
+  if ! raw=$(gh release list --repo "${repo}" --json tagName,isPrerelease,isLatest --limit 1000 2>&1); then
     if [[ "${on_fail}" == "soft" ]]; then
-      echo "::warning::failed to list releases on ${repo} to confirm ${VERSION} is newest (${raw}); skipping the advisory --latest promotion. Docker retags already completed; set latest manually if appropriate." >&2
+      echo "::warning::failed to list releases on ${repo} to confirm ${VERSION} is promotable (${raw}); skipping the advisory --latest promotion. Docker retags already completed; set latest manually if appropriate." >&2
       return 2
     fi
     echo "::error::failed to list releases on ${repo} to check backport/patch ordering: ${raw}" >&2
     exit 1
   fi
-  # Anchor the line filter on the literal, dot-escaped {major}.{minor} so a
-  # "9.9" line never also matches "9x9" or a "99" prefix.
-  [[ -n "${line}" ]] && filter="^v${line//./\\.}\.[0-9]+$"
-  max=$(jq -r '[.[] | select(.isPrerelease == false) | .tagName][]' <<<"${raw}" \
-    | grep -E "${filter}" \
-    | sort -V | tail -1)
+  if [[ -z "${line}" ]]; then
+    # Unscoped: the promoted pointer. At most one release carries isLatest, so
+    # this yields 0 or 1 tags; no shape filter is applied, because whatever a
+    # human promoted IS the baseline even if its shape is unusual.
+    max=$(jq -r '[.[] | select(.isLatest) | .tagName][]' <<<"${raw}")
+  else
+    # Anchor the line filter on the literal, dot-escaped {major}.{minor} so a
+    # "9.9" line never also matches "9x9" or a "99" prefix.
+    filter="^v${line//./\\.}\.[0-9]+$"
+    max=$(jq -r '[.[] | select(.isPrerelease == false) | .tagName][]' <<<"${raw}" \
+      | grep -E "${filter}" \
+      | sort -V | tail -1)
+  fi
   [ -z "${max}" ] && return 0
   [ "$(printf '%s\n%s\n' "${VERSION}" "${max}" | sort -V | tail -1)" = "${VERSION}" ]
 }
@@ -178,7 +212,7 @@ is_latest_stable() {
 ADVANCE_LATEST_MAJOR=true
 if ! is_latest_stable "${GITHUB_REPOSITORY}"; then
   ADVANCE_LATEST_MAJOR=false
-  echo "::notice::${VERSION} is not the newest stable release on ${GITHUB_REPOSITORY} (backport/patch promotion); skipping :latest/:${MAJOR} so they aren't moved backwards."
+  echo "::notice::${VERSION} is older than the promoted release on ${GITHUB_REPOSITORY} (backport/patch promotion); skipping :latest/:${MAJOR} so they aren't moved backwards."
 fi
 
 # :{major}.{minor} gets its own, line-scoped gate. When VERSION is newest
@@ -237,6 +271,39 @@ for ((i = 0; i < IMAGE_COUNT; i++)); do
   done
 done
 
+# --- Caller repo's own release -------------------------------------------
+#
+# Only meaningful when the caller publishes stable cuts with the GitHub "None"
+# label (release.prerelease: auto + make_latest: false in goreleaser): the
+# release exists, is not a pre-release, and is not Latest, so promoting it is
+# an explicit act rather than a human un-checking a box. Both edits are safe to
+# repeat:
+#   --latest         gated by ADVANCE_LATEST_MAJOR, the same gate as :latest,
+#                    so a backport promotion never moves the repo's Latest
+#                    pointer backwards while its line tag still advances.
+#   --prerelease=false  a no-op for an auto-classified stable cut; it is what
+#                    promotes a legacy tag still built under prerelease: true.
+if [[ "${PROMOTE_SELF}" == "true" ]]; then
+  if gh release view "${VERSION}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+    self_args=(--prerelease=false)
+    self_note=""
+    if [[ "${ADVANCE_LATEST_MAJOR}" == "true" ]]; then
+      self_args+=(--latest)
+      self_note=", set latest"
+    else
+      echo "::notice::not marking ${GITHUB_REPOSITORY}@${VERSION} as Latest: it is older than the currently promoted release."
+    fi
+    echo "Promoting ${GITHUB_REPOSITORY}@${VERSION}: unset prerelease${self_note}"
+    if ! run gh release edit "${VERSION}" --repo "${GITHUB_REPOSITORY}" "${self_args[@]}"; then
+      echo "::warning::gh release edit failed for ${GITHUB_REPOSITORY}@${VERSION}. Promote manually: gh release edit ${VERSION} --repo ${GITHUB_REPOSITORY} ${self_args[*]}"
+    fi
+  else
+    echo "::warning::no ${VERSION} release found on ${GITHUB_REPOSITORY}; skipping its promotion"
+  fi
+else
+  echo "promote-self not enabled; leaving ${GITHUB_REPOSITORY}'s own release untouched"
+fi
+
 # --- Paired public release ----------------------------------------------
 
 # Whether VERSION is the newest stable on OSS_REPO. Computed once, in the
@@ -266,7 +333,7 @@ if [[ -n "${OSS_REPO}" ]]; then
       latest_note=", set latest"
     elif [[ "${oss_rc}" -eq 1 ]]; then
       OSS_IS_LATEST=false
-      echo "::notice::${VERSION} is not the newest stable release on ${OSS_REPO} (backport/patch promotion); unsetting pre-release but not moving Latest."
+      echo "::notice::${VERSION} is older than the promoted release on ${OSS_REPO} (backport/patch promotion); unsetting pre-release but not moving Latest."
     else
       # rc 2 = could not confirm (list failure; is_latest_stable already warned
       # about the --latest skip). Kept DISTINCT from a confirmed backport
@@ -437,7 +504,7 @@ if [[ -n "${HOMEBREW_TAP_REPO}" ]]; then
       fi
       ;;
     false)
-      echo "::notice::${VERSION} is not the newest stable release on ${OSS_REPO} (backport/patch promotion); skipping Homebrew tap promotion entirely - a formula has no line-scoped equivalent to :{major}.{minor}."
+      echo "::notice::${VERSION} is older than the promoted release on ${OSS_REPO} (backport/patch promotion); skipping Homebrew tap promotion entirely - a formula has no line-scoped equivalent to :{major}.{minor}."
       ;;
     unknown)
       # Distinct from a backport: we couldn't confirm newest (the oss-repo list

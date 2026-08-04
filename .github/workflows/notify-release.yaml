@@ -16,6 +16,11 @@ on:
         description: 'Target repository (e.g. loft-sh/vcluster)'
         required: true
         type: string
+      paired_repo:
+        description: 'Second repository publishing the same version (e.g. the public OSS repo alongside a private product repo). When set, the banner links the release and changelog for both repos instead of target_repo only. Leave empty for single-release products.'
+        required: false
+        type: string
+        default: ''
       product:
         description: 'Product name (e.g. vCluster, vCluster Platform)'
         required: true
@@ -40,6 +45,21 @@ on:
         required: false
         type: string
         default: ''
+      is_prerelease:
+        description: 'Whether the release was published as a pre-release. Shown as the GitHub label in the banner.'
+        required: false
+        type: boolean
+        default: false
+      needs_promotion:
+        description: 'Set true when the release is published un-promoted (GitHub "None" label) and a human still has to promote it. Adds a promote reminder with a link to promote_workflow. Opt-in, so products that ship straight to Latest are unaffected.'
+        required: false
+        type: boolean
+        default: false
+      promote_workflow:
+        description: 'Workflow file in target_repo that performs the promotion, linked from the banner when needs_promotion is true.'
+        required: false
+        type: string
+        default: 'promote-release.yaml'
     secrets:
       SLACK_WEBHOOK_URL_PRODUCT_RELEASES:
         description: 'Slack incoming webhook URL for #product-releases'
@@ -92,8 +112,12 @@ jobs:
           previous_tag: ${{ inputs.previous_tag }}
           changes: "See changelog link below"
           target_repo: ${{ inputs.target_repo }}
+          paired_repo: ${{ inputs.paired_repo }}
           product: ${{ inputs.product }}
           status: ${{ inputs.status }}
+          is_prerelease: ${{ inputs.is_prerelease }}
+          needs_promotion: ${{ inputs.needs_promotion }}
+          promote_workflow: ${{ inputs.promote_workflow }}
           # Forward the human actor when the caller supplies one; otherwise fall
           # back to github.actor (the composite's own default) for callers that
           # don't pass it, keeping existing behavior unchanged.

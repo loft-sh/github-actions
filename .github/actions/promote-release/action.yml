@@ -8,27 +8,35 @@ description: |
   `docker buildx imagetools create` because imagetools re-wraps a bare
   single-platform manifest in a new index (changing its digest, orphaning the
   signature); crane preserves the digest for both single-platform manifests
-  (per-arch tags) and multi-arch indexes. Optionally also promotes the paired
-  public release in a companion repo (unsets prerelease, sets latest).
+  (per-arch tags) and multi-arch indexes. Optionally also promotes the caller's
+  own release (`promote-self`) and the paired public release in a companion
+  repo (unsets prerelease, sets latest).
 
-  Wire this from `on: release: types: [released]` on the repo that owns the
-  moving tags. That event only fires when a human -- not GITHUB_TOKEN/a bot --
-  flips a release from pre-release to a full release (verified live for
-  DEVOPS-1083); a bot-authored release publish never triggers it, so there is
-  no risk of the build itself re-entering this action.
+  Wire this from `on: workflow_dispatch` on the repo that owns the moving tags,
+  with the version to promote as an input. A `release: types: [released]`
+  trigger is NOT suitable for a caller that publishes stable cuts as the GitHub
+  "None" label (`release.prerelease: auto`): `released` fires at build time for
+  such a cut, which would self-promote it unvetted. It is also resolved from the
+  release's own tag ref, so it never fires for tags on maintenance branches that
+  predate the workflow file, whereas `workflow_dispatch` always runs the default
+  branch's copy and therefore covers every release line.
 
   Only acts on a stable `vX.Y.Z` version (no prerelease suffix); any other
   shape is a no-op, since moving tags and "latest" promotion aren't meaningful
   for -rc/-alpha/-next cuts.
 
   Backport-safe: before advancing `:latest`/`:{major}` (or `--latest` on
-  oss-repo), checks whether `version` is actually the newest stable release
-  on the caller's own repo (`GITHUB_REPOSITORY`, set automatically by
-  Actions) / on `oss-repo` respectively. Promoting an older line's patch
-  after a newer stable is already `:latest` only advances `:{major}.{minor}`
-  (scoped to that line), never `:latest`/`:{major}` backwards. A failure to
-  even list releases fails the run closed rather than risking a silent
-  downgrade.
+  oss-repo / the caller's own release), checks whether `version` is newer than
+  the release currently flagged Latest on the caller's own repo
+  (`GITHUB_REPOSITORY`, set automatically by Actions) / on `oss-repo`
+  respectively. The baseline is that Latest pointer, not "newest
+  non-prerelease": under `release.prerelease: auto` an un-promoted stable cut is
+  already non-prerelease, so only the Latest flag records what `:latest`
+  actually tracks. Promoting an older line's patch after a newer stable is
+  already `:latest` only advances `:{major}.{minor}` (scoped to that line),
+  never `:latest`/`:{major}` backwards. A failure to even list releases fails
+  the run closed rather than risking a silent downgrade. Re-promoting the
+  current Latest is allowed, so a partially failed promotion can be re-run.
 
   Optionally also promotes a Homebrew tap: a metadata patch, not a rebuild.
   A formula's per-platform sha256 values are exactly what's already in
@@ -54,6 +62,10 @@ inputs:
       `<image>:latest-amd64` etc. crane preserves its digest, so its cosign
       signature stays valid.
     required: true
+  promote-self:
+    description: 'Set to "true" to also promote the CALLER repo''s own <version> release (unset pre-release, set Latest). Required when the caller publishes stable cuts with the GitHub "None" label, since nothing else ever flips them. Latest is gated by the same backport check as :latest.'
+    required: false
+    default: 'false'
   oss-repo:
     description: 'owner/repo whose matching <version> release should also be promoted (prerelease unset, latest set). Leave empty to skip.'
     required: false
@@ -73,7 +85,7 @@ inputs:
     required: false
     default: '[]'
   dry-run:
-    description: 'Fail-closed: a real promotion runs only on an exact "false" (the default, so the release:released trigger still promotes for real). Any other value ("true", a typo, etc.) is a dry-run that only prints the planned retags/promotion.'
+    description: 'Fail-closed: a real promotion runs only on an exact "false" (the default, so a plain dispatch still promotes for real). Any other value ("true", a typo, etc.) is a dry-run that only prints the planned retags/promotion.'
     required: false
     default: 'false'
 runs:
@@ -97,6 +109,7 @@ runs:
         GH_TOKEN: ${{ inputs.github-token }}
         INPUT_VERSION: ${{ inputs.version }}
         INPUT_IMAGES: ${{ inputs.images }}
+        INPUT_PROMOTE_SELF: ${{ inputs.promote-self }}
         INPUT_OSS_REPO: ${{ inputs.oss-repo }}
         INPUT_HOMEBREW_TAP_REPO: ${{ inputs.homebrew-tap-repo }}
         INPUT_HOMEBREW_FORMULA_PATHS: ${{ inputs.homebrew-formula-paths }}
