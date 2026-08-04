@@ -16,6 +16,23 @@ teardown() {
 
 kv() { grep "^$1=" "$GITHUB_OUTPUT" | tail -n1; }
 
+# assert_no_match <perl-regex> <text> — fail the test if the regex matches.
+#
+# Do NOT write `! grep -q ... <<<"$output"` instead. Bash does not abort on a
+# command whose status is inverted with `!`, so under the `set -e` bats runs test
+# bodies with, a bare negated grep is a no-op unless it happens to be the final
+# line. A plain function call returning non-zero does abort, so this one really
+# fails.
+assert_no_match() {
+  local rc=0
+  grep -qP -- "$1" <<<"$2" || rc=$?
+  case "$rc" in
+    0) printf 'assert_no_match: unexpected match for %s\n' "$1" >&2; return 1 ;;
+    1) return 0 ;;
+    *) printf 'assert_no_match: grep error rc=%s for %s\n' "$rc" "$1" >&2; return 1 ;;
+  esac
+}
+
 # A PR body with a label-filter fenced block, indented like a real description.
 body_with_filter() {
   printf '%s\n' \
@@ -200,10 +217,10 @@ body_with_filter() {
 
 # A body shaped like vcluster-pro's PR template, whose label-filter block is
 # pre-filled with `none` — the default shape for a template-following PR, and
-# what makes the legacy misread bite rather than being harmless.
-template_body() {
-  printf '%s\n' '## What' 'stuff' '' '```label-filter' 'none' '```'
-}
+# what makes the legacy misread bite rather than being harmless. Only the fenced
+# block reaches the parser, so this is `body_with_filter` under a name that
+# carries that intent.
+template_body() { body_with_filter 'none'; }
 
 @test "title-only edit -> skip=true (body untouched cannot change the filter)" {
   export INPUT_EVENT_NAME="pull_request"
@@ -314,18 +331,132 @@ template_body() {
   [ "$(kv skip-edited)" = "skip-edited=false" ]
 }
 
-@test "unexpected input values fall back to comparing, never to skipping" {
-  # Default-deny on garbage: only the exact string "false" means "body untouched"
-  # and only "true" means "retargeted", so a caller passing an expression that
-  # rendered oddly gets the conservative path rather than a silent skip.
+@test "an unexpected body-changed falls back to comparing, never to skipping" {
+  # Default-deny on garbage: only the exact string "false" means "body untouched",
+  # so a caller whose expression rendered oddly gets the conservative path. Pinned
+  # per input, and by branch rather than only by value — a case-insensitive match
+  # on "False" would flip this to skip=true.
   export INPUT_EVENT_NAME="pull_request"
   export INPUT_EVENT_ACTION="edited"
   export INPUT_PR_BODY="$(template_body)"
   export INPUT_PREVIOUS_PR_BODY=""
   export INPUT_BODY_CHANGED="False"
+  export INPUT_BASE_CHANGED="false"
+
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv skip-edited)" = "skip-edited=false" ]
+  assert_no_match "description was not touched" "$output"
+  [[ "$output" == *"body-changed='False' is not"* ]]
+}
+
+@test "an unexpected base-changed neither retargets nor rides along with a skip" {
+  # base-changed's default-deny in both directions. "yes" must not fire the
+  # retarget guard (the notice pins the branch, since that guard also emits
+  # skip=false), and it must not count as the "false" the body guard demands —
+  # so this falls through to comparing, which is the only remaining path.
+  export INPUT_EVENT_NAME="pull_request"
+  export INPUT_EVENT_ACTION="edited"
+  export INPUT_PR_BODY="$(template_body)"
+  export INPUT_PREVIOUS_PR_BODY=""
+  export INPUT_BODY_CHANGED="false"
   export INPUT_BASE_CHANGED="yes"
 
   run "$SCRIPT"
   [ "$status" -eq 0 ]
   [ "$(kv skip-edited)" = "skip-edited=false" ]
+  assert_no_match "retargeted" "$output"
+  assert_no_match "description was not touched" "$output"
+  [[ "$output" == *"base-changed='yes' is not"* ]]
+}
+
+@test "a garbage value is sanitized before it reaches the warning" {
+  # A mis-wired caller can render the payload rather than a null test on it, and
+  # that carries the PR body. The runner reads a CR as a line break and a line
+  # that then begins `::` as a workflow command, so a value carrying both must not
+  # be able to forge one. Assert on the CR itself and on line starts, not on the
+  # `::error::` text: once the CR is collapsed that text is inert prose, and
+  # grepping for it would fail on a correctly sanitized line.
+  export INPUT_EVENT_NAME="pull_request"
+  export INPUT_EVENT_ACTION="edited"
+  export INPUT_PR_BODY="$(template_body)"
+  export INPUT_PREVIOUS_PR_BODY=""
+  export INPUT_BODY_CHANGED="$(printf 'x\r::error::forged')"
+  export INPUT_BASE_CHANGED="false"
+
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv skip-edited)" = "skip-edited=false" ]
+  assert_no_match '\r' "$output"
+  assert_no_match '^::error::' "$output"
+  [[ "$output" == *"is not \"true\" or \"false\""* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Half-wired callers. The two inputs are one wiring: an omitted base-changed is
+# indistinguishable from base-changed=false, so acting on body-changed alone
+# would skip a base retarget. Both must be present, and a caller that passes one
+# gets the legacy comparison — a redundant run — instead.
+
+@test "half-wired body-changed does not skip a base retarget" {
+  # The dangerous case: a caller copied only the body-changed line, then a PR
+  # author retargets their base. No changes.body, so body-changed renders "false"
+  # while base-changed stays at its empty default. Skipping here would suppress
+  # the suite for the one event that must always run.
+  export INPUT_EVENT_NAME="pull_request"
+  export INPUT_EVENT_ACTION="edited"
+  export INPUT_PR_BODY="$(template_body)"
+  export INPUT_PREVIOUS_PR_BODY=""
+  export INPUT_BODY_CHANGED="false"
+
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv skip-edited)" = "skip-edited=false" ]
+  assert_no_match "description was not touched" "$output"
+  [[ "$output" == *"must be passed together"* ]]
+}
+
+@test "half-wired base-changed still never skips a retarget" {
+  # The other half, wired the other way: base-changed alone is enough to run,
+  # because that guard only ever refuses to skip.
+  export INPUT_EVENT_NAME="pull_request"
+  export INPUT_EVENT_ACTION="edited"
+  export INPUT_PR_BODY="$(template_body)"
+  export INPUT_PREVIOUS_PR_BODY="$(template_body)"
+  export INPUT_BASE_CHANGED="true"
+
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv skip-edited)" = "skip-edited=false" ]
+  [[ "$output" == *"retargeted"* ]]
+  [[ "$output" == *"must be passed together"* ]]
+}
+
+@test "wiring both inputs raises no pairing warning" {
+  export INPUT_EVENT_NAME="pull_request"
+  export INPUT_EVENT_ACTION="edited"
+  export INPUT_PR_BODY="$(template_body)"
+  export INPUT_PREVIOUS_PR_BODY=""
+  export INPUT_BODY_CHANGED="false"
+  export INPUT_BASE_CHANGED="false"
+
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv skip-edited)" = "skip-edited=true" ]
+  assert_no_match "must be passed together" "$output"
+  assert_no_match "::warning::" "$output"
+}
+
+@test "wiring neither input raises no pairing warning" {
+  # The legacy path stays quiet: omitting both is a supported configuration, so
+  # it must not emit the warning that flags a broken one.
+  export INPUT_EVENT_NAME="pull_request"
+  export INPUT_EVENT_ACTION="edited"
+  export INPUT_PR_BODY="$(template_body)"
+  export INPUT_PREVIOUS_PR_BODY="$(template_body)"
+
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv skip-edited)" = "skip-edited=true" ]
+  assert_no_match "::warning::" "$output"
 }

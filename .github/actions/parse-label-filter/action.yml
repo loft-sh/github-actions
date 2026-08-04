@@ -30,11 +30,11 @@ inputs:
   # named-value"), failing the whole action load. See the README for the exact
   # caller expressions.
   body-changed:
-    description: 'Whether this edit touched the PR body: pass a null test on github.event.changes.body. Omit to keep the legacy body comparison, which misreads a title-only edit as a filter change.'
+    description: 'Whether this edit touched the PR body. Pass a null test on the changes.body payload key, together with base-changed; see the README.'
     required: false
     default: ''
   base-changed:
-    description: 'Whether this edit retargeted the base branch: pass a null test on github.event.changes.base. A retarget is never skippable, because it changes what the suite runs against.'
+    description: 'Whether this edit retargeted the base branch. Pass a null test on the changes.base payload key, together with body-changed; see the README.'
     required: false
     default: ''
   label-filter-input:
@@ -46,7 +46,7 @@ outputs:
     description: 'Resolved Ginkgo label filter: the parsed PR-description block, else the dispatch input, else "pr".'
     value: ${{ steps.parse.outputs.label-filter }}
   skip-edited:
-    description: 'Either "true" or "false". "true" only when this is a pull_request edited event that cannot have changed what the suite would test: never for a base retarget, always for an edit that did not touch the body, otherwise only when the label-filter block is unchanged.'
+    description: 'Either "true" or "false". "true" only when this is a pull_request edited event that cannot have changed what the suite would test; see the README for the per-field rule.'
     value: ${{ steps.parse.outputs.skip-edited }}
 runs:
   using: composite
