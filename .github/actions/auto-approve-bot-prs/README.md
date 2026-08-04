@@ -181,6 +181,21 @@ default token, say), pass `ci-read-token` instead: a classic PAT with `repo`
 scope, or a GitHub App token. Both can reach the Checks API. A fine-grained PAT
 cannot, so `github-token` is never a valid value for it.
 
+## Log safety
+
+Everything this action reports is externally controlled: `gh`'s output is
+GitHub's, check-run names and commit-status contexts belong to whoever posted
+them, the authenticated login comes from the API, and `merge-method` comes from
+the calling workflow. A bare CR in any of those is enough to forge an
+annotation, because CR terminates a log line for the runner and a line starting
+`::` is parsed as a workflow command.
+
+So every such value goes through `safe`/`sanitize_for_log` from
+`src/lib/log.sh` before it reaches a log line — one rule for the whole action,
+rather than a per-field argument about which API fields are trustworthy. If
+that lib is missing the scripts fail loudly instead of falling back to
+unsanitized output, since a silent fallback would reopen every channel at once.
+
 ## Testing
 
 ```bash
@@ -188,3 +203,6 @@ make test-auto-approve-bot-prs
 ```
 
 Runs the bats suites in `test/` against the shell scripts in `src/`.
+Assertions that must be able to fail live in `test/assertions.bash`: a bare
+`! grep` is inert under the `set -e` bats runs test bodies with, so negative
+assertions use `assert_no_match`.

@@ -26,10 +26,17 @@ set -euo pipefail
 : "${PR_NUMBER:?PR_NUMBER required}"
 : "${MERGE_METHOD:?MERGE_METHOD required}"
 
+# Every interpolated value below is externally controlled — gh's output is
+# GitHub's, and merge-method is the calling workflow's — so all of them are
+# sanitized before reaching a log line. See lib/log.sh for why a bare CR in one
+# of them is enough to forge a `::error::` annotation.
+# shellcheck source=.github/actions/auto-approve-bot-prs/src/lib/log.sh
+. "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/log.sh"
+
 case "$MERGE_METHOD" in
   squash|merge|rebase) ;;
   *)
-    echo "::error::Invalid merge method '$MERGE_METHOD'; PR #${PR_NUMBER} was approved but not merged"
+    echo "::error::Invalid merge method '$(safe "$MERGE_METHOD")'; PR #${PR_NUMBER} was approved but not merged"
     exit 0
     ;;
 esac
@@ -54,11 +61,11 @@ case "$pr_state" in
     ;;
 esac
 
-echo "::notice::plain merge of PR #${PR_NUMBER} was refused, falling back to auto-merge. Reason: ${direct_err}"
+echo "::notice::plain merge of PR #${PR_NUMBER} was refused, falling back to auto-merge. Reason: $(safe "$direct_err")"
 
 if auto_err=$(gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --auto --"$MERGE_METHOD" 2>&1); then
   echo "::warning::PR #${PR_NUMBER} could not be merged immediately; queued via GitHub auto-merge and will land once the remaining requirements pass"
   exit 0
 fi
 
-echo "::error::PR #${PR_NUMBER} was approved but could NOT be merged, and could not be queued for auto-merge either. Anything waiting on this merge will stall. Plain merge said: ${direct_err}. Auto-merge said: ${auto_err}. Check branch protection and rulesets (is the token's team a bypass actor during a code freeze?), the token's merge permission, and whether the repository allows auto-merge."
+echo "::error::PR #${PR_NUMBER} was approved but could NOT be merged, and could not be queued for auto-merge either. Anything waiting on this merge will stall. Plain merge said: $(safe "$direct_err" 500). Auto-merge said: $(safe "$auto_err" 500). Check branch protection and rulesets (is the token's team a bypass actor during a code freeze?), the token's merge permission, and whether the repository allows auto-merge."

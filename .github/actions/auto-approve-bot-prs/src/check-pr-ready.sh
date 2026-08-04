@@ -11,6 +11,13 @@ set -euo pipefail
 : "${PR_NUMBER:?PR_NUMBER required}"
 : "${PR_AUTHOR:?PR_AUTHOR required}"
 
+# The authenticated login below is API-derived and reaches a log line. The API
+# answers in JSON, and a `\r` escape inside a JSON string decodes to a real CR
+# through `jq -r`, so "GitHub logins cannot contain control characters" does not
+# close that channel. See lib/log.sh.
+# shellcheck source=.github/actions/auto-approve-bot-prs/src/lib/log.sh
+. "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/log.sh"
+
 emit() {
   local k="$1" v="$2"
   [ -n "${GITHUB_OUTPUT:-}" ] && printf '%s=%s\n' "$k" "$v" >> "$GITHUB_OUTPUT"
@@ -46,7 +53,7 @@ if [ "$mergeable" = "false" ]; then
   exit 0
 fi
 if [ "$mergeable" != "true" ]; then
-  echo "::warning::GitHub did not report mergeability for PR #${PR_NUMBER} within ${mergeable_attempts} attempts (last value '${mergeable}'); not approving. This is usually transient - a re-run should resolve it"
+  echo "::warning::GitHub did not report mergeability for PR #${PR_NUMBER} within ${mergeable_attempts} attempts (last value '$(safe "$mergeable")'); not approving. This is usually transient - a re-run should resolve it"
   emit proceed false
   exit 0
 fi
@@ -65,7 +72,7 @@ if [ -z "$approver" ]; then
   exit 0
 fi
 if [ "$approver" = "$PR_AUTHOR" ]; then
-  echo "::error::the approving identity ('${approver}') is the author of PR #${PR_NUMBER}; GitHub forbids self-approval. Pass a token belonging to a different identity than the PR author"
+  echo "::error::the approving identity ('$(safe "$approver")') is the author of PR #${PR_NUMBER}; GitHub forbids self-approval. Pass a token belonging to a different identity than the PR author"
   emit proceed false
   exit 0
 fi

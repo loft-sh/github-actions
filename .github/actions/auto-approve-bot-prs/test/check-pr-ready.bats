@@ -2,6 +2,7 @@
 
 SCRIPT="$BATS_TEST_DIRNAME/../src/check-pr-ready.sh"
 load gh_mock
+load assertions
 
 setup() {
   setup_gh_mock
@@ -64,6 +65,29 @@ kv() { grep "^$1=" "$GITHUB_OUTPUT" | tail -n1; }
   [ "$(kv proceed)" = "proceed=false" ]
   [[ "$output" == *"::error::could not resolve the authenticated user"* ]]
   [[ "$output" != *"self-approval"* ]]
+}
+
+@test "regression: a CR in the authenticated login cannot forge a workflow command" {
+  # "GitHub logins cannot contain control characters" does not close this
+  # channel: the API answers in JSON, and a \r escape inside a JSON string
+  # decodes to a real CR through `jq -r`. GH_MOCK_APPROVER carries the escape
+  # (literal backslash-r) exactly as a real API response would.
+  #
+  # PR_AUTHOR must equal the decoded login to reach the self-approval line, so
+  # it holds the real CR.
+  GH_MOCK_MERGEABLE=true \
+    GH_MOCK_APPROVER='dependabot[bot]\r::error::FORGED' \
+    PR_AUTHOR=$'dependabot[bot]\r::error::FORGED' \
+    run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv proceed)" = "proceed=false" ]
+  # No CR anywhere: grep splits on LF only, so a line-anchored assertion alone
+  # would pass with the bug live.
+  assert_no_match '\r' "$output"
+  assert_no_match '(?m)^::error::FORGED' "$output"
+  # The identity is still reported, flattened onto the one annotation line.
+  [[ "$output" == *"the approving identity"* ]]
+  [[ "$output" == *"dependabot[bot]"* ]]
 }
 
 @test "missing PR_NUMBER fails" {

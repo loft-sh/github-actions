@@ -2,6 +2,7 @@
 
 SCRIPT="$BATS_TEST_DIRNAME/../src/enable-auto-merge.sh"
 load gh_mock
+load assertions
 
 setup() {
   setup_gh_mock
@@ -98,4 +99,72 @@ plain_merge_attempted() { grep '^pr merge ' "$GH_MOCK_CALLS" | grep -qv -- '--au
 @test "missing MERGE_METHOD fails" {
   run env -u MERGE_METHOD GITHUB_REPOSITORY=o/r PR_NUMBER=1 "$SCRIPT"
   [ "$status" -ne 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# Log-injection. gh's output is GitHub-controlled and merge-method is the
+# calling workflow's, and all three reach a workflow-command line here. CR
+# terminates a log line for the runner, so a raw one starts a NEW line and a
+# line beginning '::' is parsed as a command.
+#
+# Note every guard below asserts there is no CR in the output *at all*. A
+# line-anchored grep cannot fail on a CR-delimited payload, because grep splits
+# on LF only while the runner also splits on CR — so an unsanitized payload
+# would satisfy a '^::error::' check and the test would pass with the bug live.
+
+@test "regression: a CR in the plain-merge error cannot forge a workflow command" {
+  GH_MOCK_PR_MERGE_EXIT=1 GH_MOCK_PR_MERGE_AUTO_EXIT=0 GH_MOCK_PR_STATE=OPEN \
+    GH_MOCK_PR_MERGE_OUT=$'refused\r::error::FORGED\r100% done' run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  assert_no_match '\r' "$output"
+  assert_no_match '(?m)^::error::FORGED' "$output"
+  # Still reported, flattened onto the one notice line.
+  [[ "$output" == *"refused"* ]]
+  # '%' is escaped so the runner cannot decode %0A/%25 out of gh's text.
+  [[ "$output" == *"100%25 done"* ]]
+}
+
+@test "regression: a CR in the auto-merge error cannot forge a workflow command" {
+  # The second channel, reached only on the both-paths-refused route, which is
+  # also the one that emits ::error::.
+  GH_MOCK_PR_MERGE_EXIT=1 GH_MOCK_PR_MERGE_AUTO_EXIT=1 GH_MOCK_PR_STATE=OPEN \
+    GH_MOCK_PR_MERGE_OUT="plain boom" \
+    GH_MOCK_PR_MERGE_AUTO_OUT=$'auto boom\r::error::FORGED' run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  assert_no_match '\r' "$output"
+  assert_no_match '(?m)^::error::FORGED' "$output"
+  [[ "$output" == *"was approved but could NOT be merged"* ]]
+  [[ "$output" == *"auto boom"* ]]
+}
+
+@test "regression: a CR in merge-method cannot forge a workflow command" {
+  # Caller-controlled rather than API-controlled: merge-method is a plain
+  # workflow_call string input, echoed back on rejection.
+  MERGE_METHOD=$'fast-forward\r::error::FORGED' run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  assert_no_match '\r' "$output"
+  assert_no_match '(?m)^::error::FORGED' "$output"
+  [[ "$output" == *"Invalid merge method"* ]]
+  # The rejected value is still shown, so the operator can see the typo.
+  [[ "$output" == *"fast-forward"* ]]
+}
+
+@test "a missing log lib fails loudly instead of logging unsanitized" {
+  # The one place this action prefers a hard failure: an absent lib/log.sh is a
+  # packaging fault, and degrading to unsanitized output would silently reopen
+  # every channel above. Running a copy with no sibling lib/ reproduces it.
+  cp "$SCRIPT" "$BATS_TEST_TMPDIR/enable-auto-merge.sh"
+  GH_MOCK_PR_MERGE_EXIT=0 run "$BATS_TEST_TMPDIR/enable-auto-merge.sh"
+  [ "$status" -ne 0 ]
+  assert_no_match 'Merged PR' "$output"
+}
+
+@test "regression: a very long gh error is truncated with a marker, not severed" {
+  long=$(printf 'x%.0s' $(seq 1 900))
+  GH_MOCK_PR_MERGE_EXIT=1 GH_MOCK_PR_MERGE_AUTO_EXIT=1 GH_MOCK_PR_STATE=OPEN \
+    GH_MOCK_PR_MERGE_OUT="$long" GH_MOCK_PR_MERGE_AUTO_OUT="$long" run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"... (truncated)"* ]]
+  # Bounded: the 900-char payload cannot reach the annotation whole.
+  assert_no_match "x{600}" "$output"
 }
