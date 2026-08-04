@@ -715,25 +715,32 @@ assert_no_match() {
   export WAIT_MIN_ATTEMPTS=4
   export WAIT_MAX_ATTEMPTS=6
 
+  cancelled='{"name":"Mobile Safari (iPhone)","id":100,"status":"completed","conclusion":"cancelled","started_at":"2026-04-27T07:40:05Z","details_url":"https://external/runs/220/job/1"}'
+  replacement='{"name":"Mobile Safari (iPhone)","id":200,"status":"completed","conclusion":"skipped","started_at":"2026-04-27T07:40:15Z","details_url":"https://external/runs/221/job/1"}'
+
+  # Polls 1-2: only the cancelled attempt is visible (the failure window).
+  # One JSON object per PHYSICAL line — the mock serves a sequence entry with
+  # `sed -n "${n}p"`, so a pretty-printed fixture arrives as an unparseable
+  # fragment. This test used to be written that way: polls 3-4 errored out, the
+  # sequence fell through to the empty default, and the green verdict came from
+  # "no checks at all" rather than from dedup picking the replacement. It passed
+  # without ever exercising the path it names.
   export GH_MOCK_CHECK_RUNS_SEQ="$MOCK_DIR/cr_seq"
   {
-    # Polls 1-2: only the cancelled attempt is visible (the failure window).
-    echo '{"check_runs":[{"name":"Mobile Safari (iPhone)","id":100,"status":"completed","conclusion":"cancelled","started_at":"2026-04-27T07:40:05Z","details_url":"https://external/runs/220/job/1"}]}'
-    echo '{"check_runs":[{"name":"Mobile Safari (iPhone)","id":100,"status":"completed","conclusion":"cancelled","started_at":"2026-04-27T07:40:05Z","details_url":"https://external/runs/220/job/1"}]}'
-    # Poll 3+: replacement skipped attempt registers; dedup picks the newer id.
-    echo '{"check_runs":[
-      {"name":"Mobile Safari (iPhone)","id":100,"status":"completed","conclusion":"cancelled","started_at":"2026-04-27T07:40:05Z","details_url":"https://external/runs/220/job/1"},
-      {"name":"Mobile Safari (iPhone)","id":200,"status":"completed","conclusion":"skipped","started_at":"2026-04-27T07:40:15Z","details_url":"https://external/runs/221/job/1"}
-    ]}'
-    echo '{"check_runs":[
-      {"name":"Mobile Safari (iPhone)","id":100,"status":"completed","conclusion":"cancelled","started_at":"2026-04-27T07:40:05Z","details_url":"https://external/runs/220/job/1"},
-      {"name":"Mobile Safari (iPhone)","id":200,"status":"completed","conclusion":"skipped","started_at":"2026-04-27T07:40:15Z","details_url":"https://external/runs/221/job/1"}
-    ]}'
+    printf '{"check_runs":[%s]}\n' "$cancelled"
+    printf '{"check_runs":[%s]}\n' "$cancelled"
   } > "$GH_MOCK_CHECK_RUNS_SEQ"
+  # Poll 3+: replacement skipped attempt registers; dedup picks the newer id.
+  export GH_MOCK_CHECK_RUNS_JSON
+  GH_MOCK_CHECK_RUNS_JSON="$(printf '{"check_runs":[%s,%s]}' "$cancelled" "$replacement")"
 
   run "$SCRIPT"
   [ "$status" -eq 0 ]
   [ "$(kv ci_green)" = "ci_green=true" ]
+  # The verdict came from a poll that saw the replacement, not from a parse
+  # failure degrading into an empty check list.
+  assert_no_match 'jq parse failed' "$output"
+  [[ "$output" == *"cancelled=1"* ]]
 }
 
 @test "regression: cancelled replacement that arrives as success also unblocks" {
@@ -744,19 +751,22 @@ assert_no_match() {
   export WAIT_MIN_ATTEMPTS=3
   export WAIT_MAX_ATTEMPTS=5
 
+  cancelled='{"name":"e2e","id":100,"status":"completed","conclusion":"cancelled","started_at":"2026-04-27T07:40:05Z","details_url":"https://external/runs/220/job/1"}'
+  replacement='{"name":"e2e","id":200,"status":"completed","conclusion":"success","started_at":"2026-04-27T07:40:15Z","details_url":"https://external/runs/221/job/1"}'
+
   export GH_MOCK_CHECK_RUNS_SEQ="$MOCK_DIR/cr_seq"
   {
-    echo '{"check_runs":[{"name":"e2e","id":100,"status":"completed","conclusion":"cancelled","started_at":"2026-04-27T07:40:05Z","details_url":"https://external/runs/220/job/1"}]}'
-    echo '{"check_runs":[{"name":"e2e","id":100,"status":"completed","conclusion":"cancelled","started_at":"2026-04-27T07:40:05Z","details_url":"https://external/runs/220/job/1"}]}'
-    echo '{"check_runs":[
-      {"name":"e2e","id":100,"status":"completed","conclusion":"cancelled","started_at":"2026-04-27T07:40:05Z","details_url":"https://external/runs/220/job/1"},
-      {"name":"e2e","id":200,"status":"completed","conclusion":"success","started_at":"2026-04-27T07:40:15Z","details_url":"https://external/runs/221/job/1"}
-    ]}'
+    printf '{"check_runs":[%s]}\n' "$cancelled"
+    printf '{"check_runs":[%s]}\n' "$cancelled"
   } > "$GH_MOCK_CHECK_RUNS_SEQ"
+  export GH_MOCK_CHECK_RUNS_JSON
+  GH_MOCK_CHECK_RUNS_JSON="$(printf '{"check_runs":[%s,%s]}' "$cancelled" "$replacement")"
 
   run "$SCRIPT"
   [ "$status" -eq 0 ]
   [ "$(kv ci_green)" = "ci_green=true" ]
+  assert_no_match 'jq parse failed' "$output"
+  [[ "$output" == *"cancelled=1"* ]]
 }
 
 @test "regression: cancelled-only that never gets replaced bails at settle floor (bounded wait)" {
@@ -772,7 +782,172 @@ assert_no_match() {
   [ "$status" -eq 0 ]
   [ "$(kv ci_green)" = "ci_green=false" ]
   [[ "$output" == *"e2e"* ]]
-  [[ "$output" == *"Cancelled checks did not get replaced"* ]]
+  [[ "$output" == *"Cancelled checks are final"* ]]
+}
+
+@test "regression: devops-1254 — cancelled behind a running newer suite outlives the settle floor" {
+  # vcluster-pro#2155, the v0.34.7 cut. Three pull_request events (opened plus
+  # two bot body edits) fired within 23s; concurrency cancelled the first two
+  # e2e-next runs. The winning run's `E2E Next Tests` job sits behind an image
+  # build, so its check-run did not register until 12:51:41 — while the settle
+  # floor expired at 12:49:45 and the pre-fix bail discarded a rerun that was
+  # visibly still running. The build job's check-run, in a NEWER check suite
+  # than the cancelled attempts, is the evidence that it was still coming.
+  export WAIT_MIN_ATTEMPTS=2
+  export WAIT_MAX_ATTEMPTS=6
+
+  # One JSON object per PHYSICAL line: the mock reads a sequence entry with
+  # `sed -n "${n}p"`, so a pretty-printed fixture is served to the script as a
+  # fragment that fails to parse.
+  cancelled='{"name":"E2E Next Tests","id":100,"status":"completed","conclusion":"cancelled","started_at":"2026-08-03T12:47:44Z","check_suite":{"id":100},"details_url":"https://github.com/o/r/actions/runs/220/job/1"}'
+  building='{"name":"Build vcluster-pro image","id":110,"status":"in_progress","conclusion":null,"started_at":"2026-08-03T12:48:50Z","check_suite":{"id":300},"details_url":"https://github.com/o/r/actions/runs/222/job/1"}'
+  built='{"name":"Build vcluster-pro image","id":110,"status":"completed","conclusion":"success","started_at":"2026-08-03T12:48:50Z","check_suite":{"id":300},"details_url":"https://github.com/o/r/actions/runs/222/job/1"}'
+  replacement='{"name":"E2E Next Tests","id":200,"status":"completed","conclusion":"success","started_at":"2026-08-03T12:51:43Z","check_suite":{"id":300},"details_url":"https://github.com/o/r/actions/runs/222/job/1"}'
+
+  export GH_MOCK_CHECK_RUNS_SEQ="$MOCK_DIR/cr_seq"
+  {
+    # Polls 1-3: cancelled attempt from suite 100, and the replacement run's
+    # build job (suite 300) still in progress ahead of the cancelled job.
+    for _ in 1 2 3; do printf '{"check_runs":[%s,%s]}\n' "$cancelled" "$building"; done
+    # Poll 4: the build finished and the replacement E2E check-run registered.
+    printf '{"check_runs":[%s,%s,%s]}\n' "$cancelled" "$built" "$replacement"
+  } > "$GH_MOCK_CHECK_RUNS_SEQ"
+
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv ci_green)" = "ci_green=true" ]
+  # Held past the floor (attempt 2) instead of bailing there.
+  [[ "$output" == *"attempt 3/"* ]]
+  [[ "$output" == *"cancelled (superseded; newer check suite still running)"* ]]
+  assert_no_match 'Cancelled checks are final' "$output"
+}
+
+@test "regression: pending check in an OLDER suite does not extend the cancelled hold" {
+  # The watermark is directional. A check still running in a suite older than
+  # the cancelled attempt is not a replacement for it — nothing newer has been
+  # queued — so the floor must still end the wait. Without the comparison this
+  # would degrade into "any pending check keeps cancelled alive", which is the
+  # unbounded wait the settle floor exists to prevent.
+  export WAIT_MIN_ATTEMPTS=2
+  export WAIT_MAX_ATTEMPTS=20
+  GH_MOCK_CHECK_RUNS_JSON='{"check_runs":[
+    {"name":"e2e","status":"completed","conclusion":"cancelled","check_suite":{"id":300},"details_url":"https://github.com/o/r/actions/runs/222/job/1"},
+    {"name":"slow-lint","status":"in_progress","conclusion":null,"check_suite":{"id":100},"details_url":"https://github.com/o/r/actions/runs/223/job/1"}
+  ]}' run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv ci_green)" = "ci_green=false" ]
+  [[ "$output" == *"Cancelled checks are final"* ]]
+  # Bailed at the floor, not at max_attempts.
+  assert_no_match 'attempt 3/' "$output"
+}
+
+@test "regression: our own in-progress check cannot justify holding a cancelled check" {
+  # The self-exclusion is what keeps the new hold bounded: this job's own
+  # check-run is always in progress while it polls, and it always lands in the
+  # newest check suite. If it counted as "a newer suite is still running", every
+  # cancelled check would be held to max_attempts and the settle floor would be
+  # dead code.
+  export WAIT_MIN_ATTEMPTS=2
+  export WAIT_MAX_ATTEMPTS=20
+  GH_MOCK_CHECK_RUNS_JSON='{"check_runs":[
+    {"name":"e2e","status":"completed","conclusion":"cancelled","check_suite":{"id":100},"details_url":"https://github.com/o/r/actions/runs/220/job/1"},
+    {"name":"auto-approve","status":"in_progress","conclusion":null,"check_suite":{"id":900},"details_url":"https://github.com/o/r/actions/runs/111111/job/1"}
+  ]}' run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv ci_green)" = "ci_green=false" ]
+  [[ "$output" == *"Cancelled checks are final"* ]]
+  assert_no_match 'attempt 3/' "$output"
+}
+
+@test "regression: a skipped rerun must not bury a failure on the same SHA" {
+  # Raised in review of vcluster-pro#2156. A workflow that skips its expensive
+  # job on a no-op PR-description edit (the DEVOPS-1057 gates) publishes a
+  # check-run with the SAME NAME as the job that already failed on this SHA, and
+  # a later started_at. Plain latest-wins dedup then picks `skipped`, which
+  # counts as green, and a PR whose suite genuinely failed becomes approvable.
+  #
+  # Not a Checks API artifact: `filter=latest` dedupes within a check suite and
+  # each run gets its own suite, so the API returns both attempts. The
+  # collapsing was ours.
+  GH_MOCK_CHECK_RUNS_JSON='{"check_runs":[
+    {"name":"E2E Tests","id":100,"status":"completed","conclusion":"failure","started_at":"2026-08-03T13:41:46Z","details_url":"https://github.com/o/r/actions/runs/220/job/1"},
+    {"name":"E2E Tests","id":200,"status":"completed","conclusion":"skipped","started_at":"2026-08-03T13:46:07Z","details_url":"https://github.com/o/r/actions/runs/221/job/1"}
+  ]}' run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv ci_green)" = "ci_green=false" ]
+  [[ "$output" == *"E2E Tests=failure"* ]]
+}
+
+@test "regression: a real re-run that succeeds still clears an earlier failure" {
+  # The other half of the ranking, and the reason a failure cannot simply be
+  # sticky per name: "Re-run failed jobs" on the same SHA is a normal way to
+  # clear a flake on a bump PR. success carries a verdict, so recency decides
+  # between it and the failure, and the newer success wins.
+  GH_MOCK_CHECK_RUNS_JSON='{"check_runs":[
+    {"name":"E2E Tests","id":100,"status":"completed","conclusion":"failure","started_at":"2026-08-03T13:41:46Z","details_url":"https://github.com/o/r/actions/runs/220/job/1"},
+    {"name":"E2E Tests","id":200,"status":"completed","conclusion":"success","started_at":"2026-08-03T13:46:07Z","details_url":"https://github.com/o/r/actions/runs/221/job/1"}
+  ]}' run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv ci_green)" = "ci_green=true" ]
+}
+
+@test "regression: a running rerun outranks an earlier verdict and is waited on" {
+  # A pending attempt means the verdict is not in yet, so it must outrank an
+  # older success — otherwise we would approve against a stale green while the
+  # rerun that supersedes it is still executing. Latest-wins already did this by
+  # started_at, so this pins behaviour the ranking must not break rather than
+  # behaviour it introduces; it passes against the pre-ranking script too.
+  export WAIT_MIN_ATTEMPTS=1
+  export WAIT_MAX_ATTEMPTS=2
+  GH_MOCK_CHECK_RUNS_JSON='{"check_runs":[
+    {"name":"E2E Tests","id":100,"status":"completed","conclusion":"success","started_at":"2026-08-03T13:41:46Z","details_url":"https://github.com/o/r/actions/runs/220/job/1"},
+    {"name":"E2E Tests","id":200,"status":"in_progress","conclusion":null,"started_at":"2026-08-03T13:46:07Z","details_url":"https://github.com/o/r/actions/runs/221/job/1"}
+  ]}' run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv ci_green)" = "ci_green=false" ]
+  [[ "$output" == *"pending: E2E Tests"* ]]
+}
+
+@test "regression: skipped still supersedes cancelled (concurrency replacement)" {
+  # The ranking must not undo the replacement fix: skipped and cancelled both
+  # carry no verdict, so recency alone decides between them and the newer
+  # skipped wins, leaving nothing to block on.
+  GH_MOCK_CHECK_RUNS_JSON='{"check_runs":[
+    {"name":"E2E Istio","id":100,"status":"completed","conclusion":"cancelled","started_at":"2026-08-03T12:47:44Z","details_url":"https://github.com/o/r/actions/runs/220/job/1"},
+    {"name":"E2E Istio","id":200,"status":"completed","conclusion":"skipped","started_at":"2026-08-03T12:51:41Z","details_url":"https://github.com/o/r/actions/runs/221/job/1"}
+  ]}' run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv ci_green)" = "ci_green=true" ]
+}
+
+@test "regression: a failure outranks a LATER cancelled attempt" {
+  # Ordering is by information content first, so a failure is not displaced by a
+  # rerun that was itself cancelled — that rerun produced no verdict, and the
+  # failure is still the last thing this SHA actually proved.
+  GH_MOCK_CHECK_RUNS_JSON='{"check_runs":[
+    {"name":"E2E Tests","id":100,"status":"completed","conclusion":"failure","started_at":"2026-08-03T13:41:46Z","details_url":"https://github.com/o/r/actions/runs/220/job/1"},
+    {"name":"E2E Tests","id":200,"status":"completed","conclusion":"cancelled","started_at":"2026-08-03T13:46:07Z","details_url":"https://github.com/o/r/actions/runs/221/job/1"}
+  ]}' run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv ci_green)" = "ci_green=false" ]
+  [[ "$output" == *"E2E Tests=failure"* ]]
+}
+
+@test "regression: cancelled check-runs with no suite id still bail at the floor" {
+  # Not every check-run carries a check_suite (external apps, and every fixture
+  # written before this watermark existed). A missing id must read as 0 on both
+  # sides of the comparison — never as "newer" — so the pre-existing bail
+  # behaviour is what an absent suite falls back to.
+  export WAIT_MIN_ATTEMPTS=2
+  export WAIT_MAX_ATTEMPTS=20
+  GH_MOCK_CHECK_RUNS_JSON='{"check_runs":[
+    {"name":"e2e","status":"completed","conclusion":"cancelled","details_url":"https://github.com/o/r/actions/runs/220/job/1"},
+    {"name":"other","status":"in_progress","conclusion":null,"details_url":"https://github.com/o/r/actions/runs/221/job/1"}
+  ]}' run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv ci_green)" = "ci_green=false" ]
+  [[ "$output" == *"Cancelled checks are final"* ]]
+  assert_no_match 'attempt 3/' "$output"
 }
 
 @test "regression: terminal failure during settle window still bails immediately" {

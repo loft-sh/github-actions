@@ -13,6 +13,12 @@
 # lets slow registrants (observed: 2+ minutes in the wild) appear before
 # approval.
 #
+# `cancelled` is not treated as final while a newer check suite on the same head
+# SHA is still running: that is a concurrency rerun on its way to replacing it.
+# The floor does not bound this case — a cancelled job queued behind a long
+# build cannot be replaced until that build finishes, minutes after the floor
+# expires. max_attempts is the bound.
+#
 # API errors never degrade to silent green. Every gh/jq error is captured and
 # treated as "unknown state" — the poll does not count toward the settle
 # floor, and consecutive errors eventually time out to ci_green=false.
@@ -204,13 +210,41 @@ while [ "$attempt" -lt "$max_attempts" ]; do
   # a common case when concurrency-group cancellation and the winning run
   # start within the same second. GitHub allocates check-run IDs
   # monotonically, so the larger id is always the newer attempt.
+  #
+  # "Latest wins" alone lets a `skipped` bury a real failure. A workflow that
+  # skips its expensive job on a no-op PR-description edit (vcluster-pro's e2e
+  # gates on DEVOPS-1057 do exactly this) publishes a check-run named the same as
+  # the job that already FAILED on this SHA, with a later started_at. Dedup then
+  # picks `skipped`, which counts as green below, and a PR whose suite genuinely
+  # failed becomes approvable. Note the Checks API is not the problem here and
+  # `filter=latest` would not help: it dedupes within a check suite, and each run
+  # gets its own suite, so the API faithfully returns every attempt. The
+  # collapsing is ours, so the fix is ours.
+  #
+  # Rank by information content, then recency. `skipped` and `cancelled` carry no
+  # verdict about the code; success/neutral and the failure classes do. So prefer
+  # the latest attempt that actually reached a verdict, and fall back to the
+  # latest attempt overall when none did. A still-running attempt outranks
+  # everything, because a rerun in flight means the verdict is not in yet.
+  #
+  # This ordering is what keeps each case right:
+  #   cancelled then skipped   -> skipped   (concurrency replacement; unblocks)
+  #   cancelled then success   -> success   (ditto)
+  #   failure   then skipped   -> failure   (the bug above; stays blocked)
+  #   failure   then success   -> success   (a real re-run of a flake; unblocks)
+  #   success   then pending   -> pending   (wait for the rerun)
   other=""
   if [ "$poll_errored" -eq 0 ]; then
     if ! other=$(jq_or_fail '
+      def rank:
+        if (.status // "") != "completed" then 3
+        elif ([.conclusion // ""] | inside(["skipped","cancelled"])) then 1
+        else 2
+        end;
       (.check_runs // [])
       | [.[] | select((.details_url // "") | contains("'"$EXCLUDE_PATTERN"'") | not)]
       | group_by(.name // "")
-      | map(sort_by(.started_at // "", .id // 0) | last)
+      | map(sort_by(rank, .started_at // "", .id // 0) | last)
     ' "$runs_raw"); then
       last_error="malformed check-runs response (jq could not parse it)"
       echo "::warning::attempt ${attempt}/${max_attempts}: check-runs jq parse failed"
@@ -220,13 +254,12 @@ while [ "$attempt" -lt "$max_attempts" ]; do
 
   # `cancelled` is special: GitHub's concurrency-group cancellation marks the
   # superseded run cancelled and immediately queues a replacement. There's a
-  # short window (observed: 5–10s) where the cancelled attempt is registered
-  # but the replacement is not yet visible. In that window the dedup-by-latest
-  # logic above has nothing to pick — only the cancelled attempt exists — so
-  # treating cancelled as a hard failure here would defeat the dedup fix and
-  # bail before the rerun lands. Split it out: terminal failures bail
-  # immediately; cancelled-only is held until the settle floor so the
-  # replacement has a chance to register and dedup can pick it.
+  # window where the cancelled attempt is registered but the replacement is not
+  # yet visible. In that window the dedup-by-latest logic above has nothing to
+  # pick — only the cancelled attempt exists — so treating cancelled as a hard
+  # failure here would defeat the dedup fix and bail before the rerun lands.
+  # Split it out: terminal failures bail immediately; cancelled is held while a
+  # replacement is still plausibly on its way (see the watermark below).
   cr_pending=0 cr_real_failed=0 cr_real_failed_detail=""
   cr_cancelled=0 cr_cancelled_detail="" cr_pending_names=""
   if [ "$poll_errored" -eq 0 ]; then
@@ -236,6 +269,47 @@ while [ "$attempt" -lt "$max_attempts" ]; do
     cr_cancelled=$(         jq_or_fail '[.[] | select(.conclusion == "cancelled")] | length'                                                                                                      "$other" ) || poll_errored=1
     cr_cancelled_detail=$(  jq_or_fail -r '[.[] | select(.conclusion == "cancelled") | .name // "unnamed"] | join(", ")'                                                                          "$other" ) || poll_errored=1
     cr_pending_names=$(     jq_or_fail -r '[.[] | select(.status != "completed") | .name // "unnamed"] | join(", ")'                                                                              "$other" ) || poll_errored=1
+  fi
+
+  # How long a cancelled check may be held used to be exactly the settle floor
+  # (~120s at the defaults). That assumed a replacement registers in seconds,
+  # which is only true when the cancelled job starts immediately. When it sits
+  # behind an earlier job in the same workflow — an image build, say — the
+  # replacement's check-run does not exist until that build finishes, minutes
+  # later. The floor then expires first and the bail throws away a rerun that
+  # was still coming. Observed on vcluster-pro#2155: two e2e runs cancelled by
+  # concurrency at 12:47, replacement check-runs registered 12:51:41, bail at
+  # 12:49:45 — and the release cut it was gating stalled behind it.
+  #
+  # So do not time the tolerance. Condition it on an observable: is a NEWER
+  # check suite than the cancelled one still running? GitHub allocates check
+  # suite ids monotonically and a re-triggered workflow lands in a new suite,
+  # so a non-completed check-run in a higher-numbered suite is exactly the
+  # "a rerun is in flight" signal, and its absence is "nothing more is coming".
+  #
+  # Read from the check-runs payload we already have, not from /actions/runs.
+  # Resolving each cancelled suite to its workflow and looking for a newer run
+  # of that same workflow would be more precise, but that endpoint needs
+  # `actions: read` — a grant every caller would have to add, degrading to this
+  # same bail until they all did. DEVOPS-1254 was exactly that class of bug.
+  #
+  # The wait stays bounded three ways: `other` excludes our own run, so this job
+  # cannot justify waiting on itself; a genuine user-cancelled check has no
+  # newer suite behind it and still bails at the floor; and anything left in
+  # flight is capped by max_attempts.
+  #
+  # The watermark is derived inside jq rather than round-tripped through the
+  # shell so the comparison stays numeric — suite ids are ~11 digits and a
+  # string compare would order them by prefix. `// 0` on both sides makes a
+  # missing check_suite read as oldest, never as newer.
+  cr_newer_suite_pending=0
+  if [ "$poll_errored" -eq 0 ] && [ "$cr_cancelled" -gt 0 ]; then
+    # shellcheck disable=SC2016  # $w is a jq variable, not a shell one
+    cr_newer_suite_pending=$(jq_or_fail '
+      ([.[] | select(.conclusion == "cancelled") | .check_suite.id // 0] | max // 0) as $w
+      | [.[] | select(.status != "completed") | select((.check_suite.id // 0) > $w)]
+      | length
+    ' "$other" ) || poll_errored=1
   fi
 
   # -- Fetch commit statuses ------------------------------------------------
@@ -315,13 +389,16 @@ while [ "$attempt" -lt "$max_attempts" ]; do
   fi
 
   # Cancelled checks may be in the middle of a concurrency-triggered rerun.
-  # Past the settle floor we stop waiting and treat them as final — the
-  # replacement should have registered by now if it was ever going to.
-  if [ "$cr_cancelled" -gt 0 ] && [ "$attempt" -ge "$min_attempts" ]; then
+  # Past the settle floor we stop waiting and treat them as final — unless a
+  # newer check suite is still running, which means the rerun that will replace
+  # them has started but not yet reached the cancelled job. Waiting on that is
+  # bounded by max_attempts.
+  if [ "$cr_cancelled" -gt 0 ] && [ "$attempt" -ge "$min_attempts" ] \
+     && [ "$cr_newer_suite_pending" -eq 0 ]; then
     # ::error:: because a cancelled check is not red anywhere else: unlike the
     # failed-checks path below, this annotation is the only signal an operator
     # gets, and a release cut may be blocking on the merge.
-    echo "::error::Cancelled checks did not get replaced within settle period; skipping approval. Cancelled: $(safe "${cr_cancelled_detail:-unknown}")"
+    echo "::error::Cancelled checks are final (no newer check suite is still running); skipping approval. Cancelled: $(safe "${cr_cancelled_detail:-unknown}")"
     emit ci_green false
     exit 0
   fi
@@ -332,8 +409,17 @@ while [ "$attempt" -lt "$max_attempts" ]; do
     waiting=$(printf '%s\n%s' "$cr_pending_names" "$st_pending_names" | awk 'NF' | paste -sd, - | sed 's/,/, /g' | sanitize_for_log 1000)
     echo "  pending: ${waiting:-<unnamed>}"
   fi
+  # Distinguish the two holds, because they end differently: one is waiting on a
+  # rerun that is demonstrably running (ends when it registers, or at
+  # max_attempts), the other is inside the settle floor on nothing but hope
+  # (ends at min_attempts). Reading "waiting for replacement" on a poll where
+  # nothing was coming is what made the vcluster-pro#2155 timeline hard to read.
   if [ "$cr_cancelled" -gt 0 ]; then
-    echo "  cancelled (waiting for concurrency replacement): $(safe "$cr_cancelled_detail")"
+    if [ "$cr_newer_suite_pending" -gt 0 ]; then
+      echo "  cancelled (superseded; newer check suite still running): $(safe "$cr_cancelled_detail")"
+    else
+      echo "  cancelled (waiting for concurrency replacement): $(safe "$cr_cancelled_detail")"
+    fi
   fi
 
   # Hold the "green" verdict until the settle floor. A first-poll "pending=0"
