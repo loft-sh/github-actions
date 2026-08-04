@@ -8,11 +8,11 @@ on:
         type: string
         default: 'renovate[bot],loft-bot,github-actions[bot]'
       merge-method:
-        description: 'Merge method for auto-merge (squash, merge, rebase)'
+        description: 'Merge method (squash, merge, rebase)'
         type: string
         default: 'squash'
       auto-merge:
-        description: 'Enable auto-merge after approval'
+        description: 'Merge the PR after approving it, directly where possible.'
         type: boolean
         default: false
       wait-max-attempts:
@@ -29,7 +29,7 @@ on:
         default: '10'
     secrets:
       gh-access-token:
-        description: 'GitHub PAT for approving PRs (must be different identity from PR author)'
+        description: 'GitHub PAT for approving PRs, and for merging them directly when auto-merge is true — so it needs a merge path on the base branch, not just the auto-merge toggle (must be different identity from PR author)'
         required: true
       ci-read-token:
         description: 'Optional escape hatch for the read-only CI poll when the caller cannot grant `checks: read` / `statuses: read`. Classic PAT with `repo` scope, or an App token. Never gh-access-token.'

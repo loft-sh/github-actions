@@ -3,6 +3,7 @@
 
 SCRIPT="$BATS_TEST_DIRNAME/../src/check-eligibility.sh"
 DEFAULT='renovate[bot],loft-bot,github-actions[bot],dependabot[bot]'
+load assertions
 
 setup() { export GITHUB_OUTPUT; GITHUB_OUTPUT="$(mktemp)"; }
 teardown() { rm -f "$GITHUB_OUTPUT"; }
@@ -69,4 +70,48 @@ assert_kv() {
 @test "missing PR_AUTHOR fails" {
   run env -u PR_AUTHOR TRUSTED_AUTHORS="$DEFAULT" PR_TITLE=y PR_BRANCH=z "$SCRIPT"
   [ "$status" -ne 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# Log-injection. This script is step 1 of the composite and runs before any
+# trust gate, so PR_TITLE and PR_BRANCH are the widest channel in the action:
+# whoever opens the PR picks them, and both are echoed back when the patterns
+# do not match. CR terminates a log line for the runner, so a raw one starts a
+# NEW line and a line beginning '::' is parsed as a workflow command.
+
+@test "regression: a CR in PR_TITLE cannot forge a workflow command" {
+  run_script "$DEFAULT" 'loft-bot' $'feat: x\r::error::FORGED' 'feature/foo'
+  [ "$status" -eq 0 ]
+  assert_kv eligible false
+  assert_no_match '\r' "$output"
+  assert_no_match '(?m)^::error::FORGED' "$output"
+}
+
+@test "regression: a CR in PR_BRANCH cannot forge a workflow command" {
+  run_script "$DEFAULT" 'loft-bot' 'feat: x' $'feature/foo\r::error::FORGED'
+  [ "$status" -eq 0 ]
+  assert_kv eligible false
+  assert_no_match '\r' "$output"
+  assert_no_match '(?m)^::error::FORGED' "$output"
+}
+
+@test "regression: a CR in PR_AUTHOR cannot forge a workflow command" {
+  # The untrusted-author path echoes the author back before any gate has run.
+  run_script "$DEFAULT" $'nobody\r::error::FORGED' 'chore: x' 'x'
+  [ "$status" -eq 0 ]
+  assert_kv eligible false
+  assert_no_match '\r' "$output"
+  assert_no_match '(?m)^::error::FORGED' "$output"
+}
+
+@test "a missing log lib fails loudly instead of logging unsanitized" {
+  # An absent lib/log.sh is a packaging fault. Degrading to unsanitized output
+  # would silently reopen the channels above, so the script must die instead —
+  # and must not emit its decision. Running a copy with no sibling lib/
+  # reproduces it.
+  cp "$SCRIPT" "$BATS_TEST_TMPDIR/check-eligibility.sh"
+  run env TRUSTED_AUTHORS="$DEFAULT" PR_AUTHOR=loft-bot PR_TITLE='chore: x' \
+    PR_BRANCH=x GITHUB_OUTPUT="$GITHUB_OUTPUT" "$BATS_TEST_TMPDIR/check-eligibility.sh"
+  [ "$status" -ne 0 ]
+  assert_no_match 'eligible=' "$output"
 }

@@ -12,8 +12,8 @@ secret.
 
 |       INPUT        |  TYPE   | REQUIRED |                    DEFAULT                     |                                                      DESCRIPTION                                                       |
 |--------------------|---------|----------|------------------------------------------------|------------------------------------------------------------------------------------------------------------------------|
-|     auto-merge     | boolean |  false   |                    `false`                     |                                            Enable auto-merge after approval                                            |
-|    merge-method    | string  |  false   |                   `"squash"`                   |                                  Merge method for auto-merge (squash, merge, rebase)                                   |
+|     auto-merge     | boolean |  false   |                    `false`                     |                             Merge the PR after approving it, <br>directly where possible.                              |
+|    merge-method    | string  |  false   |                   `"squash"`                   |                                          Merge method (squash, merge, rebase)                                          |
 |  trusted-authors   | string  |  false   | `"renovate[bot],loft-bot,github-actions[bot]"` |                                       Comma-separated list of trusted bot logins                                       |
 | wait-max-attempts  | string  |  false   |                     `"90"`                     | Max polling attempts waiting for other <br>CI checks (raise this when a slow required check, e.g. e2e, gates the PR).  |
 | wait-min-attempts  | string  |  false   |                     `"12"`                     |                                     Minimum polls before ci_green=true is allowed.                                     |
@@ -25,10 +25,10 @@ secret.
 
 <!-- AUTO-DOC-SECRETS:START - Do not remove or modify this section -->
 
-|     SECRET      | REQUIRED |                                                                                               DESCRIPTION                                                                                               |
-|-----------------|----------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-|  ci-read-token  |  false   | Optional escape hatch for the read-only <br>CI poll when the caller cannot <br>grant `checks: read` / `statuses: read`. Classic PAT <br>with `repo` scope, or an App <br>token. Never gh-access-token.  |
-| gh-access-token |   true   |                                                                GitHub PAT for approving PRs (must be different identity from PR author)                                                                 |
+|     SECRET      | REQUIRED |                                                                                                            DESCRIPTION                                                                                                             |
+|-----------------|----------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|  ci-read-token  |  false   |              Optional escape hatch for the read-only <br>CI poll when the caller cannot <br>grant `checks: read` / `statuses: read`. Classic PAT <br>with `repo` scope, or an App <br>token. Never gh-access-token.                |
+| gh-access-token |   true   | GitHub PAT for approving PRs, and <br>for merging them directly when auto-merge <br>is true — so it needs <br>a merge path on the base <br>branch, not just the auto-merge toggle <br>(must be different identity from PR author)  |
 
 <!-- AUTO-DOC-SECRETS:END -->
 

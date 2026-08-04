@@ -1,5 +1,23 @@
 #!/usr/bin/env bash
-# Enables GitHub's auto-merge on the PR. Never exits non-zero.
+# Merges the PR. Never exits non-zero.
+#
+# A plain merge is attempted FIRST, and `--auto` is only the fallback. By the
+# time this runs the action has already waited for every other check to go green
+# (wait-for-ci.sh) and approved the PR, so there is normally nothing left for
+# GitHub's auto-merge queue to wait on. `--auto` additionally requires the
+# repository's allow_auto_merge setting, which is invisible from here and turns
+# the merge into a silent no-op when it is off - and a merge that never happens
+# strands whatever is waiting on it (the vcluster-release orchestrator blocks on
+# exactly this merge during a legacy release cut).
+#
+# `--auto` still has a job: a required check that registered AFTER the CI wait
+# declared green legitimately refuses a merge right now but can complete later.
+# Queueing is the right answer there, so a refused plain merge degrades to it.
+#
+# Nothing here exits non-zero (the composite must not red-X a caller's CI over
+# an unrelated bot PR), but an approved-and-unmerged PR is reported at
+# ::error:: level so the cause is visible in the run summary instead of being
+# buried in a notice.
 #
 # Required env: GH_TOKEN, GITHUB_REPOSITORY, PR_NUMBER, MERGE_METHOD
 set -euo pipefail
@@ -8,13 +26,77 @@ set -euo pipefail
 : "${PR_NUMBER:?PR_NUMBER required}"
 : "${MERGE_METHOD:?MERGE_METHOD required}"
 
+# Every interpolated value below is externally controlled — gh's output is
+# GitHub's, and merge-method is the calling workflow's — so all of them are
+# sanitized before reaching a log line. See lib/log.sh for why a bare CR in one
+# of them is enough to forge a `::error::` annotation.
+# shellcheck source=.github/actions/auto-approve-bot-prs/src/lib/log.sh
+. "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/log.sh"
+
 case "$MERGE_METHOD" in
   squash|merge|rebase) ;;
   *)
-    echo "::notice::Invalid merge method '$MERGE_METHOD'; skipping"
+    echo "::error::Invalid merge method '$(safe "$MERGE_METHOD")'; PR #${PR_NUMBER} was approved but not merged"
     exit 0
     ;;
 esac
 
-gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --auto --"$MERGE_METHOD" 2>&1 \
-  || echo "::notice::gh pr merge failed; auto-merge not enabled"
+# One bounded retry per merge call. Without it a single transient blip is
+# escalated identically to a permanent policy refusal, and the ::error:: below
+# then ships confident remediation ("check branch protection…") that is simply
+# wrong for a transient cause. Secondary rate limiting is a live risk here rather
+# than theoretical: by this point the action has already made up to 90 CI polls,
+# up to 10 mergeability polls and the approval call, and both merge attempts
+# would otherwise fire back-to-back with no delay, so one blip can take out both.
+# This mirrors the retry discipline the CI wait and the mergeability poll already
+# apply. Never fails: the caller decides what a non-zero merge means.
+MERGE_RETRY_SLEEP="${MERGE_RETRY_SLEEP_SECONDS:-5}"
+try_merge() {
+  local out rc
+  if out=$("$@" 2>&1); then printf '%s' "$out"; return 0; fi
+  # Retry blind rather than classifying the error: gh's text is not a stable
+  # API, and a permanent refusal costs only one extra call and one sleep.
+  sleep "$MERGE_RETRY_SLEEP"
+  out=$("$@" 2>&1) && { printf '%s' "$out"; return 0; }
+  rc=$?
+  printf '%s' "$out"
+  return "$rc"
+}
+
+if direct_err=$(try_merge gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --"$MERGE_METHOD"); then
+  echo "Merged PR #${PR_NUMBER} (${MERGE_METHOD})"
+  exit 0
+fi
+
+# A refused plain merge is not automatically a problem: on a re-run the PR is
+# often already merged, and a PR closed unmerged is a human decision. Establish
+# which it is before escalating, so the ::error:: below keeps meaning something.
+pr_state=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json state --jq '.state' 2>/dev/null || echo "")
+case "$pr_state" in
+  MERGED)
+    echo "PR #${PR_NUMBER} is already merged; nothing to do"
+    exit 0
+    ;;
+  CLOSED)
+    echo "::warning::PR #${PR_NUMBER} is closed without being merged; not merging"
+    exit 0
+    ;;
+esac
+
+echo "::notice::plain merge of PR #${PR_NUMBER} was refused, falling back to auto-merge. Reason: $(safe "$direct_err")"
+
+if auto_err=$(try_merge gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --auto --"$MERGE_METHOD"); then
+  # Deliberately does NOT promise this lands on its own. Queueing succeeded, but
+  # that only means GitHub accepted the request — several refusals reach here
+  # with equal confidence and need a human, not patience: a strict
+  # "must be up to date with base" rule with no auto-update configured queues
+  # indefinitely; a conflict from a base commit landing during the CI wait (up to
+  # ~15 min at the default 90x10s) needs the rebase check-pr-ready.sh asks for;
+  # and allow_auto_merge being off makes the queue request itself a no-op. Naming
+  # the queue and the refusal reason lets the operator tell which, instead of
+  # reading a promise and stopping there.
+  echo "::warning::PR #${PR_NUMBER} could not be merged immediately and was queued via GitHub auto-merge. It will land only once the remaining requirements are satisfied — if it is still open later, check that (a) auto-merge is enabled on the repository, (b) the branch is up to date with its base, and (c) it has no conflicts. Plain merge was refused with: $(safe "$direct_err" 500)"
+  exit 0
+fi
+
+echo "::error::PR #${PR_NUMBER} was approved but could NOT be merged, and could not be queued for auto-merge either (each path was retried once). Anything waiting on this merge will stall. Plain merge said: $(safe "$direct_err" 500). Auto-merge said: $(safe "$auto_err" 500). Read those two reasons first — they name the cause. If they point at policy rather than a transient API error, check branch protection and rulesets (is the token's team a bypass actor during a code freeze?), the token's merge permission, and whether the repository allows auto-merge."

@@ -31,8 +31,13 @@ set -o pipefail
 #                              exercise the log-injection sanitizer. The default
 #                              text is deliberately unchanged so existing
 #                              assertions keep working.
-# GH_MOCK_PR_MERGE_EXIT      → exit code for `gh pr merge`
-# GH_MOCK_PR_MERGE_OUT       → stdout for `gh pr merge`
+# GH_MOCK_PR_MERGE_EXIT      → exit code for a PLAIN `gh pr merge` (no --auto)
+# GH_MOCK_PR_MERGE_OUT       → stdout for a plain `gh pr merge`
+# GH_MOCK_PR_MERGE_AUTO_EXIT → exit code for `gh pr merge --auto`; defaults to
+#                              GH_MOCK_PR_MERGE_EXIT so tests that don't care
+#                              about the distinction keep working
+# GH_MOCK_PR_MERGE_AUTO_OUT  → stdout for `gh pr merge --auto`
+# GH_MOCK_PR_STATE           → state for `gh pr view --json state` (OPEN|MERGED|CLOSED)
 # GH_MOCK_CALLS              → path; each invocation appends one line of args
 
 [ -n "${GH_MOCK_CALLS:-}" ] && printf '%s\n' "$*" >> "$GH_MOCK_CALLS"
@@ -132,8 +137,25 @@ case "${1:-}" in
     shift
     case "${1:-}" in
       merge)
-        echo "${GH_MOCK_PR_MERGE_OUT:-enabled}"
+        # --auto and the plain merge are separately controllable: the script
+        # tries the plain merge first and only falls back to --auto.
+        if printf '%s\n' "$@" | grep -qx -- '--auto'; then
+          echo "${GH_MOCK_PR_MERGE_AUTO_OUT:-queued}"
+          exit "${GH_MOCK_PR_MERGE_AUTO_EXIT:-${GH_MOCK_PR_MERGE_EXIT:-0}}"
+        fi
+        echo "${GH_MOCK_PR_MERGE_OUT:-merged}"
         exit "${GH_MOCK_PR_MERGE_EXIT:-0}"
+        ;;
+      view)
+        shift
+        view_filter=""
+        while [ $# -gt 0 ]; do
+          case "$1" in
+            --jq) view_filter="$2"; shift 2 ;;
+            *) shift ;;
+          esac
+        done
+        printf '{"state":"%s"}\n' "${GH_MOCK_PR_STATE:-OPEN}" | apply_filter "$view_filter"
         ;;
       *) echo "unsupported gh pr subcommand: $*" >&2; exit 99 ;;
     esac
