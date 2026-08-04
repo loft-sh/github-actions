@@ -94,3 +94,15 @@ kv() { grep "^$1=" "$GITHUB_OUTPUT" | tail -n1; }
   run env -u PR_NUMBER GITHUB_OUTPUT="$GITHUB_OUTPUT" GITHUB_REPOSITORY=o/r PR_AUTHOR=x "$SCRIPT"
   [ "$status" -ne 0 ]
 }
+
+@test "a missing log lib fails loudly instead of logging unsanitized" {
+  # An absent lib/log.sh is a packaging fault, and degrading to unsanitized
+  # output would silently reopen the CR channel asserted above. The script must
+  # die rather than emit its decision. Running a copy with no sibling lib/
+  # reproduces it. This test is what keeps the source-or-die guard honest: weaken
+  # it to `|| true`, or move it below the first echo, and this goes red.
+  cp "$SCRIPT" "$BATS_TEST_TMPDIR/check-pr-ready.sh"
+  GH_MOCK_MERGEABLE=true GH_MOCK_APPROVER="loft-bot" run "$BATS_TEST_TMPDIR/check-pr-ready.sh"
+  [ "$status" -ne 0 ]
+  assert_no_match 'proceed=true' "$output"
+}

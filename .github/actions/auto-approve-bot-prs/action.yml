@@ -21,7 +21,7 @@ inputs:
     required: false
     default: 'false'
   github-token:
-    description: 'PAT used to read PR state, approve, and enable auto-merge. Must NOT match the PR author.'
+    description: 'PAT used to read PR state, approve, and — when auto-merge is true — merge the PR directly, so it needs a merge path on the base branch, not just the auto-merge toggle. Must NOT match the PR author.'
     required: true
   ci-read-token:
     description: 'Token for the read-only CI poll only; defaults to the caller GITHUB_TOKEN, which needs `checks: read` and `statuses: read`. Never the approving PAT. See README "Two tokens, on purpose".'
@@ -92,7 +92,7 @@ runs:
 
           For more information, see https://github.com/loft-sh/github-actions?tab=readme-ov-file#auto-approve-bot-prs.
 
-    - name: Enable auto-merge
+    - name: Merge PR
       if: steps.ci.outputs.ci_green == 'true' && inputs.auto-merge == 'true'
       shell: bash
       env:

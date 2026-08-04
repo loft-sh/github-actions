@@ -11,6 +11,14 @@ set -euo pipefail
 PR_TITLE="${PR_TITLE:-}"
 PR_BRANCH="${PR_BRANCH:-}"
 
+# This is step 1 of the composite and runs BEFORE any trust gate, so PR_TITLE and
+# PR_BRANCH are the most caller-influenced strings the action handles — anyone who
+# can open a non-fork PR against a calling repo picks them. Both are echoed back
+# on the reject paths below, so a bare CR in either would forge a workflow
+# command. Same lib, same rule, as the other three scripts. See lib/log.sh.
+# shellcheck source=.github/actions/auto-approve-bot-prs/src/lib/log.sh
+. "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/log.sh"
+
 emit() {
   local k="$1" v="$2"
   [ -n "${GITHUB_OUTPUT:-}" ] && printf '%s=%s\n' "$k" "$v" >> "$GITHUB_OUTPUT"
@@ -27,7 +35,7 @@ for a in "${AUTHORS[@]}"; do
 done
 
 if [ "$author_trusted" != "true" ]; then
-  echo "::notice::Author '$PR_AUTHOR' not in trusted list"
+  echo "::notice::Author '$(safe "$PR_AUTHOR")' not in trusted list"
   emit eligible false
   emit reason ""
   exit 0
@@ -43,7 +51,7 @@ elif [[ "$PR_BRANCH" =~ ^update-platform-version- ]]; then eligible=true; reason
 fi
 
 if [ "$eligible" != "true" ]; then
-  echo "::notice::PR not in auto-approve patterns (title='$PR_TITLE' branch='$PR_BRANCH')"
+  echo "::notice::PR not in auto-approve patterns (title='$(safe "$PR_TITLE")' branch='$(safe "$PR_BRANCH")')"
 fi
 
 emit eligible "$eligible"

@@ -41,7 +41,29 @@ case "$MERGE_METHOD" in
     ;;
 esac
 
-if direct_err=$(gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --"$MERGE_METHOD" 2>&1); then
+# One bounded retry per merge call. Without it a single transient blip is
+# escalated identically to a permanent policy refusal, and the ::error:: below
+# then ships confident remediation ("check branch protection…") that is simply
+# wrong for a transient cause. Secondary rate limiting is a live risk here rather
+# than theoretical: by this point the action has already made up to 90 CI polls,
+# up to 10 mergeability polls and the approval call, and both merge attempts
+# would otherwise fire back-to-back with no delay, so one blip can take out both.
+# This mirrors the retry discipline the CI wait and the mergeability poll already
+# apply. Never fails: the caller decides what a non-zero merge means.
+MERGE_RETRY_SLEEP="${MERGE_RETRY_SLEEP_SECONDS:-5}"
+try_merge() {
+  local out rc
+  if out=$("$@" 2>&1); then printf '%s' "$out"; return 0; fi
+  # Retry blind rather than classifying the error: gh's text is not a stable
+  # API, and a permanent refusal costs only one extra call and one sleep.
+  sleep "$MERGE_RETRY_SLEEP"
+  out=$("$@" 2>&1) && { printf '%s' "$out"; return 0; }
+  rc=$?
+  printf '%s' "$out"
+  return "$rc"
+}
+
+if direct_err=$(try_merge gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --"$MERGE_METHOD"); then
   echo "Merged PR #${PR_NUMBER} (${MERGE_METHOD})"
   exit 0
 fi
@@ -63,9 +85,18 @@ esac
 
 echo "::notice::plain merge of PR #${PR_NUMBER} was refused, falling back to auto-merge. Reason: $(safe "$direct_err")"
 
-if auto_err=$(gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --auto --"$MERGE_METHOD" 2>&1); then
-  echo "::warning::PR #${PR_NUMBER} could not be merged immediately; queued via GitHub auto-merge and will land once the remaining requirements pass"
+if auto_err=$(try_merge gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --auto --"$MERGE_METHOD"); then
+  # Deliberately does NOT promise this lands on its own. Queueing succeeded, but
+  # that only means GitHub accepted the request — several refusals reach here
+  # with equal confidence and need a human, not patience: a strict
+  # "must be up to date with base" rule with no auto-update configured queues
+  # indefinitely; a conflict from a base commit landing during the CI wait (up to
+  # ~15 min at the default 90x10s) needs the rebase check-pr-ready.sh asks for;
+  # and allow_auto_merge being off makes the queue request itself a no-op. Naming
+  # the queue and the refusal reason lets the operator tell which, instead of
+  # reading a promise and stopping there.
+  echo "::warning::PR #${PR_NUMBER} could not be merged immediately and was queued via GitHub auto-merge. It will land only once the remaining requirements are satisfied — if it is still open later, check that (a) auto-merge is enabled on the repository, (b) the branch is up to date with its base, and (c) it has no conflicts. Plain merge was refused with: $(safe "$direct_err" 500)"
   exit 0
 fi
 
-echo "::error::PR #${PR_NUMBER} was approved but could NOT be merged, and could not be queued for auto-merge either. Anything waiting on this merge will stall. Plain merge said: $(safe "$direct_err" 500). Auto-merge said: $(safe "$auto_err" 500). Check branch protection and rulesets (is the token's team a bypass actor during a code freeze?), the token's merge permission, and whether the repository allows auto-merge."
+echo "::error::PR #${PR_NUMBER} was approved but could NOT be merged, and could not be queued for auto-merge either (each path was retried once). Anything waiting on this merge will stall. Plain merge said: $(safe "$direct_err" 500). Auto-merge said: $(safe "$auto_err" 500). Read those two reasons first — they name the cause. If they point at policy rather than a transient API error, check branch protection and rulesets (is the token's team a bypass actor during a code freeze?), the token's merge permission, and whether the repository allows auto-merge."

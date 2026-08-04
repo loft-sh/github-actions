@@ -484,12 +484,17 @@ Detected config files: `renovate.json`, `renovate.json5`, `.renovaterc`, `.renov
 
 ### Auto-approve bot PRs
 
-Approves (and optionally enables auto-merge on) PRs from trusted bot accounts
+Approves (and optionally merges) PRs from trusted bot accounts
 whose title or branch matches a known safe pattern (`chore:` / `fix(deps):` /
 `backport/` / `renovate/` / `update-platform-version-`). Hardened to **never
 block caller CI**: `continue-on-error: true` on the job, every shell step
 catches its own errors and exits 0, self-approval is pre-empted before calling
 the external approve action.
+
+With `auto-merge: true` the merge is performed **directly**, with GitHub's
+auto-merge queue only as a fallback — so `gh-access-token` needs a merge path on
+the base branch, not just the repository's auto-merge toggle. See the action's
+[README](.github/actions/auto-approve-bot-prs/README.md#merging).
 
 **Location:** `.github/workflows/auto-approve-bot-prs.yaml`
 

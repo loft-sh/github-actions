@@ -994,3 +994,16 @@ kv() { grep "^$1=" "$GITHUB_OUTPUT" | tail -n1; }
   [ "$(kv ci_green)" = "ci_green=false" ]
   [[ "$output" == *"deploy/netlify"* ]]
 }
+
+@test "a missing log lib fails loudly instead of logging unsanitized" {
+  # An absent lib/log.sh is a packaging fault, and degrading to unsanitized
+  # output would silently reopen the check-name channel — the widest one in this
+  # script, since whoever posted the check on the head SHA picks `.name`. The
+  # script must die rather than emit a verdict. Running a copy with no sibling
+  # lib/ reproduces it. This test is what keeps the source-or-die guard honest:
+  # weaken it to `|| true`, or move it below the first echo, and this goes red.
+  cp "$SCRIPT" "$BATS_TEST_TMPDIR/wait-for-ci.sh"
+  GH_MOCK_CHECK_RUNS_JSON='{"check_runs":[]}' run "$BATS_TEST_TMPDIR/wait-for-ci.sh"
+  [ "$status" -ne 0 ]
+  assert_no_match 'ci_green=true' "$output"
+}

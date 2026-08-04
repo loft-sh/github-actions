@@ -5,10 +5,14 @@
 # assert_no_match <perl-regex> <text> — fail the test if the regex matches.
 #
 # Do NOT write `! grep -q ... <<<"$output"` instead. Bash does not abort on a
-# command whose status is inverted with `!`, so under the `set -e` bats runs test
-# bodies with, a bare negated grep is a no-op unless it happens to be the final
-# line. Several assertions were silently inert that way. A plain function call
-# returning non-zero does abort, so this one actually fails.
+# command whose status is inverted with `!`, so under the `set -e` that bats runs
+# test bodies with, a bare negated grep is a no-op unless it happens to be the
+# final line. Several assertions were silently inert that way. A plain function
+# call returning non-zero does abort, so this one actually fails.
+#
+# The same trap applies to negating a *helper function* (`! auto_merge_attempted`)
+# — the `!` is what disables `set -e`, not the grep. Wrap those in a helper that
+# calls this, rather than negating them at the call site.
 assert_no_match() {
   local rc=0
   grep -qP -- "$1" <<<"$2" || rc=$?

@@ -92,25 +92,42 @@ release cut).
 declared green legitimately refuses a merge right now but can complete later.
 Queueing is the right answer there, so a refused plain merge degrades to it.
 
+A successful queue is **not** a promise that the PR lands. Other refusals reach
+the same fallback and need a human, not patience: a strict "must be up to date
+with base" rule with no auto-update queues indefinitely; a conflict introduced by
+a base commit landing during the CI wait (up to ~15 min at the default
+90 × 10 s) needs the rebase `check-pr-ready.sh` asks for; and `allow_auto_merge`
+being off makes the queue request itself the silent no-op this ordering exists to
+avoid. So the queued warning names what to check rather than asserting the merge
+will complete on its own.
+
+Each merge call is retried **once** after a short sleep. By this point the run
+has already made up to 90 CI polls, up to 10 mergeability polls and the approval
+call, so secondary rate limiting is a live risk, and the two merge attempts would
+otherwise fire back-to-back — one blip could take out both and escalate a
+transient failure as though it were a policy refusal.
+
 A PR that is approved but ends up merged by neither path is annotated at
 **error** level, carrying both underlying `gh` errors, since this is the only
-place that cause is knowable. Re-runs stay quiet: an already-merged PR is
-benign, and a PR closed unmerged is a human decision.
+place that cause is knowable. Those two reasons are the diagnosis; the
+branch-protection checklist that follows them applies only if they point at
+policy rather than a transient API error. Re-runs stay quiet: an already-merged
+PR is benign, and a PR closed unmerged is a human decision.
 
 ## Inputs
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-|       INPUT        |  TYPE  | REQUIRED |                    DEFAULT                     |                                                                                                DESCRIPTION                                                                                                 |
-|--------------------|--------|----------|------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-|     auto-merge     | string |  false   |                   `"false"`                    |                                                            Merge the PR after approving it, <br>directly where possible. See README "Merging".                                                             |
-|   ci-read-token    | string |  false   |                                                | Token for the read-only CI poll <br>only; defaults to the caller GITHUB_TOKEN, <br>which needs `checks: read` and `statuses: read`. Never <br>the approving PAT. See README "Two <br>tokens, on purpose".  |
-|    github-token    | string |   true   |                                                |                                                     PAT used to read PR state, <br>approve, and enable auto-merge. Must NOT <br>match the PR author.                                                       |
-|    merge-method    | string |  false   |                   `"squash"`                   |                                                                                     Merge method (squash|merge|rebase)                                                                                     |
-|  trusted-authors   | string |  false   | `"renovate[bot],loft-bot,github-actions[bot]"` |                                                                                 Comma-separated list of trusted bot logins                                                                                 |
-| wait-max-attempts  | string |  false   |                     `"90"`                     |                                                                           Max polling attempts waiting for other <br>CI checks                                                                             |
-| wait-min-attempts  | string |  false   |                     `"12"`                     |                             Minimum polls before ci_green=true is allowed. <br>Prevents early approval while slow external <br>checks (e.g. Netlify) have not yet registered.                              |
-| wait-sleep-seconds | string |  false   |                     `"10"`                     |                                                                                      Seconds between polling attempts                                                                                      |
+|       INPUT        |  TYPE  | REQUIRED |                    DEFAULT                     |                                                                                                          DESCRIPTION                                                                                                           |
+|--------------------|--------|----------|------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|     auto-merge     | string |  false   |                   `"false"`                    |                                                                      Merge the PR after approving it, <br>directly where possible. See README "Merging".                                                                       |
+|   ci-read-token    | string |  false   |                                                |           Token for the read-only CI poll <br>only; defaults to the caller GITHUB_TOKEN, <br>which needs `checks: read` and `statuses: read`. Never <br>the approving PAT. See README "Two <br>tokens, on purpose".            |
+|    github-token    | string |   true   |                                                | PAT used to read PR state, <br>approve, and — when auto-merge is <br>true — merge the PR directly, <br>so it needs a merge path <br>on the base branch, not just <br>the auto-merge toggle. Must NOT match <br>the PR author.  |
+|    merge-method    | string |  false   |                   `"squash"`                   |                                                                                               Merge method (squash|merge|rebase)                                                                                               |
+|  trusted-authors   | string |  false   | `"renovate[bot],loft-bot,github-actions[bot]"` |                                                                                           Comma-separated list of trusted bot logins                                                                                           |
+| wait-max-attempts  | string |  false   |                     `"90"`                     |                                                                                     Max polling attempts waiting for other <br>CI checks                                                                                       |
+| wait-min-attempts  | string |  false   |                     `"12"`                     |                                       Minimum polls before ci_green=true is allowed. <br>Prevents early approval while slow external <br>checks (e.g. Netlify) have not yet registered.                                        |
+| wait-sleep-seconds | string |  false   |                     `"10"`                     |                                                                                                Seconds between polling attempts                                                                                                |
 
 <!-- AUTO-DOC-INPUT:END -->
 
@@ -204,5 +221,6 @@ make test-auto-approve-bot-prs
 
 Runs the bats suites in `test/` against the shell scripts in `src/`.
 Assertions that must be able to fail live in `test/assertions.bash`: a bare
-`! grep` is inert under the `set -e` bats runs test bodies with, so negative
-assertions use `assert_no_match`.
+`! grep` is inert under the `set -e` that bats runs test bodies with, so negative
+assertions use `assert_no_match`. This applies to negated *helper functions* too,
+not just inline `grep`.

@@ -9,6 +9,9 @@ setup() {
   export GITHUB_REPOSITORY="owner/repo"
   export PR_NUMBER=42
   export MERGE_METHOD="squash"
+  # Every refusal path retries once. Keep the backoff out of the suite runtime —
+  # at the 5s default the failure-path tests alone add over a minute.
+  export MERGE_RETRY_SLEEP_SECONDS=0
 }
 teardown() { teardown_gh_mock; }
 
@@ -17,12 +20,20 @@ auto_merge_attempted() { grep -q '^pr merge .*--auto' "$GH_MOCK_CALLS"; }
 # ...and without it (the plain merge)?
 plain_merge_attempted() { grep '^pr merge ' "$GH_MOCK_CALLS" | grep -qv -- '--auto'; }
 
+# Negative forms route through assert_no_match rather than negating the two
+# helpers above with `!`. Bash exempts a `!`-inverted command from `set -e`, so
+# `! auto_merge_attempted` is inert unless it happens to be the last line of the
+# test body — which silently unproved the "no auto-merge attempt" half of four
+# titles below. See assertions.bash.
+assert_no_auto_merge() { assert_no_match '^pr merge .*--auto' "$(cat "$GH_MOCK_CALLS")"; }
+assert_no_merge_at_all() { assert_no_match '^pr merge ' "$(cat "$GH_MOCK_CALLS")"; }
+
 @test "plain merge succeeds → merged without touching auto-merge" {
   GH_MOCK_PR_MERGE_EXIT=0 run "$SCRIPT"
   [ "$status" -eq 0 ]
   [[ "$output" == *"Merged PR #42 (squash)"* ]]
   plain_merge_attempted
-  ! auto_merge_attempted
+  assert_no_auto_merge
   # The whole point of preferring the plain merge: no dependency on the
   # repository's allow_auto_merge setting on the happy path.
   [[ "$output" != *"::error::"* ]]
@@ -53,7 +64,7 @@ plain_merge_attempted() { grep '^pr merge ' "$GH_MOCK_CALLS" | grep -qv -- '--au
   GH_MOCK_PR_MERGE_EXIT=1 GH_MOCK_PR_STATE=MERGED run "$SCRIPT"
   [ "$status" -eq 0 ]
   [[ "$output" == *"already merged"* ]]
-  ! auto_merge_attempted
+  assert_no_auto_merge
   [[ "$output" != *"::error::"* ]]
 }
 
@@ -61,7 +72,7 @@ plain_merge_attempted() { grep '^pr merge ' "$GH_MOCK_CALLS" | grep -qv -- '--au
   GH_MOCK_PR_MERGE_EXIT=1 GH_MOCK_PR_STATE=CLOSED run "$SCRIPT"
   [ "$status" -eq 0 ]
   [[ "$output" == *"::warning::PR #42 is closed without being merged"* ]]
-  ! auto_merge_attempted
+  assert_no_auto_merge
   [[ "$output" != *"::error::"* ]]
 }
 
@@ -78,8 +89,56 @@ plain_merge_attempted() { grep '^pr merge ' "$GH_MOCK_CALLS" | grep -qv -- '--au
   MERGE_METHOD="fast-forward" run "$SCRIPT"
   [ "$status" -eq 0 ]
   [[ "$output" == *"::error::Invalid merge method 'fast-forward'"* ]]
-  ! plain_merge_attempted
-  ! auto_merge_attempted
+  # One assertion covers both: the rejected-method path must issue no
+  # `gh pr merge` at all, neither plain nor --auto.
+  assert_no_merge_at_all
+}
+
+# ---------------------------------------------------------------------------
+# Retry. One bounded retry per merge call, so a single transient blip is not
+# escalated as though it were a permanent policy refusal.
+
+# How many times was `gh pr merge` called, with and without --auto? Mirrors the
+# shape of plain_merge_attempted: the mock records the whole arg line, so --auto
+# has to be excluded by match, not by position.
+plain_merge_count() { grep '^pr merge ' "$GH_MOCK_CALLS" | grep -cv -- '--auto' || true; }
+auto_merge_count() { grep -c '^pr merge .*--auto' "$GH_MOCK_CALLS" || true; }
+
+@test "a successful plain merge is not retried" {
+  GH_MOCK_PR_MERGE_EXIT=0 run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(plain_merge_count)" -eq 1 ]
+}
+
+@test "a refused plain merge is retried once before falling back" {
+  GH_MOCK_PR_MERGE_EXIT=1 GH_MOCK_PR_MERGE_AUTO_EXIT=0 GH_MOCK_PR_STATE=OPEN run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  # Twice, not once: the retry has to actually issue a second call.
+  [ "$(plain_merge_count)" -eq 2 ]
+}
+
+@test "a refused --auto is retried once before escalating" {
+  GH_MOCK_PR_MERGE_EXIT=1 GH_MOCK_PR_MERGE_AUTO_EXIT=1 GH_MOCK_PR_STATE=OPEN run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(auto_merge_count)" -eq 2 ]
+  [[ "$output" == *"::error::"* ]]
+  # The escalation says it retried, so the reader knows a transient cause was
+  # already ruled out once.
+  [[ "$output" == *"retried once"* ]]
+}
+
+@test "the queued warning does not promise the merge will complete on its own" {
+  GH_MOCK_PR_MERGE_EXIT=1 GH_MOCK_PR_MERGE_AUTO_EXIT=0 GH_MOCK_PR_STATE=OPEN \
+    GH_MOCK_PR_MERGE_OUT="not up to date with base" run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  # A queue accepted is not a merge landed: an up-to-date rule with no
+  # auto-update, a mid-wait conflict, or allow_auto_merge being off all sit here
+  # forever. The warning must point at what to check, and carry the refusal.
+  [[ "$output" == *"queued via GitHub auto-merge"* ]]
+  [[ "$output" == *"auto-merge is enabled on the repository"* ]]
+  [[ "$output" == *"up to date with its base"* ]]
+  [[ "$output" == *"not up to date with base"* ]]
+  assert_no_match 'will land once the remaining requirements pass' "$output"
 }
 
 @test "each valid merge method is passed through to gh" {
