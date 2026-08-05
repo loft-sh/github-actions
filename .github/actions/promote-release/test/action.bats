@@ -400,6 +400,33 @@ teardown() {
   run ! grep -qF -- 'EDIT example-org/example-caller-repo v9.9.9 --prerelease=false --latest' "$GH_MOCK_CALLS"
 }
 
+@test "promote-self: a failed Latest edit is fatal and stops before oss-repo/homebrew" {
+  # The caller's Latest pointer is this action's own backport baseline. The
+  # docker retags have already advanced, so leaving the pointer behind on a
+  # green run would stale the baseline and let a later older-line promotion
+  # drag :latest backwards. It must fail loudly, and it must not go on to move
+  # the oss-repo release or the tap while the caller's pointer is stale.
+  export INPUT_PROMOTE_SELF="true"
+  export GH_MOCK_KNOWN_RELEASES="example-org/example-repo:v9.9.9 example-org/example-caller-repo:v9.9.9"
+  export GH_MOCK_FAIL=1
+  run "$SCRIPT"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"failed to set example-org/example-caller-repo@v9.9.9 as Latest"* ]]
+  run ! grep -qF -- 'EDIT example-org/example-repo' "$GH_MOCK_CALLS"
+}
+
+@test "promote-self: a failed edit on a BACKPORT stays a warning (no pointer moved)" {
+  # Here the edit is --prerelease=false only: it moves no pointer, so it cannot
+  # stale a baseline and must not take the run down with it.
+  export INPUT_PROMOTE_SELF="true"
+  export GH_MOCK_KNOWN_RELEASES="example-org/example-repo:v9.9.9 example-org/example-caller-repo:v9.9.9"
+  export GH_MOCK_FAIL=1
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v10.0.0","isPrerelease":false,"isLatest":true}]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"gh release edit failed for example-org/example-caller-repo@v9.9.9"* ]]
+}
+
 @test "promote-self with no matching release on the caller repo -> warns, run still succeeds" {
   export INPUT_PROMOTE_SELF="true"
   run "$SCRIPT"

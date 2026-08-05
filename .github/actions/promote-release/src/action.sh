@@ -336,6 +336,21 @@ if [[ "${PROMOTE_SELF}" == "true" ]]; then
     fi
     echo "Promoting ${GITHUB_REPOSITORY}@${VERSION}: unset prerelease${self_note}"
     if ! run gh release edit "${VERSION}" --repo "${GITHUB_REPOSITORY}" "${self_args[@]}"; then
+      if [[ "${ADVANCE_LATEST_MAJOR}" == "true" ]]; then
+        # Fatal, unlike every other release-edit failure here, because this one
+        # edit is the action's own future safety baseline. The moving docker
+        # tags have already advanced to VERSION; if the Latest pointer does not
+        # follow, the next run reads a STALE baseline and a subsequent
+        # older-line promotion passes the unscoped gate and drags :latest
+        # backwards - a silent regression whose cause is a warning nobody read
+        # on an earlier green run. Fail here instead, before the oss-repo and
+        # Homebrew promotions, so the divergence stays as small as possible and
+        # is visible. The whole action is idempotent: re-run it.
+        echo "::error::failed to set ${GITHUB_REPOSITORY}@${VERSION} as Latest, but the moving docker tags already advanced to it. Leaving the run red: the Latest pointer is this action's backport baseline, so a stale one would let a later promotion move :latest backwards. Re-run this promotion (it is idempotent), or set it by hand: gh release edit ${VERSION} --repo ${GITHUB_REPOSITORY} ${self_args[*]}"
+        exit 1
+      fi
+      # Backport promotion: the edit was --prerelease=false only, which moves no
+      # pointer and cannot stale any baseline, so a warning is enough.
       echo "::warning::gh release edit failed for ${GITHUB_REPOSITORY}@${VERSION}. Promote manually: gh release edit ${VERSION} --repo ${GITHUB_REPOSITORY} ${self_args[*]}"
     fi
   else
