@@ -30,7 +30,7 @@
     "testMatch": ["**/test/**/*.test.js"]
   },
   "devDependencies": {
-    "@vercel/ncc": "^0.38.3",
+    "@vercel/ncc": "^0.44.0",
     "jest": "^30.0.5"
   }
 }
