@@ -18,8 +18,11 @@ description: |
   "None" label (`release.prerelease: auto`): `released` fires at build time for
   such a cut, which would self-promote it unvetted. It is also resolved from the
   release's own tag ref, so it never fires for tags on maintenance branches that
-  predate the workflow file, whereas `workflow_dispatch` always runs the default
-  branch's copy and therefore covers every release line.
+  predate the workflow file, whereas one `workflow_dispatch` covers every release
+  line because the version to promote is an input rather than the ref. That the
+  dispatch runs the default branch's copy is a convention, not a guarantee (the
+  form has a branch picker and the API accepts any ref), so the caller should
+  assert the ref before the secret-bearing job runs.
 
   Only acts on a stable `vX.Y.Z` version (no prerelease suffix); any other
   shape is a no-op, since moving tags and "latest" promotion aren't meaningful

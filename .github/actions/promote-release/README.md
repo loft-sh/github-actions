@@ -23,9 +23,13 @@ taking the version to promote as an input. Do **not** wire it from
 GitHub "None" label (`release.prerelease: auto` in goreleaser): `released` fires
 at build time for such a cut, which would promote it unvetted. `release` events
 are also resolved from the release's own tag ref, so they never fire for tags on
-maintenance branches whose tree predates the workflow file — a
-`workflow_dispatch` always runs the default branch's copy and therefore covers
-every release line with no backporting.
+maintenance branches whose tree predates the workflow file. A `workflow_dispatch`
+runs the copy from whichever ref it is dispatched on, so one dispatch covers
+every release line with no backporting — the version to promote is an input, not
+the ref. Note that this is a convention, not a guarantee: the dispatch form has a
+branch picker and the API accepts any ref. Since a promotion moves public
+pointers with a privileged token, the caller should assert the ref is the default
+branch before the secret-bearing job runs.
 
 Only acts on a stable `vX.Y.Z` version (no prerelease suffix); any other shape
 is a no-op, since moving tags and "latest" promotion aren't meaningful for
