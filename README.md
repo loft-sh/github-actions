@@ -830,7 +830,6 @@ jobs:
 - `enabled` (optional, default: `true`): hard kill switch
 - `block-on-findings` (optional, default: `false`): advisory vs. blocking posture
 - `notify` / `slack-webhook-url` (optional, default: `true` / —)
-- `private-repo` / `goprivate` / `gh-access-token`: mirrors `govulncheck`'s private-module convention
 
 **Outputs:**
 
