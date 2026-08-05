@@ -104,8 +104,8 @@ test-linear-pr-commenter: ## run linear-pr-commenter unit tests
 test-link-backport-prs: ## run link-backport-prs unit tests
 	cd $(ACTIONS_DIR)/link-backport-prs/src && go test -v ./...
 
-test-release-notification: ## run release-notification detect-branch tests
-	bats $(ACTIONS_DIR)/release-notification/test/detect-branch.bats
+test-release-notification: ## run release-notification tests
+	bats $(ACTIONS_DIR)/release-notification/test/*.bats
 
 test-linear-release-sync: ## run linear-release-sync unit tests
 	cd $(ACTIONS_DIR)/linear-release-sync/src && go test -v ./...

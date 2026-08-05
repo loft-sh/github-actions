@@ -13,7 +13,7 @@ SCRIPT="$BATS_TEST_DIRNAME/../src/action.sh"
 load gh_mock
 load crane_mock
 
-# Sets GH_MOCK_RELEASE_LIST_<repo> so is_latest_stable() sees a release
+# Sets GH_MOCK_RELEASE_LIST_<repo> so the ordering predicates see a release
 # history for that repo (see gh_mock.bash for the varname sanitization).
 set_release_list() {
   local repo="$1" json="$2"
@@ -221,17 +221,123 @@ teardown() {
 }
 
 @test "newest stable over a non-empty prior-stable history -> advances :latest/:major" {
-  # The happy path above drives is_latest_stable with an empty release list,
+  # The happy path above drives the ordering predicates with an empty list,
   # so it only exercises the `[ -z "${max}" ]` short-circuit. This is the real
-  # forward-promotion case: a prior stable exists and VERSION is newer, so the
-  # `sort -V | tail -1` comparison must resolve true and :latest still advances.
-  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.9.8","isPrerelease":false}]'
+  # forward-promotion case: a prior promoted release exists and VERSION is
+  # newer, so the `sort -V | tail -1` comparison must resolve true and :latest
+  # still advances.
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.9.8","isPrerelease":false,"isLatest":true}]'
   run "$SCRIPT"
   [ "$status" -eq 0 ]
 
   grep -qF 'CREATE ghcr.io/example-org/example-image:latest ghcr.io/example-org/example-image:v9.9.9' "$CRANE_MOCK_CALLS"
   grep -qF 'CREATE ghcr.io/example-org/example-image:9 ghcr.io/example-org/example-image:v9.9.9' "$CRANE_MOCK_CALLS"
   [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 6 ]
+}
+
+@test "newer un-promoted stable cut -> does NOT block :latest (None-label baseline)" {
+  # The reason the unscoped baseline is the isLatest pointer and not "newest
+  # isPrerelease == false": under release.prerelease: auto, v10.0.0 can exist
+  # as a published-but-un-promoted stable cut (the GitHub "None" label - not a
+  # pre-release, not Latest). It is NOT what :latest tracks, so promoting
+  # v9.9.9 must still advance :latest. Reading the old flag here would strand
+  # :latest until someone promoted v10.0.0.
+  #
+  # v9.9.8 carries the Latest flag, so this isolates the one variable under
+  # test: an un-promoted NEWER cut in the list. The old isPrerelease-based
+  # baseline would have picked v10.0.0 here and refused. (The separate case of
+  # no Latest flag at ALL is a different state - see the fallback test below -
+  # because a cleared flag is indistinguishable from a never-promoted repo and
+  # must not be read as "anything may advance".)
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.9.8","isPrerelease":false,"isLatest":true},{"tagName":"v10.0.0","isPrerelease":false,"isLatest":false}]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+
+  grep -qF 'CREATE ghcr.io/example-org/example-image:latest ghcr.io/example-org/example-image:v9.9.9' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9 ghcr.io/example-org/example-image:v9.9.9' "$CRANE_MOCK_CALLS"
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 6 ]
+}
+
+@test "a prerelease-shaped tag flagged Latest remains the overall baseline" {
+  # GitHub permits a human to flag any release Latest. The overall gate must
+  # respect that pointer even when its immutable tag is not stable-shaped.
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.9.9-rc.1","isLatest":true}]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Latest-flagged release v9.9.9-rc.1"* ]]
+  run ! grep -qF ':latest ' "$CRANE_MOCK_CALLS"
+  run ! grep -qF ':9 ' "$CRANE_MOCK_CALLS"
+  grep -qF ':9.9 ' "$CRANE_MOCK_CALLS"
+}
+
+@test "multiple Latest flags conservatively use the newest flagged tag" {
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.9.8","isLatest":true},{"tagName":"v10.0.0","isLatest":true}]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Latest-flagged release v10.0.0"* ]]
+  run ! grep -qF ':latest ' "$CRANE_MOCK_CALLS"
+}
+
+@test "re-promoting the release already flagged Latest -> still advances (idempotent re-run)" {
+  # A promotion that got part-way (docker retags failed, tap left stale) has to
+  # be re-runnable. VERSION == the current Latest must therefore resolve as
+  # promotable rather than reading as "older than the promoted release".
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.9.9","isPrerelease":false,"isLatest":true}]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+
+  grep -qF 'CREATE ghcr.io/example-org/example-image:latest ghcr.io/example-org/example-image:v9.9.9' "$CRANE_MOCK_CALLS"
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 6 ]
+}
+
+@test "releases exist but none is flagged Latest -> falls back to the newest stable tag, no backward :latest" {
+  # The Latest flag is CLEARABLE: goreleaser re-asserts make_latest: false on
+  # every run, so re-running the build for the tag that currently holds it
+  # leaves the repo with releases but no isLatest. An empty isLatest must
+  # therefore NOT read as "first-ever promotion" - doing so would let this
+  # dispatch for the older v9.9.9 drag :latest/:9 back off v10.0.0.
+  export INPUT_PROMOTE_SELF="true"
+  export GH_MOCK_KNOWN_RELEASES="example-org/example-repo:v9.9.9 example-org/example-caller-repo:v9.9.9"
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.9.9","isPrerelease":false,"isLatest":false},{"tagName":"v10.0.0","isPrerelease":false,"isLatest":false}]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"no release on example-org/example-caller-repo carries the Latest flag"* ]]
+  [[ "$output" == *"newest stable tag (v10.0.0)"* ]]
+
+  # :latest/:9 must stay put; the line tag is still allowed to advance.
+  run ! grep -qF ':latest ' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9.9 ghcr.io/example-org/example-image:v9.9.9' "$CRANE_MOCK_CALLS"
+  # ... and the caller's own release must not be flipped to Latest either.
+  grep -qF -- 'EDIT example-org/example-caller-repo v9.9.9 --prerelease=false' "$GH_MOCK_CALLS"
+  run ! grep -qF -- 'EDIT example-org/example-caller-repo v9.9.9 --prerelease=false --latest' "$GH_MOCK_CALLS"
+}
+
+@test "no releases at all -> genuine first-ever promotion still advances" {
+  # The fallback above must not turn an actually-empty repo into a permanent
+  # refusal: with no releases there is nothing to regress, so :latest advances.
+  set_release_list "$GITHUB_REPOSITORY" '[]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  run ! grep -q 'carries the Latest flag' <<<"$output"
+
+  grep -qF 'CREATE ghcr.io/example-org/example-image:latest ghcr.io/example-org/example-image:v9.9.9' "$CRANE_MOCK_CALLS"
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 6 ]
+}
+
+@test "line gate ignores the mutable prerelease flag on a stable-shaped sibling" {
+  # :9.9 already points at v9.9.10. Re-running that release's build under the
+  # legacy release.prerelease: true config re-flags it isPrerelease. If the
+  # line gate filtered on that flag, v9.9.10 would drop out of the comparison,
+  # v9.9.9 would look newest in its line, and :9.9 would be retagged BACKWARDS.
+  # The gate keys on tag shape only, so the regression can't happen.
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.9.10","isPrerelease":true,"isLatest":false},{"tagName":"v10.0.0","isPrerelease":false,"isLatest":true}]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"is not the newest stable release in the 9.9 line"* ]]
+
+  run ! grep -qF ':9.9 ' "$CRANE_MOCK_CALLS"
+  run ! grep -qF ':latest ' "$CRANE_MOCK_CALLS"
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 0 ]
 }
 
 @test "non-stable version (has a suffix) -> no-op, no docker or gh calls" {
@@ -243,9 +349,9 @@ teardown() {
 }
 
 @test "every unstable suffix shape is a no-op -> never touches :latest or --latest" {
-  # A human can uncheck "pre-release" on ANY release regardless of what its
-  # tag looks like, so release:released can fire for an rc/alpha/beta/next
-  # cut too - this is the guard that stops that from ever moving :latest.
+  # A dispatch can name ANY tag, so this action can be handed an
+  # rc/alpha/beta/next cut too - this is the guard that stops that from ever
+  # moving :latest.
   for version in \
     "v9.9.9-rc.1" \
     "v9.9.9-alpha.1" \
@@ -281,6 +387,152 @@ teardown() {
   run ! grep -q '^VIEW \|^EDIT ' "$GH_MOCK_CALLS"
 }
 
+@test "promote-self off by default -> caller's own release is never touched" {
+  # Default must stay off: a caller that publishes stable cuts as real releases
+  # (prerelease: true, promoted by hand) would otherwise have its release
+  # flipped unasked.
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"promote-self not enabled"* ]]
+  run ! grep -qF 'EDIT example-org/example-caller-repo' "$GH_MOCK_CALLS"
+}
+
+@test "promote-self -> unsets prerelease and sets latest on the caller's own release" {
+  export INPUT_PROMOTE_SELF="true"
+  export GH_MOCK_KNOWN_RELEASES="example-org/example-repo:v9.9.9 example-org/example-caller-repo:v9.9.9"
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qF -- 'EDIT example-org/example-caller-repo v9.9.9 --prerelease=false --latest' "$GH_MOCK_CALLS"
+  # The paired oss-repo release is still promoted independently.
+  grep -qF -- 'EDIT example-org/example-repo v9.9.9 --prerelease=false --latest' "$GH_MOCK_CALLS"
+}
+
+@test "promote-self on a backport -> unsets prerelease but does not move Latest" {
+  # Same gate as :latest/:major, so promoting an older line never moves the
+  # repo's Latest pointer backwards.
+  export INPUT_PROMOTE_SELF="true"
+  export GH_MOCK_KNOWN_RELEASES="example-org/example-repo:v9.9.9 example-org/example-caller-repo:v9.9.9"
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v10.0.0","isPrerelease":false,"isLatest":true}]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"not marking example-org/example-caller-repo@v9.9.9 as Latest"* ]]
+  grep -qF -- 'EDIT example-org/example-caller-repo v9.9.9 --prerelease=false' "$GH_MOCK_CALLS"
+  run ! grep -qF -- 'EDIT example-org/example-caller-repo v9.9.9 --prerelease=false --latest' "$GH_MOCK_CALLS"
+}
+
+@test "promote-self: a failed Latest edit is fatal and happens before any retag" {
+  # The caller's Latest pointer is this action's own backport baseline, so it
+  # is established BEFORE the moving tags advance. If it cannot be set, nothing
+  # may be retagged: :latest ahead of a stale baseline is exactly what lets a
+  # later older-line promotion drag :latest backwards.
+  export INPUT_PROMOTE_SELF="true"
+  export GH_MOCK_KNOWN_RELEASES="example-org/example-repo:v9.9.9 example-org/example-caller-repo:v9.9.9"
+  export GH_MOCK_FAIL=1
+  run "$SCRIPT"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"failed to set example-org/example-caller-repo@v9.9.9 as Latest"* ]]
+  # Nothing at all should have moved: no retags, no oss-repo promotion.
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 0 ]
+  run ! grep -qF -- 'EDIT example-org/example-repo' "$GH_MOCK_CALLS"
+}
+
+@test "promote-self: an unreadable caller release on an advancing promotion is fatal" {
+  # `gh release view` exits non-zero both for "no such release" and for a
+  # transient API error; the two are indistinguishable. An advancing promotion
+  # must establish the pointer, so neither may be skipped with a warning - that
+  # would retag :latest and leave the baseline behind it.
+  export INPUT_PROMOTE_SELF="true"
+  run "$SCRIPT"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"no v9.9.9 release found on example-org/example-caller-repo"* ]]
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 0 ]
+  run ! grep -qF 'EDIT ' "$GH_MOCK_CALLS"
+}
+
+@test "promote-self: an API lookup failure is reported accurately and fails before retagging" {
+  export INPUT_PROMOTE_SELF="true"
+  export GH_MOCK_VIEW_FAIL=1
+  run "$SCRIPT"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"failed to inspect example-org/example-caller-repo@v9.9.9"* ]]
+  [[ "$output" == *"forced release view API failure"* ]]
+  [[ "$output" != *"no v9.9.9 release found"* ]]
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 0 ]
+}
+
+@test "promote-self: a failed edit on a BACKPORT stays a warning (no pointer moved)" {
+  # Here the edit is --prerelease=false only: it moves no pointer, so it cannot
+  # stale a baseline and must not take the run down with it.
+  export INPUT_PROMOTE_SELF="true"
+  export GH_MOCK_KNOWN_RELEASES="example-org/example-repo:v9.9.9 example-org/example-caller-repo:v9.9.9"
+  export GH_MOCK_FAIL=1
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v10.0.0","isPrerelease":false,"isLatest":true}]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"gh release edit failed for example-org/example-caller-repo@v9.9.9"* ]]
+}
+
+@test "promote-self with no matching release on the caller repo, BACKPORT -> warns, run still succeeds" {
+  # On a backport nothing advances, so there is no Latest pointer to establish
+  # and a missing release cannot stale a baseline. The line tag must still be
+  # allowed to advance, so this stays a warning rather than the fatal path.
+  export INPUT_PROMOTE_SELF="true"
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v10.0.0","isPrerelease":false,"isLatest":true}]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"no v9.9.9 release found on example-org/example-caller-repo"* ]]
+  run ! grep -qF 'EDIT example-org/example-caller-repo' "$GH_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9.9 ghcr.io/example-org/example-image:v9.9.9' "$CRANE_MOCK_CALLS"
+}
+
+@test "promote-self lookup failure on a backport preserves the real error" {
+  export INPUT_PROMOTE_SELF="true"
+  export GH_MOCK_VIEW_FAIL=1
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v10.0.0","isLatest":true}]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"failed to inspect example-org/example-caller-repo@v9.9.9"* ]]
+  [[ "$output" == *"forced release view API failure"* ]]
+  [[ "$output" != *"no v9.9.9 release found on example-org/example-caller-repo"* ]]
+}
+
+@test "promote-self -> only an exact 'true' enables it" {
+  export INPUT_PROMOTE_SELF="True"
+  export GH_MOCK_KNOWN_RELEASES="example-org/example-repo:v9.9.9 example-org/example-caller-repo:v9.9.9"
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  run ! grep -qF 'EDIT example-org/example-caller-repo' "$GH_MOCK_CALLS"
+}
+
+@test "promote-self under dry-run with no release yet -> rehearsal still completes" {
+  # A rehearsal may legitimately run before the release exists; the source
+  # manifest pre-flight is skipped under dry-run for the same reason. The fatal
+  # unreadable-release branch must therefore not fire here, or a pre-publication
+  # preview of an advancing promotion would be impossible.
+  export INPUT_PROMOTE_SELF="true"
+  export INPUT_DRY_RUN="true"
+  export GH_MOCK_KNOWN_RELEASES=""
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"dry-run: printing the planned promotion anyway"* ]]
+  # The planned edit and the planned retags are both still shown...
+  [[ "$output" == *"[dry-run] gh release edit v9.9.9 --repo example-org/example-caller-repo --prerelease=false --latest"* ]]
+  [[ "$output" == *"[dry-run] crane tag"* ]]
+  # ...and nothing was actually mutated.
+  run ! grep -q '^EDIT ' "$GH_MOCK_CALLS"
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 0 ]
+}
+
+@test "promote-self under dry-run -> reads the release but makes no edit" {
+  export INPUT_PROMOTE_SELF="true"
+  export INPUT_DRY_RUN="true"
+  export GH_MOCK_KNOWN_RELEASES="example-org/example-repo:v9.9.9 example-org/example-caller-repo:v9.9.9"
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qF 'VIEW example-org/example-caller-repo v9.9.9' "$GH_MOCK_CALLS"
+  run ! grep -q '^EDIT ' "$GH_MOCK_CALLS"
+}
+
 @test "dry-run -> prints planned retags, makes no real docker calls" {
   export INPUT_DRY_RUN="true"
   run "$SCRIPT"
@@ -314,7 +566,7 @@ teardown() {
 }
 
 @test "fail-closed dry-run -> exact 'false' (and case variants) promotes for real" {
-  # The default is 'false', so the release:released trigger still promotes; the
+  # The default is 'false', so a plain dispatch still promotes; the
   # case-insensitive match means FALSE/False also cut for real rather than
   # silently degrading to a no-op.
   for value in "false" "False" "FALSE"; do
@@ -335,10 +587,11 @@ teardown() {
 }
 
 @test "backport on caller repo -> skips :latest/:major, still advances :major.minor" {
-  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v10.0.0","isPrerelease":false}]'
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v10.0.0","isPrerelease":false,"isLatest":true}]'
   run "$SCRIPT"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"not the newest stable release on example-org/example-caller-repo"* ]]
+  [[ "$output" == *"older than the promotion baseline on example-org/example-caller-repo"* ]]
+  [[ "$output" == *"behind the caller's promotion baseline"* ]]
 
   grep -qF 'CREATE ghcr.io/example-org/example-image:9.9 ghcr.io/example-org/example-image:v9.9.9' "$CRANE_MOCK_CALLS"
   grep -qF 'CREATE ghcr.io/example-org/example-image:9.9-fips ghcr.io/example-org/example-image:v9.9.9-fips' "$CRANE_MOCK_CALLS"
@@ -346,9 +599,11 @@ teardown() {
   run ! grep -qF ':9 ' "$CRANE_MOCK_CALLS"
   [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 2 ]
 
-  # A different repo's history (oss-repo) is unaffected by the caller repo's:
-  # the paired release still gets --latest.
-  grep -qF -- 'EDIT example-org/example-repo v9.9.9 --prerelease=false --latest' "$GH_MOCK_CALLS"
+  # The paired repo may have a stale Latest pointer after an earlier advisory
+  # edit failure. The caller is the Docker-tag baseline and therefore the
+  # authoritative upper bound: a caller backport must never move OSS Latest.
+  grep -qF -- 'EDIT example-org/example-repo v9.9.9 --prerelease=false' "$GH_MOCK_CALLS"
+  run ! grep -qF -- 'EDIT example-org/example-repo v9.9.9 --prerelease=false --latest' "$GH_MOCK_CALLS"
 }
 
 @test "backport across minor lines (same major) -> still skips :latest/:major" {
@@ -357,10 +612,10 @@ teardown() {
   # which only exercises a major-version jump (v9.9.9 vs v10.0.0); sort -V's
   # minor-component comparison is a separate thing to get right.
   export INPUT_VERSION="v9.35.6"
-  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.36.0","isPrerelease":false}]'
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.36.0","isPrerelease":false,"isLatest":true}]'
   run "$SCRIPT"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"not the newest stable release on example-org/example-caller-repo"* ]]
+  [[ "$output" == *"older than the promotion baseline on example-org/example-caller-repo"* ]]
 
   grep -qF 'CREATE ghcr.io/example-org/example-image:9.35 ghcr.io/example-org/example-image:v9.35.6' "$CRANE_MOCK_CALLS"
   run ! grep -qF ':latest ' "$CRANE_MOCK_CALLS"
@@ -369,12 +624,12 @@ teardown() {
 }
 
 @test "same-minor out-of-order promotion -> skips :major.minor so the line tag can't regress" {
-  # :9.9 already points at the newer v9.9.10 in the same line; a human then
-  # un-checks pre-release on the older v9.9.9 (release:released fires for it).
+  # :9.9 already points at the newer v9.9.10 in the same line; someone then
+  # dispatches a promotion for the older v9.9.9.
   # It's not newest overall, so :latest/:9 are skipped - and because it's not
   # newest within its OWN 9.9 line either, :9.9 must be skipped too. Advancing
   # :9.9 here would silently regress it from v9.9.10 back to v9.9.9.
-  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.9.10","isPrerelease":false}]'
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.9.10","isPrerelease":false,"isLatest":true}]'
   run "$SCRIPT"
   [ "$status" -eq 0 ]
   [[ "$output" == *"is not the newest stable release in the 9.9 line"* ]]
@@ -386,7 +641,7 @@ teardown() {
   # v9.9.9 is the newest patch in the 9.9 line, but v10.0.0 exists overall.
   # This is the ordinary backport: :latest/:9 stay put, :9.9 still advances
   # (it isn't regressing - v9.9.9 IS the newest in its line).
-  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.9.8","isPrerelease":false},{"tagName":"v10.0.0","isPrerelease":false}]'
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.9.8","isPrerelease":false},{"tagName":"v10.0.0","isPrerelease":false,"isLatest":true}]'
   run "$SCRIPT"
   [ "$status" -eq 0 ]
   grep -qF 'CREATE ghcr.io/example-org/example-image:9.9 ghcr.io/example-org/example-image:v9.9.9' "$CRANE_MOCK_CALLS"
@@ -396,10 +651,10 @@ teardown() {
 }
 
 @test "backport on oss-repo -> paired release unsets prerelease but omits --latest" {
-  set_release_list "$INPUT_OSS_REPO" '[{"tagName":"v10.0.0","isPrerelease":false}]'
+  set_release_list "$INPUT_OSS_REPO" '[{"tagName":"v10.0.0","isPrerelease":false,"isLatest":true}]'
   run "$SCRIPT"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"not the newest stable release on example-org/example-repo"* ]]
+  [[ "$output" == *"older than the promotion baseline on example-org/example-repo"* ]]
 
   grep -qF -- 'EDIT example-org/example-repo v9.9.9 --prerelease=false' "$GH_MOCK_CALLS"
   run ! grep -qF -- '--latest' "$GH_MOCK_CALLS"
@@ -439,6 +694,22 @@ teardown() {
   run "$SCRIPT"
   [ "$status" -ne 0 ]
   [[ "$output" == *"failed to list releases on example-org/example-caller-repo"* ]]
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 0 ]
+}
+
+@test "malformed release list response -> fails closed before any retag" {
+  set_release_list "$GITHUB_REPOSITORY" 'not-json'
+  run "$SCRIPT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"unexpected release-list response"* ]]
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 0 ]
+}
+
+@test "parseable release list with an invalid tagName type -> fails closed" {
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":123,"isLatest":false}]'
+  run "$SCRIPT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"unexpected release-list response"* ]]
   [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 0 ]
 }
 
@@ -502,6 +773,20 @@ teardown() {
   run "$SCRIPT"
   [ "$status" -eq 0 ]
   [[ "$output" == *"::warning::gh release edit failed for example-org/example-repo@v9.9.9"* ]]
+  [[ "$output" == *"Docker retags are already complete. Promote manually"* ]]
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 6 ]
+}
+
+@test "paired release edit failure -> skips Homebrew instead of advancing it ahead of the release" {
+  export GH_MOCK_FAIL=1
+  export INPUT_HOMEBREW_TAP_REPO="example-org/example-tap"
+  export INPUT_HOMEBREW_FORMULA_PATHS='["Formula/vcluster.rb"]'
+
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"gh release edit failed for example-org/example-repo@v9.9.9"* ]]
+  [[ "$output" == *"skipping Homebrew tap promotion so the formula cannot advance ahead of the paired release"* ]]
+  run ! grep -q '^DOWNLOAD \|^API ' "$GH_MOCK_CALLS"
   [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 6 ]
 }
 
@@ -546,7 +831,7 @@ teardown() {
 @test "homebrew tap -> backport skips entirely, no download/api calls" {
   export INPUT_HOMEBREW_TAP_REPO="example-org/example-tap"
   export INPUT_HOMEBREW_FORMULA_PATHS='["Formula/vcluster.rb"]'
-  set_release_list "$INPUT_OSS_REPO" '[{"tagName":"v10.0.0","isPrerelease":false}]'
+  set_release_list "$INPUT_OSS_REPO" '[{"tagName":"v10.0.0","isPrerelease":false,"isLatest":true}]'
   set_checksums_fixture "example-org/example-repo" "$FIXTURES_DIR/checksums.txt"
   set_contents_fixture "repos/example-org/example-tap/contents/Formula/vcluster.rb" "$FIXTURES_DIR/vcluster.rb"
 
@@ -561,6 +846,22 @@ teardown() {
   [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 6 ]
   grep -qF -- 'EDIT example-org/example-repo v9.9.9 --prerelease=false' "$GH_MOCK_CALLS"
   run ! grep -qF -- '--latest' "$GH_MOCK_CALLS"
+}
+
+@test "homebrew tap -> caller backport skips even when the OSS Latest pointer is stale" {
+  export INPUT_HOMEBREW_TAP_REPO="example-org/example-tap"
+  export INPUT_HOMEBREW_FORMULA_PATHS='["Formula/vcluster.rb"]'
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v10.0.0","isPrerelease":false,"isLatest":true}]'
+  # OSS is behind and would independently classify v9.9.9 as an advance.
+  set_release_list "$INPUT_OSS_REPO" '[{"tagName":"v9.0.0","isPrerelease":false,"isLatest":true}]'
+
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"behind the caller's promotion baseline"* ]]
+  [[ "$output" == *"skipping Homebrew tap promotion entirely"* ]]
+  run ! grep -q '^DOWNLOAD \|^API ' "$GH_MOCK_CALLS"
+  grep -qF -- 'EDIT example-org/example-repo v9.9.9 --prerelease=false' "$GH_MOCK_CALLS"
+  run ! grep -qF -- 'EDIT example-org/example-repo v9.9.9 --prerelease=false --latest' "$GH_MOCK_CALLS"
 }
 
 @test "homebrew-tap-repo without oss-repo -> fails fast" {
@@ -624,6 +925,18 @@ teardown() {
   [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 6 ]
   grep -qF -- 'EDIT example-org/example-repo v9.9.9 --prerelease=false' "$GH_MOCK_CALLS"
   run ! grep -qF -- '--latest' "$GH_MOCK_CALLS"
+}
+
+@test "homebrew tap -> oss-repo view failure stays retryable, not missing" {
+  export INPUT_HOMEBREW_TAP_REPO="example-org/example-tap"
+  export INPUT_HOMEBREW_FORMULA_PATHS='["Formula/vcluster.rb"]'
+  export GH_MOCK_VIEW_FAIL_REPO="$INPUT_OSS_REPO"
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"failed to inspect example-org/example-repo@v9.9.9"* ]]
+  [[ "$output" == *"could not inspect example-org/example-repo@v9.9.9 to source Homebrew checksums"* ]]
+  [[ "$output" != *"no v9.9.9 release on example-org/example-repo to source checksums"* ]]
+  run ! grep -q '^DOWNLOAD \|^API ' "$GH_MOCK_CALLS"
 }
 
 @test "homebrew tap -> undecodable formula content warns and skips, run still succeeds" {

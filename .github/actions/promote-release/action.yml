@@ -8,27 +8,43 @@ description: |
   `docker buildx imagetools create` because imagetools re-wraps a bare
   single-platform manifest in a new index (changing its digest, orphaning the
   signature); crane preserves the digest for both single-platform manifests
-  (per-arch tags) and multi-arch indexes. Optionally also promotes the paired
-  public release in a companion repo (unsets prerelease, sets latest).
+  (per-arch tags) and multi-arch indexes. Optionally also promotes the caller's
+  own release (`promote-self`) and the paired public release in a companion
+  repo (unsets prerelease, sets latest).
 
-  Wire this from `on: release: types: [released]` on the repo that owns the
-  moving tags. That event only fires when a human -- not GITHUB_TOKEN/a bot --
-  flips a release from pre-release to a full release (verified live for
-  DEVOPS-1083); a bot-authored release publish never triggers it, so there is
-  no risk of the build itself re-entering this action.
+  Wire this from `on: workflow_dispatch` on the repo that owns the moving tags,
+  with the version to promote as an input. A `release: types: [released]`
+  trigger is NOT suitable for a caller that publishes stable cuts as the GitHub
+  "None" label (`release.prerelease: auto`): `released` fires at build time for
+  such a cut, which would self-promote it unvetted. It is also resolved from the
+  release's own tag ref, so it never fires for tags on maintenance branches that
+  predate the workflow file, whereas one `workflow_dispatch` covers every release
+  line because the version to promote is an input rather than the ref. That the
+  dispatch runs the default branch's copy is a convention, not a guarantee (the
+  form has a branch picker and the API accepts any ref), so the caller should
+  assert the ref before the secret-bearing job runs.
 
   Only acts on a stable `vX.Y.Z` version (no prerelease suffix); any other
   shape is a no-op, since moving tags and "latest" promotion aren't meaningful
   for -rc/-alpha/-next cuts.
 
   Backport-safe: before advancing `:latest`/`:{major}` (or `--latest` on
-  oss-repo), checks whether `version` is actually the newest stable release
-  on the caller's own repo (`GITHUB_REPOSITORY`, set automatically by
-  Actions) / on `oss-repo` respectively. Promoting an older line's patch
-  after a newer stable is already `:latest` only advances `:{major}.{minor}`
-  (scoped to that line), never `:latest`/`:{major}` backwards. A failure to
-  even list releases fails the run closed rather than risking a silent
-  downgrade.
+  oss-repo / the caller's own release), checks whether `version` is newer than
+  the release currently flagged Latest on the caller's own repo
+  (`GITHUB_REPOSITORY`, set automatically by Actions) / on `oss-repo`
+  respectively. The baseline is that Latest pointer, not "newest
+  non-prerelease": under `release.prerelease: auto` an un-promoted stable cut is
+  already non-prerelease, so only the Latest flag records what `:latest`
+  actually tracks. Promoting an older line's patch after a newer stable is
+  already `:latest` only advances `:{major}.{minor}` (scoped to that line),
+  never `:latest`/`:{major}` backwards. A failure to even list releases fails
+  the run closed rather than risking a silent downgrade. Re-promoting the
+  current Latest is allowed, so a partially failed promotion can be re-run.
+  If NO release carries the Latest flag the baseline falls back to the newest
+  stable-shaped tag, not to "advance": that flag is cleared whenever a release
+  build is re-run, so an absent pointer must not read as a first-ever
+  promotion. The line-scoped check keys on tag shape alone and ignores the
+  mutable pre-release flag for the same reason.
 
   Optionally also promotes a Homebrew tap: a metadata patch, not a rebuild.
   A formula's per-platform sha256 values are exactly what's already in
@@ -54,12 +70,16 @@ inputs:
       `<image>:latest-amd64` etc. crane preserves its digest, so its cosign
       signature stays valid.
     required: true
+  promote-self:
+    description: 'Set to "true" to also promote the CALLER repo''s own <version> release (unset pre-release, set Latest, gated by the same backport check as :latest). Off by default; only an exact "true" enables it. See the README promote-self section for token scope and failure semantics.'
+    required: false
+    default: 'false'
   oss-repo:
     description: 'owner/repo whose matching <version> release should also be promoted (prerelease unset, latest set). Leave empty to skip.'
     required: false
     default: ''
   github-token:
-    description: 'Token with GHCR write:packages, and contents:write on oss-repo and homebrew-tap-repo if set.'
+    description: 'Token with GHCR write:packages; contents:write on the caller repo when promote-self is true; and contents:write on oss-repo and homebrew-tap-repo if set.'
     required: true
   docker-username:
     description: 'Username paired with github-token for the GHCR login (GHCR checks the token, but docker/login-action requires a username value).'
@@ -73,9 +93,13 @@ inputs:
     required: false
     default: '[]'
   dry-run:
-    description: 'Fail-closed: a real promotion runs only on an exact "false" (the default, so the release:released trigger still promotes for real). Any other value ("true", a typo, etc.) is a dry-run that only prints the planned retags/promotion.'
+    description: 'Fail-closed: a real promotion runs only on an exact "false" (the default, so a plain dispatch still promotes for real). Any other value ("true", a typo, etc.) is a dry-run that only prints the planned retags/promotion.'
     required: false
     default: 'false'
+outputs:
+  promote-self-enabled:
+    description: 'Whether the manifest forwarded an exact "true" promote-self value to the promotion script.'
+    value: ${{ steps.promote.outputs.promote-self-enabled }}
 runs:
   using: composite
   steps:
@@ -92,11 +116,13 @@ runs:
       with:
         version: v0.20.2
     - name: Promote release
+      id: promote
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
         INPUT_VERSION: ${{ inputs.version }}
         INPUT_IMAGES: ${{ inputs.images }}
+        INPUT_PROMOTE_SELF: ${{ inputs.promote-self }}
         INPUT_OSS_REPO: ${{ inputs.oss-repo }}
         INPUT_HOMEBREW_TAP_REPO: ${{ inputs.homebrew-tap-repo }}
         INPUT_HOMEBREW_FORMULA_PATHS: ${{ inputs.homebrew-formula-paths }}

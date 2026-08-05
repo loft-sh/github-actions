@@ -20,3 +20,24 @@ jobs:
       - uses: bats-core/bats-action@77d6fb60505b4d0d1d73e48bd035b55074bbfb43 # 4.0.0
         with:
           tests: .github/actions/promote-release/test
+
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Exercise local composite promote-self wiring
+        id: promote
+        uses: ./.github/actions/promote-release
+        with:
+          version: v999.999.999
+          images: '[{"image":"ghcr.io/example-org/smoke-test"}]'
+          promote-self: 'true'
+          github-token: ${{ github.token }}
+          docker-username: ${{ github.actor }}
+          dry-run: 'true'
+      - name: Verify promote-self reached the script
+        env:
+          PROMOTE_SELF_ENABLED: ${{ steps.promote.outputs.promote-self-enabled }}
+        run: test "$PROMOTE_SELF_ENABLED" = true

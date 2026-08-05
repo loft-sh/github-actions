@@ -20,12 +20,24 @@ inputs:
     required: false
     default: 'false'
   is_prerelease:
-    description: 'Is this a pre-release?'
+    description: 'Whether to show the release as a GitHub pre-release in the banner.'
     required: false
     default: 'false'
+  needs_promotion:
+    description: 'Whether to show a GitHub promotion reminder linking to promote_workflow.'
+    required: false
+    default: 'false'
+  promote_workflow:
+    description: 'Workflow file in target_repo that performs the promotion. Linked from the banner when needs_promotion is "true".'
+    required: false
+    default: 'promote-release.yaml'
   target_repo:
     description: 'Target repository'
     required: true
+  paired_repo:
+    description: 'Optional second repository whose release and changelog are linked in the banner.'
+    required: false
+    default: ''
   product:
     description: 'Product name (vCluster or vCluster Platform)'
     required: true
@@ -40,10 +52,25 @@ inputs:
   webhook_url:
     description: 'Slack Webhook URL'
     required: true
+  dry-run:
+    description: 'Resolve and expose banner text without posting to Slack. Intended for validation and smoke tests.'
+    required: false
+    default: 'false'
   triggered_by:
     description: 'Who triggered the release (shown in the Slack banner). Defaults to github.actor; callers that dispatch the release via a bot PAT should pass the human actor so the banner does not read as the bot.'
     required: false
     default: ${{ github.actor }}
+
+outputs:
+  label_field:
+    description: 'Resolved optional Block Kit field for the GitHub release label.'
+    value: ${{ steps.release_text.outputs.label_field }}
+  changelog_text:
+    description: 'Resolved changelog or release-notes link text.'
+    value: ${{ steps.release_text.outputs.changelog_text }}
+  release_text:
+    description: 'Resolved release link text.'
+    value: ${{ steps.release_text.outputs.release_text }}
 
 runs:
   using: "composite"
@@ -66,8 +93,21 @@ runs:
       run: |
         BRANCH=$("${{ github.action_path }}/detect-branch.sh")
         echo "base_branch=$BRANCH" >> "$GITHUB_OUTPUT"
-    - name: Post release notification
+    - name: Resolve release label and links
+      id: release_text
       if: inputs.status == 'success'
+      shell: bash
+      env:
+        TARGET_REPO: ${{ inputs.target_repo }}
+        PAIRED_REPO: ${{ inputs.paired_repo }}
+        VERSION: ${{ inputs.version }}
+        PREVIOUS_TAG: ${{ inputs.previous_tag }}
+        IS_PRERELEASE: ${{ inputs.is_prerelease }}
+        NEEDS_PROMOTION: ${{ inputs.needs_promotion }}
+        PROMOTE_WORKFLOW: ${{ inputs.promote_workflow }}
+      run: bash "${{ github.action_path }}/resolve-release-text.sh"
+    - name: Post release notification
+      if: inputs.status == 'success' && inputs.dry-run != 'true'
       uses: slackapi/slack-github-action@45a88b9581bfab2566dc881e2cd66d334e621e2c  # v3.0.3
       with:
         errors: true
@@ -95,14 +135,17 @@ runs:
               fields:
                 - type: mrkdwn
                   text: "*Source Branch:*\n${{ inputs.base_branch || steps.detect_branch.outputs.base_branch || 'main' }}"
+                # Empty when neither state flag is set, which omits the element
+                # and preserves the banner shape for existing callers.
+                ${{ steps.release_text.outputs.label_field }}
             - type: section
               text:
                 type: mrkdwn
-                text: "*Changes:*\n<https://github.com/${{ inputs.target_repo }}/compare/${{ inputs.previous_tag }}...${{ inputs.version }}|View Full Changelog>"
+                text: ${{ steps.release_text.outputs.changes_json }}
             - type: context
               elements:
                 - type: mrkdwn
-                  text: "<https://github.com/${{ inputs.target_repo }}/releases/tag/${{ inputs.version }}|View Release>"
+                  text: ${{ steps.release_text.outputs.release_json }}
     - name: Resolve status text
       id: status_text
       if: inputs.status != 'success'
@@ -122,7 +165,7 @@ runs:
           skipped)   printf 'emoji=%s\n' '⏩' >> "$GITHUB_OUTPUT"; echo "label=Skipped" >> "$GITHUB_OUTPUT" ;;
         esac
     - name: Post release failure notification
-      if: inputs.status != 'success'
+      if: inputs.status != 'success' && inputs.dry-run != 'true'
       uses: slackapi/slack-github-action@45a88b9581bfab2566dc881e2cd66d334e621e2c  # v3.0.3
       with:
         errors: true

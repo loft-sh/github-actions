@@ -5,8 +5,8 @@ any configured suffix variant such as `-fips`, `-amd64`, `-fips-arm64v8`) onto
 the digest of an already published, already signed version tag — a
 digest-preserving retag via `crane tag`, never a rebuild, so cosign signatures
 (OCI referrers, digest-scoped) stay valid with no re-signing. Optionally also
-promotes a paired public release in a companion repo (unsets `prerelease`,
-sets `latest`).
+promotes the caller's own release (`promote-self`) and a paired public release
+in a companion repo (unsets `prerelease`, sets `latest`).
 
 `crane tag` is used rather than `docker buildx imagetools create`: imagetools
 is digest-preserving only when the source is already a multi-arch index. For a
@@ -17,27 +17,71 @@ manifest digest for both single-platform manifests and indexes, so it covers
 the whole moving-tag matrix — including the per-arch tags — without breaking
 signatures.
 
-Wire this from `on: release: types: [released]` on the repo that owns the
-moving tags. That event only fires when a human — not `GITHUB_TOKEN`/a bot —
-flips a release from pre-release to a full release (verified live for
-DEVOPS-1083); a bot-authored release publish never triggers it, so there is
-no risk of the build itself re-entering this action.
+Wire this from `on: workflow_dispatch` on the repo that owns the moving tags,
+taking the version to promote as an input. Do **not** wire it from
+`on: release: types: [released]` when the caller publishes stable cuts with the
+GitHub "None" label (`release.prerelease: auto` in goreleaser): `released` fires
+at build time for such a cut, which would promote it unvetted. `release` events
+are also resolved from the release's own tag ref, so they never fire for tags on
+maintenance branches whose tree predates the workflow file. A `workflow_dispatch`
+runs the copy from whichever ref it is dispatched on, so one dispatch covers
+every release line with no backporting — the version to promote is an input, not
+the ref. Note that this is a convention, not a guarantee: the dispatch form has a
+branch picker and the API accepts any ref. Since a promotion moves public
+pointers with a privileged token, the caller should assert the ref is the default
+branch before the secret-bearing job runs.
+
+Promotion runs must also be serialized within the caller repository. The
+ordering guard reads the current Latest pointer before it writes any pointer;
+without a shared concurrency group, two overlapping dispatches can both pass
+against the same baseline and let the older release write last. The example
+below uses a repository-wide `promote-release` group and does not cancel an
+in-progress promotion.
 
 Only acts on a stable `vX.Y.Z` version (no prerelease suffix); any other shape
 is a no-op, since moving tags and "latest" promotion aren't meaningful for
 `-rc`/`-alpha`/`-next` cuts.
 
 **Backport-safe:** before advancing `:latest`/`:{major}` (or `--latest` on
-`oss-repo`), the action checks whether `version` is actually the newest
-stable release on the caller's own repo (`GITHUB_REPOSITORY`, set
-automatically by Actions) / on `oss-repo`. Promoting an older line's patch
-after a newer stable is already `:latest` skips `:latest`/`:{major}`, so they
-never move backwards. `:{major}.{minor}` is scoped to its own line and gets
-its own check: it advances only when `version` is the newest stable *within
-that `{major}.{minor}` line*, so an out-of-order same-line promotion (e.g.
-un-checking pre-release on `v9.9.5` after `v9.9.6` already moved `:9.9`) can't
-regress it either. A failure to even list releases fails the run closed rather
-than risk a silent downgrade.
+`oss-repo` / the caller's own release), the action checks whether `version` is
+newer than the release currently flagged **Latest** on the caller's own repo
+(`GITHUB_REPOSITORY`, set automatically by Actions) / on `oss-repo`. That Latest
+pointer is the baseline, *not* "newest non-prerelease": under
+`release.prerelease: auto` a published-but-un-promoted stable cut is already
+non-prerelease, so the Latest flag is the only durable record of what `:latest`
+actually tracks — reading the prerelease flag instead would strand `:latest`
+behind any newer un-promoted cut. Promoting an older line's patch after a newer
+stable is already `:latest` skips `:latest`/`:{major}`, so they never move
+backwards. Re-promoting the release that is already Latest is allowed, so a
+partially failed promotion can simply be re-run.
+
+The paired `oss-repo` Latest pointer and Homebrew formula advance only when
+`version` passes **both** the caller-repository gate and the `oss-repo` gate.
+The caller pointer is the authoritative baseline for the coordinated Docker
+release, so a stale paired-repository pointer after an earlier advisory failure
+cannot reclassify a caller backport as a newest release and move public pointers
+backwards.
+
+If **no** release carries the Latest flag, the baseline falls back to the newest
+stable-shaped tag rather than to "advance". The flag is clearable — re-running a
+release build re-asserts `make_latest: false` on the tag that holds it — so an
+absent pointer must not be read as "nothing has ever been promoted"; that would
+let a dispatch for an older line drag `:latest` backwards. A genuinely empty
+release list still advances, which is the real first-ever promotion.
+
+`:{major}.{minor}` is scoped to its own line and gets its own check: it advances
+only when `version` is the newest stable-shaped tag *within that
+`{major}.{minor}` line* (GitHub has no per-line equivalent of the Latest
+pointer), so an out-of-order same-line promotion (e.g. promoting `v9.9.5` after
+`v9.9.6` already moved `:9.9`) can't regress it either. That check keys on tag
+shape alone and deliberately ignores the pre-release flag, which is mutable: a
+stable-shaped tag can carry it (every cut did under the legacy
+`release.prerelease: true` config, and re-running such a build re-flags an
+already-promoted tag), and filtering on it would drop the newer sibling from the
+comparison and permit exactly the regression the check exists to stop.
+
+A failure to even list releases fails the run closed rather than risk a silent
+downgrade.
 
 Optionally also promotes a Homebrew tap (`homebrew-tap-repo` +
 `homebrew-formula-paths`) — a metadata patch, not a rebuild. A formula's
@@ -56,12 +100,13 @@ as an all-or-nothing skip — a formula has no line-scoped equivalent to
 |         INPUT          |  TYPE  | REQUIRED |  DEFAULT  |                                                                                                                                                                                                                                                                              DESCRIPTION                                                                                                                                                                                                                                                                               |
 |------------------------|--------|----------|-----------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 |    docker-username     | string |   true   |           |                                                                                                                                                                                                                 Username paired with github-token for the <br>GHCR login (GHCR checks the token, but docker/login-action requires a username value).                                                                                                                                                                                                                   |
-|        dry-run         | string |  false   | `"false"` |                                                                                                                                                          Fail-closed: a real promotion runs only <br>on an exact "false" (the default, so the release:released trigger still promotes for real). Any <br>other value ("true", a typo, etc.) is a dry-run <br>that only prints the planned retags/promotion.                                                                                                                                                            |
-|      github-token      | string |   true   |           |                                                                                                                                                                                                                                   Token with GHCR write:packages, and contents:write <br>on oss-repo and homebrew-tap-repo if set.                                                                                                                                                                                                                                     |
+|        dry-run         | string |  false   | `"false"` |                                                                                                                                                                Fail-closed: a real promotion runs only <br>on an exact "false" (the default, so a plain dispatch still promotes for real). Any <br>other value ("true", a typo, etc.) is a dry-run <br>that only prints the planned retags/promotion.                                                                                                                                                                  |
+|      github-token      | string |   true   |           |                                                                                                                                                                                                 Token with GHCR write:packages; contents:write on <br>the caller repo when promote-self is <br>true; and contents:write on oss-repo and <br>homebrew-tap-repo if set.                                                                                                                                                                                                  |
 | homebrew-formula-paths | string |  false   |  `"[]"`   |                                                                                                                                                                                                           JSON array of formula file paths <br>within homebrew-tap-repo to update, e.g. ["Formula/vcluster.rb"]. <br>Required if homebrew-tap-repo is set.                                                                                                                                                                                                             |
 |   homebrew-tap-repo    | string |  false   |           |                                                                                                                                                                                               owner/repo of a Homebrew tap to <br>promote (e.g. loft-sh/homebrew-tap). Requires oss-repo to be <br>set, since checksums come from its <br>release. Leave empty to skip.                                                                                                                                                                                                |
 |         images         | string |   true   |           | JSON array of image entries to <br>retag, each `{"image": "ghcr.io/loft-sh/x", "suffix": ""}` (suffix optional, default <br>""). For each entry, copies `<image>:<version><suffix>` <br>to `<image>:latest<suffix>`, `<image>:<major><suffix>`, and `<image>:<major>.<minor><suffix>`. The <br>suffix is also how per-arch moving <br>tags are promoted: an entry with <br>suffix `-amd64` retags `<image>:<version>-amd64` (a bare single-platform manifest) to <br>`<image>:latest-amd64` etc. crane preserves its digest, <br>so its cosign signature stays valid.  |
 |        oss-repo        | string |  false   |           |                                                                                                                                                                                                                   owner/repo whose matching <version> release should <br>also be promoted (prerelease unset, latest set). Leave empty <br>to skip.                                                                                                                                                                                                                     |
+|      promote-self      | string |  false   | `"false"` |                                                                                                                                  Set to "true" to also promote <br>the CALLER repo's own <version> release <br>(unset pre-release, set Latest, gated by the same backport check as :latest). Off by default; only an <br>exact "true" enables it. See the <br>README promote-self section for token scope <br>and failure semantics.                                                                                                                                   |
 |        version         | string |   true   |           |                                                                                                                                                                                                                                                                The promoted release tag, e.g. v0.37.1.                                                                                                                                                                                                                                                                 |
 
 <!-- AUTO-DOC-INPUT:END -->
@@ -70,12 +115,25 @@ as an all-or-nothing skip — a formula has no line-scoped equivalent to
 
 ```yaml
 on:
-  release:
-    types: [released]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Stable version to promote, e.g. v0.37.1"
+        type: string
+        required: true
+
+# The ordering gate is a read-then-write operation. Serialize every promotion
+# in this repository so two dispatches cannot both pass against the same Latest
+# pointer and let the older run write last.
+concurrency:
+  group: promote-release
+  cancel-in-progress: false
 
 jobs:
   promote:
-    if: github.event.release.prerelease == false
+    # workflow_dispatch can target any ref. Keep the secret-bearing promotion
+    # on the repository default branch's reviewed workflow definition.
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
     permissions:
       packages: write
@@ -84,7 +142,8 @@ jobs:
       - name: Promote release
         uses: loft-sh/github-actions/.github/actions/promote-release@promote-release/v1
         with:
-          version: ${{ github.event.release.tag_name }}
+          version: ${{ inputs.version }}
+          promote-self: "true"
           oss-repo: loft-sh/vcluster
           github-token: ${{ secrets.GH_ACCESS_TOKEN }}
           docker-username: ${{ secrets.DOCKER_USERNAME }}
@@ -101,14 +160,32 @@ jobs:
             ["Formula/vcluster.rb", "Formula/vcluster-experimental.rb"]
 ```
 
+Use the documented PAT/App token for `github-token`; do not substitute the
+workflow `GITHUB_TOKEN` when `oss-repo` or `homebrew-tap-repo` is configured.
+The workflow token cannot write those other repositories, leaving the paired
+release or formula un-promoted.
+
 ### Why this needs a build-time gating change too
 
 This action only *retags* — the moving tags must not already exist from the
 build. The caller's `.goreleaser.yaml` (or equivalent) must publish only the
-immutable `:<version>` tag at build time and never the moving tags, and the
-GitHub Release itself must be created as a pre-release (`prerelease: true`,
-not `auto`) so there is a real pre-release → full-release edit for a human to
-make — otherwise `release: types: [released]` never fires for a stable cut.
+immutable `:<version>` tag at build time and never the moving tags.
+
+The GitHub Release itself should be published with the "None" label, i.e.
+`release.prerelease: auto` (a stable `vX.Y.Z` is not flagged pre-release, every
+suffixed tag is) plus `make_latest: false` (nothing is Latest at build time).
+The release is then listed and downloadable at its exact tag, while every
+*pointer* a consumer follows — `releases/latest`, the moving docker tags, a
+stable Homebrew formula — stays behind this action.
+
+Note that goreleaser re-asserts both flags on every run: a re-run of the build
+against an already-promoted tag will clear its Latest flag (`make_latest: false`
+is sent again on publish). Re-run this action afterwards to restore it; it is
+idempotent.
+
+A caller still on `prerelease: true` also works: `--prerelease=false` is part of
+what `promote-self`/`oss-repo` apply, so a legacy tag built under the old config
+promotes through the same dispatch.
 
 ### GHCR login
 
@@ -119,11 +196,51 @@ config that step writes, so no separate crane login is needed. The login is
 skipped automatically when `dry-run: true`. `action.yml` also installs crane
 (`imjasonh/setup-crane`), so callers don't need to install it themselves.
 
+### promote-self
+
+Off by default. Set it to `"true"` when the caller's own GitHub Release needs
+flipping as part of the promotion — which is the case whenever stable cuts are
+published with the "None" label, since nothing else ever promotes them. The
+release is edited to `--prerelease=false --latest`, with `--latest` withheld on a
+backport promotion (same gate as `:latest`). Only an exact `"true"` enables it.
+
+The `github-token` must also have `contents: write` on the **caller's own**
+repository (`GITHUB_REPOSITORY`) when this option is enabled, in addition to
+any permissions needed for `oss-repo` and `homebrew-tap-repo`. Without it the
+required `gh release edit` cannot establish the caller's Latest pointer and an
+advancing promotion fails before any moving tags are changed.
+
+Adopting this `promote-self` flow and the GitHub `None` label is one coordinated
+notification change: the paired `notify-release` caller must also set
+`needs_promotion: true`. Without that opt-in the release banner has no promotion
+reminder, so the Release Captain has no signal that this dispatch is still due.
+
+This edit runs **before** the docker retags, not after, and on an advancing
+promotion any failure to complete it — the release being unreadable, or the edit
+itself failing — is **fatal**, aborting before anything is retagged. The reason
+is that this one edit writes the same Latest pointer the backport gate reads back
+as its baseline on every later run. Retagging first would mean a failure here
+leaves the pointer *behind* `:latest`, and the next dispatch for an older line
+would pass that stale gate and move `:latest` backwards. Doing it first inverts
+the failure mode: a later `crane` failure leaves the pointer *ahead*, which can
+only refuse a subsequent older promotion, never permit a regression. Re-promoting
+the same version is always allowed, so a plain re-run recovers.
+
+On a backport promotion none of this applies — the edit is `--prerelease=false`
+only, which moves no pointer and cannot stale a baseline — so a missing release
+or a failed edit stays a warning and the line tag still advances. A `dry-run` is
+likewise never aborted by an unreadable release: a rehearsal may run before the
+release exists (the source-manifest pre-flight is skipped for the same reason),
+so it warns and prints the planned edit instead.
+
 ### oss-repo
 
 If set, and a release matching `version` exists on `oss-repo`, it is edited
-to `--prerelease=false --latest`. If no matching release exists, this step is
-skipped with a warning — it does not fail the docker retagging.
+to `--prerelease=false`; `--latest` is added only when both the caller and
+`oss-repo` ordering gates allow it. If no matching release exists, this step is
+skipped with a warning — it does not fail the docker retagging. An edit failure
+also remains advisory, but Homebrew promotion is skipped so the formula cannot
+advance ahead of the paired release.
 
 ### homebrew-tap-repo
 
