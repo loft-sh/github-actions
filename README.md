@@ -777,6 +777,69 @@ jobs:
 - The caller checks out its own source and controls `runs-on`/`timeout-minutes`/fork guarding at the job level.
 - A composite action cannot declare `timeout-minutes` on its steps; set `timeout-minutes` on the caller job (default ~10m is reasonable for most modules).
 
+### CVE Scan
+
+Scans a container image for CVEs with a swappable scanner backend (Snyk ships
+first) and reports findings via Slack, a markdown report, and SARIF. A
+scanner error (timeout, auth failure) never fails the job; findings only fail
+the job when `block-on-findings: true` is explicitly turned on — the default
+is advisory-only reporting.
+
+**Location:** `.github/actions/cve-scan`
+
+**Usage (release event, scanning the just-published prerelease image):**
+
+```yaml
+name: cve-scan (release)
+
+on:
+  release:
+    types: [created]
+
+jobs:
+  scan:
+    if: github.event.release.prerelease == true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          persist-credentials: false
+      - uses: loft-sh/github-actions/.github/actions/cve-scan@cve-scan/v1
+        with:
+          image-ref: ghcr.io/loft-sh/vcluster-pro:${{ github.event.release.tag_name }}
+          trigger-context: release
+          enabled: ${{ vars.CVE_SCAN_ENABLED }}
+          block-on-findings: ${{ vars.CVE_SCAN_BLOCK_ON_FINDINGS }}
+          ignore-file: .github/cve-scan-ignore.yaml
+          scanner-token: ${{ secrets.SNYK_TOKEN }}
+          slack-webhook-url: ${{ secrets.SLACK_WEBHOOK_URL_CI_TESTS_ALERTS }}
+```
+
+**Inputs:**
+
+- `image-ref` (required): full registry reference to scan
+- `dockerfile-path` (optional, default: `Dockerfile.release`)
+- `trigger-context` (optional): free-text label (e.g. `schedule`, `release`) shown in the report
+- `scanner` (optional, default: `snyk`): selects `src/scanners/<scanner>.sh`
+- `scanner-token` (required when the selected adapter needs one): named generically so a tool swap never renames this input
+- `severity-threshold` (optional, default: `high`)
+- `ignore-file` (optional): YAML suppression list, see the action's own README
+- `enabled` (optional, default: `true`): hard kill switch
+- `block-on-findings` (optional, default: `false`): advisory vs. blocking posture
+- `notify` / `slack-webhook-url` (optional, default: `true` / —)
+- `private-repo` / `goprivate` / `gh-access-token`: mirrors `govulncheck`'s private-module convention
+
+**Outputs:**
+
+- `has-vulnerabilities`, `critical-count`, `high-count`, `medium-count`, `low-count`, `ignored-count`
+- `scanner-error`: `true` if the scanner itself failed to complete — distinct from finding CVEs
+- `report-path`, `sarif-path`, `summary` (Slack-ready truncated text)
+
+See [cve-scan README](./.github/actions/cve-scan/README.md) for the ignore-file format, the scanner-adapter contract, and SARIF upload example.
+
 ### Checkov
 
 Runs [Checkov](https://www.checkov.io/) against infrastructure as code, open
