@@ -3,9 +3,13 @@ name: Test release-notification
 on:
   push:
     branches: [main]
-    paths: ['.github/actions/release-notification/**']
+    paths:
+      - '.github/actions/release-notification/**'
+      - '.github/workflows/test-release-notification.yaml'
   pull_request:
-    paths: ['.github/actions/release-notification/**']
+    paths:
+      - '.github/actions/release-notification/**'
+      - '.github/workflows/test-release-notification.yaml'
 
 permissions:
   contents: read
@@ -25,3 +29,34 @@ jobs:
           file-install: false
       - name: Run release-notification tests
         run: bats .github/actions/release-notification/test/*.bats
+
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Exercise local composite input wiring
+        id: notification
+        uses: ./.github/actions/release-notification
+        with:
+          version: v9.9.9
+          previous_tag: v9.9.8
+          target_repo: example-org/private-product
+          paired_repo: example-org/public-product
+          product: smoke-test
+          base_branch: main
+          needs_promotion: 'true'
+          promote_workflow: ship-stable.yaml
+          webhook_url: unused-in-dry-run
+          dry-run: 'true'
+      - name: Verify local composite outputs
+        env:
+          LABEL_FIELD: ${{ steps.notification.outputs.label_field }}
+          CHANGELOG_TEXT: ${{ steps.notification.outputs.changelog_text }}
+          RELEASE_TEXT: ${{ steps.notification.outputs.release_text }}
+        run: |
+          [[ "$LABEL_FIELD" == *'ship-stable.yaml|Promote it>'* ]]
+          [[ "$CHANGELOG_TEXT" == *'example-org/private-product'* ]]
+          [[ "$CHANGELOG_TEXT" == *'example-org/public-product'* ]]
+          [[ "$RELEASE_TEXT" == Releases:* ]]

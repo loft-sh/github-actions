@@ -14,7 +14,9 @@ setup() {
 }
 
 output_value() {
-  sed -n "s/^$1=//p" "$GITHUB_OUTPUT"
+  local delimiter
+  delimiter=$(sed -n "s/^$1<<//p" "$GITHUB_OUTPUT")
+  sed -n "/^$1<<${delimiter}$/,/^${delimiter}$/p" "$GITHUB_OUTPUT" | sed '1d;$d'
 }
 
 @test "default caller gets no label field and the original single-repo links" {
@@ -29,7 +31,7 @@ output_value() {
   export IS_PRERELEASE="true"
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
-  [ "$(output_value label_field)" = '- {"type": "mrkdwn", "text": "*GitHub label:*\nPre-release"}' ]
+  [ "$(output_value label_field)" = '- {"type":"mrkdwn","text":"*GitHub label:*\nPre-release"}' ]
 }
 
 @test "promotion reminder describes the newest-release gate accurately" {
@@ -37,10 +39,7 @@ output_value() {
   export PROMOTE_WORKFLOW="ship-stable.yaml"
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
-  label="$(output_value label_field)"
-  [[ "$label" == *'<https://github.com/example-org/private-product/actions/workflows/ship-stable.yaml|Promote it>'* ]]
-  [[ "$label" == *'when this is the newest release'* ]]
-  [[ "$label" != *'to move Latest, the moving image tags'* ]]
+  [ "$(output_value label_field)" = '- {"type":"mrkdwn","text":"*GitHub label:*\n`None` - not Latest yet. <https://github.com/example-org/private-product/actions/workflows/ship-stable.yaml|Promote it> to unset pre-release and, when this is the newest release, move Latest, the moving image tags and the Homebrew formula."}' ]
 }
 
 @test "promotion reminder takes precedence when both state flags are true" {
@@ -57,4 +56,35 @@ output_value() {
   [ "$status" -eq 0 ]
   [ "$(output_value changelog_text)" = '<https://github.com/example-org/private-product/compare/v9.9.8...v9.9.9|example-org/private-product> | <https://github.com/example-org/public-product/compare/v9.9.8...v9.9.9|example-org/public-product>' ]
   [ "$(output_value release_text)" = 'Releases: <https://github.com/example-org/private-product/releases/tag/v9.9.9|example-org/private-product> | <https://github.com/example-org/public-product/releases/tag/v9.9.9|example-org/public-product>' ]
+}
+
+@test "first release uses release notes instead of a degenerate compare link" {
+  export PREVIOUS_TAG=""
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value changelog_text)" = '<https://github.com/example-org/private-product/releases/tag/v9.9.9|View Release Notes>' ]
+}
+
+@test "first paired release links both repositories without a compare range" {
+  export PREVIOUS_TAG=""
+  export PAIRED_REPO="example-org/public-product"
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value changelog_text)" = '<https://github.com/example-org/private-product/releases/tag/v9.9.9|example-org/private-product> | <https://github.com/example-org/public-product/releases/tag/v9.9.9|example-org/public-product>' ]
+}
+
+@test "quotes and newlines are escaped in payload JSON and cannot inject outputs" {
+  export NEEDS_PROMOTION="true"
+  export VERSION='v9.9.9"quoted'
+  export PROMOTE_WORKFLOW=$'promote"release.yaml\ninjected=value'
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+
+  # Every value remains under its randomized-delimiter output; no bare output
+  # assignment can be injected by the workflow filename newline.
+  run grep -q '^injected=value$' "$GITHUB_OUTPUT"
+  [ "$status" -ne 0 ]
+  label_field="$(output_value label_field)"
+  jq -e 'type == "object" and .type == "mrkdwn"' <<<"${label_field#- }" >/dev/null
+  jq -e 'type == "string"' <<<"$(output_value changes_json)" >/dev/null
 }

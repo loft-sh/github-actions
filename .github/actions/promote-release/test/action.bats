@@ -258,6 +258,26 @@ teardown() {
   [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 6 ]
 }
 
+@test "a prerelease-shaped tag flagged Latest remains the overall baseline" {
+  # GitHub permits a human to flag any release Latest. The overall gate must
+  # respect that pointer even when its immutable tag is not stable-shaped.
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.9.9-rc.1","isLatest":true}]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Latest-flagged release v9.9.9-rc.1"* ]]
+  run ! grep -qF ':latest ' "$CRANE_MOCK_CALLS"
+  run ! grep -qF ':9 ' "$CRANE_MOCK_CALLS"
+  grep -qF ':9.9 ' "$CRANE_MOCK_CALLS"
+}
+
+@test "multiple Latest flags conservatively use the newest flagged tag" {
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.9.8","isLatest":true},{"tagName":"v10.0.0","isLatest":true}]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Latest-flagged release v10.0.0"* ]]
+  run ! grep -qF ':latest ' "$CRANE_MOCK_CALLS"
+}
+
 @test "re-promoting the release already flagged Latest -> still advances (idempotent re-run)" {
   # A promotion that got part-way (docker retags failed, tap left stale) has to
   # be re-runnable. VERSION == the current Latest must therefore resolve as
@@ -570,7 +590,7 @@ teardown() {
   set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v10.0.0","isPrerelease":false,"isLatest":true}]'
   run "$SCRIPT"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"older than the promoted release on example-org/example-caller-repo"* ]]
+  [[ "$output" == *"older than the promotion baseline on example-org/example-caller-repo"* ]]
 
   grep -qF 'CREATE ghcr.io/example-org/example-image:9.9 ghcr.io/example-org/example-image:v9.9.9' "$CRANE_MOCK_CALLS"
   grep -qF 'CREATE ghcr.io/example-org/example-image:9.9-fips ghcr.io/example-org/example-image:v9.9.9-fips' "$CRANE_MOCK_CALLS"
@@ -592,7 +612,7 @@ teardown() {
   set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.36.0","isPrerelease":false,"isLatest":true}]'
   run "$SCRIPT"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"older than the promoted release on example-org/example-caller-repo"* ]]
+  [[ "$output" == *"older than the promotion baseline on example-org/example-caller-repo"* ]]
 
   grep -qF 'CREATE ghcr.io/example-org/example-image:9.35 ghcr.io/example-org/example-image:v9.35.6' "$CRANE_MOCK_CALLS"
   run ! grep -qF ':latest ' "$CRANE_MOCK_CALLS"
@@ -631,7 +651,7 @@ teardown() {
   set_release_list "$INPUT_OSS_REPO" '[{"tagName":"v10.0.0","isPrerelease":false,"isLatest":true}]'
   run "$SCRIPT"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"older than the promoted release on example-org/example-repo"* ]]
+  [[ "$output" == *"older than the promotion baseline on example-org/example-repo"* ]]
 
   grep -qF -- 'EDIT example-org/example-repo v9.9.9 --prerelease=false' "$GH_MOCK_CALLS"
   run ! grep -qF -- '--latest' "$GH_MOCK_CALLS"
@@ -676,6 +696,14 @@ teardown() {
 
 @test "malformed release list response -> fails closed before any retag" {
   set_release_list "$GITHUB_REPOSITORY" 'not-json'
+  run "$SCRIPT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"unexpected release-list response"* ]]
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 0 ]
+}
+
+@test "parseable release list with an invalid tagName type -> fails closed" {
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":123,"isLatest":false}]'
   run "$SCRIPT"
   [ "$status" -ne 0 ]
   [[ "$output" == *"unexpected release-list response"* ]]
@@ -742,6 +770,7 @@ teardown() {
   run "$SCRIPT"
   [ "$status" -eq 0 ]
   [[ "$output" == *"::warning::gh release edit failed for example-org/example-repo@v9.9.9"* ]]
+  [[ "$output" == *"Docker retags are already complete. Promote manually"* ]]
   [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 6 ]
 }
 
@@ -864,6 +893,18 @@ teardown() {
   [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 6 ]
   grep -qF -- 'EDIT example-org/example-repo v9.9.9 --prerelease=false' "$GH_MOCK_CALLS"
   run ! grep -qF -- '--latest' "$GH_MOCK_CALLS"
+}
+
+@test "homebrew tap -> oss-repo view failure stays retryable, not missing" {
+  export INPUT_HOMEBREW_TAP_REPO="example-org/example-tap"
+  export INPUT_HOMEBREW_FORMULA_PATHS='["Formula/vcluster.rb"]'
+  export GH_MOCK_VIEW_FAIL_REPO="$INPUT_OSS_REPO"
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"failed to inspect example-org/example-repo@v9.9.9"* ]]
+  [[ "$output" == *"could not inspect example-org/example-repo@v9.9.9 to source Homebrew checksums"* ]]
+  [[ "$output" != *"no v9.9.9 release on example-org/example-repo to source checksums"* ]]
+  run ! grep -q '^DOWNLOAD \|^API ' "$GH_MOCK_CALLS"
 }
 
 @test "homebrew tap -> undecodable formula content warns and skips, run still succeeds" {

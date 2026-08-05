@@ -71,7 +71,7 @@ inputs:
       signature stays valid.
     required: true
   promote-self:
-    description: 'Set to "true" to also promote the CALLER repo''s own <version> release (unset pre-release, set Latest). Required when the caller publishes stable cuts with the GitHub "None" label, since nothing else ever flips them. Latest is gated by the same backport check as :latest. On an advancing promotion this edit runs BEFORE the docker retags and any failure to complete it is fatal, because that pointer is this action''s own backport baseline: retagging first would leave it behind :latest and let a later promotion move :latest backwards. Re-run the action to recover. On a backport the edit moves no pointer, so a failure stays a warning.'
+    description: 'Set to "true" to also promote the CALLER repo''s own <version> release (unset pre-release, set Latest, gated by the same backport check as :latest). Off by default; only an exact "true" enables it. See the README promote-self section for token scope and failure semantics.'
     required: false
     default: 'false'
   oss-repo:
@@ -96,6 +96,10 @@ inputs:
     description: 'Fail-closed: a real promotion runs only on an exact "false" (the default, so a plain dispatch still promotes for real). Any other value ("true", a typo, etc.) is a dry-run that only prints the planned retags/promotion.'
     required: false
     default: 'false'
+outputs:
+  promote-self-enabled:
+    description: 'Whether the manifest forwarded an exact "true" promote-self value to the promotion script.'
+    value: ${{ steps.promote.outputs.promote-self-enabled }}
 runs:
   using: composite
   steps:
@@ -112,6 +116,7 @@ runs:
       with:
         version: v0.20.2
     - name: Promote release
+      id: promote
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
