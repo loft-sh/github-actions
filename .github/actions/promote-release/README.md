@@ -42,11 +42,26 @@ actually tracks — reading the prerelease flag instead would strand `:latest`
 behind any newer un-promoted cut. Promoting an older line's patch after a newer
 stable is already `:latest` skips `:latest`/`:{major}`, so they never move
 backwards. Re-promoting the release that is already Latest is allowed, so a
-partially failed promotion can simply be re-run. `:{major}.{minor}` is scoped to
-its own line and gets its own check: it advances only when `version` is the
-newest stable *within that `{major}.{minor}` line* (GitHub has no per-line
-equivalent of the Latest pointer), so an out-of-order same-line promotion (e.g.
-promoting `v9.9.5` after `v9.9.6` already moved `:9.9`) can't regress it either.
+partially failed promotion can simply be re-run.
+
+If **no** release carries the Latest flag, the baseline falls back to the newest
+stable-shaped tag rather than to "advance". The flag is clearable — re-running a
+release build re-asserts `make_latest: false` on the tag that holds it — so an
+absent pointer must not be read as "nothing has ever been promoted"; that would
+let a dispatch for an older line drag `:latest` backwards. A genuinely empty
+release list still advances, which is the real first-ever promotion.
+
+`:{major}.{minor}` is scoped to its own line and gets its own check: it advances
+only when `version` is the newest stable-shaped tag *within that
+`{major}.{minor}` line* (GitHub has no per-line equivalent of the Latest
+pointer), so an out-of-order same-line promotion (e.g. promoting `v9.9.5` after
+`v9.9.6` already moved `:9.9`) can't regress it either. That check keys on tag
+shape alone and deliberately ignores the pre-release flag, which is mutable: a
+stable-shaped tag can carry it (every cut did under the legacy
+`release.prerelease: true` config, and re-running such a build re-flags an
+already-promoted tag), and filtering on it would drop the newer sibling from the
+comparison and permit exactly the regression the check exists to stop.
+
 A failure to even list releases fails the run closed rather than risk a silent
 downgrade.
 

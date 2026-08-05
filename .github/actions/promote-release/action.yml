@@ -37,6 +37,11 @@ description: |
   never `:latest`/`:{major}` backwards. A failure to even list releases fails
   the run closed rather than risking a silent downgrade. Re-promoting the
   current Latest is allowed, so a partially failed promotion can be re-run.
+  If NO release carries the Latest flag the baseline falls back to the newest
+  stable-shaped tag, not to "advance": that flag is cleared whenever a release
+  build is re-run, so an absent pointer must not read as a first-ever
+  promotion. The line-scoped check keys on tag shape alone and ignores the
+  mutable pre-release flag for the same reason.
 
   Optionally also promotes a Homebrew tap: a metadata patch, not a rebuild.
   A formula's per-platform sha256 values are exactly what's already in

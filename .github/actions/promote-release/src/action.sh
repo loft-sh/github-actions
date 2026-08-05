@@ -151,14 +151,25 @@ run() {
 #     so it is the only correct baseline. VERSION == the current isLatest
 #     resolves true, keeping a re-run idempotent (it must still be able to
 #     re-apply retags that failed the first time).
+#     If NO release carries isLatest, the baseline falls back to the newest
+#     stable-shaped tag rather than to "advance". The flag is clearable (a
+#     build re-run re-asserts make_latest: false on the tag that holds it), so
+#     an absent pointer must not read as "nothing has ever been promoted".
 #
 #   Line-scoped ($2 = "{major}.{minor}", e.g. "9.9") - gates :{major}.{minor}.
-#     GitHub has no per-line equivalent of the isLatest pointer, so this stays
-#     a comparison against the newest stable-shaped release in that line. The
-#     shape filter already excludes -rc/-alpha, and under prerelease: auto the
-#     effect is conservative in the safe direction: if a newer patch in the
-#     same line exists but has not been promoted, the line tag is left alone
-#     (promote that newer patch instead) rather than regressed.
+#     GitHub has no per-line equivalent of the isLatest pointer, so this is a
+#     comparison against the newest stable-SHAPED release in that line, on tag
+#     shape alone. isPrerelease is deliberately not consulted: it is mutable
+#     and a stable-shaped tag can carry it (every cut did under the legacy
+#     release.prerelease: true config), so filtering on it could drop the newer
+#     sibling and let an older patch regress the line tag. Under prerelease:
+#     auto the effect is conservative in the safe direction anyway: if a newer
+#     patch in the same line exists but has not been promoted, the line tag is
+#     left alone (promote that newer patch instead) rather than regressed.
+#
+# Both baselines therefore degrade to the same immutable, tag-shape-derived
+# comparison when their flag is missing or untrustworthy, and both can only
+# ever refuse a promotion, never permit a regression.
 #
 # No release in scope at all is treated as "yes" (first-ever promotion).
 #
@@ -177,6 +188,12 @@ run() {
 #     --latest, which never moves it backward).
 is_latest_stable() {
   local repo="$1" line="${2-}" on_fail="${3:-exit}" raw max filter
+  # The exact stable release shape. Used as a fallback baseline in both
+  # branches below because it is derived from the immutable tag: unlike
+  # isLatest and isPrerelease it cannot be cleared by a build re-run or
+  # re-flagged by a human, so it can only ever refuse a promotion, never
+  # permit a regression.
+  local stable_shape='^v[0-9]+\.[0-9]+\.[0-9]+$'
   # --limit must comfortably exceed the repo's lifetime release count: the
   # "empty result => advance" short-circuit below reads an empty list as "no
   # prior release (in scope) ever". For the line-scoped check that's the fail-
@@ -197,11 +214,35 @@ is_latest_stable() {
     # this yields 0 or 1 tags; no shape filter is applied, because whatever a
     # human promoted IS the baseline even if its shape is unusual.
     max=$(jq -r '[.[] | select(.isLatest) | .tagName][]' <<<"${raw}")
+    if [[ -z "${max}" ]]; then
+      # No release carries the Latest flag. This is NOT automatically a
+      # first-ever promotion: goreleaser re-asserts make_latest: false on every
+      # run, so re-running the build for the tag that is currently Latest
+      # clears the flag and leaves the repo in exactly this state. Falling
+      # straight through to "advance" there would let a dispatch for an older
+      # line move :latest, :{major}, the repo's Latest pointer and the stable
+      # Homebrew formula BACKWARDS - the very downgrade this function exists to
+      # prevent.
+      #
+      # Fall back to the newest stable-SHAPED tag. A genuinely empty release
+      # list (or one with no stable cut yet) still yields an empty baseline and
+      # advances, which is the real first-ever promotion.
+      max=$(jq -r '.[].tagName' <<<"${raw}" | grep -E "${stable_shape}" | sort -V | tail -1)
+      if [[ -n "${max}" ]]; then
+        echo "::warning::no release on ${repo} carries the Latest flag; using the newest stable tag (${max}) as the promotion baseline instead. Re-running a release build clears that flag - promote the version that should be Latest to restore it." >&2
+      fi
+    fi
   else
     # Anchor the line filter on the literal, dot-escaped {major}.{minor} so a
-    # "9.9" line never also matches "9x9" or a "99" prefix.
+    # "9.9" line never also matches "9x9" or a "99" prefix. The shape filter
+    # already excludes -rc/-alpha/-next, so isPrerelease adds nothing here and
+    # is deliberately NOT consulted: it is mutable, and a stable-shaped tag can
+    # carry isPrerelease == true (every cut did under the legacy
+    # release.prerelease: true config, and re-running such a build re-flags an
+    # already-promoted tag). Filtering on it would drop the newer sibling from
+    # the comparison and let an older patch retag :{major}.{minor} backwards.
     filter="^v${line//./\\.}\.[0-9]+$"
-    max=$(jq -r '[.[] | select(.isPrerelease == false) | .tagName][]' <<<"${raw}" \
+    max=$(jq -r '.[].tagName' <<<"${raw}" \
       | grep -E "${filter}" \
       | sort -V | tail -1)
   fi

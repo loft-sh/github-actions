@@ -242,7 +242,14 @@ teardown() {
   # pre-release, not Latest). It is NOT what :latest tracks, so promoting
   # v9.9.9 must still advance :latest. Reading the old flag here would strand
   # :latest until someone promoted v10.0.0.
-  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v10.0.0","isPrerelease":false,"isLatest":false}]'
+  #
+  # v9.9.8 carries the Latest flag, so this isolates the one variable under
+  # test: an un-promoted NEWER cut in the list. The old isPrerelease-based
+  # baseline would have picked v10.0.0 here and refused. (The separate case of
+  # no Latest flag at ALL is a different state - see the fallback test below -
+  # because a cleared flag is indistinguishable from a never-promoted repo and
+  # must not be read as "anything may advance".)
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.9.8","isPrerelease":false,"isLatest":true},{"tagName":"v10.0.0","isPrerelease":false,"isLatest":false}]'
   run "$SCRIPT"
   [ "$status" -eq 0 ]
 
@@ -261,6 +268,56 @@ teardown() {
 
   grep -qF 'CREATE ghcr.io/example-org/example-image:latest ghcr.io/example-org/example-image:v9.9.9' "$CRANE_MOCK_CALLS"
   [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 6 ]
+}
+
+@test "releases exist but none is flagged Latest -> falls back to the newest stable tag, no backward :latest" {
+  # The Latest flag is CLEARABLE: goreleaser re-asserts make_latest: false on
+  # every run, so re-running the build for the tag that currently holds it
+  # leaves the repo with releases but no isLatest. An empty isLatest must
+  # therefore NOT read as "first-ever promotion" - doing so would let this
+  # dispatch for the older v9.9.9 drag :latest/:9 back off v10.0.0.
+  export INPUT_PROMOTE_SELF="true"
+  export GH_MOCK_KNOWN_RELEASES="example-org/example-repo:v9.9.9 example-org/example-caller-repo:v9.9.9"
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.9.9","isPrerelease":false,"isLatest":false},{"tagName":"v10.0.0","isPrerelease":false,"isLatest":false}]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"no release on example-org/example-caller-repo carries the Latest flag"* ]]
+  [[ "$output" == *"newest stable tag (v10.0.0)"* ]]
+
+  # :latest/:9 must stay put; the line tag is still allowed to advance.
+  run ! grep -qF ':latest ' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9.9 ghcr.io/example-org/example-image:v9.9.9' "$CRANE_MOCK_CALLS"
+  # ... and the caller's own release must not be flipped to Latest either.
+  grep -qF -- 'EDIT example-org/example-caller-repo v9.9.9 --prerelease=false' "$GH_MOCK_CALLS"
+  run ! grep -qF -- 'EDIT example-org/example-caller-repo v9.9.9 --prerelease=false --latest' "$GH_MOCK_CALLS"
+}
+
+@test "no releases at all -> genuine first-ever promotion still advances" {
+  # The fallback above must not turn an actually-empty repo into a permanent
+  # refusal: with no releases there is nothing to regress, so :latest advances.
+  set_release_list "$GITHUB_REPOSITORY" '[]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  run ! grep -q 'carries the Latest flag' <<<"$output"
+
+  grep -qF 'CREATE ghcr.io/example-org/example-image:latest ghcr.io/example-org/example-image:v9.9.9' "$CRANE_MOCK_CALLS"
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 6 ]
+}
+
+@test "line gate ignores the mutable prerelease flag on a stable-shaped sibling" {
+  # :9.9 already points at v9.9.10. Re-running that release's build under the
+  # legacy release.prerelease: true config re-flags it isPrerelease. If the
+  # line gate filtered on that flag, v9.9.10 would drop out of the comparison,
+  # v9.9.9 would look newest in its line, and :9.9 would be retagged BACKWARDS.
+  # The gate keys on tag shape only, so the regression can't happen.
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.9.10","isPrerelease":true,"isLatest":false},{"tagName":"v10.0.0","isPrerelease":false,"isLatest":true}]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"is not the newest stable release in the 9.9 line"* ]]
+
+  run ! grep -qF ':9.9 ' "$CRANE_MOCK_CALLS"
+  run ! grep -qF ':latest ' "$CRANE_MOCK_CALLS"
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 0 ]
 }
 
 @test "non-stable version (has a suffix) -> no-op, no docker or gh calls" {

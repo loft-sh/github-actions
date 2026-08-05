@@ -20,17 +20,23 @@ inputs:
     required: false
     default: 'false'
   is_prerelease:
-    description: 'Is this a pre-release?'
+    description: |
+      Is this a pre-release? When "true" the banner gains a "GitHub label:
+      Pre-release" field. Left at the default no label field is rendered at
+      all, so a caller that does not set it sees the same banner as before
+      this field existed.
     required: false
     default: 'false'
   needs_promotion:
     description: |
       Set to "true" when the release is published un-promoted and a human still
       has to promote it (the GitHub "None" label: not a pre-release, not Latest).
-      Adds a line to the banner pointing at the promote workflow, since the
-      release build is the only thing that tells the Release Captain a step is
-      left. Opt-in, so products whose releases ship straight to Latest are
-      unaffected.
+      Adds a "GitHub label" field to the banner pointing at the promote
+      workflow, since the release build is the only thing that tells the Release
+      Captain a step is left. Opt-in: with neither this nor is_prerelease set,
+      no label field is rendered and the banner is byte-identical to the one
+      callers got before these inputs existed, so products whose releases ship
+      straight to Latest are unaffected.
     required: false
     default: 'false'
   promote_workflow:
@@ -119,15 +125,20 @@ runs:
               fields:
                 - type: mrkdwn
                   text: "*Source Branch:*\n${{ inputs.base_branch || steps.detect_branch.outputs.base_branch || 'main' }}"
-                # Always-present field rather than a conditionally-appended
-                # block: Block Kit payloads here are static YAML, and an empty
-                # element is invalid, so the state is rendered as text instead.
-                - type: mrkdwn
-                  # Fallback is the neutral "Release", never "Latest": callers
-                  # that pass neither flag (e.g. vCluster Platform) have their
-                  # own labelling rules, and claiming Latest for them would be a
-                  # guess.
-                  text: "*GitHub label:*\n${{ (inputs.needs_promotion == 'true' && format('`None` - not Latest yet. <https://github.com/{0}/actions/workflows/{1}|Promote it> to move Latest, the moving image tags and the Homebrew formula.', inputs.target_repo, inputs.promote_workflow)) || (inputs.is_prerelease == 'true' && 'Pre-release') || 'Release' }}"
+                # Opt-in field, rendered only when the caller actually declares
+                # a label state. This payload is a YAML *string*, so an
+                # expression that resolves to '' just leaves a blank line and
+                # the element is omitted entirely - which is what keeps the
+                # promise that callers passing neither flag are unaffected.
+                # Rendering an unconditional field instead would tell every
+                # existing caller (e.g. vCluster Platform, whose releases ship
+                # straight to Latest) "GitHub label: Release", which is both new
+                # output they did not ask for and wrong for them: the two
+                # booleans cannot distinguish an ordinary release from a Latest
+                # one, so with neither set there is nothing truthful to say.
+                # Written in flow style because a block-style element cannot be
+                # produced from a single-line expression.
+                ${{ (inputs.needs_promotion == 'true' && format('- {{"type": "mrkdwn", "text": "*GitHub label:*\n`None` - not Latest yet. <https://github.com/{0}/actions/workflows/{1}|Promote it> to move Latest, the moving image tags and the Homebrew formula."}}', inputs.target_repo, inputs.promote_workflow)) || (inputs.is_prerelease == 'true' && '- {"type": "mrkdwn", "text": "*GitHub label:*\nPre-release"}') || '' }}
             # One cut can publish two releases (e.g. a private product repo plus
             # its public OSS counterpart), so both the changelog and the release
             # link render per repo when paired_repo is set. Labelled with the
