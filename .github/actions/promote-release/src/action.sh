@@ -287,32 +287,18 @@ for ((i = 0; i < IMAGE_COUNT; i++)); do
   fi
 done
 
-# --- Docker moving tags ------------------------------------------------
-
-for ((i = 0; i < IMAGE_COUNT; i++)); do
-  entry=$(jq -c ".[$i]" <<<"${INPUT_IMAGES}")
-  image=$(jq -r '.image' <<<"${entry}")
-  suffix=$(jq -r '.suffix // ""' <<<"${entry}")
-
-  src="${image}:${VERSION}${suffix}"
-  moving_tags=()
-  [[ "${ADVANCE_LATEST_MAJOR}" == "true" ]] && moving_tags+=(latest "${MAJOR}")
-  [[ "${ADVANCE_MINOR}" == "true" ]] && moving_tags+=("${MAJOR}.${MINOR}")
-  if [[ "${#moving_tags[@]}" -eq 0 ]]; then
-    echo "::notice::${src}: no moving tags to advance (VERSION is superseded both overall and within its own line); nothing to retag."
-    continue
-  fi
-  for moving in "${moving_tags[@]}"; do
-    dest="${image}:${moving}${suffix}"
-    echo "Retagging ${dest} -> ${src}"
-    # crane tag SRC NEWTAG re-points NEWTAG (in SRC's repo) at SRC's exact
-    # manifest digest -- digest-preserving for both single-platform manifests
-    # and indexes, so per-arch moving tags stay cosign-verifiable (see header).
-    run crane tag "${src}" "${moving}${suffix}"
-  done
-done
-
 # --- Caller repo's own release -------------------------------------------
+#
+# Deliberately BEFORE the docker retags, and after the source-manifest
+# pre-flight above. This edit writes the caller's Latest pointer, which is the
+# very pointer is_latest_stable() reads back as the unscoped backport baseline
+# on every later run. If the retags moved first and this then failed, the
+# pointer would sit BEHIND :latest, and the next dispatch for an older line
+# would pass that stale gate and drag :latest backwards. Establishing the
+# pointer first inverts the failure mode: a later crane failure leaves the
+# pointer AHEAD, which is the conservative direction - it can only refuse a
+# subsequent older promotion, never permit a regression - and re-promoting this
+# same version is still allowed, so a plain re-run recovers.
 #
 # Only meaningful when the caller publishes stable cuts with the GitHub "None"
 # label (release.prerelease: auto + make_latest: false in goreleaser): the
@@ -338,27 +324,57 @@ if [[ "${PROMOTE_SELF}" == "true" ]]; then
     if ! run gh release edit "${VERSION}" --repo "${GITHUB_REPOSITORY}" "${self_args[@]}"; then
       if [[ "${ADVANCE_LATEST_MAJOR}" == "true" ]]; then
         # Fatal, unlike every other release-edit failure here, because this one
-        # edit is the action's own future safety baseline. The moving docker
-        # tags have already advanced to VERSION; if the Latest pointer does not
-        # follow, the next run reads a STALE baseline and a subsequent
-        # older-line promotion passes the unscoped gate and drags :latest
-        # backwards - a silent regression whose cause is a warning nobody read
-        # on an earlier green run. Fail here instead, before the oss-repo and
-        # Homebrew promotions, so the divergence stays as small as possible and
-        # is visible. The whole action is idempotent: re-run it.
-        echo "::error::failed to set ${GITHUB_REPOSITORY}@${VERSION} as Latest, but the moving docker tags already advanced to it. Leaving the run red: the Latest pointer is this action's backport baseline, so a stale one would let a later promotion move :latest backwards. Re-run this promotion (it is idempotent), or set it by hand: gh release edit ${VERSION} --repo ${GITHUB_REPOSITORY} ${self_args[*]}"
+        # edit is the action's own future safety baseline. Nothing has been
+        # retagged yet, so aborting leaves every pointer consistent at its
+        # previous version rather than :latest ahead of a stale baseline.
+        echo "::error::failed to set ${GITHUB_REPOSITORY}@${VERSION} as Latest: ${self_args[*]}. Refusing to retag the moving tags, since :latest would then be ahead of the pointer this action reads as its backport baseline and a later promotion could move it backwards. Nothing has changed yet; re-run this promotion (it is idempotent)."
         exit 1
       fi
       # Backport promotion: the edit was --prerelease=false only, which moves no
       # pointer and cannot stale any baseline, so a warning is enough.
       echo "::warning::gh release edit failed for ${GITHUB_REPOSITORY}@${VERSION}. Promote manually: gh release edit ${VERSION} --repo ${GITHUB_REPOSITORY} ${self_args[*]}"
     fi
+  elif [[ "${ADVANCE_LATEST_MAJOR}" == "true" ]]; then
+    # `gh release view` exits non-zero both for "no such release" and for a
+    # transient API error, and the two are indistinguishable here. An advancing
+    # promotion has to actually establish the pointer, so neither may pass
+    # silently: skipping with a warning would retag :latest and leave the
+    # baseline behind it, which is the regression this ordering exists to stop.
+    echo "::error::cannot read ${GITHUB_REPOSITORY}@${VERSION} (no such release, or the API call failed), so its Latest pointer cannot be established. Refusing to retag the moving tags. Nothing has changed yet; re-run once the release is readable." >&2
+    exit 1
   else
+    # Backport promotion: no pointer to establish, so a missing release is only
+    # worth a warning - the line tag can still advance.
     echo "::warning::no ${VERSION} release found on ${GITHUB_REPOSITORY}; skipping its promotion"
   fi
 else
   echo "promote-self not enabled; leaving ${GITHUB_REPOSITORY}'s own release untouched"
 fi
+
+# --- Docker moving tags ------------------------------------------------
+
+for ((i = 0; i < IMAGE_COUNT; i++)); do
+  entry=$(jq -c ".[$i]" <<<"${INPUT_IMAGES}")
+  image=$(jq -r '.image' <<<"${entry}")
+  suffix=$(jq -r '.suffix // ""' <<<"${entry}")
+
+  src="${image}:${VERSION}${suffix}"
+  moving_tags=()
+  [[ "${ADVANCE_LATEST_MAJOR}" == "true" ]] && moving_tags+=(latest "${MAJOR}")
+  [[ "${ADVANCE_MINOR}" == "true" ]] && moving_tags+=("${MAJOR}.${MINOR}")
+  if [[ "${#moving_tags[@]}" -eq 0 ]]; then
+    echo "::notice::${src}: no moving tags to advance (VERSION is superseded both overall and within its own line); nothing to retag."
+    continue
+  fi
+  for moving in "${moving_tags[@]}"; do
+    dest="${image}:${moving}${suffix}"
+    echo "Retagging ${dest} -> ${src}"
+    # crane tag SRC NEWTAG re-points NEWTAG (in SRC's repo) at SRC's exact
+    # manifest digest -- digest-preserving for both single-platform manifests
+    # and indexes, so per-arch moving tags stay cosign-verifiable (see header).
+    run crane tag "${src}" "${moving}${suffix}"
+  done
+done
 
 # --- Paired public release ----------------------------------------------
 

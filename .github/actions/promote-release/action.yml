@@ -71,7 +71,7 @@ inputs:
       signature stays valid.
     required: true
   promote-self:
-    description: 'Set to "true" to also promote the CALLER repo''s own <version> release (unset pre-release, set Latest). Required when the caller publishes stable cuts with the GitHub "None" label, since nothing else ever flips them. Latest is gated by the same backport check as :latest. A failure to set Latest is fatal and aborts before the oss-repo and Homebrew promotions, because that pointer is this action''s own backport baseline and a stale one would let a later promotion move :latest backwards; re-run the action to recover.'
+    description: 'Set to "true" to also promote the CALLER repo''s own <version> release (unset pre-release, set Latest). Required when the caller publishes stable cuts with the GitHub "None" label, since nothing else ever flips them. Latest is gated by the same backport check as :latest. On an advancing promotion this edit runs BEFORE the docker retags and any failure to complete it is fatal, because that pointer is this action''s own backport baseline: retagging first would leave it behind :latest and let a later promotion move :latest backwards. Re-run the action to recover. On a backport the edit moves no pointer, so a failure stays a warning.'
     required: false
     default: 'false'
   oss-repo:

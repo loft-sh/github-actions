@@ -400,19 +400,33 @@ teardown() {
   run ! grep -qF -- 'EDIT example-org/example-caller-repo v9.9.9 --prerelease=false --latest' "$GH_MOCK_CALLS"
 }
 
-@test "promote-self: a failed Latest edit is fatal and stops before oss-repo/homebrew" {
-  # The caller's Latest pointer is this action's own backport baseline. The
-  # docker retags have already advanced, so leaving the pointer behind on a
-  # green run would stale the baseline and let a later older-line promotion
-  # drag :latest backwards. It must fail loudly, and it must not go on to move
-  # the oss-repo release or the tap while the caller's pointer is stale.
+@test "promote-self: a failed Latest edit is fatal and happens before any retag" {
+  # The caller's Latest pointer is this action's own backport baseline, so it
+  # is established BEFORE the moving tags advance. If it cannot be set, nothing
+  # may be retagged: :latest ahead of a stale baseline is exactly what lets a
+  # later older-line promotion drag :latest backwards.
   export INPUT_PROMOTE_SELF="true"
   export GH_MOCK_KNOWN_RELEASES="example-org/example-repo:v9.9.9 example-org/example-caller-repo:v9.9.9"
   export GH_MOCK_FAIL=1
   run "$SCRIPT"
   [ "$status" -eq 1 ]
   [[ "$output" == *"failed to set example-org/example-caller-repo@v9.9.9 as Latest"* ]]
+  # Nothing at all should have moved: no retags, no oss-repo promotion.
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 0 ]
   run ! grep -qF -- 'EDIT example-org/example-repo' "$GH_MOCK_CALLS"
+}
+
+@test "promote-self: an unreadable caller release on an advancing promotion is fatal" {
+  # `gh release view` exits non-zero both for "no such release" and for a
+  # transient API error; the two are indistinguishable. An advancing promotion
+  # must establish the pointer, so neither may be skipped with a warning - that
+  # would retag :latest and leave the baseline behind it.
+  export INPUT_PROMOTE_SELF="true"
+  run "$SCRIPT"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"cannot read example-org/example-caller-repo@v9.9.9"* ]]
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 0 ]
+  run ! grep -qF 'EDIT ' "$GH_MOCK_CALLS"
 }
 
 @test "promote-self: a failed edit on a BACKPORT stays a warning (no pointer moved)" {
@@ -427,12 +441,17 @@ teardown() {
   [[ "$output" == *"gh release edit failed for example-org/example-caller-repo@v9.9.9"* ]]
 }
 
-@test "promote-self with no matching release on the caller repo -> warns, run still succeeds" {
+@test "promote-self with no matching release on the caller repo, BACKPORT -> warns, run still succeeds" {
+  # On a backport nothing advances, so there is no Latest pointer to establish
+  # and a missing release cannot stale a baseline. The line tag must still be
+  # allowed to advance, so this stays a warning rather than the fatal path.
   export INPUT_PROMOTE_SELF="true"
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v10.0.0","isPrerelease":false,"isLatest":true}]'
   run "$SCRIPT"
   [ "$status" -eq 0 ]
   [[ "$output" == *"no v9.9.9 release found on example-org/example-caller-repo"* ]]
   run ! grep -qF 'EDIT example-org/example-caller-repo' "$GH_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9.9 ghcr.io/example-org/example-image:v9.9.9' "$CRANE_MOCK_CALLS"
 }
 
 @test "promote-self -> only an exact 'true' enables it" {
