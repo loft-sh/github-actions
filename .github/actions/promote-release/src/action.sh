@@ -297,8 +297,8 @@ done
 # context to advisory edit failures (for example, whether retags are complete).
 # $6 explains why --latest was withheld.
 #
-# Return codes: 0 = edit succeeded/planned (or advisory edit failed),
-# 3 = release not found, 4 = lookup failed for another reason.
+# Return codes: 0 = edit succeeded/planned, 3 = release not found,
+# 4 = lookup failed for another reason, 5 = advisory edit failed.
 promote_gh_release() {
   local repo="$1" advance_latest="$2" failure_mode="$3" preview_missing="${4:-false}"
   local prior_note="${5:-}" skip_reason="${6:-the promotion ordering gate withheld it}"
@@ -354,6 +354,7 @@ promote_gh_release() {
       exit 1
     fi
     echo "::warning::gh release edit failed for ${repo}@${VERSION}.${prior_note:+ ${prior_note}} Promote manually: gh release edit ${VERSION} --repo ${repo} ${edit_args[*]}" >&2
+    return 5
   fi
 }
 
@@ -422,7 +423,7 @@ done
 # block below, and reused by the Homebrew section - so the advisory Homebrew
 # step doesn't fire a second `gh release list` (that duplicated the work and,
 # via fetch_release_list's fail-closed exit, could hard-fail the whole run for a
-# transient list blip after everything else already succeeded). Four states:
+# transient list blip after everything else already succeeded). States:
 #   "true"    - VERSION is newest; promote --latest and the Homebrew tap.
 #   "false"   - confirmed backport; skip --latest and skip Homebrew (a formula
 #               has no line-scoped equivalent to :{major}.{minor}).
@@ -430,6 +431,8 @@ done
 #               warn it's retryable, NOT a backport.
 #   "missing" - no matching oss-repo release.
 #   "lookup-failed" - the release lookup failed for a retryable reason.
+#   "edit-failed" - the paired release could not be promoted; skip Homebrew so
+#                   it cannot advance ahead of the release consumers follow.
 #   ""        - never computed (no oss-repo configured).
 OSS_IS_LATEST=""
 if [[ -n "${OSS_REPO}" ]]; then
@@ -439,9 +442,21 @@ if [[ -n "${OSS_REPO}" ]]; then
   OSS_SKIP_REASON="release ordering could not be confirmed"
   fetch_release_list "${OSS_REPO}" soft || oss_rc=$?
   if [[ "${oss_rc}" -eq 0 ]] && is_at_or_after_latest_pointer "${OSS_REPO}" "${RELEASE_LIST}"; then
-    OSS_IS_LATEST=true
-    OSS_ADVANCE_LATEST=true
     OSS_BASELINE_NOTE="${LATEST_BASELINE_NOTE}"
+    if [[ "${ADVANCE_LATEST_MAJOR}" == "true" ]]; then
+      OSS_IS_LATEST=true
+      OSS_ADVANCE_LATEST=true
+    else
+      # The caller's Latest pointer is also the Docker moving-tag baseline and
+      # therefore the authoritative upper bound for this coordinated release.
+      # Requiring both repositories to pass prevents a stale OSS pointer (for
+      # example after an earlier advisory edit failure) from promoting a caller
+      # backport as OSS Latest or moving the Homebrew formula backwards.
+      OSS_IS_LATEST=false
+      OSS_BASELINE_NOTE="caller ${CALLER_BASELINE_NOTE}"
+      OSS_SKIP_REASON="${VERSION} is behind ${CALLER_BASELINE_NOTE} on ${GITHUB_REPOSITORY}"
+      echo "::notice::${VERSION} is behind the caller's promotion baseline (${CALLER_BASELINE_NOTE}); unsetting pre-release on ${OSS_REPO} but not moving Latest."
+    fi
   elif [[ "${oss_rc}" -eq 0 ]]; then
     OSS_IS_LATEST=false
     OSS_BASELINE_NOTE="${LATEST_BASELINE_NOTE}"
@@ -458,6 +473,7 @@ if [[ -n "${OSS_REPO}" ]]; then
   case "${promote_rc}" in
     0) ;;
     3) OSS_IS_LATEST=missing ;;
+    5) OSS_IS_LATEST=edit-failed ;;
     *) OSS_IS_LATEST=lookup-failed ;;
   esac
 else
@@ -629,6 +645,9 @@ if [[ -n "${HOMEBREW_TAP_REPO}" ]]; then
       ;;
     lookup-failed)
       echo "::warning::could not inspect ${OSS_REPO}@${VERSION} to source Homebrew checksums; skipping Homebrew tap promotion. Re-run the action once the API or repository access recovers."
+      ;;
+    edit-failed)
+      echo "::warning::the release edit for ${OSS_REPO}@${VERSION} failed; skipping Homebrew tap promotion so the formula cannot advance ahead of the paired release. Re-run the action after fixing the release promotion."
       ;;
   esac
 else

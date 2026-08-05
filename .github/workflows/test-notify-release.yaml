@@ -23,7 +23,8 @@ jobs:
     uses: ./.github/workflows/notify-release.yaml
     with:
       release_version: 'v0.0.0-smoke-test'
-      previous_tag: 'v0.0.0'
+      # Empty previous_tag is valid for a first release and must pass the
+      # reusable workflow's dry-run validation.
       target_repo: ${{ github.repository }}
       product: 'smoke-test'
       dry-run: true

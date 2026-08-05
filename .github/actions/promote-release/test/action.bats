@@ -591,6 +591,7 @@ teardown() {
   run "$SCRIPT"
   [ "$status" -eq 0 ]
   [[ "$output" == *"older than the promotion baseline on example-org/example-caller-repo"* ]]
+  [[ "$output" == *"behind the caller's promotion baseline"* ]]
 
   grep -qF 'CREATE ghcr.io/example-org/example-image:9.9 ghcr.io/example-org/example-image:v9.9.9' "$CRANE_MOCK_CALLS"
   grep -qF 'CREATE ghcr.io/example-org/example-image:9.9-fips ghcr.io/example-org/example-image:v9.9.9-fips' "$CRANE_MOCK_CALLS"
@@ -598,9 +599,11 @@ teardown() {
   run ! grep -qF ':9 ' "$CRANE_MOCK_CALLS"
   [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 2 ]
 
-  # A different repo's history (oss-repo) is unaffected by the caller repo's:
-  # the paired release still gets --latest.
-  grep -qF -- 'EDIT example-org/example-repo v9.9.9 --prerelease=false --latest' "$GH_MOCK_CALLS"
+  # The paired repo may have a stale Latest pointer after an earlier advisory
+  # edit failure. The caller is the Docker-tag baseline and therefore the
+  # authoritative upper bound: a caller backport must never move OSS Latest.
+  grep -qF -- 'EDIT example-org/example-repo v9.9.9 --prerelease=false' "$GH_MOCK_CALLS"
+  run ! grep -qF -- 'EDIT example-org/example-repo v9.9.9 --prerelease=false --latest' "$GH_MOCK_CALLS"
 }
 
 @test "backport across minor lines (same major) -> still skips :latest/:major" {
@@ -774,6 +777,19 @@ teardown() {
   [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 6 ]
 }
 
+@test "paired release edit failure -> skips Homebrew instead of advancing it ahead of the release" {
+  export GH_MOCK_FAIL=1
+  export INPUT_HOMEBREW_TAP_REPO="example-org/example-tap"
+  export INPUT_HOMEBREW_FORMULA_PATHS='["Formula/vcluster.rb"]'
+
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"gh release edit failed for example-org/example-repo@v9.9.9"* ]]
+  [[ "$output" == *"skipping Homebrew tap promotion so the formula cannot advance ahead of the paired release"* ]]
+  run ! grep -q '^DOWNLOAD \|^API ' "$GH_MOCK_CALLS"
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 6 ]
+}
+
 @test "homebrew tap -> not configured by default, no download/api calls" {
   run "$SCRIPT"
   [ "$status" -eq 0 ]
@@ -830,6 +846,22 @@ teardown() {
   [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 6 ]
   grep -qF -- 'EDIT example-org/example-repo v9.9.9 --prerelease=false' "$GH_MOCK_CALLS"
   run ! grep -qF -- '--latest' "$GH_MOCK_CALLS"
+}
+
+@test "homebrew tap -> caller backport skips even when the OSS Latest pointer is stale" {
+  export INPUT_HOMEBREW_TAP_REPO="example-org/example-tap"
+  export INPUT_HOMEBREW_FORMULA_PATHS='["Formula/vcluster.rb"]'
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v10.0.0","isPrerelease":false,"isLatest":true}]'
+  # OSS is behind and would independently classify v9.9.9 as an advance.
+  set_release_list "$INPUT_OSS_REPO" '[{"tagName":"v9.0.0","isPrerelease":false,"isLatest":true}]'
+
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"behind the caller's promotion baseline"* ]]
+  [[ "$output" == *"skipping Homebrew tap promotion entirely"* ]]
+  run ! grep -q '^DOWNLOAD \|^API ' "$GH_MOCK_CALLS"
+  grep -qF -- 'EDIT example-org/example-repo v9.9.9 --prerelease=false' "$GH_MOCK_CALLS"
+  run ! grep -qF -- 'EDIT example-org/example-repo v9.9.9 --prerelease=false --latest' "$GH_MOCK_CALLS"
 }
 
 @test "homebrew-tap-repo without oss-repo -> fails fast" {

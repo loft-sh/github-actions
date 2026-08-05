@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       previous_tag:
-        description: 'The previous tag for changelog comparison (required when status=success)'
+        description: 'The previous tag for changelog comparison. Leave empty for a first release; the banner links release notes instead.'
         required: false
         type: string
         default: ''
@@ -85,9 +85,6 @@ jobs:
           echo "  product=$PRODUCT"
           echo "  status=$STATUS"
           REQUIRED_VARS="RELEASE_VERSION TARGET_REPO PRODUCT"
-          if [ "$STATUS" = "success" ]; then
-            REQUIRED_VARS="$REQUIRED_VARS PREVIOUS_TAG"
-          fi
           for var in $REQUIRED_VARS; do
             if [ -z "${!var}" ]; then
               echo "::error::Required input $var is empty"

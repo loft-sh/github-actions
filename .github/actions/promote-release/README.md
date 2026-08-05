@@ -31,6 +31,13 @@ branch picker and the API accepts any ref. Since a promotion moves public
 pointers with a privileged token, the caller should assert the ref is the default
 branch before the secret-bearing job runs.
 
+Promotion runs must also be serialized within the caller repository. The
+ordering guard reads the current Latest pointer before it writes any pointer;
+without a shared concurrency group, two overlapping dispatches can both pass
+against the same baseline and let the older release write last. The example
+below uses a repository-wide `promote-release` group and does not cancel an
+in-progress promotion.
+
 Only acts on a stable `vX.Y.Z` version (no prerelease suffix); any other shape
 is a no-op, since moving tags and "latest" promotion aren't meaningful for
 `-rc`/`-alpha`/`-next` cuts.
@@ -47,6 +54,13 @@ behind any newer un-promoted cut. Promoting an older line's patch after a newer
 stable is already `:latest` skips `:latest`/`:{major}`, so they never move
 backwards. Re-promoting the release that is already Latest is allowed, so a
 partially failed promotion can simply be re-run.
+
+The paired `oss-repo` Latest pointer and Homebrew formula advance only when
+`version` passes **both** the caller-repository gate and the `oss-repo` gate.
+The caller pointer is the authoritative baseline for the coordinated Docker
+release, so a stale paired-repository pointer after an earlier advisory failure
+cannot reclassify a caller backport as a newest release and move public pointers
+backwards.
 
 If **no** release carries the Latest flag, the baseline falls back to the newest
 stable-shaped tag rather than to "advance". The flag is clearable — re-running a
@@ -107,6 +121,13 @@ on:
         description: "Stable version to promote, e.g. v0.37.1"
         type: string
         required: true
+
+# The ordering gate is a read-then-write operation. Serialize every promotion
+# in this repository so two dispatches cannot both pass against the same Latest
+# pointer and let the older run write last.
+concurrency:
+  group: promote-release
+  cancel-in-progress: false
 
 jobs:
   promote:
@@ -215,8 +236,11 @@ so it warns and prints the planned edit instead.
 ### oss-repo
 
 If set, and a release matching `version` exists on `oss-repo`, it is edited
-to `--prerelease=false --latest`. If no matching release exists, this step is
-skipped with a warning — it does not fail the docker retagging.
+to `--prerelease=false`; `--latest` is added only when both the caller and
+`oss-repo` ordering gates allow it. If no matching release exists, this step is
+skipped with a warning — it does not fail the docker retagging. An edit failure
+also remains advisory, but Homebrew promotion is skipped so the formula cannot
+advance ahead of the paired release.
 
 ### homebrew-tap-repo
 
