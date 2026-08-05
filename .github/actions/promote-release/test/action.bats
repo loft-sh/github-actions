@@ -13,7 +13,7 @@ SCRIPT="$BATS_TEST_DIRNAME/../src/action.sh"
 load gh_mock
 load crane_mock
 
-# Sets GH_MOCK_RELEASE_LIST_<repo> so is_latest_stable() sees a release
+# Sets GH_MOCK_RELEASE_LIST_<repo> so the ordering predicates see a release
 # history for that repo (see gh_mock.bash for the varname sanitization).
 set_release_list() {
   local repo="$1" json="$2"
@@ -221,7 +221,7 @@ teardown() {
 }
 
 @test "newest stable over a non-empty prior-stable history -> advances :latest/:major" {
-  # The happy path above drives is_latest_stable with an empty release list,
+  # The happy path above drives the ordering predicates with an empty list,
   # so it only exercises the `[ -z "${max}" ]` short-circuit. This is the real
   # forward-promotion case: a prior promoted release exists and VERSION is
   # newer, so the `sort -V | tail -1` comparison must resolve true and :latest
@@ -424,9 +424,20 @@ teardown() {
   export INPUT_PROMOTE_SELF="true"
   run "$SCRIPT"
   [ "$status" -eq 1 ]
-  [[ "$output" == *"cannot read example-org/example-caller-repo@v9.9.9"* ]]
+  [[ "$output" == *"no v9.9.9 release found on example-org/example-caller-repo"* ]]
   [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 0 ]
   run ! grep -qF 'EDIT ' "$GH_MOCK_CALLS"
+}
+
+@test "promote-self: an API lookup failure is reported accurately and fails before retagging" {
+  export INPUT_PROMOTE_SELF="true"
+  export GH_MOCK_VIEW_FAIL=1
+  run "$SCRIPT"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"failed to inspect example-org/example-caller-repo@v9.9.9"* ]]
+  [[ "$output" == *"forced release view API failure"* ]]
+  [[ "$output" != *"no v9.9.9 release found"* ]]
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 0 ]
 }
 
 @test "promote-self: a failed edit on a BACKPORT stays a warning (no pointer moved)" {
@@ -452,6 +463,17 @@ teardown() {
   [[ "$output" == *"no v9.9.9 release found on example-org/example-caller-repo"* ]]
   run ! grep -qF 'EDIT example-org/example-caller-repo' "$GH_MOCK_CALLS"
   grep -qF 'CREATE ghcr.io/example-org/example-image:9.9 ghcr.io/example-org/example-image:v9.9.9' "$CRANE_MOCK_CALLS"
+}
+
+@test "promote-self lookup failure on a backport preserves the real error" {
+  export INPUT_PROMOTE_SELF="true"
+  export GH_MOCK_VIEW_FAIL=1
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v10.0.0","isLatest":true}]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"failed to inspect example-org/example-caller-repo@v9.9.9"* ]]
+  [[ "$output" == *"forced release view API failure"* ]]
+  [[ "$output" != *"no v9.9.9 release found on example-org/example-caller-repo"* ]]
 }
 
 @test "promote-self -> only an exact 'true' enables it" {
@@ -649,6 +671,14 @@ teardown() {
   run "$SCRIPT"
   [ "$status" -ne 0 ]
   [[ "$output" == *"failed to list releases on example-org/example-caller-repo"* ]]
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 0 ]
+}
+
+@test "malformed release list response -> fails closed before any retag" {
+  set_release_list "$GITHUB_REPOSITORY" 'not-json'
+  run "$SCRIPT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"unexpected release-list response"* ]]
   [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 0 ]
 }
 

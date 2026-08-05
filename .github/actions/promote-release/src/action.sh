@@ -20,10 +20,11 @@
 # -rc/-alpha/-next cuts.
 #
 # Required env:
-#   GH_TOKEN        Token with GHCR write:packages, and contents:write on
-#                    INPUT_OSS_REPO and INPUT_HOMEBREW_TAP_REPO if set. Docker
-#                    login happens in the calling action.yml step, before this
-#                    script runs.
+#   GH_TOKEN        Token with GHCR write:packages; contents:write on the
+#                    caller's GITHUB_REPOSITORY when INPUT_PROMOTE_SELF=true;
+#                    and contents:write on INPUT_OSS_REPO and
+#                    INPUT_HOMEBREW_TAP_REPO if set. Docker login happens in
+#                    the calling action.yml step, before this script runs.
 #   INPUT_VERSION    The promoted release tag, e.g. v0.37.1.
 #   INPUT_IMAGES     JSON array of image entries to retag, each
 #                    {"image": "ghcr.io/loft-sh/x", "suffix": ""} (suffix
@@ -135,123 +136,99 @@ run() {
   fi
 }
 
-# True if it is safe to move a pointer on $1 forward to VERSION. What "safe"
-# compares against depends on the scope, because the two pointers this gates
-# have different baselines:
+# Fetches the release list once for a repository. Callers then pass the same
+# snapshot to the two predicates below, so the overall and line-scoped gates
+# cannot observe different repository states during one promotion.
 #
-#   Unscoped ($2 empty) - gates :latest, :{major} and the repo's GitHub Latest
-#     pointer. Baseline is the release currently flagged isLatest, i.e. the
-#     last release a human actually PROMOTED. This must not be "newest
-#     non-prerelease": with release.prerelease: auto a stable cut is published
-#     un-promoted as the GitHub "None" label (not a pre-release, not latest),
-#     so isPrerelease == false no longer means "vetted". Reading vettedness off
-#     that flag would block every promotion behind any newer un-promoted cut,
-#     leaving :latest stale until the newest line happened to be promoted.
-#     The isLatest pointer is the only durable record of what :latest tracks,
-#     so it is the only correct baseline. VERSION == the current isLatest
-#     resolves true, keeping a re-run idempotent (it must still be able to
-#     re-apply retags that failed the first time).
-#     If NO release carries isLatest, the baseline falls back to the newest
-#     stable-shaped tag rather than to "advance". The flag is clearable (a
-#     build re-run re-asserts make_latest: false on the tag that holds it), so
-#     an absent pointer must not read as "nothing has ever been promoted".
+# A failure to LIST releases is never treated as "no prior releases": that
+# would fail open on exactly the downgrade these checks exist to prevent.
+# "hard" exits before any mutations; "soft" returns 2 after the Docker retags
+# have already completed, allowing the advisory paired-release edit to continue
+# without --latest.
+RELEASE_LIST=""
+fetch_release_list() {
+  local repo="$1" failure_mode="${2:-hard}" raw
+
+  if raw=$(gh release list --repo "${repo}" --json tagName,isLatest --limit 1000 2>&1); then
+    if jq -e '
+      type == "array" and
+      all(.[];
+        (.tagName | type) == "string" and
+        (.isLatest == null or (.isLatest | type) == "boolean")
+      )
+    ' >/dev/null 2>&1 <<<"${raw}"; then
+      RELEASE_LIST="${raw}"
+      return 0
+    fi
+    raw="unexpected release-list response: ${raw}"
+  fi
+
+  if [[ "${failure_mode}" == "soft" ]]; then
+    echo "::warning::failed to list releases on ${repo} to confirm ${VERSION} is promotable (${raw}); skipping the advisory --latest promotion. Docker retags already completed; set latest manually if appropriate." >&2
+    RELEASE_LIST=""
+    return 2
+  fi
+
+  echo "::error::failed to list releases on ${repo} to check backport/patch ordering: ${raw}" >&2
+  exit 1
+}
+
+# True if VERSION is at or after the GitHub Latest pointer in $1, using the
+# release-list JSON snapshot in $2. This gates :latest, :{major}, and the
+# repository's GitHub Latest pointer.
 #
-#   Line-scoped ($2 = "{major}.{minor}", e.g. "9.9") - gates :{major}.{minor}.
-#     GitHub has no per-line equivalent of the isLatest pointer, so this is a
-#     comparison against the newest stable-SHAPED release in that line, on tag
-#     shape alone. isPrerelease is deliberately not consulted: it is mutable
-#     and a stable-shaped tag can carry it (every cut did under the legacy
-#     release.prerelease: true config), so filtering on it could drop the newer
-#     sibling and let an older patch regress the line tag. Under prerelease:
-#     auto the effect is conservative in the safe direction anyway: if a newer
-#     patch in the same line exists but has not been promoted, the line tag is
-#     left alone (promote that newer patch instead) rather than regressed.
+# The baseline is the release currently flagged isLatest: the last release a
+# human actually promoted. It cannot be "newest non-prerelease", because with
+# release.prerelease:auto an un-promoted stable cut already has isPrerelease
+# false. Equality passes so a partially failed promotion is re-runnable.
 #
-# Both baselines therefore degrade to the same immutable, tag-shape-derived
-# comparison when their flag is missing or untrustworthy, and both can only
-# ever refuse a promotion, never permit a regression.
-#
-# No release in scope at all is treated as "yes" (first-ever promotion).
-#
-# Return codes: 0 = newest (advance), 1 = not newest (don't advance).
-# A failure to even LIST releases is NOT treated as "no prior releases" - that
-# would fail open on exactly the downgrade this check exists to prevent. How a
-# list failure is handled depends on $3:
-#   "exit" (default): hard-exit non-zero. Correct for the pre-retag caller-repo
-#     gates - if we can't determine ordering, do nothing loudly (matches the
-#     Homebrew-tap downgrade guard's fail-closed precedent, release.yaml
-#     check_latest_stable). A green no-op would silently hide a failed promotion.
-#   "soft": warn and return 2. For the post-retag oss-repo gate, where the
-#     irreversible docker retags are already done and this only decides the
-#     advisory --latest flag; hard-exiting there would fail the run after the
-#     main work succeeded without preventing any downgrade (we just skip
-#     --latest, which never moves it backward).
-is_latest_stable() {
-  local repo="$1" line="${2-}" on_fail="${3:-exit}" raw max filter
-  # The exact stable release shape. Used as a fallback baseline in both
-  # branches below because it is derived from the immutable tag: unlike
-  # isLatest and isPrerelease it cannot be cleared by a build re-run or
-  # re-flagged by a human, so it can only ever refuse a promotion, never
-  # permit a regression.
+# If the mutable Latest flag is absent, fall back conservatively to the newest
+# stable-shaped tag. A build re-run can clear that flag by re-applying
+# make_latest:false, so absence must not be mistaken for a first promotion.
+is_at_or_after_latest_pointer() {
+  local repo="$1" releases="$2" max
   local stable_shape='^v[0-9]+\.[0-9]+\.[0-9]+$'
-  # --limit must comfortably exceed the repo's lifetime release count: the
-  # "empty result => advance" short-circuit below reads an empty list as "no
-  # prior release (in scope) ever". For the line-scoped check that's the fail-
-  # open edge - if a {major}.{minor} line's stable siblings all scrolled past a
-  # too-small window, the filter finds none, ADVANCE_MINOR flips true, and the
-  # line tag gets retagged backward. 1000 is ~a decade of headroom at current
-  # cadence; gh paginates up to it in one call.
-  if ! raw=$(gh release list --repo "${repo}" --json tagName,isPrerelease,isLatest --limit 1000 2>&1); then
-    if [[ "${on_fail}" == "soft" ]]; then
-      echo "::warning::failed to list releases on ${repo} to confirm ${VERSION} is promotable (${raw}); skipping the advisory --latest promotion. Docker retags already completed; set latest manually if appropriate." >&2
-      return 2
+
+  max=$(jq -r '[.[] | select(.isLatest) | .tagName][]' <<<"${releases}")
+  if [[ -z "${max}" ]]; then
+    max=$(jq -r '.[].tagName' <<<"${releases}" \
+      | grep -E "${stable_shape}" \
+      | sort -V \
+      | tail -1) || true
+    if [[ -n "${max}" ]]; then
+      echo "::warning::no release on ${repo} carries the Latest flag; using the newest stable tag (${max}) as the promotion baseline instead. Re-running a release build clears that flag - promote the version that should be Latest to restore it." >&2
     fi
-    echo "::error::failed to list releases on ${repo} to check backport/patch ordering: ${raw}" >&2
-    exit 1
   fi
-  if [[ -z "${line}" ]]; then
-    # Unscoped: the promoted pointer. At most one release carries isLatest, so
-    # this yields 0 or 1 tags; no shape filter is applied, because whatever a
-    # human promoted IS the baseline even if its shape is unusual.
-    max=$(jq -r '[.[] | select(.isLatest) | .tagName][]' <<<"${raw}")
-    if [[ -z "${max}" ]]; then
-      # No release carries the Latest flag. This is NOT automatically a
-      # first-ever promotion: goreleaser re-asserts make_latest: false on every
-      # run, so re-running the build for the tag that is currently Latest
-      # clears the flag and leaves the repo in exactly this state. Falling
-      # straight through to "advance" there would let a dispatch for an older
-      # line move :latest, :{major}, the repo's Latest pointer and the stable
-      # Homebrew formula BACKWARDS - the very downgrade this function exists to
-      # prevent.
-      #
-      # Fall back to the newest stable-SHAPED tag. A genuinely empty release
-      # list (or one with no stable cut yet) still yields an empty baseline and
-      # advances, which is the real first-ever promotion.
-      max=$(jq -r '.[].tagName' <<<"${raw}" | grep -E "${stable_shape}" | sort -V | tail -1)
-      if [[ -n "${max}" ]]; then
-        echo "::warning::no release on ${repo} carries the Latest flag; using the newest stable tag (${max}) as the promotion baseline instead. Re-running a release build clears that flag - promote the version that should be Latest to restore it." >&2
-      fi
-    fi
-  else
-    # Anchor the line filter on the literal, dot-escaped {major}.{minor} so a
-    # "9.9" line never also matches "9x9" or a "99" prefix. The shape filter
-    # already excludes -rc/-alpha/-next, so isPrerelease adds nothing here and
-    # is deliberately NOT consulted: it is mutable, and a stable-shaped tag can
-    # carry isPrerelease == true (every cut did under the legacy
-    # release.prerelease: true config, and re-running such a build re-flags an
-    # already-promoted tag). Filtering on it would drop the newer sibling from
-    # the comparison and let an older patch retag :{major}.{minor} backwards.
-    filter="^v${line//./\\.}\.[0-9]+$"
-    max=$(jq -r '.[].tagName' <<<"${raw}" \
-      | grep -E "${filter}" \
-      | sort -V | tail -1)
-  fi
+
   [ -z "${max}" ] && return 0
   [ "$(printf '%s\n%s\n' "${VERSION}" "${max}" | sort -V | tail -1)" = "${VERSION}" ]
 }
 
+# True if VERSION is the newest stable-shaped tag in its own major.minor line,
+# using the release-list JSON snapshot in $2. GitHub has no per-line Latest
+# pointer, so this deliberately ignores mutable isPrerelease state. A stable
+# tag may carry that flag after a legacy build re-run; filtering on it could
+# hide a newer sibling and allow the line tag to move backwards.
+is_newest_in_line() {
+  local line="$1" releases="$2" filter max
+  filter="^v${line//./\\.}\.[0-9]+$"
+  max=$(jq -r '.[].tagName' <<<"${releases}" \
+    | grep -E "${filter}" \
+    | sort -V \
+    | tail -1) || true
+
+  [ -z "${max}" ] && return 0
+  [ "$(printf '%s\n%s\n' "${VERSION}" "${max}" | sort -V | tail -1)" = "${VERSION}" ]
+}
+
+# The 1000-release window is intentionally much larger than the repository's
+# lifetime count. An empty line-scoped result means "first release in line", so
+# truncating older siblings out of the window would otherwise fail open.
+fetch_release_list "${GITHUB_REPOSITORY}" "hard"
+CALLER_RELEASE_LIST="${RELEASE_LIST}"
+
 ADVANCE_LATEST_MAJOR=true
-if ! is_latest_stable "${GITHUB_REPOSITORY}"; then
+if ! is_at_or_after_latest_pointer "${GITHUB_REPOSITORY}" "${CALLER_RELEASE_LIST}"; then
   ADVANCE_LATEST_MAJOR=false
   echo "::notice::${VERSION} is older than the promoted release on ${GITHUB_REPOSITORY} (backport/patch promotion); skipping :latest/:${MAJOR} so they aren't moved backwards."
 fi
@@ -262,7 +239,7 @@ fi
 # the newest patch in its own {major}.{minor} line - advancing :{major}.{minor}
 # there would silently regress it to an older patch.
 ADVANCE_MINOR=true
-if ! is_latest_stable "${GITHUB_REPOSITORY}" "${MAJOR}.${MINOR}"; then
+if ! is_newest_in_line "${MAJOR}.${MINOR}" "${CALLER_RELEASE_LIST}"; then
   ADVANCE_MINOR=false
   echo "::notice::${VERSION} is not the newest stable release in the ${MAJOR}.${MINOR} line on ${GITHUB_REPOSITORY}; skipping :${MAJOR}.${MINOR} so it isn't moved backwards within its own line."
 fi
@@ -286,6 +263,75 @@ for ((i = 0; i < IMAGE_COUNT; i++)); do
     exit 1
   fi
 done
+
+# Promotes VERSION on a GitHub repository using an already-decided Latest
+# gate. This is shared by the caller's own release and the paired OSS release,
+# keeping lookup classification, edit arguments, and repair instructions in one
+# place.
+#
+# $3 controls edit failure: "required" aborts before moving tags because the
+# caller's Latest pointer is this action's future downgrade baseline;
+# "advisory" warns and continues. $4 allows a dry-run for the caller repo to
+# print its planned edit even before the release exists.
+#
+# Return codes: 0 = edit succeeded/planned (or advisory edit failed),
+# 3 = release not found, 4 = lookup failed for another reason.
+promote_gh_release() {
+  local repo="$1" advance_latest="$2" failure_mode="$3" preview_missing="${4:-false}"
+  local view_output lookup_rc=0 latest_note=""
+  local -a edit_args=(--prerelease=false)
+
+  if ! view_output=$(gh release view "${VERSION}" --repo "${repo}" 2>&1); then
+    # `gh release view` uses this phrase for an absent tag. Do not flatten every
+    # non-zero result into "no release": authentication, rate-limit, and network
+    # failures need to retain their real diagnostic.
+    if grep -qiE 'release not found|no release found for' <<<"${view_output}"; then
+      lookup_rc=3
+    else
+      lookup_rc=4
+    fi
+  fi
+
+  if [[ "${lookup_rc}" -ne 0 ]]; then
+    if [[ "${DRY_RUN}" == "true" && "${preview_missing}" == "true" ]]; then
+      if [[ "${lookup_rc}" -eq 3 ]]; then
+        echo "::warning::no ${VERSION} release found on ${repo} (dry-run: printing the planned promotion anyway)"
+      else
+        echo "::warning::failed to inspect ${repo}@${VERSION} (${view_output}); dry-run: printing the planned promotion anyway" >&2
+      fi
+    elif [[ "${failure_mode}" == "required" ]]; then
+      if [[ "${lookup_rc}" -eq 3 ]]; then
+        echo "::error::no ${VERSION} release found on ${repo}, so its Latest pointer cannot be established. Refusing to retag the moving tags. Nothing has changed yet; publish the release and re-run the promotion." >&2
+      else
+        echo "::error::failed to inspect ${repo}@${VERSION} (${view_output}), so its Latest pointer cannot be established. Refusing to retag the moving tags. Nothing has changed yet; re-run once the release is readable." >&2
+      fi
+      exit 1
+    else
+      if [[ "${lookup_rc}" -eq 3 ]]; then
+        echo "::warning::no ${VERSION} release found on ${repo}; skipping its promotion"
+      else
+        echo "::warning::failed to inspect ${repo}@${VERSION} (${view_output}); skipping its promotion" >&2
+      fi
+      return "${lookup_rc}"
+    fi
+  fi
+
+  if [[ "${advance_latest}" == "true" ]]; then
+    edit_args+=(--latest)
+    latest_note=", set latest"
+  else
+    echo "::notice::not marking ${repo}@${VERSION} as Latest: it is older than the currently promoted release."
+  fi
+
+  echo "Promoting ${repo}@${VERSION}: unset prerelease${latest_note}"
+  if ! run gh release edit "${VERSION}" --repo "${repo}" "${edit_args[@]}"; then
+    if [[ "${failure_mode}" == "required" ]]; then
+      echo "::error::failed to set ${repo}@${VERSION} as Latest with: gh release edit ${VERSION} --repo ${repo} ${edit_args[*]}. Refusing to retag the moving tags, since :latest would then be ahead of the pointer this action reads as its backport baseline. Nothing else has changed; re-run this promotion (it is idempotent)." >&2
+      exit 1
+    fi
+    echo "::warning::gh release edit failed for ${repo}@${VERSION}. Promote manually: gh release edit ${VERSION} --repo ${repo} ${edit_args[*]}" >&2
+  fi
+}
 
 # --- Caller repo's own release -------------------------------------------
 #
@@ -311,55 +357,10 @@ done
 #   --prerelease=false  a no-op for an auto-classified stable cut; it is what
 #                    promotes a legacy tag still built under prerelease: true.
 if [[ "${PROMOTE_SELF}" == "true" ]]; then
-  self_readable=true
-  gh release view "${VERSION}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1 || self_readable=false
-
-  # `gh release view` is a real read even under dry-run, but a dry-run is a
-  # rehearsal that may legitimately run before the release exists - the
-  # source-manifest pre-flight above is skipped for exactly the same reason. So
-  # an unreadable release never aborts a rehearsal: note it and go on to print
-  # the planned edit, which is the whole point of the preview.
-  if [[ "${self_readable}" == "false" && "${DRY_RUN}" == "true" ]]; then
-    echo "::warning::no ${VERSION} release found on ${GITHUB_REPOSITORY} (dry-run: printing the planned promotion anyway)"
-    self_readable=true
-  fi
-
-  if [[ "${self_readable}" == "true" ]]; then
-    self_args=(--prerelease=false)
-    self_note=""
-    if [[ "${ADVANCE_LATEST_MAJOR}" == "true" ]]; then
-      self_args+=(--latest)
-      self_note=", set latest"
-    else
-      echo "::notice::not marking ${GITHUB_REPOSITORY}@${VERSION} as Latest: it is older than the currently promoted release."
-    fi
-    echo "Promoting ${GITHUB_REPOSITORY}@${VERSION}: unset prerelease${self_note}"
-    if ! run gh release edit "${VERSION}" --repo "${GITHUB_REPOSITORY}" "${self_args[@]}"; then
-      if [[ "${ADVANCE_LATEST_MAJOR}" == "true" ]]; then
-        # Fatal, unlike every other release-edit failure here, because this one
-        # edit is the action's own future safety baseline. Nothing has been
-        # retagged yet, so aborting leaves every pointer consistent at its
-        # previous version rather than :latest ahead of a stale baseline.
-        echo "::error::failed to set ${GITHUB_REPOSITORY}@${VERSION} as Latest: ${self_args[*]}. Refusing to retag the moving tags, since :latest would then be ahead of the pointer this action reads as its backport baseline and a later promotion could move it backwards. Nothing has changed yet; re-run this promotion (it is idempotent)."
-        exit 1
-      fi
-      # Backport promotion: the edit was --prerelease=false only, which moves no
-      # pointer and cannot stale any baseline, so a warning is enough.
-      echo "::warning::gh release edit failed for ${GITHUB_REPOSITORY}@${VERSION}. Promote manually: gh release edit ${VERSION} --repo ${GITHUB_REPOSITORY} ${self_args[*]}"
-    fi
-  elif [[ "${ADVANCE_LATEST_MAJOR}" == "true" ]]; then
-    # Real run only (a dry-run was already re-routed above). `gh release view`
-    # exits non-zero both for "no such release" and for a transient API error,
-    # and the two are indistinguishable here. An advancing promotion has to
-    # actually establish the pointer, so neither may pass silently: skipping
-    # with a warning would retag :latest and leave the baseline behind it,
-    # which is the regression this ordering exists to stop.
-    echo "::error::cannot read ${GITHUB_REPOSITORY}@${VERSION} (no such release, or the API call failed), so its Latest pointer cannot be established. Refusing to retag the moving tags. Nothing has changed yet; re-run once the release is readable." >&2
-    exit 1
+  if [[ "${ADVANCE_LATEST_MAJOR}" == "true" ]]; then
+    promote_gh_release "${GITHUB_REPOSITORY}" true required true
   else
-    # Backport promotion: no pointer to establish, so a missing release is only
-    # worth a warning - the line tag can still advance.
-    echo "::warning::no ${VERSION} release found on ${GITHUB_REPOSITORY}; skipping its promotion"
+    promote_gh_release "${GITHUB_REPOSITORY}" false advisory true || true
   fi
 else
   echo "promote-self not enabled; leaving ${GITHUB_REPOSITORY}'s own release untouched"
@@ -405,35 +406,27 @@ done
 #   ""        - never computed (no matching oss-repo release, or no oss-repo).
 OSS_IS_LATEST=""
 if [[ -n "${OSS_REPO}" ]]; then
-  if gh release view "${VERSION}" --repo "${OSS_REPO}" >/dev/null 2>&1; then
-    edit_args=(--prerelease=false)
-    latest_note=""
-    # "soft": a list failure here must not hard-fail the run (docker retags are
-    # already done and this only gates the advisory --latest). Capture the code
-    # via `|| oss_rc=$?` so `set -e` doesn't exit on the non-zero return.
-    oss_rc=0
-    is_latest_stable "${OSS_REPO}" "" "soft" || oss_rc=$?
-    if [[ "${oss_rc}" -eq 0 ]]; then
-      OSS_IS_LATEST=true
-      edit_args+=(--latest)
-      latest_note=", set latest"
-    elif [[ "${oss_rc}" -eq 1 ]]; then
-      OSS_IS_LATEST=false
-      echo "::notice::${VERSION} is older than the promoted release on ${OSS_REPO} (backport/patch promotion); unsetting pre-release but not moving Latest."
-    else
-      # rc 2 = could not confirm (list failure; is_latest_stable already warned
-      # about the --latest skip). Kept DISTINCT from a confirmed backport
-      # (false) so the downstream Homebrew gate warns accurately instead of
-      # mislabeling a transient blip as a backport and silently leaving the
-      # formula stale. Prerelease is still unset; only --latest is withheld.
-      OSS_IS_LATEST=unknown
-    fi
-    echo "Promoting ${OSS_REPO}@${VERSION}: unset prerelease${latest_note}"
-    if ! run gh release edit "${VERSION}" --repo "${OSS_REPO}" "${edit_args[@]}"; then
-      echo "::warning::gh release edit failed for ${OSS_REPO}@${VERSION}; docker retags are already complete. Promote manually: gh release edit ${VERSION} --repo ${OSS_REPO} ${edit_args[*]}"
-    fi
+  oss_rc=0
+  OSS_ADVANCE_LATEST=false
+  fetch_release_list "${OSS_REPO}" soft || oss_rc=$?
+  if [[ "${oss_rc}" -eq 0 ]] && is_at_or_after_latest_pointer "${OSS_REPO}" "${RELEASE_LIST}"; then
+    OSS_IS_LATEST=true
+    OSS_ADVANCE_LATEST=true
+  elif [[ "${oss_rc}" -eq 0 ]]; then
+    OSS_IS_LATEST=false
+    echo "::notice::${VERSION} is older than the promoted release on ${OSS_REPO} (backport/patch promotion); unsetting pre-release but not moving Latest."
   else
-    echo "::warning::no ${VERSION} release found on ${OSS_REPO}; skipping its promotion"
+    # The list warning was already emitted. Keep this distinct from a confirmed
+    # backport so the Homebrew gate reports a retryable lookup failure.
+    OSS_IS_LATEST=unknown
+  fi
+
+  promote_rc=0
+  promote_gh_release "${OSS_REPO}" "${OSS_ADVANCE_LATEST}" advisory false || promote_rc=$?
+  if [[ "${promote_rc}" -ne 0 ]]; then
+    # No readable release means there is no trustworthy checksums source for
+    # the paired Homebrew update, regardless of the earlier list result.
+    OSS_IS_LATEST=""
   fi
 else
   echo "No oss-repo configured; skipping paired release promotion"

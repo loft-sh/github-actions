@@ -5,8 +5,9 @@
 # Records every invocation (one line per call) into $GH_MOCK_CALLS.
 #
 # release view  - exits 0 only for tag/repo pairs listed in
-#                 $GH_MOCK_KNOWN_RELEASES (space-separated "repo:tag"), 1
-#                 otherwise.
+#                 $GH_MOCK_KNOWN_RELEASES (space-separated "repo:tag"), 1 with
+#                 the real CLI's "release not found" diagnostic otherwise;
+#                 GH_MOCK_VIEW_FAIL=1 simulates another API/network failure.
 # release edit  - always succeeds unless GH_MOCK_FAIL=1.
 # release list  - prints the JSON array from
 #                 GH_MOCK_RELEASE_LIST_<repo, non-alnum -> _> (default "[]");
@@ -67,9 +68,14 @@ if [ "$subcommand" = "release" ]; then
   case "$action" in
     view)
       printf 'VIEW %s %s\n' "$repo" "$tag" >> "$GH_MOCK_CALLS"
+      if [ "${GH_MOCK_VIEW_FAIL:-0}" = "1" ]; then
+        echo "mock gh: forced release view API failure" >&2
+        exit 1
+      fi
       for known in $GH_MOCK_KNOWN_RELEASES; do
         [ "$known" = "${repo}:${tag}" ] && exit 0
       done
+      echo "release not found" >&2
       exit 1
       ;;
     edit)

@@ -23,5 +23,5 @@ jobs:
           assert-install: false
           detik-install: false
           file-install: false
-      - name: Run detect-branch tests
-        run: bats .github/actions/release-notification/test/detect-branch.bats
+      - name: Run release-notification tests
+        run: bats .github/actions/release-notification/test/*.bats
