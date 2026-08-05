@@ -31,7 +31,7 @@ inputs:
     description: "Helm CLI version to install."
     required: false
     # renovate: datasource=github-releases depName=helm/helm
-    default: v4.1.4
+    default: v4.2.3
   republish-latest:
     description: "When true, after pushing, query ChartMuseum for the highest semver of <chart-name> and re-push it so it becomes the most recently uploaded entry. Use for stable release publishing into a multi-line release stream."
     required: false
