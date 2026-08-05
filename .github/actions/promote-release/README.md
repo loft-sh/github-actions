@@ -188,7 +188,10 @@ the same version is always allowed, so a plain re-run recovers.
 
 On a backport promotion none of this applies — the edit is `--prerelease=false`
 only, which moves no pointer and cannot stale a baseline — so a missing release
-or a failed edit stays a warning and the line tag still advances.
+or a failed edit stays a warning and the line tag still advances. A `dry-run` is
+likewise never aborted by an unreadable release: a rehearsal may run before the
+release exists (the source-manifest pre-flight is skipped for the same reason),
+so it warns and prints the planned edit instead.
 
 ### oss-repo
 

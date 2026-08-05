@@ -311,7 +311,20 @@ done
 #   --prerelease=false  a no-op for an auto-classified stable cut; it is what
 #                    promotes a legacy tag still built under prerelease: true.
 if [[ "${PROMOTE_SELF}" == "true" ]]; then
-  if gh release view "${VERSION}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+  self_readable=true
+  gh release view "${VERSION}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1 || self_readable=false
+
+  # `gh release view` is a real read even under dry-run, but a dry-run is a
+  # rehearsal that may legitimately run before the release exists - the
+  # source-manifest pre-flight above is skipped for exactly the same reason. So
+  # an unreadable release never aborts a rehearsal: note it and go on to print
+  # the planned edit, which is the whole point of the preview.
+  if [[ "${self_readable}" == "false" && "${DRY_RUN}" == "true" ]]; then
+    echo "::warning::no ${VERSION} release found on ${GITHUB_REPOSITORY} (dry-run: printing the planned promotion anyway)"
+    self_readable=true
+  fi
+
+  if [[ "${self_readable}" == "true" ]]; then
     self_args=(--prerelease=false)
     self_note=""
     if [[ "${ADVANCE_LATEST_MAJOR}" == "true" ]]; then
@@ -335,11 +348,12 @@ if [[ "${PROMOTE_SELF}" == "true" ]]; then
       echo "::warning::gh release edit failed for ${GITHUB_REPOSITORY}@${VERSION}. Promote manually: gh release edit ${VERSION} --repo ${GITHUB_REPOSITORY} ${self_args[*]}"
     fi
   elif [[ "${ADVANCE_LATEST_MAJOR}" == "true" ]]; then
-    # `gh release view` exits non-zero both for "no such release" and for a
-    # transient API error, and the two are indistinguishable here. An advancing
-    # promotion has to actually establish the pointer, so neither may pass
-    # silently: skipping with a warning would retag :latest and leave the
-    # baseline behind it, which is the regression this ordering exists to stop.
+    # Real run only (a dry-run was already re-routed above). `gh release view`
+    # exits non-zero both for "no such release" and for a transient API error,
+    # and the two are indistinguishable here. An advancing promotion has to
+    # actually establish the pointer, so neither may pass silently: skipping
+    # with a warning would retag :latest and leave the baseline behind it,
+    # which is the regression this ordering exists to stop.
     echo "::error::cannot read ${GITHUB_REPOSITORY}@${VERSION} (no such release, or the API call failed), so its Latest pointer cannot be established. Refusing to retag the moving tags. Nothing has changed yet; re-run once the release is readable." >&2
     exit 1
   else

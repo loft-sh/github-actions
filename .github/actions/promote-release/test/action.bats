@@ -462,6 +462,25 @@ teardown() {
   run ! grep -qF 'EDIT example-org/example-caller-repo' "$GH_MOCK_CALLS"
 }
 
+@test "promote-self under dry-run with no release yet -> rehearsal still completes" {
+  # A rehearsal may legitimately run before the release exists; the source
+  # manifest pre-flight is skipped under dry-run for the same reason. The fatal
+  # unreadable-release branch must therefore not fire here, or a pre-publication
+  # preview of an advancing promotion would be impossible.
+  export INPUT_PROMOTE_SELF="true"
+  export INPUT_DRY_RUN="true"
+  export GH_MOCK_KNOWN_RELEASES=""
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"dry-run: printing the planned promotion anyway"* ]]
+  # The planned edit and the planned retags are both still shown...
+  [[ "$output" == *"[dry-run] gh release edit v9.9.9 --repo example-org/example-caller-repo --prerelease=false --latest"* ]]
+  [[ "$output" == *"[dry-run] crane tag"* ]]
+  # ...and nothing was actually mutated.
+  run ! grep -q '^EDIT ' "$GH_MOCK_CALLS"
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 0 ]
+}
+
 @test "promote-self under dry-run -> reads the release but makes no edit" {
   export INPUT_PROMOTE_SELF="true"
   export INPUT_DRY_RUN="true"
