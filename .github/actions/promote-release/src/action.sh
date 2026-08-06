@@ -321,18 +321,38 @@ for ((i = 0; i < IMAGE_COUNT; i++)); do
       reason="could not be inspected ($(tr '\n' ' ' <<<"${digest_err}"))"
       ;;
   esac
+  # Report every unresolved entry before deciding, in both modes. This loop is
+  # read-only (crane digest only; crane tag is further down, behind the dry-run
+  # guard), so walking the whole list costs nothing and does not weaken the
+  # fail-closed guarantee - the abort just moves below. A tag-form mistake
+  # breaks every entry at once, and aborting on the first one would make that
+  # one re-dispatch per image to discover.
   if [[ "${DRY_RUN}" == "true" ]]; then
-    echo "::warning::source manifest ${src_ref} ${reason}; a real promotion would abort here." >&2
-    UNRESOLVED_SOURCES=$((UNRESOLVED_SOURCES + 1))
+    echo "::warning::source manifest ${src_ref} ${reason}; a real promotion would abort." >&2
   else
-    echo "::error::source manifest ${src_ref} ${reason}; refusing to start retagging" >&2
-    exit 1
+    echo "::error::source manifest ${src_ref} ${reason}" >&2
   fi
+  UNRESOLVED_SOURCES=$((UNRESOLVED_SOURCES + 1))
 done
 # One line an operator can act on, so the verdict isn't buried in a per-image
-# warning for every entry in a long images list.
+# warning for every entry in a long images list - a real dispatch carries ~45.
 if ((UNRESOLVED_SOURCES > 0)); then
-  echo "::warning::${UNRESOLVED_SOURCES} of ${IMAGE_COUNT} source manifests could not be resolved at :${VERSION_TAG}, so this promotion would abort as dispatched. Confirm the images are published, that their tags read ${VERSION_TAG} rather than ${VERSION}, and that this run can read them." >&2
+  summary="${UNRESOLVED_SOURCES} of ${IMAGE_COUNT} source manifests could not be resolved at :${VERSION_TAG}. Confirm the images are published, that their tags read ${VERSION_TAG} rather than ${VERSION}, and that this run can read them."
+  # Also to the step summary: a rehearsal stays green, and a warning-laden green
+  # run reads as a clean pass once an annotations panel collapses the list -
+  # the same "looked like it answered the question" mistake this pre-flight
+  # exists to stop. Unset outside Actions (bats), hence the fallback.
+  {
+    echo "### promote-release: ${UNRESOLVED_SOURCES}/${IMAGE_COUNT} sources unresolved at :${VERSION_TAG}"
+    echo
+    echo "${summary}"
+  } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+  if [[ "${DRY_RUN}" == "true" ]]; then
+    echo "::warning::${summary} This promotion would abort as dispatched." >&2
+  else
+    echo "::error::${summary} Refusing to start retagging." >&2
+    exit 1
+  fi
 fi
 
 # Promotes VERSION on a GitHub repository using an already-decided Latest

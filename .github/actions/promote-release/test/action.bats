@@ -733,7 +733,10 @@ teardown() {
   export GH_MOCK_KNOWN_RELEASES="example-org/example-repo:v9.9.9 example-org/example-caller-repo:v9.9.9"
   run "$SCRIPT"
   [ "$status" -eq 0 ]
-  ! grep -q ':v9\.9\.9' "$CRANE_MOCK_CALLS"
+  # `run !`, not a bare `!`: errexit does not apply to a negated command, so a
+  # bare `!` on a non-final line is inert and would keep this test green on a
+  # regression - and this is the assertion carrying the whole invariant.
+  run ! grep -q ':v9\.9\.9' "$CRANE_MOCK_CALLS"
   grep -qF 'INSPECT ghcr.io/example-org/example-image:9.9.9' "$CRANE_MOCK_CALLS"
   grep -qF 'CREATE ghcr.io/example-org/example-image:latest ghcr.io/example-org/example-image:9.9.9' "$CRANE_MOCK_CALLS"
   # The release side keeps the git tag form.
@@ -748,7 +751,7 @@ teardown() {
   export CRANE_MOCK_MISSING="ghcr.io/example-org/example-image:9.9.9 ghcr.io/example-org/example-image:9.9.9-fips"
   run "$SCRIPT"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"source manifest ghcr.io/example-org/example-image:9.9.9 does not exist; a real promotion would abort here"* ]]
+  [[ "$output" == *"source manifest ghcr.io/example-org/example-image:9.9.9 does not exist; a real promotion would abort"* ]]
   [[ "$output" == *"2 of 2 source manifests could not be resolved at :9.9.9"* ]]
   # Still a rehearsal: the plan is printed and nothing is retagged for real.
   [[ "$output" == *"[dry-run] crane tag ghcr.io/example-org/example-image:9.9.9 latest"* ]]
@@ -765,6 +768,46 @@ teardown() {
   # on a successful lookup can't leave this test green.
   [[ "$output" != *"source manifests could not be resolved"* ]]
   grep -qF 'INSPECT ghcr.io/example-org/example-image:9.9.9' "$CRANE_MOCK_CALLS"
+}
+
+@test "real run with several unresolved sources -> reports every one, then aborts" {
+  # A tag-form mistake breaks every entry at once. Aborting on the first would
+  # make that one re-dispatch per image to discover, and the loop is read-only,
+  # so there is nothing to protect by stopping early.
+  export CRANE_MOCK_MISSING="ghcr.io/example-org/example-image:9.9.9 ghcr.io/example-org/example-image:9.9.9-fips"
+  run "$SCRIPT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"source manifest ghcr.io/example-org/example-image:9.9.9 does not exist"* ]]
+  [[ "$output" == *"source manifest ghcr.io/example-org/example-image:9.9.9-fips does not exist"* ]]
+  [[ "$output" == *"2 of 2 source manifests could not be resolved"* ]]
+  # The fatal path carries the tag-form diagnosis too, not just the rehearsal.
+  [[ "$output" == *"their tags read 9.9.9 rather than v9.9.9"* ]]
+  [[ "$output" == *"Refusing to start retagging"* ]]
+  # Still fail-closed: nothing was retagged and the release was never edited.
+  run ! grep -q '^CREATE ' "$CRANE_MOCK_CALLS"
+  run ! grep -q '^EDIT ' "$GH_MOCK_CALLS"
+}
+
+@test "unresolved sources -> verdict is written to the step summary, not only annotations" {
+  # A rehearsal stays green, and ~45 per-entry warnings are easy to mistake for
+  # a clean pass once an annotations panel collapses them.
+  export INPUT_DRY_RUN="true"
+  export CRANE_MOCK_MISSING="ghcr.io/example-org/example-image:9.9.9"
+  GITHUB_STEP_SUMMARY="$BATS_TEST_TMPDIR/summary.md"
+  export GITHUB_STEP_SUMMARY
+  : > "$GITHUB_STEP_SUMMARY"
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qF '1/2 sources unresolved at :9.9.9' "$GITHUB_STEP_SUMMARY"
+}
+
+@test "all sources resolved -> nothing is written to the step summary" {
+  GITHUB_STEP_SUMMARY="$BATS_TEST_TMPDIR/summary.md"
+  export GITHUB_STEP_SUMMARY
+  : > "$GITHUB_STEP_SUMMARY"
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -s "$GITHUB_STEP_SUMMARY" ]
 }
 
 @test "crane not installed -> fails as a tooling error, not as missing manifests" {
