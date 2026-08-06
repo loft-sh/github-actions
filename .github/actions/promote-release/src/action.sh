@@ -145,6 +145,35 @@ MINOR="${BASH_REMATCH[2]}"
 # in one tag namespace.
 DOCKER_TAG="${VERSION#v}"
 
+# --- Runner preconditions ----------------------------------------------
+# Checks on the environment, not on the image entries, so they belong here
+# rather than inside the source-manifest phase: a crane-less run now fails
+# before it makes a single API call, and that phase keeps one job.
+#
+# A missing crane is not evidence about any manifest. Without this guard the
+# pre-flight would exit non-zero for every entry with its stderr discarded,
+# which reads as "nothing is published" - a wrong answer that looks like a real
+# one. After the stable-shape check above, so a pre-release cut stays a clean
+# no-op that needs no tooling at all.
+if ! command -v crane >/dev/null 2>&1; then
+  echo "::error::crane is not on PATH, so no source manifest can be inspected. The action installs it (imjasonh/setup-crane); if that step was skipped or failed, fix it rather than reading this as a missing manifest." >&2
+  exit 1
+fi
+
+# Only meaningful under dry-run, where the login is deliberately non-fatal and a
+# lookup can therefore run unauthenticated; on a real run a failed login has
+# already stopped the job. Say so up front when it happened: without the
+# credential a repo the run cannot read fails at crane's token exchange, and
+# while that lands in the indeterminate bucket rather than being called absent,
+# "could not be inspected" x45 still reads as a registry problem. Naming the
+# credential first, before any per-entry line, makes it one obvious cause
+# instead of a guess at the end. Empty (the value when the caller does not wire
+# it, or if the expression does not resolve) is treated as success, so this can
+# only ever add information.
+if [[ "${DRY_RUN}" == "true" && -n "${INPUT_LOGIN_OUTCOME:-}" && "${INPUT_LOGIN_OUTCOME}" != "success" ]]; then
+  echo "::warning::the GHCR login did not succeed (${INPUT_LOGIN_OUTCOME}), so these lookups run with whatever credentials the runner already had. Read any unresolved source against that first: fix the credential and re-run before concluding anything about what is published." >&2
+fi
+
 run() {
   if [[ "${DRY_RUN}" == "true" ]]; then
     echo "[dry-run] $*"
@@ -286,33 +315,14 @@ fi
 # rehearsal warns and keeps printing the rest of the plan. Non-fatal in dry-run
 # because rehearsing a cut whose images are not published yet is allowed, the
 # same allowance the release lookup below makes.
-# A missing crane is not evidence about any manifest. Without this the lookup
-# below would exit non-zero for every entry with its stderr discarded, which
-# reads as "nothing is published" - a wrong answer that looks like a real one.
-if ! command -v crane >/dev/null 2>&1; then
-  echo "::error::crane is not on PATH, so no source manifest can be inspected. The action installs it (imjasonh/setup-crane); if that step was skipped or failed, fix it rather than reading this as a missing manifest." >&2
-  exit 1
-fi
-
-# Only meaningful under dry-run, where the login is deliberately non-fatal and a
-# lookup can therefore run unauthenticated; on a real run a failed login has
-# already stopped the job. Say so up front when it happened: without the
-# credential a repo the run cannot read fails at crane's token exchange, and
-# while that lands in the indeterminate bucket rather than being called absent,
-# "could not be inspected" x45 still reads as a registry problem. Naming the
-# credential first makes it one obvious cause instead of a guess at the end.
-# Empty (the value when the caller does not wire it, or if the expression does
-# not resolve) is treated as success, so this can only ever add information.
-if [[ "${DRY_RUN}" == "true" && -n "${INPUT_LOGIN_OUTCOME:-}" && "${INPUT_LOGIN_OUTCOME}" != "success" ]]; then
-  echo "::warning::the GHCR login did not succeed (${INPUT_LOGIN_OUTCOME}), so these lookups run with whatever credentials the runner already had. Read any unresolved source against that first: fix the credential and re-run before concluding anything about what is published." >&2
-fi
-
 IMAGE_COUNT=$(jq -r 'length' <<<"${INPUT_IMAGES}")
-UNRESOLVED_SOURCES=0
-# Which refs, not just how many: the plan printed later marks these, and the step
-# summary lists them, so neither makes the reader re-derive it from the warnings.
-UNRESOLVED_REFS=()
-UNRESOLVED_DETAIL=()
+# Sparse, keyed by the same entry index both loops walk: the retag loop reads
+# UNRESOLVED_REASON[$i] to mark its plan lines rather than rebuilding the ref and
+# string-matching it, which would be the same build-a-ref-twice shape this action
+# was fixed for - and would fail silently, just dropping the marker. One array
+# also carries the count (${#UNRESOLVED_REASON[@]}) and, with UNRESOLVED_REF, the
+# step-summary detail, instead of three accumulators appended in lockstep.
+declare -a UNRESOLVED_REASON=() UNRESOLVED_REF=()
 for ((i = 0; i < IMAGE_COUNT; i++)); do
   entry=$(jq -c ".[$i]" <<<"${INPUT_IMAGES}")
   image=$(jq -r '.image // empty' <<<"${entry}")
@@ -366,14 +376,36 @@ for ((i = 0; i < IMAGE_COUNT; i++)); do
   else
     echo "::error::source manifest ${src_ref} ${reason}" >&2
   fi
-  UNRESOLVED_SOURCES=$((UNRESOLVED_SOURCES + 1))
-  UNRESOLVED_REFS+=("${src_ref}")
-  UNRESOLVED_DETAIL+=("${src_ref}: ${reason}")
+  UNRESOLVED_REASON[i]="${reason}"
+  UNRESOLVED_REF[i]="${src_ref}"
 done
+UNRESOLVED_SOURCES="${#UNRESOLVED_REASON[@]}"
+# A verdict anything other than a human can read. Per-entry annotations, the step
+# summary and the plan markers all need someone to open this run, so a rehearsal
+# where every source failed is indistinguishable from a clean one to a caller
+# keyed on the job conclusion. Publishing the count lets one opt into failing or
+# alerting without parsing logs.
+if [[ -n "${GITHUB_OUTPUT-}" ]]; then
+  printf 'unresolved-sources=%s\n' "${UNRESOLVED_SOURCES}" >> "${GITHUB_OUTPUT}"
+fi
 # One line an operator can act on, so the verdict isn't buried in a per-image
 # warning for every entry in a long images list - a real dispatch carries ~45.
 if ((UNRESOLVED_SOURCES > 0)); then
-  summary="${UNRESOLVED_SOURCES} of ${IMAGE_COUNT} source manifests could not be resolved at :${DOCKER_TAG}. Confirm the images are published, that their tags read ${DOCKER_TAG} rather than ${VERSION}, and that this run can read them."
+  # Only advise on the tag form when something actually came back absent. When
+  # every failure was indeterminate the images are published and correctly
+  # tagged, and telling the operator to check the tag namespace is the same
+  # misdirection the per-entry split exists to prevent - on the one line meant to
+  # spare them from reading the per-entry list.
+  absent=0
+  for idx in "${!UNRESOLVED_REASON[@]}"; do
+    [[ "${UNRESOLVED_REASON[idx]}" == "does not exist" ]] && absent=$((absent + 1))
+  done
+  if ((absent > 0)); then
+    hint="Confirm the images are published, that their tags read ${DOCKER_TAG} rather than ${VERSION}, and that this run can read them."
+  else
+    hint="Every lookup failed to complete rather than finding a missing tag, so check the credential and registry availability, not the tag form."
+  fi
+  summary="${UNRESOLVED_SOURCES} of ${IMAGE_COUNT} source manifests could not be resolved at :${DOCKER_TAG}. ${hint}"
   # Also to the step summary: a rehearsal stays green, and a warning-laden green
   # run reads as a clean pass once an annotations panel collapses the list -
   # the same "looked like it answered the question" mistake this pre-flight
@@ -385,9 +417,14 @@ if ((UNRESOLVED_SOURCES > 0)); then
     echo
     # Which ones, so the summary stands alone. Capped, because a tag-form mistake
     # breaks every entry and a 45-line summary is its own kind of unreadable.
-    printf '%s\n' "${UNRESOLVED_DETAIL[@]:0:20}" | sed 's/^/- /'
-    if ((UNRESOLVED_SOURCES > 20)); then
-      echo "- (+$((UNRESOLVED_SOURCES - 20)) more, see the warnings above)"
+    shown=0
+    for idx in "${!UNRESOLVED_REASON[@]}"; do
+      ((shown < 20)) || break
+      echo "- ${UNRESOLVED_REF[idx]}: ${UNRESOLVED_REASON[idx]}"
+      shown=$((shown + 1))
+    done
+    if ((UNRESOLVED_SOURCES > shown)); then
+      echo "- (+$((UNRESOLVED_SOURCES - shown)) more, see the warnings above)"
     fi
   } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
   if [[ "${DRY_RUN}" == "true" ]]; then
@@ -524,12 +561,7 @@ for ((i = 0; i < IMAGE_COUNT; i++)); do
   # the printed plan carries its own verdict and survives being read on its own.
   # Only reachable under dry-run; a real run has already aborted by here.
   plan_note=""
-  for unresolved in ${UNRESOLVED_REFS[@]+"${UNRESOLVED_REFS[@]}"}; do
-    if [[ "${unresolved}" == "${src}" ]]; then
-      plan_note=" (WOULD FAIL: source unresolved)"
-      break
-    fi
-  done
+  [[ -n "${UNRESOLVED_REASON[i]:-}" ]] && plan_note=" (WOULD FAIL: source unresolved)"
   for moving in "${moving_tags[@]}"; do
     dest="${image}:${moving}${suffix}"
     echo "Retagging ${dest} -> ${src}${plan_note}"

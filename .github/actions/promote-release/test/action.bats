@@ -883,7 +883,8 @@ teardown() {
   # verdict could not, so a regression hoisting it out of the loop fails here.
   export INPUT_DRY_RUN="true"
   export CRANE_MOCK_MISSING="ghcr.io/example-org/example-image:9.9.9"
-  export CRANE_MOCK_DIGEST_ERROR_FOR="ghcr.io/example-org/example-image:9.9.9-fips=2026/08/06 15:01:50 GET https://ghcr.io/token?scope=x: unexpected status code 403 Forbidden"
+  set_digest_error "ghcr.io/example-org/example-image:9.9.9-fips" \
+    "2026/08/06 15:01:50 GET https://ghcr.io/token?scope=x: unexpected status code 403 Forbidden"
   run "$SCRIPT"
   [ "$status" -eq 0 ]
   [[ "$output" == *"example-image:9.9.9 does not exist"* ]]
@@ -898,6 +899,13 @@ teardown() {
   run "$SCRIPT"
   [ "$status" -eq 0 ]
   [[ "$output" == *"the GHCR login did not succeed (failure)"* ]]
+  # Assert the ordering the test is named for, not just presence: the whole point
+  # is that the credential is stated BEFORE the per-entry list, so a regression
+  # moving this warning into the entry loop must fail here.
+  login_line=$(grep -n 'GHCR login did not succeed' <<<"$output" | head -1 | cut -d: -f1)
+  first_entry=$(grep -n 'source manifest ghcr.io' <<<"$output" | head -1 | cut -d: -f1)
+  [ -n "$login_line" ] && [ -n "$first_entry" ]
+  [ "$login_line" -lt "$first_entry" ]
 }
 
 @test "login outcome is ignored on a real run and when unset" {
@@ -920,8 +928,13 @@ teardown() {
   export CRANE_MOCK_MISSING="ghcr.io/example-org/example-image:9.9.9-fips"
   run "$SCRIPT"
   [ "$status" -eq 0 ]
-  # The unresolved entry is flagged in the plan itself...
+  # Every moving tag of the unresolved entry is flagged, not only the first: the
+  # marker is computed once per entry and printed per tag, so a regression that
+  # cleared it after the first iteration would leave two of three lines reading
+  # as healthy in a ~45-entry plan.
   [[ "$output" == *"Retagging ghcr.io/example-org/example-image:latest-fips -> ghcr.io/example-org/example-image:9.9.9-fips (WOULD FAIL: source unresolved)"* ]]
+  [[ "$output" == *"Retagging ghcr.io/example-org/example-image:9-fips -> ghcr.io/example-org/example-image:9.9.9-fips (WOULD FAIL: source unresolved)"* ]]
+  [[ "$output" == *"Retagging ghcr.io/example-org/example-image:9.9-fips -> ghcr.io/example-org/example-image:9.9.9-fips (WOULD FAIL: source unresolved)"* ]]
   # ...and the healthy sibling is not.
   [[ "$output" == *"Retagging ghcr.io/example-org/example-image:latest -> ghcr.io/example-org/example-image:9.9.9"* ]]
   [[ "$output" != *"example-image:latest -> ghcr.io/example-org/example-image:9.9.9 (WOULD FAIL"* ]]
@@ -936,6 +949,62 @@ teardown() {
   run "$SCRIPT"
   [ "$status" -eq 0 ]
   grep -qF -- '- ghcr.io/example-org/example-image:9.9.9-fips: does not exist' "$GITHUB_STEP_SUMMARY"
+}
+
+@test "step summary caps the list at 20 and counts the rest" {
+  # 25 entries, all unresolved: an off-by-one in the cap or the trailer would
+  # otherwise pass, since no other test drives more than two.
+  entries=$(jq -nc '[range(25) | {image: "ghcr.io/example-org/img\(.)"}]')
+  export INPUT_IMAGES="$entries"
+  export INPUT_DRY_RUN="true"
+  export CRANE_MOCK_DIGEST_ERROR="2026/08/06 HEAD https://ghcr.io/v2/x/manifests/9.9.9: unexpected status code 404 Not Found"
+  GITHUB_STEP_SUMMARY="$BATS_TEST_TMPDIR/summary.md"
+  export GITHUB_STEP_SUMMARY
+  : > "$GITHUB_STEP_SUMMARY"
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(grep -c '^- ghcr.io/example-org/img' "$GITHUB_STEP_SUMMARY")" -eq 20 ]
+  grep -qF -- '- (+5 more, see the warnings above)' "$GITHUB_STEP_SUMMARY"
+  [[ "$output" == *"25 of 25 source manifests could not be resolved"* ]]
+}
+
+@test "aggregate hint follows the classes present, not a fixed string" {
+  export INPUT_DRY_RUN="true"
+
+  # Nothing absent: advising on the tag form would be the same misdirection the
+  # per-entry split exists to prevent.
+  export CRANE_MOCK_DIGEST_ERROR="2026/08/06 GET https://ghcr.io/token?scope=x: unexpected status code 403 Forbidden"
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"check the credential and registry availability, not the tag form"* ]]
+  [[ "$output" != *"rather than v9.9.9"* ]]
+
+  # Something absent: the tag-form hint is the useful one.
+  unset CRANE_MOCK_DIGEST_ERROR
+  export CRANE_MOCK_MISSING="ghcr.io/example-org/example-image:9.9.9"
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"their tags read 9.9.9 rather than v9.9.9"* ]]
+  [[ "$output" != *"not the tag form"* ]]
+}
+
+@test "unresolved-sources is published as a step output" {
+  # The only machine-readable signal that a rehearsed plan would not execute; a
+  # caller keyed on the job conclusion cannot see it otherwise.
+  GITHUB_OUTPUT="$BATS_TEST_TMPDIR/out.txt"
+  export GITHUB_OUTPUT
+  : > "$GITHUB_OUTPUT"
+  export INPUT_DRY_RUN="true"
+  export CRANE_MOCK_MISSING="ghcr.io/example-org/example-image:9.9.9-fips"
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qx 'unresolved-sources=1' "$GITHUB_OUTPUT"
+
+  : > "$GITHUB_OUTPUT"
+  unset CRANE_MOCK_MISSING
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qx 'unresolved-sources=0' "$GITHUB_OUTPUT"
 }
 
 @test "digest lookup failure that isn't absence -> reported as uninspectable, not missing" {

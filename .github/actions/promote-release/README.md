@@ -257,6 +257,27 @@ or a failed edit stays a warning and the line tag still advances. A `dry-run` is
 likewise never aborted by an unreadable release: a rehearsal may run before the
 release exists, so it warns and prints the planned edit instead.
 
+### images
+
+One entry per moving-tag family, each `{"image": "...", "suffix": ""}` with the
+suffix optional. For every entry the source `<image>:X.Y.Z<suffix>` is copied to
+
+- `<image>:latest<suffix>`
+- `<image>:<major><suffix>`
+- `<image>:<major>.<minor><suffix>`
+
+so the suffix applies to the source *and* to every destination. That is also how
+per-arch moving tags are promoted: an entry with suffix `-amd64` retags
+`<image>:X.Y.Z-amd64` — a bare single-platform manifest — onto
+`<image>:latest-amd64` and friends, digest preserved, so its cosign signature
+stays valid. Keep the list in step with whatever the build publishes; a family
+listed here but not built for this version fails the pre-flight below, and one
+built but not listed here is simply never promoted.
+
+Which of the three destinations actually move depends on the backport gates
+above: `:latest`/`:{major}` only when `version` is at or ahead of the caller's
+Latest pointer, `:{major}.{minor}` only when it is newest within its own line.
+
 ### Source-manifest pre-flight
 
 Before anything is written, every configured entry's source manifest is resolved

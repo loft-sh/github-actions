@@ -95,6 +95,9 @@ outputs:
   promote-self-enabled:
     description: 'Whether the manifest forwarded an exact "true" promote-self value to the promotion script.'
     value: ${{ steps.promote.outputs.promote-self-enabled }}
+  unresolved-sources:
+    description: 'How many configured source manifests could not be resolved at the bare version tag. Always 0 on a successful real promotion, since it aborts otherwise; on a dry-run this is the only machine-readable signal that the rehearsed plan would not execute, so gate or alert on it rather than on the job conclusion.'
+    value: ${{ steps.promote.outputs.unresolved-sources }}
 runs:
   using: composite
   steps:
