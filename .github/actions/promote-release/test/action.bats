@@ -184,31 +184,31 @@ teardown() {
   run "$SCRIPT"
   [ "$status" -eq 0 ]
 
-  grep -qF 'CREATE ghcr.io/example-org/example-image:latest ghcr.io/example-org/example-image:v9.9.9' "$CRANE_MOCK_CALLS"
-  grep -qF 'CREATE ghcr.io/example-org/example-image:9 ghcr.io/example-org/example-image:v9.9.9' "$CRANE_MOCK_CALLS"
-  grep -qF 'CREATE ghcr.io/example-org/example-image:9.9 ghcr.io/example-org/example-image:v9.9.9' "$CRANE_MOCK_CALLS"
-  grep -qF 'CREATE ghcr.io/example-org/example-image:latest-fips ghcr.io/example-org/example-image:v9.9.9-fips' "$CRANE_MOCK_CALLS"
-  grep -qF 'CREATE ghcr.io/example-org/example-image:9-fips ghcr.io/example-org/example-image:v9.9.9-fips' "$CRANE_MOCK_CALLS"
-  grep -qF 'CREATE ghcr.io/example-org/example-image:9.9-fips ghcr.io/example-org/example-image:v9.9.9-fips' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:latest ghcr.io/example-org/example-image:9.9.9' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9 ghcr.io/example-org/example-image:9.9.9' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9.9 ghcr.io/example-org/example-image:9.9.9' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:latest-fips ghcr.io/example-org/example-image:9.9.9-fips' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9-fips ghcr.io/example-org/example-image:9.9.9-fips' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9.9-fips ghcr.io/example-org/example-image:9.9.9-fips' "$CRANE_MOCK_CALLS"
   [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 6 ]
 }
 
 @test "per-arch suffix entries -> retag per-arch moving tags from the per-arch version source" {
   # DEVOPS-1083: the per-arch moving tags (latest-amd64, latest-fips-arm64v8,
   # ...) are promoted purely as suffix entries -- each copies the bare
-  # single-platform source <image>:<version><suffix> onto its moving tags.
+  # single-platform source <image>:X.Y.Z<suffix> onto its moving tags.
   # crane makes this digest-preserving (imagetools would not); here we assert
   # the retag targets are wired correctly for the per-arch suffixes.
   export INPUT_IMAGES='[{"image":"ghcr.io/example-org/example-image","suffix":"-amd64"},{"image":"ghcr.io/example-org/example-image","suffix":"-fips-arm64v8"}]'
   run "$SCRIPT"
   [ "$status" -eq 0 ]
 
-  grep -qF 'CREATE ghcr.io/example-org/example-image:latest-amd64 ghcr.io/example-org/example-image:v9.9.9-amd64' "$CRANE_MOCK_CALLS"
-  grep -qF 'CREATE ghcr.io/example-org/example-image:9-amd64 ghcr.io/example-org/example-image:v9.9.9-amd64' "$CRANE_MOCK_CALLS"
-  grep -qF 'CREATE ghcr.io/example-org/example-image:9.9-amd64 ghcr.io/example-org/example-image:v9.9.9-amd64' "$CRANE_MOCK_CALLS"
-  grep -qF 'CREATE ghcr.io/example-org/example-image:latest-fips-arm64v8 ghcr.io/example-org/example-image:v9.9.9-fips-arm64v8' "$CRANE_MOCK_CALLS"
-  grep -qF 'CREATE ghcr.io/example-org/example-image:9-fips-arm64v8 ghcr.io/example-org/example-image:v9.9.9-fips-arm64v8' "$CRANE_MOCK_CALLS"
-  grep -qF 'CREATE ghcr.io/example-org/example-image:9.9-fips-arm64v8 ghcr.io/example-org/example-image:v9.9.9-fips-arm64v8' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:latest-amd64 ghcr.io/example-org/example-image:9.9.9-amd64' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9-amd64 ghcr.io/example-org/example-image:9.9.9-amd64' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9.9-amd64 ghcr.io/example-org/example-image:9.9.9-amd64' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:latest-fips-arm64v8 ghcr.io/example-org/example-image:9.9.9-fips-arm64v8' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9-fips-arm64v8 ghcr.io/example-org/example-image:9.9.9-fips-arm64v8' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9.9-fips-arm64v8 ghcr.io/example-org/example-image:9.9.9-fips-arm64v8' "$CRANE_MOCK_CALLS"
   [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 6 ]
 }
 
@@ -230,8 +230,8 @@ teardown() {
   run "$SCRIPT"
   [ "$status" -eq 0 ]
 
-  grep -qF 'CREATE ghcr.io/example-org/example-image:latest ghcr.io/example-org/example-image:v9.9.9' "$CRANE_MOCK_CALLS"
-  grep -qF 'CREATE ghcr.io/example-org/example-image:9 ghcr.io/example-org/example-image:v9.9.9' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:latest ghcr.io/example-org/example-image:9.9.9' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9 ghcr.io/example-org/example-image:9.9.9' "$CRANE_MOCK_CALLS"
   [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 6 ]
 }
 
@@ -253,8 +253,8 @@ teardown() {
   run "$SCRIPT"
   [ "$status" -eq 0 ]
 
-  grep -qF 'CREATE ghcr.io/example-org/example-image:latest ghcr.io/example-org/example-image:v9.9.9' "$CRANE_MOCK_CALLS"
-  grep -qF 'CREATE ghcr.io/example-org/example-image:9 ghcr.io/example-org/example-image:v9.9.9' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:latest ghcr.io/example-org/example-image:9.9.9' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9 ghcr.io/example-org/example-image:9.9.9' "$CRANE_MOCK_CALLS"
   [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 6 ]
 }
 
@@ -286,7 +286,7 @@ teardown() {
   run "$SCRIPT"
   [ "$status" -eq 0 ]
 
-  grep -qF 'CREATE ghcr.io/example-org/example-image:latest ghcr.io/example-org/example-image:v9.9.9' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:latest ghcr.io/example-org/example-image:9.9.9' "$CRANE_MOCK_CALLS"
   [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 6 ]
 }
 
@@ -306,7 +306,7 @@ teardown() {
 
   # :latest/:9 must stay put; the line tag is still allowed to advance.
   run ! grep -qF ':latest ' "$CRANE_MOCK_CALLS"
-  grep -qF 'CREATE ghcr.io/example-org/example-image:9.9 ghcr.io/example-org/example-image:v9.9.9' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9.9 ghcr.io/example-org/example-image:9.9.9' "$CRANE_MOCK_CALLS"
   # ... and the caller's own release must not be flipped to Latest either.
   grep -qF -- 'EDIT example-org/example-caller-repo v9.9.9 --prerelease=false' "$GH_MOCK_CALLS"
   run ! grep -qF -- 'EDIT example-org/example-caller-repo v9.9.9 --prerelease=false --latest' "$GH_MOCK_CALLS"
@@ -320,7 +320,7 @@ teardown() {
   [ "$status" -eq 0 ]
   run ! grep -q 'carries the Latest flag' <<<"$output"
 
-  grep -qF 'CREATE ghcr.io/example-org/example-image:latest ghcr.io/example-org/example-image:v9.9.9' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:latest ghcr.io/example-org/example-image:9.9.9' "$CRANE_MOCK_CALLS"
   [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 6 ]
 }
 
@@ -482,7 +482,7 @@ teardown() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"no v9.9.9 release found on example-org/example-caller-repo"* ]]
   run ! grep -qF 'EDIT example-org/example-caller-repo' "$GH_MOCK_CALLS"
-  grep -qF 'CREATE ghcr.io/example-org/example-image:9.9 ghcr.io/example-org/example-image:v9.9.9' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9.9 ghcr.io/example-org/example-image:9.9.9' "$CRANE_MOCK_CALLS"
 }
 
 @test "promote-self lookup failure on a backport preserves the real error" {
@@ -506,8 +506,8 @@ teardown() {
 
 @test "promote-self under dry-run with no release yet -> rehearsal still completes" {
   # A rehearsal may legitimately run before the release exists; the source
-  # manifest pre-flight is skipped under dry-run for the same reason. The fatal
-  # unreadable-release branch must therefore not fire here, or a pre-publication
+  # manifest pre-flight warns instead of aborting under dry-run for the same
+  # reason. The fatal unreadable-release branch must not fire here, or a pre-publication
   # preview of an advancing promotion would be impossible.
   export INPUT_PROMOTE_SELF="true"
   export INPUT_DRY_RUN="true"
@@ -537,9 +537,11 @@ teardown() {
   export INPUT_DRY_RUN="true"
   run "$SCRIPT"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"[dry-run] crane tag ghcr.io/example-org/example-image:v9.9.9 latest"* ]]
-  [[ "$output" == *"[dry-run] crane tag ghcr.io/example-org/example-image:v9.9.9-fips latest-fips"* ]]
-  [ ! -s "$CRANE_MOCK_CALLS" ]
+  [[ "$output" == *"[dry-run] crane tag ghcr.io/example-org/example-image:9.9.9 latest"* ]]
+  [[ "$output" == *"[dry-run] crane tag ghcr.io/example-org/example-image:9.9.9-fips latest-fips"* ]]
+  # A rehearsal may read the registry - the existence lookup is what proves the
+  # printed plan could actually run - but must not write to it.
+  run ! grep -q '^CREATE ' "$CRANE_MOCK_CALLS"
 }
 
 @test "fail-closed dry-run -> any value that isn't exactly 'false' makes no real mutations" {
@@ -593,8 +595,8 @@ teardown() {
   [[ "$output" == *"older than the promotion baseline on example-org/example-caller-repo"* ]]
   [[ "$output" == *"behind the caller's promotion baseline"* ]]
 
-  grep -qF 'CREATE ghcr.io/example-org/example-image:9.9 ghcr.io/example-org/example-image:v9.9.9' "$CRANE_MOCK_CALLS"
-  grep -qF 'CREATE ghcr.io/example-org/example-image:9.9-fips ghcr.io/example-org/example-image:v9.9.9-fips' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9.9 ghcr.io/example-org/example-image:9.9.9' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9.9-fips ghcr.io/example-org/example-image:9.9.9-fips' "$CRANE_MOCK_CALLS"
   run ! grep -qF ':latest ' "$CRANE_MOCK_CALLS"
   run ! grep -qF ':9 ' "$CRANE_MOCK_CALLS"
   [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 2 ]
@@ -617,7 +619,7 @@ teardown() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"older than the promotion baseline on example-org/example-caller-repo"* ]]
 
-  grep -qF 'CREATE ghcr.io/example-org/example-image:9.35 ghcr.io/example-org/example-image:v9.35.6' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9.35 ghcr.io/example-org/example-image:9.35.6' "$CRANE_MOCK_CALLS"
   run ! grep -qF ':latest ' "$CRANE_MOCK_CALLS"
   run ! grep -qF ':9 ' "$CRANE_MOCK_CALLS"
   [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 2 ]
@@ -644,7 +646,7 @@ teardown() {
   set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.9.8","isPrerelease":false},{"tagName":"v10.0.0","isPrerelease":false,"isLatest":true}]'
   run "$SCRIPT"
   [ "$status" -eq 0 ]
-  grep -qF 'CREATE ghcr.io/example-org/example-image:9.9 ghcr.io/example-org/example-image:v9.9.9' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9.9 ghcr.io/example-org/example-image:9.9.9' "$CRANE_MOCK_CALLS"
   run ! grep -qF ':latest ' "$CRANE_MOCK_CALLS"
   run ! grep -qF ':9 ' "$CRANE_MOCK_CALLS"
   [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 2 ]
@@ -714,10 +716,376 @@ teardown() {
 }
 
 @test "missing source manifest for a suffix variant -> fails before any create call" {
-  export CRANE_MOCK_MISSING="ghcr.io/example-org/example-image:v9.9.9-fips"
+  export CRANE_MOCK_MISSING="ghcr.io/example-org/example-image:9.9.9-fips"
   run "$SCRIPT"
   [ "$status" -ne 0 ]
-  [[ "$output" == *"source manifest ghcr.io/example-org/example-image:v9.9.9-fips does not exist"* ]]
+  [[ "$output" == *"source manifest ghcr.io/example-org/example-image:9.9.9-fips does not exist"* ]]
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 0 ]
+}
+
+@test "docker refs use the bare version tag, never the v-prefixed release tag" {
+  # goreleaser publishes image tags from `{{ .Version }}`, which strips the
+  # leading v, so a promotion that composes its source ref from the release tag
+  # looks up a manifest that was never pushed and aborts on every entry. Assert
+  # the tag namespace directly: no crane call may ever name :v9.9.9, and the
+  # release edits must still use the v-prefixed tag.
+  export INPUT_PROMOTE_SELF="true"
+  export GH_MOCK_KNOWN_RELEASES="example-org/example-repo:v9.9.9 example-org/example-caller-repo:v9.9.9"
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  # `run !`, not a bare `!`: errexit does not apply to a negated command, so a
+  # bare `!` on a non-final line is inert and would keep this test green on a
+  # regression - and this is the assertion carrying the whole invariant.
+  run ! grep -q ':v9\.9\.9' "$CRANE_MOCK_CALLS"
+  grep -qF 'INSPECT ghcr.io/example-org/example-image:9.9.9' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:latest ghcr.io/example-org/example-image:9.9.9' "$CRANE_MOCK_CALLS"
+  # The release side keeps the git tag form.
+  grep -qF -- 'EDIT example-org/example-caller-repo v9.9.9 --prerelease=false --latest' "$GH_MOCK_CALLS"
+}
+
+@test "dry-run with a missing source manifest -> warns per entry, summarizes, still rehearses" {
+  # The rehearsal exists to answer "would this promotion work". Skipping the
+  # existence lookup under dry-run made it answer yes for a plan that could not
+  # execute, so the lookup runs either way and only the verdict differs.
+  export INPUT_DRY_RUN="true"
+  export CRANE_MOCK_MISSING="ghcr.io/example-org/example-image:9.9.9 ghcr.io/example-org/example-image:9.9.9-fips"
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"source manifest ghcr.io/example-org/example-image:9.9.9 does not exist; a real promotion would abort"* ]]
+  [[ "$output" == *"2 of 2 source manifests could not be resolved at :9.9.9"* ]]
+  # Still a rehearsal: the plan is printed and nothing is retagged for real.
+  [[ "$output" == *"[dry-run] crane tag ghcr.io/example-org/example-image:9.9.9 latest"* ]]
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 0 ]
+}
+
+@test "dry-run with sources present -> no missing-manifest warning" {
+  export INPUT_DRY_RUN="true"
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"does not exist"* ]]
+  [[ "$output" != *"could not be inspected"* ]]
+  # Reject the string the aggregate actually emits, so a counter that increments
+  # on a successful lookup can't leave this test green.
+  [[ "$output" != *"source manifests could not be resolved"* ]]
+  grep -qF 'INSPECT ghcr.io/example-org/example-image:9.9.9' "$CRANE_MOCK_CALLS"
+}
+
+@test "real run with several unresolved sources -> reports every one, then aborts" {
+  # A tag-form mistake breaks every entry at once. Aborting on the first would
+  # make that one re-dispatch per image to discover, and the loop is read-only,
+  # so there is nothing to protect by stopping early.
+  export CRANE_MOCK_MISSING="ghcr.io/example-org/example-image:9.9.9 ghcr.io/example-org/example-image:9.9.9-fips"
+  run "$SCRIPT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"source manifest ghcr.io/example-org/example-image:9.9.9 does not exist"* ]]
+  [[ "$output" == *"source manifest ghcr.io/example-org/example-image:9.9.9-fips does not exist"* ]]
+  [[ "$output" == *"2 of 2 source manifests could not be resolved"* ]]
+  # The fatal path carries the tag-form diagnosis too, not just the rehearsal.
+  [[ "$output" == *"their tags read 9.9.9 rather than v9.9.9"* ]]
+  [[ "$output" == *"Refusing to start retagging"* ]]
+  # Still fail-closed: nothing was retagged and the release was never edited.
+  run ! grep -q '^CREATE ' "$CRANE_MOCK_CALLS"
+  run ! grep -q '^EDIT ' "$GH_MOCK_CALLS"
+}
+
+@test "unresolved sources -> verdict is written to the step summary, not only annotations" {
+  # A rehearsal stays green, and ~45 per-entry warnings are easy to mistake for
+  # a clean pass once an annotations panel collapses them.
+  export INPUT_DRY_RUN="true"
+  export CRANE_MOCK_MISSING="ghcr.io/example-org/example-image:9.9.9"
+  GITHUB_STEP_SUMMARY="$BATS_TEST_TMPDIR/summary.md"
+  export GITHUB_STEP_SUMMARY
+  : > "$GITHUB_STEP_SUMMARY"
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qF '1/2 sources unresolved at :9.9.9' "$GITHUB_STEP_SUMMARY"
+}
+
+@test "all sources resolved -> nothing is written to the step summary" {
+  GITHUB_STEP_SUMMARY="$BATS_TEST_TMPDIR/summary.md"
+  export GITHUB_STEP_SUMMARY
+  : > "$GITHUB_STEP_SUMMARY"
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -s "$GITHUB_STEP_SUMMARY" ]
+}
+
+@test "crane not installed -> fails as a tooling error, not as missing manifests" {
+  # The composite installs crane; if that step is skipped or fails, every lookup
+  # errors at once. Reporting that as "nothing is published" is a wrong answer
+  # that looks like a real one, so it must fail on the tool instead.
+  rm -f "$CRANE_MOCK_DIR/crane"
+  run "$SCRIPT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"crane is not on PATH"* ]]
+  [[ "$output" != *"does not exist"* ]]
+}
+
+@test "crane not installed under dry-run -> also fails, rather than warning falsely" {
+  export INPUT_DRY_RUN="true"
+  rm -f "$CRANE_MOCK_DIR/crane"
+  run "$SCRIPT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"crane is not on PATH"* ]]
+  [[ "$output" != *"source manifests could not be resolved"* ]]
+}
+
+# Every string below is real crane v0.20.2 stderr, captured live against ghcr.io
+# with the pinned version, so the classifier is pinned against what production
+# actually prints rather than against invented registry JSON. crane renders the
+# HTTP status itself and never surfaces MANIFEST_UNKNOWN/NAME_UNKNOWN, which is
+# why an absent tag is recognised by "unexpected status code 404".
+@test "classification: crane's absent-tag wording reads as absence" {
+  export CRANE_MOCK_DIGEST_ERROR="2026/08/06 15:01:49 HEAD request failed, falling back on GET: HEAD https://ghcr.io/v2/example-org/example-image/manifests/9.9.9: unexpected status code 404 Not Found (HEAD responses have no body, use GET for details)"
+  run "$SCRIPT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"does not exist"* ]]
+  [[ "$output" != *"could not be inspected"* ]]
+}
+
+@test "classification: a refused token exchange reads as uninspectable" {
+  # What an unreadable repo actually produces - the failure a soft rehearsal
+  # login can cause. It must never be reported as absence.
+  export CRANE_MOCK_DIGEST_ERROR="2026/08/06 15:01:50 No matching credentials were found for \"ghcr.io\", falling back on anonymous
+2026/08/06 15:01:50 HEAD request failed, falling back on GET: GET https://ghcr.io/token?scope=repository%3Aexample-org%2Fexample-image%3Apull&service=ghcr.io: unexpected status code 403 Forbidden"
+  run "$SCRIPT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"could not be inspected"* ]]
+  [[ "$output" != *"does not exist"* ]]
+  # The reason must be flattened onto one line. This is the only test feeding
+  # multi-line crane stderr through the classifier, so it is the only place the
+  # `tr '\n' ' '` is exercised - and it is load-bearing twice over: a raw newline
+  # truncates the annotation at the break, and keeping registry-supplied text off
+  # the start of a line is what stops a `::` sequence in it forging a second
+  # workflow command.
+  run ! grep -q '^2026/08/06 15:01:50 HEAD request failed' <<<"$output"
+}
+
+@test "classification: registry error codes still read as absence" {
+  # crane does not emit these, but other registries and tools do; the arm is
+  # kept deliberately, so pin it rather than leaving it unproven.
+  for msg in "MANIFEST_UNKNOWN: manifest unknown" "NAME_UNKNOWN: repository name not known to registry"; do
+    export CRANE_MOCK_DIGEST_ERROR="$msg"
+    run "$SCRIPT"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"does not exist"* ]] || {
+      echo "did not classify as absence: $msg"
+      return 1
+    }
+  done
+}
+
+@test "classification: a 404 from the token endpoint does NOT read as absence" {
+  # The status alone is not enough: a pathological 404 on the token exchange, or
+  # from a proxy in front of it, would otherwise classify every entry as absent -
+  # the misdirection this split exists to prevent. Absence is bound to a 404 on
+  # the manifest request, which is the only lookup that can prove a tag missing.
+  export CRANE_MOCK_DIGEST_ERROR="2026/08/06 15:01:50 HEAD request failed, falling back on GET: GET https://ghcr.io/token?scope=repository%3Aexample-org%2Fexample-image%3Apull&service=ghcr.io: unexpected status code 404 Not Found"
+  run "$SCRIPT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"could not be inspected"* ]]
+  [[ "$output" != *"does not exist"* ]]
+}
+
+@test "classification: a bare 404 in transport noise does NOT read as absence" {
+  # The pattern is "unexpected status code 404", not a bare "404": a host, digest
+  # or proxy message carrying those digits must fall through to indeterminate.
+  export CRANE_MOCK_DIGEST_ERROR="dial tcp: lookup registry-404.example.com: no such host"
+  run "$SCRIPT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"could not be inspected"* ]]
+  [[ "$output" != *"does not exist"* ]]
+}
+
+@test "classification: mixed run -> each entry keeps its own verdict" {
+  # The only case where the per-entry classification does work a single run-wide
+  # verdict could not, so a regression hoisting it out of the loop fails here.
+  export INPUT_DRY_RUN="true"
+  export CRANE_MOCK_MISSING="ghcr.io/example-org/example-image:9.9.9"
+  set_digest_error "ghcr.io/example-org/example-image:9.9.9-fips" \
+    "2026/08/06 15:01:50 GET https://ghcr.io/token?scope=x: unexpected status code 403 Forbidden"
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"example-image:9.9.9 does not exist"* ]]
+  [[ "$output" == *"example-image:9.9.9-fips could not be inspected"* ]]
+  [[ "$output" == *"2 of 2 source manifests could not be resolved"* ]]
+  # This is the only run with both classes present, so it is the only place the
+  # aggregate has a choice to make. Both hints must appear, and the split must be
+  # reported, or a mixed run reads as whichever class the code happened to pick.
+  [[ "$output" == *"(1 not found, 1 uninspectable)"* ]]
+  [[ "$output" == *"their tags read 9.9.9 rather than v9.9.9"* ]]
+  [[ "$output" == *"check the credential and registry availability"* ]]
+}
+
+@test "rehearsal login failure -> named before the per-entry list, not left to inference" {
+  export INPUT_DRY_RUN="true"
+  export INPUT_LOGIN_OUTCOME="failure"
+  export CRANE_MOCK_DIGEST_ERROR="2026/08/06 GET https://ghcr.io/token?scope=x: unexpected status code 403 Forbidden"
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"the GHCR login did not succeed (failure)"* ]]
+  # Assert the ordering the test is named for, not just presence: the whole point
+  # is that the credential is stated BEFORE the per-entry list, so a regression
+  # moving this warning into the entry loop must fail here.
+  login_line=$(grep -n 'GHCR login did not succeed' <<<"$output" | head -1 | cut -d: -f1)
+  first_entry=$(grep -n 'source manifest ghcr.io' <<<"$output" | head -1 | cut -d: -f1)
+  [ -n "$login_line" ] && [ -n "$first_entry" ]
+  [ "$login_line" -lt "$first_entry" ]
+}
+
+@test "login outcome is ignored on a real run and when unset" {
+  # The rehearsal step is skipped on a real run, so its outcome is meaningless
+  # there; an unwired or unresolved expression must not warn either.
+  export INPUT_LOGIN_OUTCOME="skipped"
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"GHCR login did not succeed"* ]]
+
+  export INPUT_DRY_RUN="true"
+  export INPUT_LOGIN_OUTCOME=""
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"GHCR login did not succeed"* ]]
+}
+
+@test "dry-run plan marks the lines whose source did not resolve" {
+  export INPUT_DRY_RUN="true"
+  export CRANE_MOCK_MISSING="ghcr.io/example-org/example-image:9.9.9-fips"
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  # Every moving tag of the unresolved entry is flagged, not only the first: the
+  # marker is computed once per entry and printed per tag, so a regression that
+  # cleared it after the first iteration would leave two of three lines reading
+  # as healthy in a ~45-entry plan.
+  [[ "$output" == *"Retagging ghcr.io/example-org/example-image:latest-fips -> ghcr.io/example-org/example-image:9.9.9-fips (WOULD FAIL: source unresolved)"* ]]
+  [[ "$output" == *"Retagging ghcr.io/example-org/example-image:9-fips -> ghcr.io/example-org/example-image:9.9.9-fips (WOULD FAIL: source unresolved)"* ]]
+  [[ "$output" == *"Retagging ghcr.io/example-org/example-image:9.9-fips -> ghcr.io/example-org/example-image:9.9.9-fips (WOULD FAIL: source unresolved)"* ]]
+  # ...and the healthy sibling is not.
+  [[ "$output" == *"Retagging ghcr.io/example-org/example-image:latest -> ghcr.io/example-org/example-image:9.9.9"* ]]
+  [[ "$output" != *"example-image:latest -> ghcr.io/example-org/example-image:9.9.9 (WOULD FAIL"* ]]
+}
+
+@test "step summary names which refs were unresolved, not only how many" {
+  export INPUT_DRY_RUN="true"
+  export CRANE_MOCK_MISSING="ghcr.io/example-org/example-image:9.9.9-fips"
+  GITHUB_STEP_SUMMARY="$BATS_TEST_TMPDIR/summary.md"
+  export GITHUB_STEP_SUMMARY
+  : > "$GITHUB_STEP_SUMMARY"
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qF -- '- ghcr.io/example-org/example-image:9.9.9-fips: does not exist' "$GITHUB_STEP_SUMMARY"
+}
+
+@test "step summary caps the list at 20 and counts the rest" {
+  # 25 entries, all unresolved: an off-by-one in the cap or the trailer would
+  # otherwise pass, since no other test drives more than two.
+  entries=$(jq -nc '[range(25) | {image: "ghcr.io/example-org/img\(.)"}]')
+  export INPUT_IMAGES="$entries"
+  export INPUT_DRY_RUN="true"
+  export CRANE_MOCK_DIGEST_ERROR="2026/08/06 HEAD https://ghcr.io/v2/x/manifests/9.9.9: unexpected status code 404 Not Found"
+  GITHUB_STEP_SUMMARY="$BATS_TEST_TMPDIR/summary.md"
+  export GITHUB_STEP_SUMMARY
+  : > "$GITHUB_STEP_SUMMARY"
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(grep -c '^- ghcr.io/example-org/img' "$GITHUB_STEP_SUMMARY")" -eq 20 ]
+  grep -qF -- '- (+5 more, see the annotations above)' "$GITHUB_STEP_SUMMARY"
+  [[ "$output" == *"25 of 25 source manifests could not be resolved"* ]]
+}
+
+@test "aggregate hint follows the classes present, not a fixed string" {
+  export INPUT_DRY_RUN="true"
+
+  # Nothing absent: advising on the tag form would be the same misdirection the
+  # per-entry split exists to prevent.
+  export CRANE_MOCK_DIGEST_ERROR="2026/08/06 GET https://ghcr.io/token?scope=x: unexpected status code 403 Forbidden"
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"check the credential and registry availability, not the tag form"* ]]
+  [[ "$output" != *"rather than v9.9.9"* ]]
+
+  # Something absent: the tag-form hint is the useful one.
+  unset CRANE_MOCK_DIGEST_ERROR
+  export CRANE_MOCK_MISSING="ghcr.io/example-org/example-image:9.9.9"
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"their tags read 9.9.9 rather than v9.9.9"* ]]
+  [[ "$output" != *"not the tag form"* ]]
+}
+
+@test "unresolved-sources is published on a real run too" {
+  # action.yml promises "always 0 on a successful real promotion", and every
+  # other assertion for this output was under dry-run - the half that is not
+  # documented.
+  GITHUB_OUTPUT="$BATS_TEST_TMPDIR/out.txt"
+  export GITHUB_OUTPUT
+  : > "$GITHUB_OUTPUT"
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qx 'unresolved-sources=0' "$GITHUB_OUTPUT"
+
+  # ...and written before a real run aborts, so a caller can still read the count.
+  : > "$GITHUB_OUTPUT"
+  export CRANE_MOCK_MISSING="ghcr.io/example-org/example-image:9.9.9-fips"
+  run "$SCRIPT"
+  [ "$status" -ne 0 ]
+  grep -qx 'unresolved-sources=1' "$GITHUB_OUTPUT"
+}
+
+@test "unresolved-sources is published on a non-stable version no-op" {
+  # The no-op exits 0 long before the pre-flight, so without an explicit write a
+  # caller gating on this output reads an empty string and breaks in their own
+  # workflow - on a dispatch this action calls clean.
+  GITHUB_OUTPUT="$BATS_TEST_TMPDIR/out.txt"
+  export GITHUB_OUTPUT
+  : > "$GITHUB_OUTPUT"
+  export INPUT_VERSION="v9.9.9-rc.1"
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qx 'unresolved-sources=0' "$GITHUB_OUTPUT"
+}
+
+@test "unresolved-sources is published as a step output" {
+  # The only machine-readable signal that a rehearsed plan would not execute; a
+  # caller keyed on the job conclusion cannot see it otherwise.
+  GITHUB_OUTPUT="$BATS_TEST_TMPDIR/out.txt"
+  export GITHUB_OUTPUT
+  : > "$GITHUB_OUTPUT"
+  export INPUT_DRY_RUN="true"
+  export CRANE_MOCK_MISSING="ghcr.io/example-org/example-image:9.9.9-fips"
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qx 'unresolved-sources=1' "$GITHUB_OUTPUT"
+
+  : > "$GITHUB_OUTPUT"
+  unset CRANE_MOCK_MISSING
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qx 'unresolved-sources=0' "$GITHUB_OUTPUT"
+}
+
+@test "digest lookup failure that isn't absence -> reported as uninspectable, not missing" {
+  # A 401 on a private package, a rate limit or a DNS failure is not evidence
+  # that the tag was never pushed; calling it missing would send an operator to
+  # re-cut an image that is already published.
+  export CRANE_MOCK_DIGEST_ERROR="UNAUTHORIZED: authentication required"
+  run "$SCRIPT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"could not be inspected"* ]]
+  [[ "$output" == *"UNAUTHORIZED: authentication required"* ]]
+  [[ "$output" != *"does not exist"* ]]
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 0 ]
+}
+
+@test "dry-run digest failure that isn't absence -> warns as uninspectable, still rehearses" {
+  export INPUT_DRY_RUN="true"
+  export CRANE_MOCK_DIGEST_ERROR="TOOMANYREQUESTS: rate limit exceeded"
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"could not be inspected"* ]]
+  [[ "$output" == *"TOOMANYREQUESTS: rate limit exceeded"* ]]
+  [[ "$output" != *"does not exist"* ]]
+  [[ "$output" == *"2 of 2 source manifests could not be resolved"* ]]
   [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 0 ]
 }
 

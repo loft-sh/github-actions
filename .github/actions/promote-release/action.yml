@@ -62,13 +62,8 @@ inputs:
     description: |
       JSON array of image entries to retag, each
       `{"image": "ghcr.io/loft-sh/x", "suffix": ""}` (suffix optional, default
-      ""). For each entry, copies `<image>:<version><suffix>` to
-      `<image>:latest<suffix>`, `<image>:<major><suffix>`, and
-      `<image>:<major>.<minor><suffix>`. The suffix is also how per-arch
-      moving tags are promoted: an entry with suffix `-amd64` retags
-      `<image>:<version>-amd64` (a bare single-platform manifest) to
-      `<image>:latest-amd64` etc. crane preserves its digest, so its cosign
-      signature stays valid.
+      ""). Docker tags are the bare version, without the `v` that `version`
+      carries; see the README for the full retag/suffix semantics.
     required: true
   promote-self:
     description: 'Set to "true" to also promote the CALLER repo''s own <version> release (unset pre-release, set Latest, gated by the same backport check as :latest). Off by default; only an exact "true" enables it. See the README promote-self section for token scope and failure semantics.'
@@ -93,16 +88,35 @@ inputs:
     required: false
     default: '[]'
   dry-run:
-    description: 'Fail-closed: a real promotion runs only on an exact "false" (the default, so a plain dispatch still promotes for real). Any other value ("true", a typo, etc.) is a dry-run that only prints the planned retags/promotion.'
+    description: 'Fail-closed: a real promotion runs only on an exact "false" (the default, so a plain dispatch still promotes for real). Any other value ("true", a typo, etc.) is a dry-run, which writes nothing but still reads the registry; see the README.'
     required: false
     default: 'false'
 outputs:
   promote-self-enabled:
     description: 'Whether the manifest forwarded an exact "true" promote-self value to the promotion script.'
     value: ${{ steps.promote.outputs.promote-self-enabled }}
+  unresolved-sources:
+    description: 'How many configured source manifests could not be resolved at the bare version tag. Always 0 on a successful real promotion, since it aborts otherwise; on a dry-run this is the only machine-readable signal that the rehearsed plan would not execute, so gate or alert on it rather than on the job conclusion.'
+    value: ${{ steps.promote.outputs.unresolved-sources }}
 runs:
   using: composite
   steps:
+    # Login and crane both run for dry-runs too. The rehearsal reads the
+    # registry - it resolves every source manifest so it can tell the operator
+    # whether the plan it prints could actually execute - and a package that is
+    # not publicly readable fails crane's anonymous token exchange outright, so
+    # the lookup needs the credential to mean anything. Gating these on a real
+    # run left the rehearsal calling a crane that was never installed, which
+    # reads as "every source manifest is missing" and makes the preview
+    # worthless. Nothing here writes to the registry; `crane tag` is the only
+    # mutation and it stays behind the script's dry-run guard.
+    #
+    # Login is split by mode rather than carrying `continue-on-error` on one
+    # step, because the value would have to be an expression and
+    # `continue-on-error: ${{ inputs.x }}` is evaluated in the composite's own
+    # context, where it resolves empty and halts the run with "Unexpected value"
+    # (actions/runner#2418, still open). A literal boolean is unaffected, so the
+    # two modes get their own step.
     - name: Log in to GHCR
       if: inputs.dry-run != 'true'
       uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
@@ -110,8 +124,20 @@ runs:
         registry: ghcr.io
         username: ${{ inputs.docker-username }}
         password: ${{ inputs.github-token }}
+    # A rehearsal must not abort on registry availability - the script downgrades
+    # a 401 and an unreadable release to warnings for that reason, and a login
+    # failure here would be the one registry interaction that still killed it,
+    # before the classification that turns it into "could not be inspected".
+    - name: Log in to GHCR (rehearsal, non-fatal)
+      id: ghcr-login-rehearsal
+      if: inputs.dry-run == 'true'
+      continue-on-error: true
+      uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+      with:
+        registry: ghcr.io
+        username: ${{ inputs.docker-username }}
+        password: ${{ inputs.github-token }}
     - name: Install crane
-      if: inputs.dry-run != 'true'
       uses: imjasonh/setup-crane@feee3b6bb0d4c68370f256a4502498c9227e5c6b # v0.7
       with:
         version: v0.20.2
@@ -127,6 +153,11 @@ runs:
         INPUT_HOMEBREW_TAP_REPO: ${{ inputs.homebrew-tap-repo }}
         INPUT_HOMEBREW_FORMULA_PATHS: ${{ inputs.homebrew-formula-paths }}
         INPUT_DRY_RUN: ${{ inputs.dry-run }}
+        # So the script can name a failed credential before listing unresolved
+        # sources, instead of leaving the operator to infer it. Empty on a real
+        # run (that step is skipped there, and a real login failure has already
+        # stopped the job), which the script treats as success.
+        INPUT_LOGIN_OUTCOME: ${{ inputs.dry-run == 'true' && steps.ghcr-login-rehearsal.outcome || '' }}
       run: ${{ github.action_path }}/src/action.sh
 branding:
   icon: 'upload-cloud'
