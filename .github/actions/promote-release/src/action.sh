@@ -8,7 +8,7 @@
 #
 # `crane tag`, not `docker buildx imagetools create`: imagetools is
 # digest-preserving only when the source is already a multi-arch index. For a
-# bare single-platform manifest (a per-arch tag like :vX.Y.Z-amd64) it wraps
+# bare single-platform manifest (a per-arch tag like :X.Y.Z-amd64) it wraps
 # the manifest in a NEW index, changing the digest and orphaning the
 # digest-scoped cosign signature. `crane tag` re-points a tag at the exact
 # same manifest digest for both single-platform manifests and indexes, so it
@@ -28,8 +28,9 @@
 #   INPUT_VERSION    The promoted release tag, e.g. v0.37.1.
 #   INPUT_IMAGES     JSON array of image entries to retag, each
 #                    {"image": "ghcr.io/loft-sh/x", "suffix": ""} (suffix
-#                    optional, default ""). For each entry, copies
-#                    <image>:<version><suffix> to <image>:latest<suffix>,
+#                    optional, default ""). Docker tags are the bare version,
+#                    without the v that INPUT_VERSION carries, so for each entry
+#                    this copies <image>:X.Y.Z<suffix> to <image>:latest<suffix>,
 #                    <image>:<major><suffix>, and <image>:<major>.<minor><suffix>.
 #
 # Optional env:
@@ -55,9 +56,11 @@
 #                     (case-insensitive) "false" - which is the default, so a
 #                     plain dispatch still promotes for real. ANY
 #                     other value ("true", "yes", "1", a typo, wrong case,
-#                     stray whitespace) is a dry-run that only prints the
-#                     planned retags/promotion, so a caller who meant to
-#                     preview can't accidentally fire a real retag/release flip.
+#                     stray whitespace) is a dry-run: it prints the planned
+#                     retags/promotion and writes nothing, so a caller who meant
+#                     to preview can't accidentally fire a real retag/release
+#                     flip. It still READS - it resolves every source manifest,
+#                     which is what makes the printed plan trustworthy.
 #
 # GITHUB_REPOSITORY (owner/repo of the caller, set automatically by Actions)
 # is used to detect a backport/patch promotion: if VERSION is older than the
@@ -134,6 +137,13 @@ if [[ ! "${VERSION}" =~ ^v([0-9]+)\.([0-9]+)\.[0-9]+$ ]]; then
 fi
 MAJOR="${BASH_REMATCH[1]}"
 MINOR="${BASH_REMATCH[2]}"
+# Docker tag form, which is not the git tag form. goreleaser publishes image
+# tags from `{{ .Version }}`, which strips the leading v, so the manifest this
+# action retags from is :X.Y.Z while the release it promotes is vX.Y.Z. The
+# moving tags written below are derived from MAJOR/MINOR and so are already
+# bare; deriving the source the same way keeps both ends of every `crane tag`
+# in one tag namespace.
+VERSION_TAG="${VERSION#v}"
 
 run() {
   if [[ "${DRY_RUN}" == "true" ]]; then
@@ -266,11 +276,26 @@ if ! is_newest_in_line "${MAJOR}.${MINOR}" "${CALLER_RELEASE_LIST}"; then
 fi
 
 # Validate every entry - and that its source manifest actually exists at
-# VERSION - before making any changes, so a config typo or a suffix variant
+# VERSION_TAG - before making any changes, so a config typo or a suffix variant
 # (e.g. -fips) that wasn't built for this version can't leave earlier
-# entries retagged while a later one fails. Skipped under dry-run, since
-# nothing has been pushed to inspect yet in a rehearsal.
+# entries retagged while a later one fails.
+#
+# The lookup runs under dry-run too. Skipping it there made a rehearsal report a
+# plan that could not execute - the one question a rehearsal exists to answer -
+# so it is checked either way and only the verdict differs: a real run aborts, a
+# rehearsal warns and keeps printing the rest of the plan. Non-fatal in dry-run
+# because rehearsing a cut whose images are not published yet is allowed, the
+# same allowance the release lookup below makes.
+# A missing crane is not evidence about any manifest. Without this the lookup
+# below would exit non-zero for every entry with its stderr discarded, which
+# reads as "nothing is published" - a wrong answer that looks like a real one.
+if ! command -v crane >/dev/null 2>&1; then
+  echo "::error::crane is not on PATH, so no source manifest can be inspected. The action installs it (imjasonh/setup-crane); if that step was skipped or failed, fix it rather than reading this as a missing manifest." >&2
+  exit 1
+fi
+
 IMAGE_COUNT=$(jq -r 'length' <<<"${INPUT_IMAGES}")
+UNRESOLVED_SOURCES=0
 for ((i = 0; i < IMAGE_COUNT; i++)); do
   entry=$(jq -c ".[$i]" <<<"${INPUT_IMAGES}")
   image=$(jq -r '.image // empty' <<<"${entry}")
@@ -279,11 +304,36 @@ for ((i = 0; i < IMAGE_COUNT; i++)); do
     echo "::error::images[$i] is missing required \"image\" field: ${entry}" >&2
     exit 1
   fi
-  if [[ "${DRY_RUN}" != "true" ]] && ! crane digest "${image}:${VERSION}${suffix}" >/dev/null 2>&1; then
-    echo "::error::source manifest ${image}:${VERSION}${suffix} does not exist; refusing to start retagging" >&2
+  src_ref="${image}:${VERSION_TAG}${suffix}"
+  if digest_err=$(crane digest "${src_ref}" 2>&1 >/dev/null); then
+    continue
+  fi
+  # Absence and "could not tell" are different facts and get different wording:
+  # the first says the tag was never pushed (typically a tag-form or build-matrix
+  # mismatch), the second says the registry did not answer - a 401 on a private
+  # package, a rate limit, DNS. Reporting an auth failure as a missing manifest
+  # would send an operator to re-cut an image that is already published.
+  case "${digest_err}" in
+    *MANIFEST_UNKNOWN* | *NAME_UNKNOWN* | *"not found"* | *"404"*)
+      reason="does not exist"
+      ;;
+    *)
+      reason="could not be inspected ($(tr '\n' ' ' <<<"${digest_err}"))"
+      ;;
+  esac
+  if [[ "${DRY_RUN}" == "true" ]]; then
+    echo "::warning::source manifest ${src_ref} ${reason}; a real promotion would abort here." >&2
+    UNRESOLVED_SOURCES=$((UNRESOLVED_SOURCES + 1))
+  else
+    echo "::error::source manifest ${src_ref} ${reason}; refusing to start retagging" >&2
     exit 1
   fi
 done
+# One line an operator can act on, so the verdict isn't buried in a per-image
+# warning for every entry in a long images list.
+if ((UNRESOLVED_SOURCES > 0)); then
+  echo "::warning::${UNRESOLVED_SOURCES} of ${IMAGE_COUNT} source manifests could not be resolved at :${VERSION_TAG}, so this promotion would abort as dispatched. Confirm the images are published, that their tags read ${VERSION_TAG} rather than ${VERSION}, and that this run can read them." >&2
+fi
 
 # Promotes VERSION on a GitHub repository using an already-decided Latest
 # gate. This is shared by the caller's own release and the paired OSS release,
@@ -399,7 +449,7 @@ for ((i = 0; i < IMAGE_COUNT; i++)); do
   image=$(jq -r '.image' <<<"${entry}")
   suffix=$(jq -r '.suffix // ""' <<<"${entry}")
 
-  src="${image}:${VERSION}${suffix}"
+  src="${image}:${VERSION_TAG}${suffix}"
   moving_tags=()
   [[ "${ADVANCE_LATEST_MAJOR}" == "true" ]] && moving_tags+=(latest "${MAJOR}")
   [[ "${ADVANCE_MINOR}" == "true" ]] && moving_tags+=("${MAJOR}.${MINOR}")

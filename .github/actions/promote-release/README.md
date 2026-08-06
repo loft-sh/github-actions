@@ -8,6 +8,13 @@ digest-preserving retag via `crane tag`, never a rebuild, so cosign signatures
 promotes the caller's own release (`promote-self`) and a paired public release
 in a companion repo (unsets `prerelease`, sets `latest`).
 
+`version` is the **git tag** (`vX.Y.Z`), and the docker tags it reads and writes
+are the **bare** form (`X.Y.Z`, `latest`, `9`, `9.9`) — goreleaser publishes image
+tags from `{{ .Version }}`, which strips the leading `v`. Both ends of every
+`crane tag` therefore live in the bare namespace, while the GitHub release edits
+and the Homebrew download URLs keep the `v`. Callers whose images are tagged
+*with* a leading `v` are not supported.
+
 `crane tag` is used rather than `docker buildx imagetools create`: imagetools
 is digest-preserving only when the source is already a multi-arch index. For a
 bare single-platform manifest (a per-arch tag such as `:{version}-amd64`) it
@@ -100,11 +107,11 @@ as an all-or-nothing skip — a formula has no line-scoped equivalent to
 |         INPUT          |  TYPE  | REQUIRED |  DEFAULT  |                                                                                                                                                                                                                                                                              DESCRIPTION                                                                                                                                                                                                                                                                               |
 |------------------------|--------|----------|-----------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 |    docker-username     | string |   true   |           |                                                                                                                                                                                                                 Username paired with github-token for the <br>GHCR login (GHCR checks the token, but docker/login-action requires a username value).                                                                                                                                                                                                                   |
-|        dry-run         | string |  false   | `"false"` |                                                                                                                                                                Fail-closed: a real promotion runs only <br>on an exact "false" (the default, so a plain dispatch still promotes for real). Any <br>other value ("true", a typo, etc.) is a dry-run <br>that only prints the planned retags/promotion.                                                                                                                                                                  |
+|        dry-run         | string |  false   | `"false"` |                                                                                                                                                                Fail-closed: a real promotion runs only <br>on an exact "false" (the default, so a plain dispatch still promotes for real). Any <br>other value ("true", a typo, etc.) is a dry-run <br>that prints the planned retags/promotion and writes <br>nothing. A dry-run still reads: it authenticates <br>to the registry and resolves every source <br>manifest, so the rehearsal can report whether <br>the plan it prints would actually run.                                                                                                                                                                  |
 |      github-token      | string |   true   |           |                                                                                                                                                                                                 Token with GHCR write:packages; contents:write on <br>the caller repo when promote-self is <br>true; and contents:write on oss-repo and <br>homebrew-tap-repo if set.                                                                                                                                                                                                  |
 | homebrew-formula-paths | string |  false   |  `"[]"`   |                                                                                                                                                                                                           JSON array of formula file paths <br>within homebrew-tap-repo to update, e.g. ["Formula/vcluster.rb"]. <br>Required if homebrew-tap-repo is set.                                                                                                                                                                                                             |
 |   homebrew-tap-repo    | string |  false   |           |                                                                                                                                                                                               owner/repo of a Homebrew tap to <br>promote (e.g. loft-sh/homebrew-tap). Requires oss-repo to be <br>set, since checksums come from its <br>release. Leave empty to skip.                                                                                                                                                                                                |
-|         images         | string |   true   |           | JSON array of image entries to <br>retag, each `{"image": "ghcr.io/loft-sh/x", "suffix": ""}` (suffix optional, default <br>""). For each entry, copies `<image>:<version><suffix>` <br>to `<image>:latest<suffix>`, `<image>:<major><suffix>`, and `<image>:<major>.<minor><suffix>`. The <br>suffix is also how per-arch moving <br>tags are promoted: an entry with <br>suffix `-amd64` retags `<image>:<version>-amd64` (a bare single-platform manifest) to <br>`<image>:latest-amd64` etc. crane preserves its digest, <br>so its cosign signature stays valid.  |
+|         images         | string |   true   |           | JSON array of image entries to <br>retag, each `{"image": "ghcr.io/loft-sh/x", "suffix": ""}` (suffix optional, default <br>""). Docker tags are the bare <br>version, without the `v` that `version` <br>carries (goreleaser publishes `{{ .Version }}`), so <br>for each entry this copies `<image>:X.Y.Z<suffix>` <br>to `<image>:latest<suffix>`, `<image>:<major><suffix>`, and `<image>:<major>.<minor><suffix>`. The <br>suffix is also how per-arch moving <br>tags are promoted: an entry with <br>suffix `-amd64` retags `<image>:X.Y.Z-amd64` (a bare single-platform manifest) to <br>`<image>:latest-amd64` etc. crane preserves its digest, <br>so its cosign signature stays valid.  |
 |        oss-repo        | string |  false   |           |                                                                                                                                                                                                                   owner/repo whose matching <version> release should <br>also be promoted (prerelease unset, latest set). Leave empty <br>to skip.                                                                                                                                                                                                                     |
 |      promote-self      | string |  false   | `"false"` |                                                                                                                                  Set to "true" to also promote <br>the CALLER repo's own <version> release <br>(unset pre-release, set Latest, gated by the same backport check as :latest). Off by default; only an <br>exact "true" enables it. See the <br>README promote-self section for token scope <br>and failure semantics.                                                                                                                                   |
 |        version         | string |   true   |           |                                                                                                                                                                                                                                                                The promoted release tag, e.g. v0.37.1.                                                                                                                                                                                                                                                                 |
@@ -192,9 +199,16 @@ promotes through the same dispatch.
 `crane tag` needs to push to GHCR. `action.yml` includes a `docker/login-action`
 step using `docker-username` + `github-token` (GHCR checks the token;
 `docker/login-action` still requires a username value); crane reads the docker
-config that step writes, so no separate crane login is needed. The login is
-skipped automatically when `dry-run: true`. `action.yml` also installs crane
-(`imjasonh/setup-crane`), so callers don't need to install it themselves.
+config that step writes, so no separate crane login is needed. `action.yml` also
+installs crane (`imjasonh/setup-crane`), so callers don't need to install it
+themselves.
+
+Both steps run for a `dry-run` as well, because the rehearsal resolves every
+source manifest and moving tags are typically private packages, so an
+unauthenticated lookup would 401. Neither step writes to the registry — `crane
+tag` is the only mutation and it stays behind the dry-run guard. If crane is
+somehow absent the action fails outright rather than reading the failed lookups
+as missing manifests.
 
 ### promote-self
 
@@ -230,8 +244,21 @@ On a backport promotion none of this applies — the edit is `--prerelease=false
 only, which moves no pointer and cannot stale a baseline — so a missing release
 or a failed edit stays a warning and the line tag still advances. A `dry-run` is
 likewise never aborted by an unreadable release: a rehearsal may run before the
-release exists (the source-manifest pre-flight is skipped for the same reason),
-so it warns and prints the planned edit instead.
+release exists, so it warns and prints the planned edit instead.
+
+The source-manifest pre-flight runs under `dry-run` too, and only its verdict
+differs: a real promotion aborts, a rehearsal warns per entry, adds a one-line
+summary of how many sources could not be resolved, and still prints the rest of
+the plan. "Unresolved" covers two distinct facts, and the wording says which:
+a tag that was never pushed (`does not exist` — usually a tag-form or
+build-matrix mismatch) versus a registry that did not answer (`could not be
+inspected`, carrying the error — a 401 on a private package, a rate limit, DNS).
+A real run fails closed on either, but an auth failure must never be reported as
+a missing image. If crane itself is unavailable the run fails outright, since
+that is not evidence about any manifest.
+It is non-fatal there for the same pre-publish reason as the release lookup —
+but it is not *skipped*, because the question a rehearsal exists to answer is
+whether the printed plan can actually run.
 
 ### oss-repo
 

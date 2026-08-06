@@ -62,11 +62,12 @@ inputs:
     description: |
       JSON array of image entries to retag, each
       `{"image": "ghcr.io/loft-sh/x", "suffix": ""}` (suffix optional, default
-      ""). For each entry, copies `<image>:<version><suffix>` to
-      `<image>:latest<suffix>`, `<image>:<major><suffix>`, and
-      `<image>:<major>.<minor><suffix>`. The suffix is also how per-arch
-      moving tags are promoted: an entry with suffix `-amd64` retags
-      `<image>:<version>-amd64` (a bare single-platform manifest) to
+      ""). Docker tags are the bare version, without the `v` that `version`
+      carries (goreleaser publishes `{{ .Version }}`), so for each entry this
+      copies `<image>:X.Y.Z<suffix>` to `<image>:latest<suffix>`,
+      `<image>:<major><suffix>`, and `<image>:<major>.<minor><suffix>`. The
+      suffix is also how per-arch moving tags are promoted: an entry with suffix
+      `-amd64` retags `<image>:X.Y.Z-amd64` (a bare single-platform manifest) to
       `<image>:latest-amd64` etc. crane preserves its digest, so its cosign
       signature stays valid.
     required: true
@@ -93,7 +94,7 @@ inputs:
     required: false
     default: '[]'
   dry-run:
-    description: 'Fail-closed: a real promotion runs only on an exact "false" (the default, so a plain dispatch still promotes for real). Any other value ("true", a typo, etc.) is a dry-run that only prints the planned retags/promotion.'
+    description: 'Fail-closed: a real promotion runs only on an exact "false" (the default, so a plain dispatch still promotes for real). Any other value ("true", a typo, etc.) is a dry-run that prints the planned retags/promotion and writes nothing. A dry-run still reads: it authenticates to the registry and resolves every source manifest, so the rehearsal can report whether the plan it prints would actually run.'
     required: false
     default: 'false'
 outputs:
@@ -103,15 +104,21 @@ outputs:
 runs:
   using: composite
   steps:
+    # Both steps run for dry-runs too. The rehearsal reads the registry - it
+    # resolves every source manifest so it can tell the operator whether the
+    # plan it prints could actually execute - and moving tags are commonly
+    # private packages, so an unauthenticated lookup would 401. Gating these on
+    # a real run left the rehearsal calling a crane that was never installed,
+    # which reads as "every source manifest is missing" and makes the preview
+    # worthless. Nothing here writes to the registry; `crane tag` is the only
+    # mutation and it stays behind the script's dry-run guard.
     - name: Log in to GHCR
-      if: inputs.dry-run != 'true'
       uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
       with:
         registry: ghcr.io
         username: ${{ inputs.docker-username }}
         password: ${{ inputs.github-token }}
     - name: Install crane
-      if: inputs.dry-run != 'true'
       uses: imjasonh/setup-crane@feee3b6bb0d4c68370f256a4502498c9227e5c6b # v0.7
       with:
         version: v0.20.2

@@ -12,7 +12,13 @@
 #                              which CLI performs it.
 #   crane digest <ref>         the pre-flight existence check. Records
 #                              "INSPECT <ref>"; exits 1 if <ref> is listed in
-#                              space-separated $CRANE_MOCK_MISSING, else 0.
+#                              space-separated $CRANE_MOCK_MISSING (printing a
+#                              registry MANIFEST_UNKNOWN to stderr, which is how
+#                              absence is positively identified), else 0.
+#                              $CRANE_MOCK_DIGEST_ERROR makes every digest call
+#                              fail with that message instead - the not-absence
+#                              failure class (401, rate limit, DNS), which must
+#                              not be reported as a missing manifest.
 
 setup_crane_mock() {
   CRANE_MOCK_DIR="$(mktemp -d)"
@@ -47,8 +53,15 @@ case "$verb" in
   digest)
     ref="$1"
     printf 'INSPECT %s\n' "$ref" >> "$CRANE_MOCK_CALLS"
+    if [ -n "${CRANE_MOCK_DIGEST_ERROR:-}" ]; then
+      echo "$CRANE_MOCK_DIGEST_ERROR" >&2
+      exit 1
+    fi
     for missing in $CRANE_MOCK_MISSING; do
-      [ "$missing" = "$ref" ] && exit 1
+      if [ "$missing" = "$ref" ]; then
+        echo "MANIFEST_UNKNOWN: manifest unknown; map[Tag:${ref##*:}]" >&2
+        exit 1
+      fi
     done
     exit 0
     ;;
