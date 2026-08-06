@@ -100,12 +100,13 @@ runs:
   steps:
     # Login and crane both run for dry-runs too. The rehearsal reads the
     # registry - it resolves every source manifest so it can tell the operator
-    # whether the plan it prints could actually execute - and moving tags are
-    # commonly private packages, so an unauthenticated lookup would 401. Gating
-    # these on a real run left the rehearsal calling a crane that was never
-    # installed, which reads as "every source manifest is missing" and makes the
-    # preview worthless. Nothing here writes to the registry; `crane tag` is the
-    # only mutation and it stays behind the script's dry-run guard.
+    # whether the plan it prints could actually execute - and a package that is
+    # not publicly readable fails crane's anonymous token exchange outright, so
+    # the lookup needs the credential to mean anything. Gating these on a real
+    # run left the rehearsal calling a crane that was never installed, which
+    # reads as "every source manifest is missing" and makes the preview
+    # worthless. Nothing here writes to the registry; `crane tag` is the only
+    # mutation and it stays behind the script's dry-run guard.
     #
     # Login is split by mode rather than carrying `continue-on-error` on one
     # step, because the value would have to be an expression and
@@ -125,6 +126,7 @@ runs:
     # failure here would be the one registry interaction that still killed it,
     # before the classification that turns it into "could not be inspected".
     - name: Log in to GHCR (rehearsal, non-fatal)
+      id: ghcr-login-rehearsal
       if: inputs.dry-run == 'true'
       continue-on-error: true
       uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
@@ -148,6 +150,11 @@ runs:
         INPUT_HOMEBREW_TAP_REPO: ${{ inputs.homebrew-tap-repo }}
         INPUT_HOMEBREW_FORMULA_PATHS: ${{ inputs.homebrew-formula-paths }}
         INPUT_DRY_RUN: ${{ inputs.dry-run }}
+        # So the script can name a failed credential before listing unresolved
+        # sources, instead of leaving the operator to infer it. Empty on a real
+        # run (that step is skipped there, and a real login failure has already
+        # stopped the job), which the script treats as success.
+        INPUT_LOGIN_OUTCOME: ${{ inputs.dry-run == 'true' && steps.ghcr-login-rehearsal.outcome || '' }}
       run: ${{ github.action_path }}/src/action.sh
 branding:
   icon: 'upload-cloud'

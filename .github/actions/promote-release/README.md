@@ -204,11 +204,22 @@ installs crane (`imjasonh/setup-crane`), so callers don't need to install it
 themselves.
 
 Both steps run for a `dry-run` as well, because the rehearsal resolves every
-source manifest and moving tags are typically private packages, so an
-unauthenticated lookup would 401. Neither step writes to the registry — `crane
-tag` is the only mutation and it stays behind the dry-run guard. If crane is
-somehow absent the action fails outright rather than reading the failed lookups
-as missing manifests.
+source manifest (see [Source-manifest pre-flight](#source-manifest-pre-flight))
+and a package that is not publicly readable fails crane's anonymous token
+exchange outright, so without the credential the lookup cannot tell you anything.
+Neither step writes to the registry — `crane tag` is the only mutation and it
+stays behind the dry-run guard.
+
+The rehearsal's login is a separate step carrying a literal
+`continue-on-error: true`, so a bad credential or a GHCR hiccup degrades into the
+pre-flight's `could not be inspected` wording instead of killing the preview. It
+has to be a separate step rather than one step with an expression:
+`continue-on-error: ${{ inputs.… }}` on a composite step is evaluated in the
+composite's own context, where it resolves empty and halts the run with
+`Unexpected value ''` ([actions/runner#2418][coe], still open). Literal booleans
+are unaffected.
+
+[coe]: https://github.com/actions/runner/issues/2418
 
 ### promote-self
 
@@ -246,24 +257,50 @@ or a failed edit stays a warning and the line tag still advances. A `dry-run` is
 likewise never aborted by an unreadable release: a rehearsal may run before the
 release exists, so it warns and prints the planned edit instead.
 
-The source-manifest pre-flight runs under `dry-run` too, and only its verdict
-differs: a real promotion aborts, a rehearsal warns per entry, adds a one-line
-summary of how many sources could not be resolved, and still prints the rest of
-the plan. "Unresolved" covers two distinct facts, and the wording says which:
-a tag that was never pushed (`does not exist` — usually a tag-form or
-build-matrix mismatch) versus a registry that did not answer (`could not be
-inspected`, carrying the error — a 401 on a private package, a rate limit, DNS).
-A real run fails closed on either, but an auth failure must never be reported as
-a missing image. If crane itself is unavailable the run fails outright, since
-that is not evidence about any manifest. Every entry is reported before the
-decision, so one dispatch surfaces the whole list rather than one image at a
-time — the loop is read-only, so the abort simply moves after it. The verdict
-also goes to the step summary, since a rehearsal stays green and a long warning
-list is easy to mistake for a clean pass.
+### Source-manifest pre-flight
 
-The pre-flight is non-fatal in a rehearsal for the same pre-publish reason as the
-release lookup — but it is not *skipped*, because the question a rehearsal exists
-to answer is whether the printed plan can actually run.
+Before anything is written, every configured entry's source manifest is resolved
+at `<image>:X.Y.Z<suffix>`. A suffix variant that was never built for this
+version, or a wrong tag namespace, therefore fails before the first retag rather
+than part-way through one.
+
+It runs under `dry-run` too, and only the verdict differs: a real promotion
+aborts, a rehearsal warns and keeps printing the plan. Skipping the lookup in a
+rehearsal made it answer "yes" for plans that could not execute, which is the one
+question a rehearsal exists to answer. It is non-fatal there for the same
+pre-publish reason as the release lookup above — rehearsing a cut whose images
+are not published yet is allowed — but it is not *skipped*.
+
+"Unresolved" covers two different facts and the wording says which, because
+reporting a denial as a missing image sends an operator to re-cut something that
+is already published:
+
+| Wording | Means | Recognised by |
+|---|---|---|
+| `does not exist` | the tag was never pushed — usually a tag-namespace or build-matrix mismatch | `unexpected status code 404` on the manifest request, or a registry `MANIFEST_UNKNOWN`/`NAME_UNKNOWN` |
+| `could not be inspected (<error>)` | the registry did not answer — a refused token exchange, a rate limit, DNS | anything else, with the raw error attached |
+
+The split is matched against what crane actually prints (verified live against
+ghcr.io on the pinned v0.20.2): crane renders the HTTP status itself and never
+surfaces the registry's `MANIFEST_UNKNOWN`, and a package the run cannot read
+fails at the *token exchange* rather than reaching a manifest 404 — which is what
+keeps a failed login out of the absence bucket. The match is deliberately the
+phrase `unexpected status code 404` and not a bare `404`, so a host or proxy
+message carrying those digits stays indeterminate.
+
+If crane itself is missing the run fails outright: that is not evidence about any
+manifest, and treating it as absence would report every source as unpublished.
+When the non-fatal rehearsal login did not succeed, that is stated before the
+per-entry list, so a bad credential is named rather than inferred.
+
+Every entry is reported before the decision — the loop is read-only, so the abort
+simply moves after it, and one dispatch surfaces the whole list instead of one
+image per re-dispatch. The verdict, with the affected refs, also goes to
+`$GITHUB_STEP_SUMMARY` (capped at 20 plus a count): a rehearsal stays green, and a
+long warning list is easy to mistake for a clean pass. Plan lines whose source
+did not resolve are marked `WOULD FAIL`, so the printed plan carries its own
+verdict.
+
 ### oss-repo
 
 If set, and a release matching `version` exists on `oss-repo`, it is edited

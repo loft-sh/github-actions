@@ -12,13 +12,26 @@
 #                              which CLI performs it.
 #   crane digest <ref>         the pre-flight existence check. Records
 #                              "INSPECT <ref>"; exits 1 if <ref> is listed in
-#                              space-separated $CRANE_MOCK_MISSING (printing a
-#                              registry MANIFEST_UNKNOWN to stderr, which is how
-#                              absence is positively identified), else 0.
-#                              $CRANE_MOCK_DIGEST_ERROR makes every digest call
-#                              fail with that message instead - the not-absence
-#                              failure class (401, rate limit, DNS), which must
-#                              not be reported as a missing manifest.
+#                              space-separated $CRANE_MOCK_MISSING, else 0.
+#
+#                              An absent tag emits crane's OWN wording, captured
+#                              live from crane v0.20.2 (the version action.yml
+#                              pins) against ghcr.io - NOT the registry's
+#                              MANIFEST_UNKNOWN JSON, which crane never
+#                              surfaces. Getting this wrong is how a suite can
+#                              cover a classifier that does not match reality.
+#
+#                              $CRANE_MOCK_DIGEST_ERROR fails EVERY digest call
+#                              with that message - the not-absence class (a
+#                              refused token exchange, a rate limit, DNS), which
+#                              must never be reported as a missing manifest.
+#                              $CRANE_MOCK_DIGEST_ERROR_FOR="<ref>=<message>"
+#                              (repeatable, newline-separated) does the same for
+#                              one ref only, so a mixed run - one source genuinely
+#                              absent, a sibling merely unreadable - can be
+#                              expressed. That mix is the only case where the
+#                              per-entry classification does work a single
+#                              run-wide verdict could not.
 
 setup_crane_mock() {
   CRANE_MOCK_DIR="$(mktemp -d)"
@@ -57,9 +70,28 @@ case "$verb" in
       echo "$CRANE_MOCK_DIGEST_ERROR" >&2
       exit 1
     fi
+    # Per-ref override, checked before the missing list so a single ref can be
+    # made unreadable while another stays genuinely absent.
+    if [ -n "${CRANE_MOCK_DIGEST_ERROR_FOR:-}" ]; then
+      while IFS= read -r pair; do
+        [ -n "$pair" ] || continue
+        case "$pair" in
+          "$ref="*)
+            echo "${pair#"$ref="}" >&2
+            exit 1
+            ;;
+        esac
+      done <<EOF2
+$CRANE_MOCK_DIGEST_ERROR_FOR
+EOF2
+    fi
     for missing in $CRANE_MOCK_MISSING; do
       if [ "$missing" = "$ref" ]; then
-        echo "MANIFEST_UNKNOWN: manifest unknown; map[Tag:${ref##*:}]" >&2
+        # crane's real absent-tag wording (v0.20.2, live against ghcr.io). It
+        # renders the HTTP status itself; the registry's MANIFEST_UNKNOWN never
+        # reaches stderr.
+        repo="${ref%:*}"; tag="${ref##*:}"
+        echo "$(date '+%Y/%m/%d %H:%M:%S') HEAD request failed, falling back on GET: HEAD https://${repo#*/}/manifests/${tag}: unexpected status code 404 Not Found (HEAD responses have no body, use GET for details)" >&2
         exit 1
       fi
     done

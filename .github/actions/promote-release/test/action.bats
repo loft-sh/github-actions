@@ -830,6 +830,114 @@ teardown() {
   [[ "$output" != *"source manifests could not be resolved"* ]]
 }
 
+# Every string below is real crane v0.20.2 stderr, captured live against ghcr.io
+# with the pinned version, so the classifier is pinned against what production
+# actually prints rather than against invented registry JSON. crane renders the
+# HTTP status itself and never surfaces MANIFEST_UNKNOWN/NAME_UNKNOWN, which is
+# why an absent tag is recognised by "unexpected status code 404".
+@test "classification: crane's absent-tag wording reads as absence" {
+  export CRANE_MOCK_DIGEST_ERROR="2026/08/06 15:01:49 HEAD request failed, falling back on GET: HEAD https://ghcr.io/v2/example-org/example-image/manifests/9.9.9: unexpected status code 404 Not Found (HEAD responses have no body, use GET for details)"
+  run "$SCRIPT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"does not exist"* ]]
+  [[ "$output" != *"could not be inspected"* ]]
+}
+
+@test "classification: a refused token exchange reads as uninspectable" {
+  # What an unreadable repo actually produces - the failure a soft rehearsal
+  # login can cause. It must never be reported as absence.
+  export CRANE_MOCK_DIGEST_ERROR="2026/08/06 15:01:50 No matching credentials were found for \"ghcr.io\", falling back on anonymous
+2026/08/06 15:01:50 HEAD request failed, falling back on GET: GET https://ghcr.io/token?scope=repository%3Aexample-org%2Fexample-image%3Apull&service=ghcr.io: unexpected status code 403 Forbidden"
+  run "$SCRIPT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"could not be inspected"* ]]
+  [[ "$output" != *"does not exist"* ]]
+}
+
+@test "classification: registry error codes still read as absence" {
+  # crane does not emit these, but other registries and tools do; the arm is
+  # kept deliberately, so pin it rather than leaving it unproven.
+  for msg in "MANIFEST_UNKNOWN: manifest unknown" "NAME_UNKNOWN: repository name not known to registry"; do
+    export CRANE_MOCK_DIGEST_ERROR="$msg"
+    run "$SCRIPT"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"does not exist"* ]] || {
+      echo "did not classify as absence: $msg"
+      return 1
+    }
+  done
+}
+
+@test "classification: a bare 404 in transport noise does NOT read as absence" {
+  # The pattern is "unexpected status code 404", not a bare "404": a host, digest
+  # or proxy message carrying those digits must fall through to indeterminate.
+  export CRANE_MOCK_DIGEST_ERROR="dial tcp: lookup registry-404.example.com: no such host"
+  run "$SCRIPT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"could not be inspected"* ]]
+  [[ "$output" != *"does not exist"* ]]
+}
+
+@test "classification: mixed run -> each entry keeps its own verdict" {
+  # The only case where the per-entry classification does work a single run-wide
+  # verdict could not, so a regression hoisting it out of the loop fails here.
+  export INPUT_DRY_RUN="true"
+  export CRANE_MOCK_MISSING="ghcr.io/example-org/example-image:9.9.9"
+  export CRANE_MOCK_DIGEST_ERROR_FOR="ghcr.io/example-org/example-image:9.9.9-fips=2026/08/06 15:01:50 GET https://ghcr.io/token?scope=x: unexpected status code 403 Forbidden"
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"example-image:9.9.9 does not exist"* ]]
+  [[ "$output" == *"example-image:9.9.9-fips could not be inspected"* ]]
+  [[ "$output" == *"2 of 2 source manifests could not be resolved"* ]]
+}
+
+@test "rehearsal login failure -> named before the per-entry list, not left to inference" {
+  export INPUT_DRY_RUN="true"
+  export INPUT_LOGIN_OUTCOME="failure"
+  export CRANE_MOCK_DIGEST_ERROR="2026/08/06 GET https://ghcr.io/token?scope=x: unexpected status code 403 Forbidden"
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"the GHCR login did not succeed (failure)"* ]]
+}
+
+@test "login outcome is ignored on a real run and when unset" {
+  # The rehearsal step is skipped on a real run, so its outcome is meaningless
+  # there; an unwired or unresolved expression must not warn either.
+  export INPUT_LOGIN_OUTCOME="skipped"
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"GHCR login did not succeed"* ]]
+
+  export INPUT_DRY_RUN="true"
+  export INPUT_LOGIN_OUTCOME=""
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"GHCR login did not succeed"* ]]
+}
+
+@test "dry-run plan marks the lines whose source did not resolve" {
+  export INPUT_DRY_RUN="true"
+  export CRANE_MOCK_MISSING="ghcr.io/example-org/example-image:9.9.9-fips"
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  # The unresolved entry is flagged in the plan itself...
+  [[ "$output" == *"Retagging ghcr.io/example-org/example-image:latest-fips -> ghcr.io/example-org/example-image:9.9.9-fips (WOULD FAIL: source unresolved)"* ]]
+  # ...and the healthy sibling is not.
+  [[ "$output" == *"Retagging ghcr.io/example-org/example-image:latest -> ghcr.io/example-org/example-image:9.9.9"* ]]
+  [[ "$output" != *"example-image:latest -> ghcr.io/example-org/example-image:9.9.9 (WOULD FAIL"* ]]
+}
+
+@test "step summary names which refs were unresolved, not only how many" {
+  export INPUT_DRY_RUN="true"
+  export CRANE_MOCK_MISSING="ghcr.io/example-org/example-image:9.9.9-fips"
+  GITHUB_STEP_SUMMARY="$BATS_TEST_TMPDIR/summary.md"
+  export GITHUB_STEP_SUMMARY
+  : > "$GITHUB_STEP_SUMMARY"
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qF -- '- ghcr.io/example-org/example-image:9.9.9-fips: does not exist' "$GITHUB_STEP_SUMMARY"
+}
+
 @test "digest lookup failure that isn't absence -> reported as uninspectable, not missing" {
   # A 401 on a private package, a rate limit or a DNS failure is not evidence
   # that the tag was never pushed; calling it missing would send an operator to

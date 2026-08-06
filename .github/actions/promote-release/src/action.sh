@@ -143,7 +143,7 @@ MINOR="${BASH_REMATCH[2]}"
 # moving tags written below are derived from MAJOR/MINOR and so are already
 # bare; deriving the source the same way keeps both ends of every `crane tag`
 # in one tag namespace.
-VERSION_TAG="${VERSION#v}"
+DOCKER_TAG="${VERSION#v}"
 
 run() {
   if [[ "${DRY_RUN}" == "true" ]]; then
@@ -276,7 +276,7 @@ if ! is_newest_in_line "${MAJOR}.${MINOR}" "${CALLER_RELEASE_LIST}"; then
 fi
 
 # Validate every entry - and that its source manifest actually exists at
-# VERSION_TAG - before making any changes, so a config typo or a suffix variant
+# DOCKER_TAG - before making any changes, so a config typo or a suffix variant
 # (e.g. -fips) that wasn't built for this version can't leave earlier
 # entries retagged while a later one fails.
 #
@@ -294,8 +294,25 @@ if ! command -v crane >/dev/null 2>&1; then
   exit 1
 fi
 
+# Only meaningful under dry-run, where the login is deliberately non-fatal and a
+# lookup can therefore run unauthenticated; on a real run a failed login has
+# already stopped the job. Say so up front when it happened: without the
+# credential a repo the run cannot read fails at crane's token exchange, and
+# while that lands in the indeterminate bucket rather than being called absent,
+# "could not be inspected" x45 still reads as a registry problem. Naming the
+# credential first makes it one obvious cause instead of a guess at the end.
+# Empty (the value when the caller does not wire it, or if the expression does
+# not resolve) is treated as success, so this can only ever add information.
+if [[ "${DRY_RUN}" == "true" && -n "${INPUT_LOGIN_OUTCOME:-}" && "${INPUT_LOGIN_OUTCOME}" != "success" ]]; then
+  echo "::warning::the GHCR login did not succeed (${INPUT_LOGIN_OUTCOME}), so these lookups run with whatever credentials the runner already had. Read any unresolved source against that first: fix the credential and re-run before concluding anything about what is published." >&2
+fi
+
 IMAGE_COUNT=$(jq -r 'length' <<<"${INPUT_IMAGES}")
 UNRESOLVED_SOURCES=0
+# Which refs, not just how many: the plan printed later marks these, and the step
+# summary lists them, so neither makes the reader re-derive it from the warnings.
+UNRESOLVED_REFS=()
+UNRESOLVED_DETAIL=()
 for ((i = 0; i < IMAGE_COUNT; i++)); do
   entry=$(jq -c ".[$i]" <<<"${INPUT_IMAGES}")
   image=$(jq -r '.image // empty' <<<"${entry}")
@@ -304,17 +321,34 @@ for ((i = 0; i < IMAGE_COUNT; i++)); do
     echo "::error::images[$i] is missing required \"image\" field: ${entry}" >&2
     exit 1
   fi
-  src_ref="${image}:${VERSION_TAG}${suffix}"
+  src_ref="${image}:${DOCKER_TAG}${suffix}"
   if digest_err=$(crane digest "${src_ref}" 2>&1 >/dev/null); then
     continue
   fi
   # Absence and "could not tell" are different facts and get different wording:
   # the first says the tag was never pushed (typically a tag-form or build-matrix
-  # mismatch), the second says the registry did not answer - a 401 on a private
-  # package, a rate limit, DNS. Reporting an auth failure as a missing manifest
-  # would send an operator to re-cut an image that is already published.
+  # mismatch), the second says the registry did not answer. Reporting a denial as
+  # a missing manifest would send an operator to re-cut an image that is already
+  # published, so only a positive absence signal may claim absence.
+  #
+  # The patterns match what crane actually prints, verified live against ghcr.io
+  # with the pinned v0.20.2:
+  #
+  #   readable repo, absent tag -> "HEAD https://ghcr.io/v2/<repo>/manifests/<t>:
+  #                                 unexpected status code 404 Not Found"
+  #   repo not readable         -> "No matching credentials were found" then a
+  #                                 failure on GET /token?scope=... (403)
+  #
+  # So a repo the run cannot read fails at the token exchange and never reaches a
+  # manifest 404 - which is what keeps a failed login out of the absence bucket.
+  # crane renders the HTTP status itself and never surfaces the registry's
+  # MANIFEST_UNKNOWN/NAME_UNKNOWN codes; those are kept because other registries
+  # and tools do, but "unexpected status code 404" is the arm that fires on GHCR.
+  # It is deliberately not a bare "404" (a host or digest containing 404, or a
+  # proxy failure, must not read as absence) and not "not found" (crane writes
+  # "Not Found", and case matters here).
   case "${digest_err}" in
-    *MANIFEST_UNKNOWN* | *NAME_UNKNOWN* | *"not found"* | *"404"*)
+    *MANIFEST_UNKNOWN* | *NAME_UNKNOWN* | *"unexpected status code 404"*)
       reason="does not exist"
       ;;
     *)
@@ -333,19 +367,28 @@ for ((i = 0; i < IMAGE_COUNT; i++)); do
     echo "::error::source manifest ${src_ref} ${reason}" >&2
   fi
   UNRESOLVED_SOURCES=$((UNRESOLVED_SOURCES + 1))
+  UNRESOLVED_REFS+=("${src_ref}")
+  UNRESOLVED_DETAIL+=("${src_ref}: ${reason}")
 done
 # One line an operator can act on, so the verdict isn't buried in a per-image
 # warning for every entry in a long images list - a real dispatch carries ~45.
 if ((UNRESOLVED_SOURCES > 0)); then
-  summary="${UNRESOLVED_SOURCES} of ${IMAGE_COUNT} source manifests could not be resolved at :${VERSION_TAG}. Confirm the images are published, that their tags read ${VERSION_TAG} rather than ${VERSION}, and that this run can read them."
+  summary="${UNRESOLVED_SOURCES} of ${IMAGE_COUNT} source manifests could not be resolved at :${DOCKER_TAG}. Confirm the images are published, that their tags read ${DOCKER_TAG} rather than ${VERSION}, and that this run can read them."
   # Also to the step summary: a rehearsal stays green, and a warning-laden green
   # run reads as a clean pass once an annotations panel collapses the list -
   # the same "looked like it answered the question" mistake this pre-flight
   # exists to stop. Unset outside Actions (bats), hence the fallback.
   {
-    echo "### promote-release: ${UNRESOLVED_SOURCES}/${IMAGE_COUNT} sources unresolved at :${VERSION_TAG}"
+    echo "### promote-release: ${UNRESOLVED_SOURCES}/${IMAGE_COUNT} sources unresolved at :${DOCKER_TAG}"
     echo
     echo "${summary}"
+    echo
+    # Which ones, so the summary stands alone. Capped, because a tag-form mistake
+    # breaks every entry and a 45-line summary is its own kind of unreadable.
+    printf '%s\n' "${UNRESOLVED_DETAIL[@]:0:20}" | sed 's/^/- /'
+    if ((UNRESOLVED_SOURCES > 20)); then
+      echo "- (+$((UNRESOLVED_SOURCES - 20)) more, see the warnings above)"
+    fi
   } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
   if [[ "${DRY_RUN}" == "true" ]]; then
     echo "::warning::${summary} This promotion would abort as dispatched." >&2
@@ -469,7 +512,7 @@ for ((i = 0; i < IMAGE_COUNT; i++)); do
   image=$(jq -r '.image' <<<"${entry}")
   suffix=$(jq -r '.suffix // ""' <<<"${entry}")
 
-  src="${image}:${VERSION_TAG}${suffix}"
+  src="${image}:${DOCKER_TAG}${suffix}"
   moving_tags=()
   [[ "${ADVANCE_LATEST_MAJOR}" == "true" ]] && moving_tags+=(latest "${MAJOR}")
   [[ "${ADVANCE_MINOR}" == "true" ]] && moving_tags+=("${MAJOR}.${MINOR}")
@@ -477,9 +520,19 @@ for ((i = 0; i < IMAGE_COUNT; i++)); do
     echo "::notice::${src}: no moving tags to advance (VERSION is superseded both overall and within its own line); nothing to retag."
     continue
   fi
+  # Mark the plan lines whose source the pre-flight already failed to resolve, so
+  # the printed plan carries its own verdict and survives being read on its own.
+  # Only reachable under dry-run; a real run has already aborted by here.
+  plan_note=""
+  for unresolved in ${UNRESOLVED_REFS[@]+"${UNRESOLVED_REFS[@]}"}; do
+    if [[ "${unresolved}" == "${src}" ]]; then
+      plan_note=" (WOULD FAIL: source unresolved)"
+      break
+    fi
+  done
   for moving in "${moving_tags[@]}"; do
     dest="${image}:${moving}${suffix}"
-    echo "Retagging ${dest} -> ${src}"
+    echo "Retagging ${dest} -> ${src}${plan_note}"
     # crane tag SRC NEWTAG re-points NEWTAG (in SRC's repo) at SRC's exact
     # manifest digest -- digest-preserving for both single-platform manifests
     # and indexes, so per-arch moving tags stay cosign-verifiable (see header).
