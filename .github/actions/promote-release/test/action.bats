@@ -852,6 +852,13 @@ teardown() {
   [ "$status" -ne 0 ]
   [[ "$output" == *"could not be inspected"* ]]
   [[ "$output" != *"does not exist"* ]]
+  # The reason must be flattened onto one line. This is the only test feeding
+  # multi-line crane stderr through the classifier, so it is the only place the
+  # `tr '\n' ' '` is exercised - and it is load-bearing twice over: a raw newline
+  # truncates the annotation at the break, and keeping registry-supplied text off
+  # the start of a line is what stops a `::` sequence in it forging a second
+  # workflow command.
+  run ! grep -q '^2026/08/06 15:01:50 HEAD request failed' <<<"$output"
 }
 
 @test "classification: registry error codes still read as absence" {
@@ -890,6 +897,12 @@ teardown() {
   [[ "$output" == *"example-image:9.9.9 does not exist"* ]]
   [[ "$output" == *"example-image:9.9.9-fips could not be inspected"* ]]
   [[ "$output" == *"2 of 2 source manifests could not be resolved"* ]]
+  # This is the only run with both classes present, so it is the only place the
+  # aggregate has a choice to make. Both hints must appear, and the split must be
+  # reported, or a mixed run reads as whichever class the code happened to pick.
+  [[ "$output" == *"(1 not found, 1 uninspectable)"* ]]
+  [[ "$output" == *"their tags read 9.9.9 rather than v9.9.9"* ]]
+  [[ "$output" == *"check the credential and registry availability"* ]]
 }
 
 @test "rehearsal login failure -> named before the per-entry list, not left to inference" {
@@ -964,7 +977,7 @@ teardown() {
   run "$SCRIPT"
   [ "$status" -eq 0 ]
   [ "$(grep -c '^- ghcr.io/example-org/img' "$GITHUB_STEP_SUMMARY")" -eq 20 ]
-  grep -qF -- '- (+5 more, see the warnings above)' "$GITHUB_STEP_SUMMARY"
+  grep -qF -- '- (+5 more, see the annotations above)' "$GITHUB_STEP_SUMMARY"
   [[ "$output" == *"25 of 25 source manifests could not be resolved"* ]]
 }
 
@@ -986,6 +999,38 @@ teardown() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"their tags read 9.9.9 rather than v9.9.9"* ]]
   [[ "$output" != *"not the tag form"* ]]
+}
+
+@test "unresolved-sources is published on a real run too" {
+  # action.yml promises "always 0 on a successful real promotion", and every
+  # other assertion for this output was under dry-run - the half that is not
+  # documented.
+  GITHUB_OUTPUT="$BATS_TEST_TMPDIR/out.txt"
+  export GITHUB_OUTPUT
+  : > "$GITHUB_OUTPUT"
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qx 'unresolved-sources=0' "$GITHUB_OUTPUT"
+
+  # ...and written before a real run aborts, so a caller can still read the count.
+  : > "$GITHUB_OUTPUT"
+  export CRANE_MOCK_MISSING="ghcr.io/example-org/example-image:9.9.9-fips"
+  run "$SCRIPT"
+  [ "$status" -ne 0 ]
+  grep -qx 'unresolved-sources=1' "$GITHUB_OUTPUT"
+}
+
+@test "unresolved-sources is published on a non-stable version no-op" {
+  # The no-op exits 0 long before the pre-flight, so without an explicit write a
+  # caller gating on this output reads an empty string and breaks in their own
+  # workflow - on a dispatch this action calls clean.
+  GITHUB_OUTPUT="$BATS_TEST_TMPDIR/out.txt"
+  export GITHUB_OUTPUT
+  : > "$GITHUB_OUTPUT"
+  export INPUT_VERSION="v9.9.9-rc.1"
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qx 'unresolved-sources=0' "$GITHUB_OUTPUT"
 }
 
 @test "unresolved-sources is published as a step output" {

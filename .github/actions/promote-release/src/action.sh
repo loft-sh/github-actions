@@ -52,6 +52,12 @@
 #                     INPUT_HOMEBREW_TAP_REPO to update, e.g.
 #                     ["Formula/vcluster.rb"]. Required if
 #                     INPUT_HOMEBREW_TAP_REPO is set.
+#   INPUT_LOGIN_OUTCOME
+#                    Outcome of the non-fatal rehearsal GHCR login step, so an
+#                     unresolved source can be read against a failed credential
+#                     rather than inferred from it. Only consulted under
+#                     dry-run; empty (unwired, or an expression that did not
+#                     resolve) is treated as success.
 #   INPUT_DRY_RUN    Fail-closed: a real promotion runs only on an exact
 #                     (case-insensitive) "false" - which is the default, so a
 #                     plain dispatch still promotes for real. ANY
@@ -133,6 +139,14 @@ fi
 
 if [[ ! "${VERSION}" =~ ^v([0-9]+)\.([0-9]+)\.[0-9]+$ ]]; then
   echo "::notice::${VERSION} is not a stable vX.Y.Z release; moving tags and latest promotion only apply to stable cuts. Nothing to do."
+  # This is a successful no-op, so the output has to carry its documented value:
+  # a caller told to gate on unresolved-sources would otherwise read an empty
+  # string here and break on `fromJSON('')` or an integer comparison, in their
+  # own workflow, on a dispatch this action considers clean. Every other exit
+  # from here on is a failure, where a caller cannot read outputs anyway.
+  if [[ -n "${GITHUB_OUTPUT-}" ]]; then
+    printf 'unresolved-sources=0\n' >> "${GITHUB_OUTPUT}"
+  fi
   exit 0
 fi
 MAJOR="${BASH_REMATCH[1]}"
@@ -323,6 +337,8 @@ IMAGE_COUNT=$(jq -r 'length' <<<"${INPUT_IMAGES}")
 # also carries the count (${#UNRESOLVED_REASON[@]}) and, with UNRESOLVED_REF, the
 # step-summary detail, instead of three accumulators appended in lockstep.
 declare -a UNRESOLVED_REASON=() UNRESOLVED_REF=()
+absent=0
+indeterminate=0
 for ((i = 0; i < IMAGE_COUNT; i++)); do
   entry=$(jq -c ".[$i]" <<<"${INPUT_IMAGES}")
   image=$(jq -r '.image // empty' <<<"${entry}")
@@ -357,12 +373,20 @@ for ((i = 0; i < IMAGE_COUNT; i++)); do
   # It is deliberately not a bare "404" (a host or digest containing 404, or a
   # proxy failure, must not read as absence) and not "not found" (crane writes
   # "Not Found", and case matters here).
+  # Tally in the arm that makes the decision, not by string-matching the display
+  # text later: the wording is operator-facing and will be reworded, and reading
+  # the verdict back out of it would silently flip the aggregate's diagnosis.
   case "${digest_err}" in
     *MANIFEST_UNKNOWN* | *NAME_UNKNOWN* | *"unexpected status code 404"*)
       reason="does not exist"
+      absent=$((absent + 1))
       ;;
     *)
+      # Flattened: a raw newline would truncate the annotation at the break, and
+      # keeping registry-supplied text off the start of a line is what stops a
+      # `::`-prefixed sequence in it from forging a second workflow command.
       reason="could not be inspected ($(tr '\n' ' ' <<<"${digest_err}"))"
+      indeterminate=$((indeterminate + 1))
       ;;
   esac
   # Report every unresolved entry before deciding, in both modes. This loop is
@@ -380,7 +404,7 @@ for ((i = 0; i < IMAGE_COUNT; i++)); do
   UNRESOLVED_REF[i]="${src_ref}"
 done
 UNRESOLVED_SOURCES="${#UNRESOLVED_REASON[@]}"
-# A verdict anything other than a human can read. Per-entry annotations, the step
+# A verdict something other than a human can read. Per-entry annotations, the step
 # summary and the plan markers all need someone to open this run, so a rehearsal
 # where every source failed is indistinguishable from a clean one to a caller
 # keyed on the job conclusion. Publishing the count lets one opt into failing or
@@ -391,21 +415,15 @@ fi
 # One line an operator can act on, so the verdict isn't buried in a per-image
 # warning for every entry in a long images list - a real dispatch carries ~45.
 if ((UNRESOLVED_SOURCES > 0)); then
-  # Only advise on the tag form when something actually came back absent. When
-  # every failure was indeterminate the images are published and correctly
-  # tagged, and telling the operator to check the tag namespace is the same
-  # misdirection the per-entry split exists to prevent - on the one line meant to
-  # spare them from reading the per-entry list.
-  absent=0
-  for idx in "${!UNRESOLVED_REASON[@]}"; do
-    [[ "${UNRESOLVED_REASON[idx]}" == "does not exist" ]] && absent=$((absent + 1))
-  done
-  if ((absent > 0)); then
-    hint="Confirm the images are published, that their tags read ${DOCKER_TAG} rather than ${VERSION}, and that this run can read them."
-  else
-    hint="Every lookup failed to complete rather than finding a missing tag, so check the credential and registry availability, not the tag form."
-  fi
-  summary="${UNRESOLVED_SOURCES} of ${IMAGE_COUNT} source manifests could not be resolved at :${DOCKER_TAG}. ${hint}"
+  # Report the split and advise per class. A single hint chosen by "was anything
+  # absent" steers a 1-absent/44-unreadable run at the tag form, when 44 of the
+  # 45 failures are a credential or availability problem - and the operator
+  # cannot see the mix without opening the per-entry list this line exists to
+  # spare them from.
+  hint=""
+  ((absent > 0)) && hint+="Confirm the ${absent} not-found image(s) are published and that their tags read ${DOCKER_TAG} rather than ${VERSION}. "
+  ((indeterminate > 0)) && hint+="For the ${indeterminate} uninspectable entry/entries check the credential and registry availability, not the tag form."
+  summary="${UNRESOLVED_SOURCES} of ${IMAGE_COUNT} source manifests could not be resolved at :${DOCKER_TAG} (${absent} not found, ${indeterminate} uninspectable). ${hint}"
   # Also to the step summary: a rehearsal stays green, and a warning-laden green
   # run reads as a clean pass once an annotations panel collapses the list -
   # the same "looked like it answered the question" mistake this pre-flight
@@ -424,7 +442,7 @@ if ((UNRESOLVED_SOURCES > 0)); then
       shown=$((shown + 1))
     done
     if ((UNRESOLVED_SOURCES > shown)); then
-      echo "- (+$((UNRESOLVED_SOURCES - shown)) more, see the warnings above)"
+      echo "- (+$((UNRESOLVED_SOURCES - shown)) more, see the annotations above)"
     fi
   } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
   if [[ "${DRY_RUN}" == "true" ]]; then

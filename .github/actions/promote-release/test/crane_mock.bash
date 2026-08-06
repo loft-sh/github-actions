@@ -33,7 +33,7 @@
 #                              per-entry classification does work a single
 #                              run-wide verdict could not. Set it with
 #                              set_digest_error, which sanitizes the ref the same
-#                              way gh_mock.bash keys its per-repo overrides.
+#                              way gh_mock.bash's mock keys its per-repo lookups.
 
 setup_crane_mock() {
   CRANE_MOCK_DIR="$(mktemp -d)"
@@ -106,7 +106,8 @@ EOF
 }
 
 # Makes `crane digest <ref>` fail with <message> for that ref only, mirroring
-# gh_mock.bash's set_release_list/set_checksums_fixture helpers.
+# action.bats's set_release_list/set_checksums_fixture helpers. Kept here rather
+# than beside those, so the setter sits with the contract it drives.
 set_digest_error() {
   local ref="$1" message="$2" varname
   varname="CRANE_MOCK_DIGEST_ERROR_$(printf '%s' "$ref" | tr -c 'A-Za-z0-9' '_')"

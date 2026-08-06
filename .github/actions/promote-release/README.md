@@ -118,6 +118,17 @@ as an all-or-nothing skip — a formula has no line-scoped equivalent to
 
 <!-- AUTO-DOC-INPUT:END -->
 
+## Outputs
+
+<!-- AUTO-DOC-OUTPUT:START - Do not remove or modify this section -->
+
+|        OUTPUT        |  TYPE  |                                                                                                                                                                     DESCRIPTION                                                                                                                                                                     |
+|----------------------|--------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| promote-self-enabled | string |                                                                                                                         Whether the manifest forwarded an exact <br>"true" promote-self value to the promotion <br>script.                                                                                                                          |
+|  unresolved-sources  | string | How many configured source manifests could <br>not be resolved at the bare <br>version tag. Always 0 on a <br>successful real promotion, since it aborts <br>otherwise; on a dry-run this is <br>the only machine-readable signal that the <br>rehearsed plan would not execute, so <br>gate or alert on it rather <br>than on the job conclusion.  |
+
+<!-- AUTO-DOC-OUTPUT:END -->
+
 ## Usage
 
 ```yaml
@@ -316,11 +327,19 @@ per-entry list, so a bad credential is named rather than inferred.
 
 Every entry is reported before the decision — the loop is read-only, so the abort
 simply moves after it, and one dispatch surfaces the whole list instead of one
-image per re-dispatch. The verdict, with the affected refs, also goes to
-`$GITHUB_STEP_SUMMARY` (capped at 20 plus a count): a rehearsal stays green, and a
-long warning list is easy to mistake for a clean pass. Plan lines whose source
-did not resolve are marked `WOULD FAIL`, so the printed plan carries its own
-verdict.
+image per re-dispatch. The aggregate names the split (`N not found, M
+uninspectable`) and advises per class, so a run where one image is genuinely
+missing and forty are unreadable does not steer you at the tag form. The verdict,
+with the affected refs, also goes to `$GITHUB_STEP_SUMMARY` (capped at 20 plus a
+count): a rehearsal stays green, and a long annotation list is easy to mistake
+for a clean pass. Plan lines whose source did not resolve are marked
+`WOULD FAIL`, so the printed plan carries its own verdict.
+
+All of that still needs a human to open the run. The `unresolved-sources` output
+is the one channel a *caller* can read: it is the count of sources that did not
+resolve, `0` on a clean run and on the non-stable no-op, and it is written before
+a real run aborts. Since a rehearsal is green either way, gate or alert on that
+output rather than on the job conclusion.
 
 ### oss-repo
 
