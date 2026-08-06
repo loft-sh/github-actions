@@ -371,13 +371,17 @@ for ((i = 0; i < IMAGE_COUNT; i++)); do
   # MANIFEST_UNKNOWN/NAME_UNKNOWN codes; those are kept because other registries
   # and tools do, but "unexpected status code 404" is the arm that fires on GHCR.
   # It is deliberately not a bare "404" (a host or digest containing 404, or a
-  # proxy failure, must not read as absence) and not "not found" (crane writes
+  # 404 from the token endpoint, must not read as absence) and not "not found" (crane writes
   # "Not Found", and case matters here).
   # Tally in the arm that makes the decision, not by string-matching the display
   # text later: the wording is operator-facing and will be reworded, and reading
   # the verdict back out of it would silently flip the aggregate's diagnosis.
+  # The 404 arm is bound to the manifest request, not to a 404 anywhere in the
+  # text: crane prints the URL it called, so requiring "/manifests/" before the
+  # status keeps a pathological 404 from the token endpoint (or a proxy in front
+  # of it) from reading as absence for every entry at once.
   case "${digest_err}" in
-    *MANIFEST_UNKNOWN* | *NAME_UNKNOWN* | *"unexpected status code 404"*)
+    *MANIFEST_UNKNOWN* | *NAME_UNKNOWN* | *"/manifests/"*"unexpected status code 404"*)
       reason="does not exist"
       absent=$((absent + 1))
       ;;

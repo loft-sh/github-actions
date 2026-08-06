@@ -41,6 +41,15 @@ jobs:
         env:
           PROMOTE_SELF_ENABLED: ${{ steps.promote.outputs.promote-self-enabled }}
         run: test "$PROMOTE_SELF_ENABLED" = true
+      # bats proves the script writes this; it cannot reach the `outputs:` mapping
+      # in action.yml, which is where a typo would silently empty the output the
+      # README sells as the only machine-readable signal. The smoke image is
+      # deterministically unresolvable, so the count is 1 regardless of which
+      # class it lands in.
+      - name: Verify unresolved-sources is wired through to the caller
+        env:
+          UNRESOLVED: ${{ steps.promote.outputs.unresolved-sources }}
+        run: test "$UNRESOLVED" = 1
       # The bats suite calls src/action.sh directly with hand-exported INPUT_*,
       # so it cannot exercise a step-level `if:` in action.yml. That left the
       # dry-run GHCR login unguarded: re-gating it on a real run would put the

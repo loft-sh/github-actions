@@ -309,7 +309,7 @@ is already published:
 
 | Wording | Means | Recognised by |
 |---|---|---|
-| `does not exist` | the tag was never pushed — usually a tag-namespace or build-matrix mismatch | `unexpected status code 404` on the manifest request, or a registry `MANIFEST_UNKNOWN`/`NAME_UNKNOWN` |
+| `does not exist` | the tag was never pushed — usually a tag-namespace or build-matrix mismatch | `unexpected status code 404` on a `/manifests/` URL, or a registry `MANIFEST_UNKNOWN`/`NAME_UNKNOWN` |
 | `could not be inspected (<error>)` | the registry did not answer — a refused token exchange, a rate limit, DNS | anything else, with the raw error attached |
 
 The split is matched against what crane actually prints (verified live against
@@ -317,8 +317,10 @@ ghcr.io on the pinned v0.20.2): crane renders the HTTP status itself and never
 surfaces the registry's `MANIFEST_UNKNOWN`, and a package the run cannot read
 fails at the *token exchange* rather than reaching a manifest 404 — which is what
 keeps a failed login out of the absence bucket. The match is deliberately the
-phrase `unexpected status code 404` and not a bare `404`, so a host or proxy
-message carrying those digits stays indeterminate.
+phrase `unexpected status code 404` on a `/manifests/` URL, not a bare `404`
+anywhere in the text: a host carrying those digits, or a 404 from the token
+endpoint or a proxy in front of it, stays indeterminate. Only the manifest lookup
+can prove a tag missing.
 
 If crane itself is missing the run fails outright: that is not evidence about any
 manifest, and treating it as absence would report every source as unpublished.

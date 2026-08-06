@@ -875,6 +875,18 @@ teardown() {
   done
 }
 
+@test "classification: a 404 from the token endpoint does NOT read as absence" {
+  # The status alone is not enough: a pathological 404 on the token exchange, or
+  # from a proxy in front of it, would otherwise classify every entry as absent -
+  # the misdirection this split exists to prevent. Absence is bound to a 404 on
+  # the manifest request, which is the only lookup that can prove a tag missing.
+  export CRANE_MOCK_DIGEST_ERROR="2026/08/06 15:01:50 HEAD request failed, falling back on GET: GET https://ghcr.io/token?scope=repository%3Aexample-org%2Fexample-image%3Apull&service=ghcr.io: unexpected status code 404 Not Found"
+  run "$SCRIPT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"could not be inspected"* ]]
+  [[ "$output" != *"does not exist"* ]]
+}
+
 @test "classification: a bare 404 in transport noise does NOT read as absence" {
   # The pattern is "unexpected status code 404", not a bare "404": a host, digest
   # or proxy message carrying those digits must fall through to indeterminate.
