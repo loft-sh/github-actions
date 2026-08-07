@@ -17,7 +17,7 @@ inputs:
     description: 'Repository publishing the release, as owner/name (e.g. loft-sh/vcluster).'
     required: true
   version:
-    description: 'Version to resolve: "latest" or "main" resolve to the latest published release tag; any other value passes through unchanged.'
+    description: 'Version to resolve: "latest" or "main" resolves to the latest published release tag; any other value passes through unchanged.'
     required: true
   github-token:
     description: 'Token with contents:read on `repo`.'
