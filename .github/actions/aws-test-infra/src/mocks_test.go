@@ -293,12 +293,15 @@ func (f *fakeEC2) DescribeInstances(_ context.Context, in *ec2.DescribeInstances
 			return out, nil
 		}
 	}
+	// Private IPs are distinct per instance (10.0.1.10, .11, ...) so tests can
+	// verify the role → private-IP mapping and not just presence.
 	res := types.Reservation{}
-	for _, id := range in.InstanceIds {
+	for i, id := range in.InstanceIds {
 		id := id
 		res.Instances = append(res.Instances, types.Instance{
-			InstanceId:      aws.String(id),
-			PublicIpAddress: aws.String("203.0.113.1"),
+			InstanceId:       aws.String(id),
+			PublicIpAddress:  aws.String("203.0.113.1"),
+			PrivateIpAddress: aws.String(fmt.Sprintf("10.0.1.%d", 10+i)),
 		})
 	}
 	out.Reservations = []types.Reservation{res}

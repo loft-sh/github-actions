@@ -200,6 +200,9 @@ outputs:
   primary-public-ip:
     description: 'Public IP of the primary instance'
     value: ${{ steps.run.outputs.primary_public_ip }}
+  primary-private-ip:
+    description: 'Private IP of the primary instance'
+    value: ${{ steps.run.outputs.primary_private_ip }}
   instance-ids:
     description: 'Comma-separated list of all instance IDs'
     value: ${{ steps.run.outputs.instance_ids }}
@@ -215,6 +218,9 @@ outputs:
   instance-id-by-role:
     description: 'JSON map of role → instance ID. Use for arbitrary role names (anything other than primary/worker1/worker2). Consumer accesses with `fromJSON(steps.<id>.outputs.instance-id-by-role).<role>`.'
     value: ${{ steps.run.outputs.instance_id_by_role }}
+  private-ip-by-role:
+    description: 'JSON map of role → private IP. Consumer accesses with `fromJSON(steps.<id>.outputs.private-ip-by-role).<role>`.'
+    value: ${{ steps.run.outputs.private_ip_by_role }}
   bucket:
     description: '(s3-stage) Bucket name that was ensured/used.'
     value: ${{ steps.run.outputs.bucket }}

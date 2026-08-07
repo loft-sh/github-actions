@@ -64,7 +64,7 @@ func TestProvision_HappyPath_Ordering(t *testing.T) {
 		"RunInstances", // primary
 		"RunInstances", // worker1
 		"RunInstances", // worker2
-		"DescribeInstances", // primary public IP
+		"DescribeInstances", // instance IPs (public + private)
 	}
 	seq := methodSequence(c.calls)
 	if err := requireOrdering(seq, want); err != nil {
@@ -108,6 +108,21 @@ func TestProvision_HappyPath_Ordering(t *testing.T) {
 	}
 	if got := ids.InstanceIDByRole["primary"]; got != "i-primary" {
 		t.Errorf("InstanceIDByRole[primary] = %q, want i-primary", got)
+	}
+	// The fake assigns 10.0.1.<10+i> in DescribeInstances input order, which is
+	// InstanceIDs order (primary, worker1, worker2).
+	if ids.PrimaryPrivateIP != "10.0.1.10" {
+		t.Errorf("PrimaryPrivateIP = %q, want 10.0.1.10", ids.PrimaryPrivateIP)
+	}
+	wantPrivate := map[string]string{
+		"primary": "10.0.1.10",
+		"worker1": "10.0.1.11",
+		"worker2": "10.0.1.12",
+	}
+	for role, want := range wantPrivate {
+		if got := ids.PrivateIPByRole[role]; got != want {
+			t.Errorf("PrivateIPByRole[%s] = %q, want %q", role, got, want)
+		}
 	}
 }
 
