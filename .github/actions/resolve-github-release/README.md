@@ -20,11 +20,11 @@ download fails loudly on a bad tag anyway.
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-|    INPUT     |  TYPE  | REQUIRED | DEFAULT |                                                                DESCRIPTION                                                                 |
-|--------------|--------|----------|---------|--------------------------------------------------------------------------------------------------------------------------------------------|
-| github-token | string |   true   |         |                                                    Token with contents:read on `repo`.                                                     |
-|     repo     | string |   true   |         |                               Repository publishing the release, as owner/name <br>(e.g. loft-sh/vcluster).                                |
-|   version    | string |   true   |         | Version to resolve: "latest" or "main" <br>resolve to the latest published release <br>tag; any other value passes through <br>unchanged.  |
+|    INPUT     |  TYPE  | REQUIRED | DEFAULT |                                                                 DESCRIPTION                                                                 |
+|--------------|--------|----------|---------|---------------------------------------------------------------------------------------------------------------------------------------------|
+| github-token | string |   true   |         |                                                     Token with contents:read on `repo`.                                                     |
+|     repo     | string |   true   |         |                               Repository publishing the release, as owner/name <br>(e.g. loft-sh/vcluster).                                 |
+|   version    | string |   true   |         | Version to resolve: "latest" or "main" <br>resolves to the latest published release <br>tag; any other value passes through <br>unchanged.  |
 
 <!-- AUTO-DOC-INPUT:END -->
 
