@@ -201,7 +201,7 @@ outputs:
     description: 'Public IP of the primary instance'
     value: ${{ steps.run.outputs.primary_public_ip }}
   primary-private-ip:
-    description: 'Private IP of the primary instance'
+    description: 'Private IP of the role labeled "primary" (empty if not present). Unlike primary-public-ip (positional: first instance), this agrees with primary-instance-id and private-ip-by-role.'
     value: ${{ steps.run.outputs.primary_private_ip }}
   instance-ids:
     description: 'Comma-separated list of all instance IDs'

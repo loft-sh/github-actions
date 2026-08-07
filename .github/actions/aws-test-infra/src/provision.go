@@ -394,9 +394,12 @@ func Provision(
 	}
 
 	// Pull instance IPs. The public IP of the first instance — by convention,
-	// "primary" — serves runner→primary and worker→primary connectivity; the
-	// private IPs serve intra-VPC addressing (e.g. a control plane advertising
-	// itself to workers), keyed by role.
+	// "primary" — serves runner→primary and worker→primary connectivity
+	// (positional, inherited shape). The private IPs serve intra-VPC addressing
+	// (e.g. a control plane advertising itself to workers): keyed by role, with
+	// PrimaryPrivateIP derived from the role literally named "primary" so it
+	// always agrees with primary-instance-id and private-ip-by-role (and, like
+	// them, is empty when no such role exists).
 	if len(ids.InstanceIDs) > 0 {
 		descOut, err := c.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
 			InstanceIds: ids.InstanceIDs,
@@ -414,7 +417,7 @@ func Provision(
 			}
 		}
 		ids.PrimaryPublicIP = publicByID[ids.InstanceIDs[0]]
-		ids.PrimaryPrivateIP = privateByID[ids.InstanceIDs[0]]
+		ids.PrimaryPrivateIP = privateByID[ids.InstanceIDByRole["primary"]]
 		for role, id := range ids.InstanceIDByRole {
 			ids.PrivateIPByRole[role] = privateByID[id]
 		}
