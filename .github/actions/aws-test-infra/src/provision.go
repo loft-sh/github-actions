@@ -73,6 +73,8 @@ type ResourceIDs struct {
 	InstanceIDs      []string `json:"instance_ids"`
 	InstanceIDByRole map[string]string `json:"instance_id_by_role"`
 	PrimaryPublicIP  string   `json:"primary_public_ip"`
+	PrimaryPrivateIP string   `json:"primary_private_ip"`
+	PrivateIPByRole  map[string]string `json:"private_ip_by_role"`
 }
 
 func runProvision(ctx context.Context, logger *slog.Logger, name string, args []string) error {
@@ -193,7 +195,7 @@ func Provision(
 	waiter EC2Waiter,
 	cfg ProvisionConfig,
 ) (ResourceIDs, error) {
-	ids := ResourceIDs{InstanceIDByRole: map[string]string{}}
+	ids := ResourceIDs{InstanceIDByRole: map[string]string{}, PrivateIPByRole: map[string]string{}}
 
 	// VPC
 	vpcOut, err := c.CreateVpc(ctx, &ec2.CreateVpcInput{
@@ -391,18 +393,30 @@ func Provision(
 		return ids, fmt.Errorf("wait instance-running: %w", err)
 	}
 
-	// Pull primary public IP (the existing workflows use the public IP of
-	// the first instance — by convention, "primary" — for runner→primary
-	// and worker→primary connectivity).
+	// Pull instance IPs. The public IP of the first instance — by convention,
+	// "primary" — serves runner→primary and worker→primary connectivity; the
+	// private IPs serve intra-VPC addressing (e.g. a control plane advertising
+	// itself to workers), keyed by role.
 	if len(ids.InstanceIDs) > 0 {
 		descOut, err := c.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
-			InstanceIds: []string{ids.InstanceIDs[0]},
+			InstanceIds: ids.InstanceIDs,
 		})
 		if err != nil {
-			return ids, fmt.Errorf("describe primary instance: %w", err)
+			return ids, fmt.Errorf("describe instances: %w", err)
 		}
-		if len(descOut.Reservations) > 0 && len(descOut.Reservations[0].Instances) > 0 {
-			ids.PrimaryPublicIP = aws.ToString(descOut.Reservations[0].Instances[0].PublicIpAddress)
+		privateByID := map[string]string{}
+		publicByID := map[string]string{}
+		for _, res := range descOut.Reservations {
+			for _, inst := range res.Instances {
+				id := aws.ToString(inst.InstanceId)
+				privateByID[id] = aws.ToString(inst.PrivateIpAddress)
+				publicByID[id] = aws.ToString(inst.PublicIpAddress)
+			}
+		}
+		ids.PrimaryPublicIP = publicByID[ids.InstanceIDs[0]]
+		ids.PrimaryPrivateIP = privateByID[ids.InstanceIDs[0]]
+		for role, id := range ids.InstanceIDByRole {
+			ids.PrivateIPByRole[role] = privateByID[id]
 		}
 	}
 
