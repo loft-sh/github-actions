@@ -214,6 +214,17 @@ config that step writes, so no separate crane login is needed. `action.yml` also
 installs crane (`imjasonh/setup-crane`), so callers don't need to install it
 themselves.
 
+The install runs **before** the login, and the order is load-bearing.
+`setup-crane` finishes with its own `crane auth login ghcr.io` hardcoded to the
+workflow's `github.token`, writing the same `~/.docker/config.json` entry as
+`docker/login-action` — last writer wins. Installed after the login, that
+replaces `github-token` with the workflow token, which can still write every
+package owned by the caller repo and is denied on every package owned by another
+one (`DENIED: permission_denied: write_package`). A promotion spanning both then
+dies partway through with one image family's moving tags already retagged. The
+smoke job pins the order by reading the stored username back: `docker-username`
+means the login won, `dummy` means `setup-crane` did.
+
 Both steps run for a `dry-run` as well, because the rehearsal resolves every
 source manifest (see [Source-manifest pre-flight](#source-manifest-pre-flight))
 and a package that is not publicly readable fails crane's anonymous token

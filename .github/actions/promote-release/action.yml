@@ -111,6 +111,20 @@ runs:
     # worthless. Nothing here writes to the registry; `crane tag` is the only
     # mutation and it stays behind the script's dry-run guard.
     #
+    # crane is installed BEFORE the logins on purpose: setup-crane ends with its
+    # own `crane auth login ghcr.io` hardcoded to the workflow's github.token,
+    # and it and docker/login-action write the same ~/.docker/config.json entry,
+    # so whichever runs last owns the credential. Installed last, github.token
+    # silently replaced the token this action was handed - which still retags
+    # every package owned by the caller repo and denies every package owned by
+    # another one (DENIED: permission_denied: write_package), so a promotion
+    # covering both fails halfway through with the moving tags of one image
+    # family already moved. The smoke job pins the order by asserting the stored
+    # username is the one passed here rather than setup-crane's "dummy".
+    - name: Install crane
+      uses: imjasonh/setup-crane@feee3b6bb0d4c68370f256a4502498c9227e5c6b # v0.7
+      with:
+        version: v0.20.2
     # Login is split by mode rather than carrying `continue-on-error` on one
     # step, because the value would have to be an expression and
     # `continue-on-error: ${{ inputs.x }}` is evaluated in the composite's own
@@ -137,10 +151,6 @@ runs:
         registry: ghcr.io
         username: ${{ inputs.docker-username }}
         password: ${{ inputs.github-token }}
-    - name: Install crane
-      uses: imjasonh/setup-crane@feee3b6bb0d4c68370f256a4502498c9227e5c6b # v0.7
-      with:
-        version: v0.20.2
     - name: Promote release
       id: promote
       shell: bash
