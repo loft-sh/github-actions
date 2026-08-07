@@ -1,0 +1,42 @@
+name: Resolve GitHub release
+description: |
+  Resolve a release version input to a concrete tag: "latest" (or "main")
+  becomes the tag of the repository's latest published release, anything else
+  passes through unchanged.
+
+  For workflows that consume another repo's release artifacts and accept a
+  version input defaulting to "latest": every artifact URL needs a real tag,
+  and "latest" resolves differently over time, so the run also records the
+  resolved tag in the step summary as an audit trail.
+
+  An explicit tag is deliberately not checked for existence. Callers may pass
+  tags for releases that are still publishing; ordering on a release that is
+  about to appear is wait-for-release's job.
+inputs:
+  repo:
+    description: 'Repository publishing the release, as owner/name (e.g. loft-sh/vcluster).'
+    required: true
+  version:
+    description: 'Version to resolve: "latest" or "main" resolve to the latest published release tag; any other value passes through unchanged.'
+    required: true
+  github-token:
+    description: 'Token with contents:read on `repo`.'
+    required: true
+outputs:
+  tag:
+    description: 'The resolved release tag.'
+    value: ${{ steps.resolve.outputs.tag }}
+runs:
+  using: composite
+  steps:
+    - name: Resolve release
+      id: resolve
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        INPUT_REPO: ${{ inputs.repo }}
+        INPUT_VERSION: ${{ inputs.version }}
+      run: ${{ github.action_path }}/src/resolve-github-release.sh
+branding:
+  icon: 'tag'
+  color: 'orange'
