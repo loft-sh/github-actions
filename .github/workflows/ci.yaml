@@ -13,12 +13,12 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
-    uses: loft-sh/github-actions/.github/workflows/validate-renovate.yaml@53686d2452bc48398252887a37ad248c38a7f1eb # validate-renovate/v1
+    uses: loft-sh/github-actions/.github/workflows/validate-renovate.yaml@c40c1db6d6d24f1b75f6db794efe3a1bbf7cfb1a # validate-renovate/v1
 
   actionlint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
       - uses: rhysd/actionlint@914e7df21a07ef503a81201c76d2b11c789d3fca  # v1.7.12
@@ -26,7 +26,7 @@ jobs:
   zizmor:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
       - run: pip install zizmor==1.24.1 && zizmor .github/
