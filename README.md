@@ -780,11 +780,12 @@ jobs:
 ### CVE Scan
 
 Scans a container image for CVEs with a swappable scanner backend (Snyk ships
-first) and reports findings via Slack, a markdown report, and SARIF. Three
+first) and reports via Slack, a short markdown summary, and the scanner's own
+SARIF for the Security tab. Three
 outcomes, handled differently on purpose: a **scanner error** (registry
 failure, timeout) never fails the job; **findings** only fail it when
 `block-on-findings: true` is explicitly turned on, so the default is
-advisory-only; and a **config error** (bad threshold, malformed ignore-file,
+advisory-only; and a **config error** (bad threshold,
 or a scanner that can't be set up) always fails it, regardless of
 `block-on-findings`.
 
@@ -829,7 +830,6 @@ jobs:
           trigger-context: release
           enabled: ${{ vars.CVE_SCAN_ENABLED }}
           block-on-findings: ${{ vars.CVE_SCAN_BLOCK_ON_FINDINGS }}
-          ignore-file: .github/cve-scan-ignore.yaml
           scanner-token: ${{ secrets.SNYK_TOKEN }}
           registry-username: ${{ github.actor }}
           registry-password: ${{ secrets.GITHUB_TOKEN }}
@@ -845,7 +845,6 @@ jobs:
 - `scanner-token` (required by the snyk adapter): named generically so a tool swap never renames this input
 - `scanner-version` (optional, renovate-pinned): scanner CLI version to install and checksum-verify
 - `severity-threshold` (optional, default: `high`)
-- `ignore-file` (optional): YAML suppression list, each entry requiring an `owner` and an `expires` date
 - `enabled` (optional, default: `true`): kill switch; resolves toward scanning on an unrecognised value
 - `block-on-findings` (optional, default: `false`): advisory vs. blocking posture
 - `registry` (optional, default: `ghcr.io`) / `registry-username` / `registry-password`: the action pulls the image with the caller's own credentials rather than relying on the scanner vendor's registry integration
@@ -853,11 +852,11 @@ jobs:
 
 **Outputs:**
 
-- `has-vulnerabilities`, `critical-count`, `high-count`, `medium-count`, `low-count`, `ignored-count`
+- `has-vulnerabilities`, `critical-count`, `high-count`, `medium-count`, `low-count`
 - `scanner-error`: `true` if the scan couldn't complete — distinct both from finding CVEs and from a setup error, which fails the job
-- `report-path`, `sarif-path`, `summary` (Slack-ready truncated text)
+- `report-path`, `sarif-path` (written by the scanner), `summary` (Slack-ready text)
 
-See [cve-scan README](./.github/actions/cve-scan/README.md) for the ignore-file format, the scanner-adapter exit-code contract, how to resolve the image tag per repo, and the SARIF upload example.
+See [cve-scan README](./.github/actions/cve-scan/README.md) for suppressing findings via `.snyk`, the scanner-adapter exit-code contract, how to resolve the image tag per repo, and the SARIF upload example.
 
 ### Checkov
 
