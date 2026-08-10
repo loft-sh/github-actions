@@ -8,9 +8,16 @@ digest-preserving retag via `crane tag`, never a rebuild, so cosign signatures
 promotes the caller's own release (`promote-self`) and a paired public release
 in a companion repo (unsets `prerelease`, sets `latest`).
 
+`version` is the **git tag** (`vX.Y.Z`), and the docker tags it reads and writes
+are the **bare** form (`X.Y.Z`, `latest`, `9`, `9.9`) — goreleaser publishes image
+tags from `{{ .Version }}`, which strips the leading `v`. Both ends of every
+`crane tag` therefore live in the bare namespace, while the GitHub release edits
+and the Homebrew download URLs keep the `v`. Callers whose images are tagged
+*with* a leading `v` are not supported.
+
 `crane tag` is used rather than `docker buildx imagetools create`: imagetools
 is digest-preserving only when the source is already a multi-arch index. For a
-bare single-platform manifest (a per-arch tag such as `:{version}-amd64`) it
+bare single-platform manifest (a per-arch tag such as `:X.Y.Z-amd64`) it
 wraps the manifest in a **new** index, changing its digest and orphaning the
 digest-scoped cosign signature. `crane tag` re-points a tag at the exact same
 manifest digest for both single-platform manifests and indexes, so it covers
@@ -97,19 +104,30 @@ as an all-or-nothing skip — a formula has no line-scoped equivalent to
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-|         INPUT          |  TYPE  | REQUIRED |  DEFAULT  |                                                                                                                                                                                                                                                                              DESCRIPTION                                                                                                                                                                                                                                                                               |
-|------------------------|--------|----------|-----------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-|    docker-username     | string |   true   |           |                                                                                                                                                                                                                 Username paired with github-token for the <br>GHCR login (GHCR checks the token, but docker/login-action requires a username value).                                                                                                                                                                                                                   |
-|        dry-run         | string |  false   | `"false"` |                                                                                                                                                                Fail-closed: a real promotion runs only <br>on an exact "false" (the default, so a plain dispatch still promotes for real). Any <br>other value ("true", a typo, etc.) is a dry-run <br>that only prints the planned retags/promotion.                                                                                                                                                                  |
-|      github-token      | string |   true   |           |                                                                                                                                                                                                 Token with GHCR write:packages; contents:write on <br>the caller repo when promote-self is <br>true; and contents:write on oss-repo and <br>homebrew-tap-repo if set.                                                                                                                                                                                                  |
-| homebrew-formula-paths | string |  false   |  `"[]"`   |                                                                                                                                                                                                           JSON array of formula file paths <br>within homebrew-tap-repo to update, e.g. ["Formula/vcluster.rb"]. <br>Required if homebrew-tap-repo is set.                                                                                                                                                                                                             |
-|   homebrew-tap-repo    | string |  false   |           |                                                                                                                                                                                               owner/repo of a Homebrew tap to <br>promote (e.g. loft-sh/homebrew-tap). Requires oss-repo to be <br>set, since checksums come from its <br>release. Leave empty to skip.                                                                                                                                                                                                |
-|         images         | string |   true   |           | JSON array of image entries to <br>retag, each `{"image": "ghcr.io/loft-sh/x", "suffix": ""}` (suffix optional, default <br>""). For each entry, copies `<image>:<version><suffix>` <br>to `<image>:latest<suffix>`, `<image>:<major><suffix>`, and `<image>:<major>.<minor><suffix>`. The <br>suffix is also how per-arch moving <br>tags are promoted: an entry with <br>suffix `-amd64` retags `<image>:<version>-amd64` (a bare single-platform manifest) to <br>`<image>:latest-amd64` etc. crane preserves its digest, <br>so its cosign signature stays valid.  |
-|        oss-repo        | string |  false   |           |                                                                                                                                                                                                                   owner/repo whose matching <version> release should <br>also be promoted (prerelease unset, latest set). Leave empty <br>to skip.                                                                                                                                                                                                                     |
-|      promote-self      | string |  false   | `"false"` |                                                                                                                                  Set to "true" to also promote <br>the CALLER repo's own <version> release <br>(unset pre-release, set Latest, gated by the same backport check as :latest). Off by default; only an <br>exact "true" enables it. See the <br>README promote-self section for token scope <br>and failure semantics.                                                                                                                                   |
-|        version         | string |   true   |           |                                                                                                                                                                                                                                                                The promoted release tag, e.g. v0.37.1.                                                                                                                                                                                                                                                                 |
+|         INPUT          |  TYPE  | REQUIRED |  DEFAULT  |                                                                                                                                             DESCRIPTION                                                                                                                                              |
+|------------------------|--------|----------|-----------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|    docker-username     | string |   true   |           |                                                                                Username paired with github-token for the <br>GHCR login (GHCR checks the token, but docker/login-action requires a username value).                                                                                  |
+|        dry-run         | string |  false   | `"false"` |                   Fail-closed: a real promotion runs only <br>on an exact "false" (the default, so a plain dispatch still promotes for real). Any <br>other value ("true", a typo, etc.) is a dry-run, <br>which writes nothing but still reads <br>the registry; see the README.                    |
+|      github-token      | string |   true   |           |                                                                Token with GHCR write:packages; contents:write on <br>the caller repo when promote-self is <br>true; and contents:write on oss-repo and <br>homebrew-tap-repo if set.                                                                 |
+| homebrew-formula-paths | string |  false   |  `"[]"`   |                                                                          JSON array of formula file paths <br>within homebrew-tap-repo to update, e.g. ["Formula/vcluster.rb"]. <br>Required if homebrew-tap-repo is set.                                                                            |
+|   homebrew-tap-repo    | string |  false   |           |                                                              owner/repo of a Homebrew tap to <br>promote (e.g. loft-sh/homebrew-tap). Requires oss-repo to be <br>set, since checksums come from its <br>release. Leave empty to skip.                                                               |
+|         images         | string |   true   |           |             JSON array of image entries to <br>retag, each `{"image": "ghcr.io/loft-sh/x", "suffix": ""}` (suffix optional, default <br>""). Docker tags are the bare <br>version, without the `v` that `version` <br>carries; see the README for the <br>full retag/suffix semantics.               |
+|        oss-repo        | string |  false   |           |                                                                                  owner/repo whose matching <version> release should <br>also be promoted (prerelease unset, latest set). Leave empty <br>to skip.                                                                                    |
+|      promote-self      | string |  false   | `"false"` | Set to "true" to also promote <br>the CALLER repo's own <version> release <br>(unset pre-release, set Latest, gated by the same backport check as :latest). Off by default; only an <br>exact "true" enables it. See the <br>README promote-self section for token scope <br>and failure semantics.  |
+|        version         | string |   true   |           |                                                                                                                               The promoted release tag, e.g. v0.37.1.                                                                                                                                |
 
 <!-- AUTO-DOC-INPUT:END -->
+
+## Outputs
+
+<!-- AUTO-DOC-OUTPUT:START - Do not remove or modify this section -->
+
+|        OUTPUT        |  TYPE  |                                                                                                                                                                     DESCRIPTION                                                                                                                                                                     |
+|----------------------|--------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| promote-self-enabled | string |                                                                                                                         Whether the manifest forwarded an exact <br>"true" promote-self value to the promotion <br>script.                                                                                                                          |
+|  unresolved-sources  | string | How many configured source manifests could <br>not be resolved at the bare <br>version tag. Always 0 on a <br>successful real promotion, since it aborts <br>otherwise; on a dry-run this is <br>the only machine-readable signal that the <br>rehearsed plan would not execute, so <br>gate or alert on it rather <br>than on the job conclusion.  |
+
+<!-- AUTO-DOC-OUTPUT:END -->
 
 ## Usage
 
@@ -192,9 +210,38 @@ promotes through the same dispatch.
 `crane tag` needs to push to GHCR. `action.yml` includes a `docker/login-action`
 step using `docker-username` + `github-token` (GHCR checks the token;
 `docker/login-action` still requires a username value); crane reads the docker
-config that step writes, so no separate crane login is needed. The login is
-skipped automatically when `dry-run: true`. `action.yml` also installs crane
-(`imjasonh/setup-crane`), so callers don't need to install it themselves.
+config that step writes, so no separate crane login is needed. `action.yml` also
+installs crane (`imjasonh/setup-crane`), so callers don't need to install it
+themselves.
+
+The install runs **before** the login, and the order is load-bearing.
+`setup-crane` finishes with its own `crane auth login ghcr.io` hardcoded to the
+workflow's `github.token`, writing the same `~/.docker/config.json` entry as
+`docker/login-action` — last writer wins. Installed after the login, that
+replaces `github-token` with the workflow token, which can still write every
+package owned by the caller repo and is denied on every package owned by another
+one (`DENIED: permission_denied: write_package`). A promotion spanning both then
+dies partway through with one image family's moving tags already retagged. The
+smoke job pins the order by reading the stored username back: `docker-username`
+means the login won, `dummy` means `setup-crane` did.
+
+Both steps run for a `dry-run` as well, because the rehearsal resolves every
+source manifest (see [Source-manifest pre-flight](#source-manifest-pre-flight))
+and a package that is not publicly readable fails crane's anonymous token
+exchange outright, so without the credential the lookup cannot tell you anything.
+Neither step writes to the registry — `crane tag` is the only mutation and it
+stays behind the dry-run guard.
+
+The rehearsal's login is a separate step carrying a literal
+`continue-on-error: true`, so a bad credential or a GHCR hiccup degrades into the
+pre-flight's `could not be inspected` wording instead of killing the preview. It
+has to be a separate step rather than one step with an expression:
+`continue-on-error: ${{ inputs.… }}` on a composite step is evaluated in the
+composite's own context, where it resolves empty and halts the run with
+`Unexpected value ''` ([actions/runner#2418][coe], still open). Literal booleans
+are unaffected.
+
+[coe]: https://github.com/actions/runner/issues/2418
 
 ### promote-self
 
@@ -230,8 +277,82 @@ On a backport promotion none of this applies — the edit is `--prerelease=false
 only, which moves no pointer and cannot stale a baseline — so a missing release
 or a failed edit stays a warning and the line tag still advances. A `dry-run` is
 likewise never aborted by an unreadable release: a rehearsal may run before the
-release exists (the source-manifest pre-flight is skipped for the same reason),
-so it warns and prints the planned edit instead.
+release exists, so it warns and prints the planned edit instead.
+
+### images
+
+One entry per moving-tag family, each `{"image": "...", "suffix": ""}` with the
+suffix optional. For every entry the source `<image>:X.Y.Z<suffix>` is copied to
+
+- `<image>:latest<suffix>`
+- `<image>:<major><suffix>`
+- `<image>:<major>.<minor><suffix>`
+
+so the suffix applies to the source *and* to every destination. That is also how
+per-arch moving tags are promoted: an entry with suffix `-amd64` retags
+`<image>:X.Y.Z-amd64` — a bare single-platform manifest — onto
+`<image>:latest-amd64` and friends, digest preserved, so its cosign signature
+stays valid. Keep the list in step with whatever the build publishes; a family
+listed here but not built for this version fails the pre-flight below, and one
+built but not listed here is simply never promoted.
+
+Which of the three destinations actually move depends on the backport gates
+above: `:latest`/`:{major}` only when `version` is at or ahead of the caller's
+Latest pointer, `:{major}.{minor}` only when it is newest within its own line.
+
+### Source-manifest pre-flight
+
+Before anything is written, every configured entry's source manifest is resolved
+at `<image>:X.Y.Z<suffix>`. A suffix variant that was never built for this
+version, or a wrong tag namespace, therefore fails before the first retag rather
+than part-way through one.
+
+It runs under `dry-run` too, and only the verdict differs: a real promotion
+aborts, a rehearsal warns and keeps printing the plan. Skipping the lookup in a
+rehearsal made it answer "yes" for plans that could not execute, which is the one
+question a rehearsal exists to answer. It is non-fatal there for the same
+pre-publish reason as the release lookup above — rehearsing a cut whose images
+are not published yet is allowed — but it is not *skipped*.
+
+"Unresolved" covers two different facts and the wording says which, because
+reporting a denial as a missing image sends an operator to re-cut something that
+is already published:
+
+| Wording | Means | Recognised by |
+|---|---|---|
+| `does not exist` | the tag was never pushed — usually a tag-namespace or build-matrix mismatch | `unexpected status code 404` on a `/manifests/` URL, or a registry `MANIFEST_UNKNOWN`/`NAME_UNKNOWN` |
+| `could not be inspected (<error>)` | the registry did not answer — a refused token exchange, a rate limit, DNS | anything else, with the raw error attached |
+
+The split is matched against what crane actually prints (verified live against
+ghcr.io on the pinned v0.20.2): crane renders the HTTP status itself and never
+surfaces the registry's `MANIFEST_UNKNOWN`, and a package the run cannot read
+fails at the *token exchange* rather than reaching a manifest 404 — which is what
+keeps a failed login out of the absence bucket. The match is deliberately the
+phrase `unexpected status code 404` on a `/manifests/` URL, not a bare `404`
+anywhere in the text: a host carrying those digits, or a 404 from the token
+endpoint or a proxy in front of it, stays indeterminate. Only the manifest lookup
+can prove a tag missing.
+
+If crane itself is missing the run fails outright: that is not evidence about any
+manifest, and treating it as absence would report every source as unpublished.
+When the non-fatal rehearsal login did not succeed, that is stated before the
+per-entry list, so a bad credential is named rather than inferred.
+
+Every entry is reported before the decision — the loop is read-only, so the abort
+simply moves after it, and one dispatch surfaces the whole list instead of one
+image per re-dispatch. The aggregate names the split (`N not found, M
+uninspectable`) and advises per class, so a run where one image is genuinely
+missing and forty are unreadable does not steer you at the tag form. The verdict,
+with the affected refs, also goes to `$GITHUB_STEP_SUMMARY` (capped at 20 plus a
+count): a rehearsal stays green, and a long annotation list is easy to mistake
+for a clean pass. Plan lines whose source did not resolve are marked
+`WOULD FAIL`, so the printed plan carries its own verdict.
+
+All of that still needs a human to open the run. The `unresolved-sources` output
+is the one channel a *caller* can read: it is the count of sources that did not
+resolve, `0` on a clean run and on the non-stable no-op, and it is written before
+a real run aborts. Since a rehearsal is green either way, gate or alert on that
+output rather than on the job conclusion.
 
 ### oss-repo
 

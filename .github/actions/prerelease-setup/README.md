@@ -18,11 +18,23 @@ The action performs, in order:
    exports `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` /
    `AWS_SESSION_TOKEN` to `$GITHUB_ENV` by default, so consumer steps
    reading them as `env.AWS_*` resolve as expected.
-7. Resolve and validate the four version inputs (see below). Empty
-   inputs fall back to "latest" via the GitHub API: latest release for
-   `standalone-vcluster-version` and `platform-base-version`; latest
-   pre-release for `standalone-vcluster-upgrade-version` and
-   `platform-rc-version`.
+7. Resolve and validate the four version inputs (see below). An empty
+   upgrade target (`standalone-vcluster-upgrade-version`,
+   `platform-rc-version`) resolves to the most recently published
+   pre-release whose final release has not shipped yet, excluding `-next`
+   internal builds. An empty base
+   (`standalone-vcluster-version`, `platform-base-version`) resolves to the
+   highest stable release strictly below its target, so a maintenance
+   release is tested against the release before it rather than against
+   whatever happens to be newest.
+
+   `/releases` is not returned in any dependable order, so publish times are
+   read from the payload and sorted rather than trusting the first row. That
+   means the whole list is read. It is bounded by the `RELEASE_PAGE_LIMIT`
+   environment variable (default `20`, in pages of 100); it is not an action
+   input, so a caller that needs to raise it sets it as a job-level `env:`.
+   Exceeding the bound fails the step, because resolving from a partial list
+   could pick the wrong base.
 8. Verify the resolved vCluster releases publish the assets the
    downstream test relies on (`install-standalone.sh` for base + upgrade,
    `vcluster-linux-amd64` for upgrade). Fails fast before any EC2 / VCI
@@ -42,11 +54,11 @@ provisioning (`aws-test-infra`) and the Ginkgo test execution
 |                INPUT                |  TYPE  | REQUIRED | DEFAULT |                                                                                                                                           DESCRIPTION                                                                                                                                            |
 |-------------------------------------|--------|----------|---------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 |            github-token             | string |   true   |         | GitHub token with contents:read on loft-sh/loft-enterprise. <br>Required because the platform release resolvers <br>call the GitHub API for a <br>private repo; unauthenticated calls return 404. <br>Pass the calling job's github.token from <br>a job whose permissions grant contents:read.  |
-|        platform-base-version        | string |  false   |         |                                                                             Platform version for the initial install <br>(e.g. 4.9.0). Empty resolves to the latest <br>stable release of loft-sh/loft-enterprise.                                                                               |
-|         platform-rc-version         | string |  false   |         |                                                                               Platform RC version for upgrade (e.g. 4.10.0-alpha.6). <br>Empty resolves to the latest pre-release <br>of loft-sh/loft-enterprise.                                                                                |
+|        platform-base-version        | string |  false   |         |                                                                 Platform version for the initial install <br>(e.g. 4.9.0). Empty resolves to the highest <br>stable release of loft-sh/loft-enterprise below the <br>RC target.                                                                  |
+|         platform-rc-version         | string |  false   |         |                                               Platform RC version for upgrade (e.g. 4.10.0-alpha.6). <br>Empty resolves to the most recently <br>published platform pre-release whose final release <br>has not shipped, excluding -next builds.                                                 |
 |          role-session-name          | string |   true   |         |                                                                           AWS STS role-session-name. Each consumer job <br>passes a distinct value (e.g. prerelease-vcluster-<run-id>, prerelease-aicloud-<run-id>).                                                                             |
-| standalone-vcluster-upgrade-version | string |  false   |         |                                                           vCluster version to upgrade standalone to <br>(e.g. 0.35.0-alpha.7). Empty resolves to the latest <br>vCluster pre-release. Must differ from the <br>resolved base version.                                                            |
-|     standalone-vcluster-version     | string |  false   |         |                                                                               vCluster version to install for standalone <br>(e.g. 0.34.0). Empty resolves to the latest <br>GitHub release of loft-sh/vcluster.                                                                                 |
+| standalone-vcluster-upgrade-version | string |  false   |         |                vCluster version to upgrade standalone to <br>(e.g. 0.35.0-alpha.7). Empty resolves to the most <br>recently published vCluster pre-release whose final <br>release has not shipped, excluding -next <br>builds. Must differ from the resolved <br>base version.                  |
+|     standalone-vcluster-version     | string |  false   |         |                                                                vCluster version to install for standalone <br>(e.g. 0.34.0). Empty resolves to the highest <br>stable release of loft-sh/vcluster below the <br>upgrade target.                                                                  |
 
 <!-- AUTO-DOC-INPUT:END -->
 
@@ -108,7 +120,7 @@ jobs:
     steps:
       - name: Pre-release setup
         id: setup
-        uses: loft-sh/github-actions/.github/actions/prerelease-setup@prerelease-setup/v1.1
+        uses: loft-sh/github-actions/.github/actions/prerelease-setup@prerelease-setup/v1
         with:
           role-session-name: prerelease-vcluster-${{ github.run_id }}
           github-token: ${{ github.token }}

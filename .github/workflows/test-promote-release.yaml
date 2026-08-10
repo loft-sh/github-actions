@@ -41,3 +41,56 @@ jobs:
         env:
           PROMOTE_SELF_ENABLED: ${{ steps.promote.outputs.promote-self-enabled }}
         run: test "$PROMOTE_SELF_ENABLED" = true
+      # bats proves the script writes this; it cannot reach the `outputs:` mapping
+      # in action.yml, which is where a typo would silently empty the output the
+      # README sells as the only machine-readable signal. The smoke image is
+      # deterministically unresolvable, so the count is 1 regardless of which
+      # class it lands in.
+      - name: Verify unresolved-sources is wired through to the caller
+        env:
+          UNRESOLVED: ${{ steps.promote.outputs.unresolved-sources }}
+        run: test "$UNRESOLVED" = 1
+      # The bats suite calls src/action.sh directly with hand-exported INPUT_*,
+      # so it cannot exercise a step-level `if:` in action.yml. That left the
+      # dry-run GHCR login unguarded: re-gating it on a real run would put the
+      # rehearsal back to reporting every source as missing, with CI green.
+      # Asserting the credential landed pins the step actually ran. (Its sibling,
+      # the crane install, is covered by accident - reverting that one trips the
+      # script's `command -v crane` check and fails this job outright.)
+      - name: Verify the rehearsal authenticated to GHCR
+        env:
+          EXPECTED_USER: ${{ github.actor }}
+        run: |
+          config="${DOCKER_CONFIG:-$HOME/.docker}/config.json"
+          if [[ ! -f "$config" ]]; then
+            echo "::error::no docker config at $config; the dry-run GHCR login did not run"
+            exit 1
+          fi
+          if ! jq -e '.auths | has("ghcr.io")' "$config" >/dev/null; then
+            echo "::error::docker config has no ghcr.io entry; the dry-run GHCR login did not run"
+            jq -r '.auths | keys' "$config"
+            exit 1
+          fi
+          # setup-crane logs in to the same ghcr.io entry as "dummy" with the
+          # workflow's github.token, so whichever step runs last owns the
+          # credential crane will push with. github.token can only write packages
+          # owned by the caller repo, and the difference is invisible until a
+          # promotion touches a package owned by another repo. The username is
+          # the only part of the entry a test can read back, and it is enough:
+          # "dummy" means setup-crane won and the action's own token was thrown
+          # away.
+          auth=$(jq -r '.auths["ghcr.io"].auth // ""' "$config")
+          if [[ -n "$auth" ]]; then
+            user=$(base64 -d <<<"$auth" | cut -d: -f1)
+          else
+            user=$(jq -r '.auths["ghcr.io"].username // ""' "$config")
+          fi
+          if [[ -z "$user" ]]; then
+            echo "::error::could not read the ghcr.io username from $config; a credential helper is storing it out of band and this assertion needs rewriting"
+            exit 1
+          fi
+          if [[ "$user" != "$EXPECTED_USER" ]]; then
+            echo "::error::ghcr.io is authenticated as '$user', expected '$EXPECTED_USER'; the GHCR login must run after the crane install so the action's github-token is what crane pushes with"
+            exit 1
+          fi
+          echo "dry-run authenticated to ghcr.io as $user"
