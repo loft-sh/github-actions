@@ -839,7 +839,7 @@ jobs:
 **Inputs:**
 
 - `image-ref` (required): full registry reference to scan
-- `dockerfile-path` (optional, default: `Dockerfile.release`): must exist in the checkout — a missing target silently scans only the base image, so the adapter rejects it
+- `dockerfile-path` (optional, default: empty): passed to the scanner as `--file` for base-image remediation advice; it does not change which vulnerabilities are found
 - `trigger-context` (optional): free-text label (e.g. `schedule`, `release`) shown in the report
 - `scanner` (optional, default: `snyk`): selects `src/scanners/<scanner>.sh`
 - `scanner-token` (required by the snyk adapter): named generically so a tool swap never renames this input
