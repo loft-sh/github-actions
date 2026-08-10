@@ -3,6 +3,7 @@
 # The org-level "DevOps Code Owner Review" ruleset requires an approving
 # review from a code owner before anything merges to the default branch.
 #
-# Named individuals rather than @loft-sh/eng-devops on purpose: the wider
-# team holds push and maintain here, but merge sign-off sits with these two.
-*   @Piotr1215 @sydorovdmytro
+# Owned by the team rather than by named individuals, so any member of
+# @loft-sh/eng-merge-devops can give the required sign-off and one person
+# being away no longer blocks merges here.
+*   @loft-sh/eng-merge-devops
