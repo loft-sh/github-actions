@@ -848,7 +848,7 @@ jobs:
 - `ignore-file` (optional): YAML suppression list, each entry requiring an `owner` and an `expires` date
 - `enabled` (optional, default: `true`): kill switch; resolves toward scanning on an unrecognised value
 - `block-on-findings` (optional, default: `false`): advisory vs. blocking posture
-- `pull-image` (optional, default: `true`) / `registry-username` / `registry-password`: the action pulls the image with the caller's own credentials rather than relying on the scanner vendor's registry integration
+- `registry` (optional, default: `ghcr.io`) / `registry-username` / `registry-password`: the action pulls the image with the caller's own credentials rather than relying on the scanner vendor's registry integration
 - `notify` / `slack-webhook-url` (optional, default: `true` / —)
 
 **Outputs:**
