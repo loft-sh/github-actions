@@ -827,7 +827,6 @@ jobs:
       - uses: loft-sh/github-actions/.github/actions/cve-scan@cve-scan/v1
         with:
           image-ref: ghcr.io/loft-sh/vcluster-pro:${{ steps.image-tag.outputs.tag }}
-          trigger-context: release
           enabled: ${{ vars.CVE_SCAN_ENABLED }}
           block-on-findings: ${{ vars.CVE_SCAN_BLOCK_ON_FINDINGS }}
           scanner-token: ${{ secrets.SNYK_TOKEN }}
@@ -840,7 +839,6 @@ jobs:
 
 - `image-ref` (required): full registry reference to scan
 - `dockerfile-path` (optional, default: empty): passed to the scanner as `--file` for base-image remediation advice; it does not change which vulnerabilities are found
-- `trigger-context` (optional): free-text label (e.g. `schedule`, `release`) shown in the report
 - `scanner` (optional, default: `snyk`): selects `src/scanners/<scanner>.sh`
 - `scanner-token` (required by the snyk adapter): named generically so a tool swap never renames this input
 - `scanner-version` (optional, renovate-pinned): scanner CLI version to install and checksum-verify
