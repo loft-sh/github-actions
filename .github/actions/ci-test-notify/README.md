@@ -70,7 +70,7 @@ Build URL: <link to workflow run>
       E2E Tests: failure
 
       ${{ needs.e2e-tests.outputs.failure-summary || 'Check build logs for details.' }}
-    webhook-url: ${{ secrets.SLACK_WEBHOOK_URL_DEV_VCLUSTER }}
+    webhook-url: ${{ secrets.SLACK_WEBHOOK_URL_CI_TESTS_ALERTS }}
 ```
 
 ## Notification gating
