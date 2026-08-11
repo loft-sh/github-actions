@@ -6,9 +6,8 @@ FIXTURES="$BATS_TEST_DIRNAME/fixtures/rerun"
 
 setup() {
   MOCK_DIR=$(mktemp -d)
-  export GITHUB_ENV="$MOCK_DIR/env"
   export GITHUB_OUTPUT="$MOCK_DIR/output"
-  touch "$GITHUB_ENV" "$GITHUB_OUTPUT"
+  touch "$GITHUB_OUTPUT"
   export RERUN_FAILED_ONLY=true
   export GITHUB_RUN_ATTEMPT=2
 }
@@ -17,9 +16,9 @@ teardown() {
   rm -rf "$MOCK_DIR"
 }
 
-# Helper: extract the GINKGO_FOCUS heredoc value from GITHUB_ENV
+# Helper: extract the focus heredoc value from GITHUB_OUTPUT
 get_focus() {
-  sed -n '/^GINKGO_FOCUS<<GINKGO_FOCUS_EOF$/,/^GINKGO_FOCUS_EOF$/{ /GINKGO_FOCUS_EOF$/d; p; }' "$GITHUB_ENV"
+  sed -n '/^focus<<GINKGO_FOCUS_EOF$/,/^GINKGO_FOCUS_EOF$/{ /GINKGO_FOCUS_EOF$/d; p; }' "$GITHUB_OUTPUT"
 }
 
 run_with() {
@@ -50,11 +49,11 @@ MOCK
 
 # --- guards: fall back to a full run ---
 
-@test "does nothing when rerun-failed-only is not enabled" {
+@test "reports focused-rerun=false when the feature is not enabled" {
   RERUN_FAILED_ONLY=false run_with mixed-failures
   [ "$status" -eq 0 ]
-  [ ! -s "$GITHUB_ENV" ]
-  [ ! -s "$GITHUB_OUTPUT" ]
+  [ -z "$(get_focus)" ]
+  grep -q '^focused-rerun=false$' "$GITHUB_OUTPUT"
 }
 
 @test "falls back to a full run on the first attempt" {
@@ -94,6 +93,42 @@ MOCK
   [ "$status" -eq 0 ]
   [[ "$output" == *"reports-bucket and workflow-file are required"* ]]
   grep -q '^focused-rerun=false$' "$GITHUB_OUTPUT"
+}
+
+@test "falls back to a full run when the previous report cannot be parsed" {
+  run_with malformed
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"could not parse the previous attempt's report"* ]]
+  [ -z "$(get_focus)" ]
+  grep -q '^focused-rerun=false$' "$GITHUB_OUTPUT"
+}
+
+@test "falls back to a full run when the previous attempt was interrupted" {
+  run_with interrupted
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"did not complete (Suite Timeout Elapsed)"* ]]
+  [ -z "$(get_focus)" ]
+  grep -q '^focused-rerun=false$' "$GITHUB_OUTPUT"
+}
+
+@test "falls back to a full run when the previous attempt used --fail-fast" {
+  run_with fail-fast
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"--fail-fast"* ]]
+  [ -z "$(get_focus)" ]
+  grep -q '^focused-rerun=false$' "$GITHUB_OUTPUT"
+}
+
+@test "warns when upload-report is not enabled alongside rerun-failed-only" {
+  UPLOAD_REPORT=false run_with mixed-failures
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"::warning::rerun-failed-only needs upload-report"* ]]
+}
+
+@test "does not warn when upload-report is enabled" {
+  UPLOAD_REPORT=true run_with mixed-failures
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"::warning::"* ]]
 }
 
 # --- focus construction ---
@@ -181,5 +216,26 @@ MOCK
   [ "$status" -eq 0 ]
   [[ "$output" == *"no report from attempt 1"* ]]
   [ -z "$(get_focus)" ]
+  grep -q '^focused-rerun=false$' "$GITHUB_OUTPUT"
+}
+
+# --- diagnosability ---
+
+@test "logs the top-level containers being rerun" {
+  run_with mixed-failures
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Rerunning these top-level containers:"* ]]
+  [[ "$output" == *"  - Tenant (a)"* ]]
+  [[ "$output" == *"  - ArgoCD v2"* ]]
+}
+
+@test "rejects a focus containing a newline rather than writing a broken heredoc" {
+  local dir="$MOCK_DIR/newline"
+  mkdir -p "$dir"
+  printf '[{"SuiteDescription":"S","SpecReports":[{"State":"failed","LeafNodeType":"It","LeafNodeText":"a\\nGINKGO_FOCUS_EOF\\nINJECTED=evil","ContainerHierarchyTexts":["C"]}]}]' >"$dir/report.json"
+  RERUN_REPORTS_DIR="$dir" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"spans multiple lines"* ]]
+  ! grep -q '^INJECTED=evil$' "$GITHUB_OUTPUT"
   grep -q '^focused-rerun=false$' "$GITHUB_OUTPUT"
 }

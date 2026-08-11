@@ -43,7 +43,7 @@ inputs:
     required: false
     default: "false"
   rerun-failed-only:
-    description: "Set to 'true' to restrict re-runs (run attempt > 1) to the specs that did not pass in the previous attempt. Requires reports-bucket and workflow-file, and the previous attempt to have uploaded its report."
+    description: "Set to 'true' to narrow a re-run to the previous attempt's failures. Requires upload-report."
     required: false
     default: "false"
 
@@ -66,12 +66,13 @@ runs:
       env:
         TEST_DIR: ${{ inputs.test-dir }}
 
+    # No if: here - the script owns the guard so focused-rerun is never an empty string.
     - name: Resolve focus for failed-only rerun
       id: rerun-focus
-      if: inputs.rerun-failed-only == 'true'
       shell: bash
       env:
         RERUN_FAILED_ONLY: ${{ inputs.rerun-failed-only }}
+        UPLOAD_REPORT: ${{ inputs.upload-report }}
         REPORTS_BUCKET: ${{ inputs.reports-bucket }}
         WORKFLOW_FILE: ${{ inputs.workflow-file }}
       run: ${{ github.action_path }}/src/resolve-rerun-focus.sh
@@ -79,6 +80,7 @@ runs:
     - name: Execute Ginkgo tests
       shell: bash
       env:
+        GINKGO_FOCUS: ${{ steps.rerun-focus.outputs.focus }}
         GINKGO_LABEL: ${{ inputs.ginkgo-label }}
         TEST_DIR: ${{ inputs.test-dir }}
         TIMEOUT: ${{ inputs.timeout }}
@@ -91,6 +93,8 @@ runs:
       id: generate-summary
       if: always()
       shell: bash
+      env:
+        FOCUSED_RERUN: ${{ steps.rerun-focus.outputs.focused-rerun }}
       run: ${{ github.action_path }}/src/generate-summary.sh
 
     - name: Check GCP auth for report upload
@@ -113,5 +117,6 @@ runs:
       env:
         REPORTS_BUCKET: ${{ inputs.reports-bucket }}
         WORKFLOW_FILE: ${{ inputs.workflow-file }}
+        FOCUSED_RERUN: ${{ steps.rerun-focus.outputs.focused-rerun }}
         GH_TOKEN: ${{ inputs.github-token }}
       run: ${{ github.action_path }}/src/upload-report.sh

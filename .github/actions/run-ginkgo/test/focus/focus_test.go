@@ -48,17 +48,14 @@ func (s specReport) didNotPass() bool {
 }
 
 // resolveFocus runs the action's script against a fixture directory and returns the
-// GINKGO_FOCUS value it exported.
+// focus step output it emitted.
 func resolveFocus(t *testing.T, fixture string) string {
 	t.Helper()
 
 	tmp := t.TempDir()
-	envFile := filepath.Join(tmp, "github_env")
 	outFile := filepath.Join(tmp, "github_output")
-	for _, f := range []string{envFile, outFile} {
-		if err := os.WriteFile(f, nil, 0o600); err != nil {
-			t.Fatalf("create %s: %v", f, err)
-		}
+	if err := os.WriteFile(outFile, nil, 0o600); err != nil {
+		t.Fatalf("create %s: %v", outFile, err)
 	}
 
 	script, err := filepath.Abs(filepath.Join("..", "..", "src", "resolve-rerun-focus.sh"))
@@ -75,24 +72,23 @@ func resolveFocus(t *testing.T, fixture string) string {
 		"RERUN_FAILED_ONLY=true",
 		"GITHUB_RUN_ATTEMPT=2",
 		"RERUN_REPORTS_DIR="+reportsDir,
-		"GITHUB_ENV="+envFile,
 		"GITHUB_OUTPUT="+outFile,
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("resolve-rerun-focus.sh failed: %v\n%s", err, out)
 	}
 
-	contents, err := os.ReadFile(envFile)
+	contents, err := os.ReadFile(outFile)
 	if err != nil {
-		t.Fatalf("read GITHUB_ENV: %v", err)
+		t.Fatalf("read GITHUB_OUTPUT: %v", err)
 	}
 	lines := strings.Split(strings.TrimRight(string(contents), "\n"), "\n")
 	for i, line := range lines {
-		if line == "GINKGO_FOCUS<<GINKGO_FOCUS_EOF" && i+1 < len(lines) {
+		if line == "focus<<GINKGO_FOCUS_EOF" && i+1 < len(lines) {
 			return lines[i+1]
 		}
 	}
-	t.Fatalf("no GINKGO_FOCUS in GITHUB_ENV:\n%s", contents)
+	t.Fatalf("no focus output:\n%s", contents)
 	return ""
 }
 
@@ -164,6 +160,7 @@ func TestFocusSelectsExactlyTheFailedTopLevelContainers(t *testing.T) {
 		"Auto Nodes Extended scales to zero",
 		"Auto Snapshots on Azure Blob",
 		"Auto Snapshots runs on schedule",
+		"Metacharacters escapes [ ] { } ^ $ \\ * + ? every metacharacter",
 		"Sleep Mode (a|b) when configured honours the annotation",
 		"Sleep Mode (a|b) when configured ignores user agents",
 		"Terraform destroys the module",
@@ -194,10 +191,34 @@ func TestFocusDoesNotLeakIntoNeighbouringContainers(t *testing.T) {
 		"Node Profiles is untouched",
 		"Node Profiles is not implemented",
 		"Auto Snapshots on Azure Blob uploads the snapshot",
+		// Differs from the dotted container only where the dots are, so an unescaped "."
+		// in esc's character class shows up as over-selection.
+		"virtualclusterinstancesXmanagementXloftXsh/v1 lists instances",
 	} {
 		if slices.Contains(selected, unwanted) {
 			t.Errorf("spec from a passing container would be rerun: %q", unwanted)
 		}
+	}
+}
+
+func TestFocusDistinguishesSameNamedContainersAcrossSuites(t *testing.T) {
+	suites := loadReport(t, "suite-collision", "report.json")
+	selected := selectSpecs(t, resolveFocus(t, "suite-collision"), suites)
+
+	// Both suites have a "Lifecycle" container with identically named specs; only the
+	// one in Suite B failed. Grouping by container name alone would rerun Suite A's too,
+	// and the two suites' specs are told apart only by the suite description prefix.
+	want := []string{"Lifecycle creates a resource", "Lifecycle deletes a resource"}
+	if !slices.Equal(selected, want) {
+		t.Errorf("selected specs mismatch\n got: %v\nwant: %v", selected, want)
+	}
+
+	re := regexp.MustCompile(resolveFocus(t, "suite-collision"))
+	if re.MatchString("Suite A Lifecycle creates a resource") {
+		t.Error("focus matched the passing suite's identically named spec")
+	}
+	if !re.MatchString("Suite B Lifecycle creates a resource") {
+		t.Error("focus did not match the failing suite's spec")
 	}
 }
 

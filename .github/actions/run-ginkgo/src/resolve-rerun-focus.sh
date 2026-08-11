@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Exports GINKGO_FOCUS restricting the run to the previous attempt's failures.
+# Emits a Ginkgo --focus restricting the run to the previous attempt's failures.
 #
-# Required env:  GITHUB_ENV, GITHUB_OUTPUT
-# Optional env:  RERUN_FAILED_ONLY, REPORTS_BUCKET, WORKFLOW_FILE, RUNNER_TEMP,
-#                GITHUB_REPOSITORY, GITHUB_RUN_ID, GITHUB_RUN_ATTEMPT
+# Required env:  GITHUB_OUTPUT
+# Optional env:  RERUN_FAILED_ONLY, UPLOAD_REPORT, REPORTS_BUCKET, WORKFLOW_FILE,
+#                RUNNER_TEMP, GITHUB_REPOSITORY, GITHUB_RUN_ID, GITHUB_RUN_ATTEMPT
 # Test seam:     RERUN_REPORTS_DIR - read reports from here instead of GCS
+#
+# Outputs:       focus, focused-rerun ('true'/'false', never unset)
 
 skip() {
   echo "::notice::Failed-only rerun not applied: $1 - running the full suite"
@@ -14,7 +16,11 @@ skip() {
   exit 0
 }
 
-[[ "${RERUN_FAILED_ONLY:-false}" == "true" ]] || exit 0
+[[ "${RERUN_FAILED_ONLY:-false}" == "true" ]] || skip "rerun-failed-only is not enabled"
+
+if [[ -n "${UPLOAD_REPORT:-}" && "$UPLOAD_REPORT" != "true" ]]; then
+  echo "::warning::rerun-failed-only needs upload-report: 'true' - without it no attempt publishes the report this reads, so reruns can never be narrowed"
+fi
 
 ATTEMPT="${GITHUB_RUN_ATTEMPT:-1}"
 [[ "$ATTEMPT" -gt 1 ]] || skip "first attempt of this run"
@@ -26,9 +32,13 @@ if [[ -z "$REPORTS_DIR" ]]; then
 
   REPORTS_DIR="${RUNNER_TEMP:-/tmp}/ginkgo-previous-attempt"
   mkdir -p "$REPORTS_DIR"
+  # Read path for the layout upload-report.sh writes - keep the two in sync.
   SRC="gs://${REPORTS_BUCKET}/${GITHUB_REPOSITORY}/${WORKFLOW_FILE}/${GITHUB_RUN_ID}/$((ATTEMPT - 1))"
-  gcloud storage cp "${SRC}/*.json" "$REPORTS_DIR/" ||
-    skip "no report from attempt $((ATTEMPT - 1)) at ${SRC}"
+  # A degraded bucket would otherwise hang the job up to its timeout-minutes.
+  TIMEOUT=(timeout 300)
+  command -v timeout >/dev/null || TIMEOUT=()
+  "${TIMEOUT[@]}" gcloud storage cp "${SRC}/*.json" "$REPORTS_DIR/" ||
+    skip "no report from attempt $((ATTEMPT - 1)) at ${SRC} (missing, unreadable or timed out)"
 fi
 
 shopt -s nullglob
@@ -45,9 +55,17 @@ RESULT=$(jq -sr '
   def fullText: [ .suite ] + (.spec.ContainerHierarchyTexts // []) + [ .spec.LeafNodeText ]
     | map(select(. != "")) | join(" ");
 
-  [ .[] | .[]? | .SuiteDescription as $suite | (.SpecReports // [])[] | { suite: $suite, spec: . } ] as $all
+  [ .[] | .[]? ] as $suites
+  | [ $suites[] | .SuiteDescription as $suite | (.SpecReports // [])[] | { suite: $suite, spec: . } ] as $all
   | [ $all[] | select(.spec.State | IN("passed", "skipped", "pending") | not) ] as $failed
-  | if ($failed | length) == 0 then
+  | ([ $suites[] | (.SpecialSuiteFailureReasons // [])[] ] | unique) as $abortReasons
+  | if ($abortReasons | length) > 0 then
+      # An interrupted, timed out or otherwise aborted suite marks its unexecuted specs
+      # "skipped", indistinguishable from a deliberate skip, so they would never be rerun.
+      { focus: "", reason: "the previous attempt did not complete (\($abortReasons | join("; ")))" }
+    elif ($suites | any(.SuiteConfig.FailFast == true)) then
+      { focus: "", reason: "the previous attempt ran with --fail-fast, which leaves unexecuted specs marked skipped" }
+    elif ($failed | length) == 0 then
       { focus: "", reason: "no failed specs in the previous report" }
     elif ($failed | any(.spec.LeafNodeType != "It")) then
       { focus: "", reason: "a suite setup/teardown node failed" }
@@ -55,18 +73,25 @@ RESULT=$(jq -sr '
       ([ $failed[] | container ] | unique) as $containers
       | [ $all[] | select(.spec.LeafNodeType == "It" and (container | IN($containers[]))) ] as $rerun
       | { focus: ([ $rerun[] | "^" + (fullText | esc) + "$" ] | unique | join("|")),
+          containers: [ $containers[] | .[1] ],
           reason: "\($failed | length) failed spec(s), rerunning \($rerun | length) spec(s) across \($containers | length) top-level container(s)" }
     end
-' "${REPORTS[@]}")
+' "${REPORTS[@]}") || skip "could not parse the previous attempt's report(s) in ${REPORTS_DIR}"
 
 FOCUS=$(jq -r '.focus' <<<"$RESULT")
-[[ -n "$FOCUS" ]] || skip "$(jq -r '.reason' <<<"$RESULT")"
+REASON=$(jq -r '.reason' <<<"$RESULT")
+[[ -n "$FOCUS" ]] || skip "$REASON"
 
-echo "::notice::Rerunning only the specs that failed in attempt $((ATTEMPT - 1)): $(jq -r '.reason' <<<"$RESULT")"
+# esc escapes regex metacharacters, not newlines: a spec text containing one would close
+# the heredoc early and let the rest be parsed as workflow commands.
+[[ "$FOCUS" != *$'\n'* ]] || skip "the previous report contains a spec whose text spans multiple lines"
+
+echo "::notice::Rerunning only the specs that failed in attempt $((ATTEMPT - 1)): ${REASON}"
+jq -r '"Rerunning these top-level containers:", (.containers[] | "  - " + .)' <<<"$RESULT"
 echo "Focus: ${FOCUS}"
 {
-  echo "GINKGO_FOCUS<<GINKGO_FOCUS_EOF"
+  echo "focus<<GINKGO_FOCUS_EOF"
   echo "$FOCUS"
   echo "GINKGO_FOCUS_EOF"
-} >>"$GITHUB_ENV"
-echo "focused-rerun=true" >>"$GITHUB_OUTPUT"
+  echo "focused-rerun=true"
+} >>"$GITHUB_OUTPUT"

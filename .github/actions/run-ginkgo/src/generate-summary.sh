@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Required env vars: GITHUB_OUTPUT
-# Optional env vars: REPORT_FILE (defaults to test-reports/report.json)
+# Optional env vars: REPORT_FILE (defaults to test-reports/report.json), FOCUSED_RERUN
 
 REPORT_FILE="${REPORT_FILE:-test-reports/report.json}"
 
@@ -82,3 +82,11 @@ RUNTIME=$(echo "$STATS" | jq -r '.runtime')
 } >> "$GITHUB_OUTPUT"
 
 echo "Summary generated (Failed: ${FAILED_COUNT}, Passed: ${PASSED_COUNT})"
+
+# A focused rerun that matched nothing means the focus was built from specs this job does
+# not own (another matrix leg's report). Ginkgo exits 0 in that case, so without this the
+# job would go green having executed no specs at all.
+if [[ "${FOCUSED_RERUN:-}" == "true" && "$((PASSED_COUNT + FAILED_COUNT))" -eq 0 ]]; then
+  echo "::error::This rerun was narrowed to the previous attempt's failures but matched no specs - the focus does not belong to this job's suite"
+  exit 1
+fi

@@ -1,0 +1,16 @@
+[
+  {
+    "SuiteDescription": "Suite A",
+    "SpecReports": [
+      { "State": "passed", "LeafNodeType": "It", "LeafNodeText": "creates a resource", "ContainerHierarchyTexts": ["Lifecycle"] },
+      { "State": "passed", "LeafNodeType": "It", "LeafNodeText": "deletes a resource", "ContainerHierarchyTexts": ["Lifecycle"] }
+    ]
+  },
+  {
+    "SuiteDescription": "Suite B",
+    "SpecReports": [
+      { "State": "failed", "LeafNodeType": "It", "LeafNodeText": "creates a resource", "ContainerHierarchyTexts": ["Lifecycle"] },
+      { "State": "passed", "LeafNodeType": "It", "LeafNodeText": "deletes a resource", "ContainerHierarchyTexts": ["Lifecycle"] }
+    ]
+  }
+]

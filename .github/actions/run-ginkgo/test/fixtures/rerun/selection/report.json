@@ -28,6 +28,9 @@
       { "State": "passed", "LeafNodeType": "It", "LeafNodeText": "is untouched", "ContainerHierarchyTexts": ["Node Profiles"] },
       { "State": "pending", "LeafNodeType": "It", "LeafNodeText": "is not implemented", "ContainerHierarchyTexts": ["Node Profiles"] },
 
+      { "State": "failed", "LeafNodeType": "It", "LeafNodeText": "escapes [ ] { } ^ $ \\ * + ? every metacharacter", "ContainerHierarchyTexts": ["Metacharacters"] },
+      { "State": "passed", "LeafNodeType": "It", "LeafNodeText": "lists instances", "ContainerHierarchyTexts": ["virtualclusterinstancesXmanagementXloftXsh/v1"] },
+
       { "State": "failed", "LeafNodeType": "It", "LeafNodeText": "runs on schedule", "ContainerHierarchyTexts": ["Auto Snapshots"] },
       { "State": "passed", "LeafNodeType": "It", "LeafNodeText": "on Azure Blob", "ContainerHierarchyTexts": ["Auto Snapshots"] },
       { "State": "passed", "LeafNodeType": "It", "LeafNodeText": "uploads the snapshot", "ContainerHierarchyTexts": ["Auto Snapshots on Azure Blob"] },
