@@ -175,3 +175,22 @@ has_arg() {
   [ "$status" -eq 0 ]
   grep -q "\-\-json-report=$WORK_DIR/test-reports/report.json" "$MOCK_ARGS_FILE"
 }
+
+# --- Focused rerun ---
+
+@test "passes GINKGO_FOCUS through as a single --focus argument" {
+  cd "$WORK_DIR"
+  export GINKGO_LABEL="suite"
+  export GINKGO_FOCUS='^Suite Alpha syncs pods \(a\)$|^Suite Beta(?: |$)'
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  has_arg '--focus=^Suite Alpha syncs pods \(a\)$|^Suite Beta(?: |$)'
+}
+
+@test "no --focus argument when GINKGO_FOCUS is unset" {
+  cd "$WORK_DIR"
+  export GINKGO_LABEL="suite"
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  ! grep -q -- '--focus=' "$MOCK_ARGS_FILE"
+}

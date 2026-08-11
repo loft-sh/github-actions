@@ -1,0 +1,19 @@
+[
+  {
+    "SuiteDescription": "Suite A",
+    "SpecReports": [
+      {
+        "State": "failed",
+        "LeafNodeType": "It",
+        "LeafNodeText": "fails here",
+        "ContainerHierarchyTexts": [
+          "Alpha"
+        ]
+      }
+    ]
+  },
+  {
+    "SuiteDescription": "Suite B",
+    "SpecReports": null
+  }
+]
