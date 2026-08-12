@@ -16,7 +16,12 @@ skip() {
   exit 0
 }
 
-[[ "${RERUN_FAILED_ONLY:-false}" == "true" ]] || skip "rerun-failed-only is not enabled"
+# The step has no if:, so focused-rerun is never empty. Callers that never opted in must
+# not collect an annotation on every run.
+if [[ "${RERUN_FAILED_ONLY:-false}" != "true" ]]; then
+  echo "focused-rerun=false" >>"$GITHUB_OUTPUT"
+  exit 0
+fi
 
 if [[ -n "${UPLOAD_REPORT:-}" && "$UPLOAD_REPORT" != "true" ]]; then
   echo "::warning::rerun-failed-only needs upload-report: 'true' - without it no attempt publishes the report this reads, so reruns can never be narrowed"
