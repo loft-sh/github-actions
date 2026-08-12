@@ -247,59 +247,78 @@ fetch_release_list() {
 # make_latest:false, so absence must not be mistaken for a first promotion.
 LATEST_BASELINE_NOTE=""
 
-# Semver precedence, which `sort -V` alone does not implement: it ranks
-# v9.9.9-rc.1 ABOVE v9.9.9, the reverse of semver. '~' sorts before
-# end-of-string, so translating '-' to '~' restores the order, and git forbids
-# '~' in ref names, so translating back cannot alter a tag. tr rather than
-# "${x//-/~}", which embeds a literal backslash.
+# Highest of the tags on stdin by semver precedence, printed in its ORIGINAL form.
+# One primitive for the whole file: every ordering here - the three selections and
+# the comparison below - goes through it, so there is no second normalization
+# contract for a future call site to pick the wrong one of.
 #
-# The gates below need this because their baseline is chosen by the mutable
-# isLatest flag rather than by tag shape, so a pre-release whose flag was
-# cleared by hand can hold the pointer. Unnormalized, the rc outranked the
-# stable release it precedes and the promotion of that release was withheld -
-# :latest, :{major}, both --latest edits and the Homebrew patch - on a green run.
+# `sort -V` implements none of the three rules on its own:
+#
+#   - it ranks v9.9.9-rc.1 ABOVE v9.9.9, the reverse of semver. '~' sorts before
+#     end-of-string, so mapping '-' to '~' restores it.
+#   - it ranks any v-prefixed tag above any bare one, because 'v' outranks a
+#     digit, so a flagged 10.0.0 next to a co-flagged v9.9.8 would resolve to
+#     v9.9.8 - the LOWER of the two - and let :latest move backwards past 10.0.0.
+#     GitHub does not require the v, so one hand-made release mixes the list.
+#   - it orders 1.2.3+build.1 above 1.2.3, which semver gives EQUAL precedence.
+#     Left in, promoting v1.2.3 against a Latest-flagged v1.2.3+meta reads as
+#     older than the baseline and withholds the whole promotion on a green run.
+#
+# All three are normalized into a key held in a separate field, never into the
+# output: the winner is handed to callers who need the real tag - it names the
+# release in LATEST_BASELINE_NOTE and is matched against GitHub's own tag names -
+# and a stripped or translated form would name a release that does not exist.
+#
+# awk rather than "${x//-/~}", where an unescaped '~' in the replacement is
+# tilde-expanded ('9.9.9-rc.1' becomes '9.9.9/home/youruserrc.1').
 #
 # Needs GNU coreutils: `sort -V` must rank '~' below everything, which BSD and
 # macOS sort do not. The runners are Ubuntu; running the bats suite on a Mac will
-# disagree. Same requirement resolve-versions.sh states for its sort_key.
+# disagree. resolve-versions.sh states the same requirement for its sort_key.
+# The precedence key for one tag. Every comparison and selection in this file is
+# defined in terms of this one function, so there is no second normalization for
+# a future call site to reach for by mistake - which is the shape of the bug this
+# whole gate keeps being fixed for.
 #
-# Mirrors newer_version in vcluster-pro's verify-promotion.sh, version_gt in
-# platform-version-bump.sh, and sort_key/is_below in this repo's
-# prerelease-setup/src/resolve-versions.sh, so the promoter and its postcondition
-# agree on order. Correcting one of them means correcting all four.
-semver_sort() {
-  tr '-' '~' | sort -V | tr '~' '-'
+# Two tags share a key exactly when semver gives them equal precedence, so key
+# equality is the equality test, and `sort -V` over keys is the ordering.
+semver_key() {
+  local key="${1#v}"
+  key="${key%%+*}"
+  printf '%s' "${key//-/\~}"
 }
 
-# Highest of the tags on stdin, by the same precedence, printed in its ORIGINAL
-# form. Selecting has to sort on a normalized key held in a separate field rather
-# than on the tag itself, because the winner is handed back to callers who need
-# the real tag: it names the release in LATEST_BASELINE_NOTE and is compared
-# against GitHub's own tag names. A stripped or '~'-translated form would name a
-# release that does not exist.
-#
-# Keying also covers the dimension a whole-line sort cannot. GitHub does not
-# require the leading v, so one hand-made release makes the list mixed, and `v`
-# outranks a digit: a raw sort of a Latest-flagged 10.0.0 alongside a co-flagged
-# v9.9.8 returns v9.9.8, the LOWER of the two, and the gate then lets :latest move
-# backwards past 10.0.0. Same failure the rc case has, on the v dimension.
+# Highest of the tags on stdin, printed in its ORIGINAL form. Sorts on the key in
+# a separate field rather than on the tag, because the winner goes to callers who
+# need the real tag: it names the release in LATEST_BASELINE_NOTE and is matched
+# against GitHub's own tag names, and a normalized form would name a release that
+# does not exist. The per-line subshell is bounded by the same 1000-release window
+# the callers fetch.
 semver_max() {
-  awk 'NF { key = $0; sub(/^v/, "", key); gsub(/-/, "~", key); print key "\t" $0 }' \
+  local tag
+  while IFS= read -r tag; do
+    [ -z "${tag}" ] && continue
+    printf '%s\t%s\n' "$(semver_key "${tag}")" "${tag}"
+  done \
     | sort -t"$(printf '\t')" -k1,1V \
     | tail -1 \
     | cut -f2-
 }
 
-# The 'v' comes off both operands first. GitHub does not require a release tag to
-# carry it, and it only takes one hand-made release for the baseline to arrive
-# bare: `sort -V` then ranks v0.36.1 above 0.36.2 - 'v' outranks a digit - so the
-# gate would read the older version as newer and move :latest BACKWARDS, the one
-# thing it exists to prevent. Stripping is also what makes the parity with
-# newer_version above real rather than approximate.
+# Comparing the KEYS rather than the tags is what makes equality pass, so a
+# partially failed promotion stays re-runnable: equal precedence means byte-equal
+# keys, so the sort returns that key either way and no separate equality test is
+# needed. 9.9.9, v9.9.9 and v9.9.9+meta are one release and compare as one.
+#
+# This is also why the comparison does not use semver_max: keys are already
+# normalized, so a plain `sort -V` is correct here, and there is no tag to hand
+# back. semver_max exists for the selections, which must return the real tag.
 version_at_or_after() {
-  local baseline="$1"
+  local baseline="$1" vkey bkey
   [ -z "${baseline}" ] && return 0
-  [ "$(printf '%s\n%s\n' "${VERSION#v}" "${baseline#v}" | semver_sort | tail -1)" = "${VERSION#v}" ]
+  vkey="$(semver_key "${VERSION}")"
+  bkey="$(semver_key "${baseline}")"
+  [ "$(printf '%s\n%s\n' "${vkey}" "${bkey}" | sort -V | tail -1)" = "${vkey}" ]
 }
 
 is_at_or_after_latest_pointer() {

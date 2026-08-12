@@ -302,6 +302,23 @@ teardown() {
   [[ "$output" == *"older than the promotion baseline"* ]]
   run ! grep -qF ':latest ' "$CRANE_MOCK_CALLS"
   run ! grep -qF ':9 ' "$CRANE_MOCK_CALLS"
+  # Withholding is scoped to the two unscoped tags. Without this the test cannot
+  # tell a correct withhold from the script short-circuiting after the gate.
+  grep -qF ':9.9 ' "$CRANE_MOCK_CALLS"
+}
+
+@test "build metadata on the baseline has equal precedence, so the promotion proceeds" {
+  # Semver gives 1.2.3 and 1.2.3+build.1 EQUAL precedence; `sort -V` ranks the
+  # metadata form higher. Left in, promoting v9.9.9 against a Latest-flagged
+  # v9.9.9+meta reads as older than its own baseline and withholds :latest,
+  # :{major}, both --latest edits and the Homebrew patch on a green run. git
+  # permits '+' in a tag name, and the baseline is whatever a human flagged.
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.9.9+meta","isLatest":true}]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"older than the promotion baseline"* ]]
+  grep -qF 'CREATE ghcr.io/example-org/example-image:latest ghcr.io/example-org/example-image:9.9.9' "$CRANE_MOCK_CALLS"
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 6 ]
 }
 
 @test "multiple Latest flags conservatively use the newest flagged tag" {
@@ -1320,6 +1337,7 @@ teardown() {
   [[ "$output" == *"Latest-flagged release 10.0.0)"* ]]
   run ! grep -qF ':latest ' "$CRANE_MOCK_CALLS"
   run ! grep -qF ':9 ' "$CRANE_MOCK_CALLS"
+  grep -qF ':9.9 ' "$CRANE_MOCK_CALLS"
 }
 
 @test "homebrew-tap-repo without oss-repo -> fails fast" {

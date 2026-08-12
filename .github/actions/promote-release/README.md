@@ -62,6 +62,16 @@ stable is already `:latest` skips `:latest`/`:{major}`, so they never move
 backwards. Re-promoting the release that is already Latest is allowed, so a
 partially failed promotion can simply be re-run.
 
+Both comparisons against that **Latest** pointer use semver precedence, not
+`sort -V` alone. Because a human can flag any release Latest, the pointer's tag
+arrives in whatever shape they created it, and `sort -V` gets all three shapes
+wrong: it ranks `v0.36.1-rc.1` above `v0.36.1`, ranks any `v`-prefixed tag above
+any bare one (`v0.36.1` above `0.36.2`), and orders `1.2.3+build.1` above the
+`1.2.3` it has equal precedence with. Each one would have the gate read its
+baseline as the newer release and either withhold a correct promotion on a green
+run or move `:latest` backwards. A pre-release genuinely ahead of `version` still
+blocks it.
+
 The paired `oss-repo` Latest pointer and Homebrew formula advance only when
 `version` passes **both** the caller-repository gate and the `oss-repo` gate.
 The caller pointer is the authoritative baseline for the coordinated Docker
@@ -75,13 +85,6 @@ release build re-asserts `make_latest: false` on the tag that holds it — so an
 absent pointer must not be read as "nothing has ever been promoted"; that would
 let a dispatch for an older line drag `:latest` backwards. A genuinely empty
 release list still advances, which is the real first-ever promotion.
-
-Because GitHub lets a human flag *any* release Latest, that baseline can be a
-pre-release tag, so the gates compare under semver precedence rather than
-`sort -V` alone — `sort -V` ranks `v0.36.1-rc.1` above `v0.36.1`, which would
-read an rc holding the pointer as newer than the stable release it precedes and
-withhold that release's whole promotion on a green run. A pre-release that is
-genuinely ahead of `version` still blocks it.
 
 `:{major}.{minor}` is scoped to its own line and gets its own check: it advances
 only when `version` is the newest stable-shaped tag *within that
