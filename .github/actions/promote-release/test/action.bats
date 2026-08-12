@@ -321,6 +321,34 @@ teardown() {
   [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 6 ]
 }
 
+@test "a bare newer patch in the same line still blocks :{major}.{minor}" {
+  # The line filter is the last place the v was still required. A bare 9.9.10
+  # doesn't match ^v9\.9\.[0-9]+$, so max comes back empty, which this gate reads
+  # as "first release in line" and advances - regressing :9.9 from 9.9.10 to
+  # 9.9.9. The unscoped gate catches the same tag correctly, so nothing else
+  # moves and the run is green: exactly the shape this whole fix is about.
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"9.9.10","isPrerelease":false,"isLatest":true}]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  run ! grep -qF ':9.9 ' "$CRANE_MOCK_CALLS"
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 0 ]
+}
+
+@test "the no-Latest-flag fallback sees a bare newest release" {
+  # The fallback exists to stop an older dispatch advancing when the flag has been
+  # cleared. Requiring the v let a bare 10.0.0 be filtered out of the candidate
+  # list entirely, so the baseline resolved to v9.9.8 and :latest advanced onto
+  # 9.9.9 - past 10.0.0 - on the one path built to fail closed.
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.9.8","isPrerelease":false,"isLatest":false},{"tagName":"10.0.0","isPrerelease":false,"isLatest":false}]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"newest stable tag 10.0.0;"* ]]
+  run ! grep -qF ':latest ' "$CRANE_MOCK_CALLS"
+  run ! grep -qF ':9 ' "$CRANE_MOCK_CALLS"
+  # 9.9.9 IS the newest in its own 9.9 line, so the line tag still advances.
+  grep -qF ':9.9 ' "$CRANE_MOCK_CALLS"
+}
+
 @test "multiple Latest flags conservatively use the newest flagged tag" {
   set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.9.8","isLatest":true},{"tagName":"v10.0.0","isLatest":true}]'
   run "$SCRIPT"
