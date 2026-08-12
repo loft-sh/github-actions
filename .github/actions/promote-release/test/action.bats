@@ -290,6 +290,20 @@ teardown() {
   grep -qF -- 'EDIT example-org/example-repo v9.9.9 --prerelease=false --latest' "$GH_MOCK_CALLS"
 }
 
+@test "a newer baseline tagged without the v prefix still blocks :latest" {
+  # GitHub does not require the v, and one hand-made release is enough for the
+  # baseline to arrive bare. `sort -V` ranks v9.9.9 above 10.0.0 because 'v'
+  # outranks a digit, so without stripping it the gate reads the OLDER version as
+  # newer and moves :latest BACKWARDS - the failure it exists to prevent, and the
+  # opposite direction from the rc bug above.
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"10.0.0","isPrerelease":false,"isLatest":true}]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"older than the promotion baseline"* ]]
+  run ! grep -qF ':latest ' "$CRANE_MOCK_CALLS"
+  run ! grep -qF ':9 ' "$CRANE_MOCK_CALLS"
+}
+
 @test "multiple Latest flags conservatively use the newest flagged tag" {
   set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.9.8","isLatest":true},{"tagName":"v10.0.0","isLatest":true}]'
   run "$SCRIPT"
@@ -1265,6 +1279,32 @@ teardown() {
   run ! grep -q '^DOWNLOAD \|^API ' "$GH_MOCK_CALLS"
   grep -qF -- 'EDIT example-org/example-repo v9.9.9 --prerelease=false' "$GH_MOCK_CALLS"
   run ! grep -qF -- 'EDIT example-org/example-repo v9.9.9 --prerelease=false --latest' "$GH_MOCK_CALLS"
+}
+
+@test "homebrew tap -> an rc holding Latest on BOTH repos still promotes the tap" {
+  # The OSS gate and the tap are the half of the DEVOPS-1319 regression that the
+  # caller-side tests cannot see: is_at_or_after_latest_pointer runs a second time
+  # against OSS_REPO, and its verdict is what decides OSS_IS_LATEST and therefore
+  # whether the formula is patched at all. With an rc holding Latest on both
+  # repos, a bare sort withheld --latest from the OSS release AND skipped the tap
+  # entirely, on a green run. Pinned here so a regression on either gate fails
+  # rather than passing quietly through the caller-side assertions.
+  export INPUT_HOMEBREW_TAP_REPO="example-org/example-tap"
+  export INPUT_HOMEBREW_FORMULA_PATHS='["Formula/vcluster.rb"]'
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.9.9-rc.1","isLatest":true}]'
+  set_release_list "$INPUT_OSS_REPO" '[{"tagName":"v9.9.9-rc.1","isLatest":true}]'
+  set_checksums_fixture "example-org/example-repo" "$FIXTURES_DIR/checksums.txt"
+  set_contents_fixture "repos/example-org/example-tap/contents/Formula/vcluster.rb" "$FIXTURES_DIR/vcluster.rb"
+
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"skipping Homebrew tap promotion entirely"* ]]
+  [[ "$output" != *"older than the promotion baseline"* ]]
+
+  grep -qF -- 'EDIT example-org/example-repo v9.9.9 --prerelease=false --latest' "$GH_MOCK_CALLS"
+  grep -qF 'API PUT repos/example-org/example-tap/contents/Formula/vcluster.rb sha=fakesha' "$GH_MOCK_CALLS"
+  put_out="$(put_output_path 'repos/example-org/example-tap/contents/Formula/vcluster.rb')"
+  grep -qF 'version "9.9.9"' "$put_out"
 }
 
 @test "homebrew-tap-repo without oss-repo -> fails fast" {

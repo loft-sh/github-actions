@@ -259,16 +259,28 @@ LATEST_BASELINE_NOTE=""
 # stable release it precedes and the promotion of that release was withheld -
 # :latest, :{major}, both --latest edits and the Homebrew patch - on a green run.
 #
-# Mirrors newer_version in vcluster-pro's verify-promotion.sh and version_gt in
-# platform-version-bump.sh, so the promoter and its postcondition agree on order.
+# Needs GNU coreutils: `sort -V` must rank '~' below everything, which BSD and
+# macOS sort do not. The runners are Ubuntu; running the bats suite on a Mac will
+# disagree. Same requirement resolve-versions.sh states for its sort_key.
+#
+# Mirrors newer_version in vcluster-pro's verify-promotion.sh, version_gt in
+# platform-version-bump.sh, and sort_key/is_below in this repo's
+# prerelease-setup/src/resolve-versions.sh, so the promoter and its postcondition
+# agree on order. Correcting one of them means correcting all four.
 semver_sort() {
   tr '-' '~' | sort -V | tr '~' '-'
 }
 
+# The 'v' comes off both operands first. GitHub does not require a release tag to
+# carry it, and it only takes one hand-made release for the baseline to arrive
+# bare: `sort -V` then ranks v0.36.1 above 0.36.2 - 'v' outranks a digit - so the
+# gate would read the older version as newer and move :latest BACKWARDS, the one
+# thing it exists to prevent. Stripping is also what makes the parity with
+# newer_version above real rather than approximate.
 version_at_or_after() {
   local baseline="$1"
   [ -z "${baseline}" ] && return 0
-  [ "$(printf '%s\n%s\n' "${VERSION}" "${baseline}" | semver_sort | tail -1)" = "${VERSION}" ]
+  [ "$(printf '%s\n%s\n' "${VERSION#v}" "${baseline#v}" | semver_sort | tail -1)" = "${VERSION#v}" ]
 }
 
 is_at_or_after_latest_pointer() {
@@ -283,9 +295,12 @@ is_at_or_after_latest_pointer() {
   # conservative.
   max=$(jq -r '[.[] | select(.isLatest) | .tagName][]' <<<"${releases}" | semver_sort | tail -1)
   if [[ -z "${max}" ]]; then
+    # semver_sort is a no-op while stable_shape excludes every hyphen, and is
+    # here so that stays a detail of the filter rather than something this sort
+    # depends on being true.
     max=$(jq -r '.[].tagName' <<<"${releases}" \
       | grep -E "${stable_shape}" \
-      | sort -V \
+      | semver_sort \
       | tail -1) || true
     if [[ -n "${max}" ]]; then
       LATEST_BASELINE_NOTE="newest stable tag ${max}; no release currently flagged Latest"
@@ -310,7 +325,7 @@ is_newest_in_line() {
   filter="^v${line//./\\.}\.[0-9]+$"
   max=$(jq -r '.[].tagName' <<<"${releases}" \
     | grep -E "${filter}" \
-    | sort -V \
+    | semver_sort \
     | tail -1) || true
 
   version_at_or_after "${max}"
