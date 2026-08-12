@@ -260,21 +260,56 @@ teardown() {
 
 @test "a prerelease-shaped tag flagged Latest remains the overall baseline" {
   # GitHub permits a human to flag any release Latest. The overall gate must
-  # respect that pointer even when its immutable tag is not stable-shaped.
-  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.9.9-rc.1","isLatest":true}]'
+  # respect that pointer even when its immutable tag is not stable-shaped. The
+  # rc here belongs to a LATER line than VERSION, so respecting it and ordering
+  # it correctly both say the same thing: withhold.
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v10.0.0-rc.1","isLatest":true}]'
   run "$SCRIPT"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"Latest-flagged release v9.9.9-rc.1"* ]]
+  [[ "$output" == *"Latest-flagged release v10.0.0-rc.1)"* ]]
   run ! grep -qF ':latest ' "$CRANE_MOCK_CALLS"
   run ! grep -qF ':9 ' "$CRANE_MOCK_CALLS"
   grep -qF ':9.9 ' "$CRANE_MOCK_CALLS"
+}
+
+@test "an rc flagged Latest does not outrank the stable release it precedes" {
+  # `sort -V` ranks v9.9.9-rc.1 above v9.9.9, so unnormalized this state - which
+  # any hand-cleared prerelease flag on an rc produces - read the baseline as
+  # newer than the version being promoted and withheld :latest, :{major}, both
+  # --latest edits and the Homebrew patch while still exiting 0. Only
+  # :{major}.{minor} moved, on its own line-scoped gate. Semver puts the final
+  # release above its own rc, so this promotion has to complete.
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.9.9-rc.1","isLatest":true}]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"older than the promotion baseline"* ]]
+
+  grep -qF 'CREATE ghcr.io/example-org/example-image:latest ghcr.io/example-org/example-image:9.9.9' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9 ghcr.io/example-org/example-image:9.9.9' "$CRANE_MOCK_CALLS"
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 6 ]
+  grep -qF -- 'EDIT example-org/example-repo v9.9.9 --prerelease=false --latest' "$GH_MOCK_CALLS"
 }
 
 @test "multiple Latest flags conservatively use the newest flagged tag" {
   set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.9.8","isLatest":true},{"tagName":"v10.0.0","isLatest":true}]'
   run "$SCRIPT"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"Latest-flagged release v10.0.0"* ]]
+  [[ "$output" == *"Latest-flagged release v10.0.0)"* ]]
+  run ! grep -qF ':latest ' "$CRANE_MOCK_CALLS"
+}
+
+@test "a release co-flagged Latest with its own rc uses the final release, not the rc" {
+  # Conservative means the HIGHER of the flagged tags. Under a bare sort the rc
+  # won, which is the lower of the two, so the selection itself leaked
+  # permissiveness into the gate independently of version_at_or_after.
+  #
+  # Anchored on the notice's closing paren: "release v10.0.0" is a substring of
+  # "release v10.0.0-rc.1", so an unanchored match passes on the wrong pick and
+  # this test can't fail.
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v10.0.0-rc.1","isLatest":true},{"tagName":"v10.0.0","isLatest":true}]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Latest-flagged release v10.0.0)"* ]]
   run ! grep -qF ':latest ' "$CRANE_MOCK_CALLS"
 }
 

@@ -76,6 +76,13 @@ absent pointer must not be read as "nothing has ever been promoted"; that would
 let a dispatch for an older line drag `:latest` backwards. A genuinely empty
 release list still advances, which is the real first-ever promotion.
 
+Because GitHub lets a human flag *any* release Latest, that baseline can be a
+pre-release tag, so the gates compare under semver precedence rather than
+`sort -V` alone — `sort -V` ranks `v0.36.1-rc.1` above `v0.36.1`, which would
+read an rc holding the pointer as newer than the stable release it precedes and
+withhold that release's whole promotion on a green run. A pre-release that is
+genuinely ahead of `version` still blocks it.
+
 `:{major}.{minor}` is scoped to its own line and gets its own check: it advances
 only when `version` is the newest stable-shaped tag *within that
 `{major}.{minor}` line* (GitHub has no per-line equivalent of the Latest

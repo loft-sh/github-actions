@@ -246,10 +246,29 @@ fetch_release_list() {
 # stable-shaped tag. A build re-run can clear that flag by re-applying
 # make_latest:false, so absence must not be mistaken for a first promotion.
 LATEST_BASELINE_NOTE=""
+
+# Semver precedence, which `sort -V` alone does not implement: it ranks
+# v9.9.9-rc.1 ABOVE v9.9.9, the reverse of semver. '~' sorts before
+# end-of-string, so translating '-' to '~' restores the order, and git forbids
+# '~' in ref names, so translating back cannot alter a tag. tr rather than
+# "${x//-/~}", which embeds a literal backslash.
+#
+# The gates below need this because their baseline is chosen by the mutable
+# isLatest flag rather than by tag shape, so a pre-release whose flag was
+# cleared by hand can hold the pointer. Unnormalized, the rc outranked the
+# stable release it precedes and the promotion of that release was withheld -
+# :latest, :{major}, both --latest edits and the Homebrew patch - on a green run.
+#
+# Mirrors newer_version in vcluster-pro's verify-promotion.sh and version_gt in
+# platform-version-bump.sh, so the promoter and its postcondition agree on order.
+semver_sort() {
+  tr '-' '~' | sort -V | tr '~' '-'
+}
+
 version_at_or_after() {
   local baseline="$1"
   [ -z "${baseline}" ] && return 0
-  [ "$(printf '%s\n%s\n' "${VERSION}" "${baseline}" | sort -V | tail -1)" = "${VERSION}" ]
+  [ "$(printf '%s\n%s\n' "${VERSION}" "${baseline}" | semver_sort | tail -1)" = "${VERSION}" ]
 }
 
 is_at_or_after_latest_pointer() {
@@ -258,8 +277,11 @@ is_at_or_after_latest_pointer() {
 
   # Whatever GitHub flags Latest is the baseline, even when its tag is not a
   # stable release shape. Sorting also makes a corrupt multi-Latest response
-  # conservative and deterministic by selecting the newest flagged tag.
-  max=$(jq -r '[.[] | select(.isLatest) | .tagName][]' <<<"${releases}" | sort -V | tail -1)
+  # conservative and deterministic by selecting the newest flagged tag - which
+  # needs semver order too: a bare sort would pick v10.0.0-rc.1 over a
+  # co-flagged v10.0.0 and hand the gate the LOWER of the two, the opposite of
+  # conservative.
+  max=$(jq -r '[.[] | select(.isLatest) | .tagName][]' <<<"${releases}" | semver_sort | tail -1)
   if [[ -z "${max}" ]]; then
     max=$(jq -r '.[].tagName' <<<"${releases}" \
       | grep -E "${stable_shape}" \
