@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Required env vars: TEST_DIR, TIMEOUT, PROCS
-# Optional env vars: GINKGO_LABEL, ADDITIONAL_ARGS, ADDITIONAL_GINKGO_FLAGS
+# Optional env vars: GINKGO_LABEL, ADDITIONAL_ARGS, ADDITIONAL_GINKGO_FLAGS, GINKGO_FOCUS
 
 WORKSPACE_ROOT="$(pwd)"
 REPORTS_DIR="${WORKSPACE_ROOT}/test-reports"
@@ -28,6 +28,11 @@ if [[ -n "${GINKGO_LABEL:-}" ]]; then
   LABEL_FILTER=$(echo "${GINKGO_LABEL}" | awk '{$1=$1; print}')
   GINKGO_ARGS+=("--label-filter=${LABEL_FILTER}")
   GINKGO_ARGS+=("-r")
+fi
+
+# Set by resolve-rerun-focus.sh to restrict the run to the previous attempt's failures
+if [[ -n "${GINKGO_FOCUS:-}" ]]; then
+  GINKGO_ARGS+=("--focus=${GINKGO_FOCUS}")
 fi
 
 echo "Working directory: ${TEST_DIR}"

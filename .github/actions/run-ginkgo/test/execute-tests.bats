@@ -2,38 +2,17 @@
 # Tests for execute-tests.sh argument construction.
 # Mocks `ginkgo` to capture the arguments it would receive.
 
+load helpers
+
 SCRIPT="$BATS_TEST_DIRNAME/../src/execute-tests.sh"
 
 setup() {
   MOCK_DIR=$(mktemp -d)
-  export MOCK_ARGS_FILE="$MOCK_DIR/ginkgo-args"
-
-  # Create a mock ginkgo that records arguments
-  MOCK_BIN="$MOCK_DIR/bin"
-  mkdir -p "$MOCK_BIN"
-  cat > "$MOCK_BIN/ginkgo" <<'MOCK'
-#!/usr/bin/env bash
-printf '%s\n' "$@" > "$MOCK_ARGS_FILE"
-MOCK
-  chmod +x "$MOCK_BIN/ginkgo"
-
-  # Create a fake test directory structure
-  export WORK_DIR="$MOCK_DIR/workspace"
-  mkdir -p "$WORK_DIR/e2e-next/suites/basic"
-
-  # Required env vars
-  export TEST_DIR="e2e-next"
-  export TIMEOUT="60m"
-  export PROCS="8"
-  export PATH="$MOCK_BIN:$PATH"
+  setup_ginkgo_mock
 }
 
 teardown() {
   rm -rf "$MOCK_DIR"
-}
-
-has_arg() {
-  grep -qF -- "$1" "$MOCK_ARGS_FILE"
 }
 
 # --- Label-based tests ---
@@ -174,4 +153,23 @@ has_arg() {
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   grep -q "\-\-json-report=$WORK_DIR/test-reports/report.json" "$MOCK_ARGS_FILE"
+}
+
+# --- Focused rerun ---
+
+@test "passes GINKGO_FOCUS through as a single --focus argument" {
+  cd "$WORK_DIR"
+  export GINKGO_LABEL="suite"
+  export GINKGO_FOCUS='^Suite Alpha syncs pods \(a\)$|^Suite Beta(?: |$)'
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  has_arg '--focus=^Suite Alpha syncs pods \(a\)$|^Suite Beta(?: |$)'
+}
+
+@test "no --focus argument when GINKGO_FOCUS is unset" {
+  cd "$WORK_DIR"
+  export GINKGO_LABEL="suite"
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  ! grep -q -- '--focus=' "$MOCK_ARGS_FILE"
 }

@@ -138,8 +138,9 @@ test-govulncheck: ## run govulncheck bats tests
 test-go-licenses: ## run go-licenses bats tests
 	bats $(ACTIONS_DIR)/go-licenses/test/run.bats
 
-test-run-ginkgo: ## run run-ginkgo bats tests
+test-run-ginkgo: ## run run-ginkgo bats and focus selection tests
 	bats $(ACTIONS_DIR)/run-ginkgo/test/*.bats
+	cd $(ACTIONS_DIR)/run-ginkgo/test/focus && go test -count=1 ./...
 
 test-sticky-pr-comment: ## run sticky-pr-comment bats tests
 	bats $(ACTIONS_DIR)/sticky-pr-comment/test/*.bats

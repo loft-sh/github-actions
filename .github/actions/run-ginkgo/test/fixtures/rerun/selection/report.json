@@ -1,0 +1,41 @@
+[
+  {
+    "SuiteDescription": "vCluster Platform E2E Suite",
+    "SpecReports": [
+      { "State": "passed", "LeafNodeType": "SynchronizedBeforeSuite", "LeafNodeText": "" },
+
+      { "State": "failed", "LeafNodeType": "It", "LeafNodeText": "installs the module", "ContainerHierarchyTexts": ["Terraform"] },
+      { "State": "passed", "LeafNodeType": "It", "LeafNodeText": "destroys the module", "ContainerHierarchyTexts": ["Terraform"] },
+      { "State": "skipped", "LeafNodeType": "It", "LeafNodeText": "imports existing state", "ContainerHierarchyTexts": ["Terraform"] },
+
+      { "State": "passed", "LeafNodeType": "It", "LeafNodeText": "boots a node", "ContainerHierarchyTexts": ["Auto Nodes"] },
+      { "State": "passed", "LeafNodeType": "It", "LeafNodeText": "drains a node", "ContainerHierarchyTexts": ["Auto Nodes"] },
+
+      { "State": "failed", "LeafNodeType": "It", "LeafNodeText": "scales to zero", "ContainerHierarchyTexts": ["Auto Nodes Extended"] },
+      { "State": "passed", "LeafNodeType": "It", "LeafNodeText": "scales back up", "ContainerHierarchyTexts": ["Auto Nodes Extended"] },
+
+      { "State": "panicked", "LeafNodeType": "It", "LeafNodeText": "renders parameters", "ContainerHierarchyTexts": ["ArgoCD v2 Integration", "template management", "parameter rendering"] },
+      { "State": "passed", "LeafNodeType": "It", "LeafNodeText": "creates the connector", "ContainerHierarchyTexts": ["ArgoCD v2 Integration", "connector management"] },
+      { "State": "passed", "LeafNodeType": "It", "LeafNodeText": "deletes the connector", "ContainerHierarchyTexts": ["ArgoCD v2 Integration", "connector management"] },
+
+      { "State": "timedout", "LeafNodeType": "It", "LeafNodeText": "lists instances", "ContainerHierarchyTexts": ["virtualclusterinstances.management.loft.sh/v1"] },
+      { "State": "passed", "LeafNodeType": "It", "LeafNodeText": "gets an instance", "ContainerHierarchyTexts": ["virtualclusterinstances.management.loft.sh/v1"] },
+
+      { "State": "failed", "LeafNodeType": "It", "LeafNodeText": "honours the annotation", "ContainerHierarchyTexts": ["Sleep Mode (a|b)", "when configured"] },
+      { "State": "passed", "LeafNodeType": "It", "LeafNodeText": "ignores user agents", "ContainerHierarchyTexts": ["Sleep Mode (a|b)", "when configured"] },
+      { "State": "passed", "LeafNodeType": "It", "LeafNodeText": "wakes on traffic", "ContainerHierarchyTexts": ["Sleep Mode (a|b) Extra"] },
+
+      { "State": "passed", "LeafNodeType": "It", "LeafNodeText": "is untouched", "ContainerHierarchyTexts": ["Node Profiles"] },
+      { "State": "pending", "LeafNodeType": "It", "LeafNodeText": "is not implemented", "ContainerHierarchyTexts": ["Node Profiles"] },
+
+      { "State": "failed", "LeafNodeType": "It", "LeafNodeText": "escapes [ ] { } ^ $ \\ * + ? every metacharacter", "ContainerHierarchyTexts": ["Metacharacters"] },
+      { "State": "passed", "LeafNodeType": "It", "LeafNodeText": "lists instances", "ContainerHierarchyTexts": ["virtualclusterinstancesXmanagementXloftXsh/v1"] },
+
+      { "State": "failed", "LeafNodeType": "It", "LeafNodeText": "runs on schedule", "ContainerHierarchyTexts": ["Auto Snapshots"] },
+      { "State": "passed", "LeafNodeType": "It", "LeafNodeText": "on Azure Blob", "ContainerHierarchyTexts": ["Auto Snapshots"] },
+      { "State": "passed", "LeafNodeType": "It", "LeafNodeText": "uploads the snapshot", "ContainerHierarchyTexts": ["Auto Snapshots on Azure Blob"] },
+
+      { "State": "passed", "LeafNodeType": "ReportAfterSuite", "LeafNodeText": "" }
+    ]
+  }
+]

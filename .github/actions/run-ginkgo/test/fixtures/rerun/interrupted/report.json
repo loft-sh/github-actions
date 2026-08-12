@@ -1,0 +1,11 @@
+[
+  {
+    "SuiteDescription": "vCluster Platform E2E Suite",
+    "SuiteSucceeded": false,
+    "SpecialSuiteFailureReasons": ["Suite Timeout Elapsed"],
+    "SpecReports": [
+      { "State": "failed", "LeafNodeType": "It", "LeafNodeText": "times out", "ContainerHierarchyTexts": ["Terraform"] },
+      { "State": "skipped", "LeafNodeType": "It", "LeafNodeText": "never ran", "ContainerHierarchyTexts": ["Auto Nodes"] }
+    ]
+  }
+]

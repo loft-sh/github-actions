@@ -1,0 +1,23 @@
+[
+  {
+    "SuiteDescription": "Suite B",
+    "SpecReports": [
+      {
+        "State": "timedout",
+        "LeafNodeType": "It",
+        "LeafNodeText": "hangs",
+        "ContainerHierarchyTexts": [
+          "Beta"
+        ]
+      },
+      {
+        "State": "failed",
+        "LeafNodeType": "It",
+        "LeafNodeText": "hangs",
+        "ContainerHierarchyTexts": [
+          "Beta"
+        ]
+      }
+    ]
+  }
+]

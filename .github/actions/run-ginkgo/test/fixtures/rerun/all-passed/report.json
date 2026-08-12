@@ -1,0 +1,25 @@
+[
+  {
+    "SuiteDescription": "vCluster Platform E2E Suite",
+    "SpecReports": [
+      {
+        "State": "passed",
+        "LeafNodeType": "It",
+        "LeafNodeText": "creates a tenant cluster",
+        "ContainerHierarchyTexts": [
+          "Tenant",
+          "Lifecycle"
+        ]
+      },
+      {
+        "State": "skipped",
+        "LeafNodeType": "It",
+        "LeafNodeText": "deletes a tenant cluster",
+        "ContainerHierarchyTexts": [
+          "Tenant",
+          "Lifecycle"
+        ]
+      }
+    ]
+  }
+]

@@ -1,0 +1,13 @@
+[
+  {
+    "SuiteDescription": "vCluster Platform E2E Suite",
+    "SpecReports": [
+      { "State": "passed", "LeafNodeType": "It", "LeafNodeText": "creates a tenant cluster", "ContainerHierarchyTexts": ["Tenant (a)", "Lifecycle"] },
+      { "State": "failed", "LeafNodeType": "It", "LeafNodeText": "syncs pods", "ContainerHierarchyTexts": ["Tenant (a)", "Sync"] },
+      { "State": "skipped", "LeafNodeType": "It", "LeafNodeText": "deletes a tenant cluster", "ContainerHierarchyTexts": ["Sleep Mode", "Lifecycle"] },
+      { "State": "pending", "LeafNodeType": "It", "LeafNodeText": "not implemented yet", "ContainerHierarchyTexts": ["Node Profiles", "Lifecycle"] },
+      { "State": "panicked", "LeafNodeType": "It", "LeafNodeText": "renders parameters", "ContainerHierarchyTexts": ["ArgoCD v2", "template management", "parameter rendering"] },
+      { "State": "failed", "LeafNodeType": "It", "LeafNodeText": "top level spec with no container" }
+    ]
+  }
+]

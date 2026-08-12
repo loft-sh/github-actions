@@ -1,0 +1,11 @@
+[
+  {
+    "SuiteDescription": "vCluster Platform E2E Suite",
+    "SuiteSucceeded": false,
+    "SuiteConfig": { "FailFast": true },
+    "SpecReports": [
+      { "State": "failed", "LeafNodeType": "It", "LeafNodeText": "fails first", "ContainerHierarchyTexts": ["Terraform"] },
+      { "State": "skipped", "LeafNodeType": "It", "LeafNodeText": "never ran", "ContainerHierarchyTexts": ["Auto Nodes"] }
+    ]
+  }
+]
