@@ -70,7 +70,14 @@ any bare one (`v0.36.1` above `0.36.2`), and orders `1.2.3+build.1` above the
 `1.2.3` it has equal precedence with. Each one would have the gate read its
 baseline as the newer release and either withhold a correct promotion on a green
 run or move `:latest` backwards. A pre-release genuinely ahead of `version` still
-blocks it.
+blocks it. The tag-shape filters admit the same forms, since a shape a filter
+rejects is invisible to the ordering rather than merely mis-sorted.
+
+One consequence to know about: a tag that is not a version at all (`stable`,
+`nightly`) outranks every release, so flagging one Latest makes every promotion
+withhold `:latest`/`:{major}` while `:{major}.{minor}` keeps advancing. The run
+emits a `::warning::` naming the tag and stays green. **Re-running does not clear
+it** — move the Latest flag onto a released version.
 
 The paired `oss-repo` Latest pointer and Homebrew formula advance only when
 `version` passes **both** the caller-repository gate and the `oss-repo` gate.

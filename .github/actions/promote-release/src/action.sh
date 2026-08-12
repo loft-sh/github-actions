@@ -288,6 +288,14 @@ semver_max() {
     | cut -f2-
 }
 
+# Whether a tag is a version at all, tested on its key so the same normalization
+# decides this and the ordering. Nothing branches on it: ordering a non-version is
+# not wrong so much as meaningless, and the only use is telling an operator that
+# the baseline they flagged cannot be compared and no re-run will change that.
+is_version_shaped() {
+  [[ "$(semver_key "$1")" =~ ^[0-9]+\.[0-9]+\.[0-9]+(~.*)?$ ]]
+}
+
 # Comparing the KEYS rather than the tags is what makes equality pass, so a
 # partially failed promotion stays re-runnable: equal precedence means byte-equal
 # keys, so the sort returns that key either way and no separate equality test is
@@ -319,13 +327,14 @@ version_at_or_after() {
 LATEST_BASELINE_NOTE=""
 is_at_or_after_latest_pointer() {
   local repo="$1" releases="$2" max
-  # Optional v: these filters select which releases are CANDIDATES, so a shape
-  # they reject is invisible to the ordering below rather than merely sorted
-  # oddly. Requiring the v dropped a bare newest release out of the candidate
-  # list and handed this gate an older baseline - on the path whose whole purpose
-  # is to fail closed. semver_key ignores the prefix, so accepting both forms
-  # here is what makes the two agree on which releases exist.
-  local stable_shape='^v?[0-9]+\.[0-9]+\.[0-9]+$'
+  # These filters select which releases are CANDIDATES, so a shape they reject is
+  # invisible to the ordering below rather than merely sorted oddly: it drops a
+  # newest release out of the list and hands this gate an older baseline, on the
+  # path whose whole purpose is to fail closed. So the filter has to admit
+  # everything semver_key normalizes away - the optional v and build metadata -
+  # or the two disagree about which releases exist. It stays stricter in the one
+  # way that matters: no pre-release component.
+  local stable_shape='^v?[0-9]+\.[0-9]+\.[0-9]+(\+[0-9A-Za-z.-]+)?$'
 
   # Whatever GitHub flags Latest is the baseline, even when its tag is not a
   # stable release shape. Selecting the highest also makes a corrupt multi-Latest
@@ -348,6 +357,14 @@ is_at_or_after_latest_pointer() {
     fi
   else
     LATEST_BASELINE_NOTE="Latest-flagged release ${max}"
+    # A warning rather than a notice, and rather than an error: the run below is
+    # otherwise correct and still moves :{major}.{minor}, so failing would block a
+    # promotion that partly succeeds. But a non-version baseline outranks every
+    # release, so this repo withholds :latest/:{major} on every promotion from now
+    # on, and re-running is the one thing that cannot fix it.
+    if ! is_version_shaped "${max}"; then
+      echo "::warning::the release flagged Latest on ${repo} is tagged '${max}', which is not a version, so nothing can be ordered against it. :latest/:${MAJOR} will be withheld on every promotion until the Latest flag is moved to a released version - a re-run will not clear this."
+    fi
   fi
 
   version_at_or_after "${max}"
@@ -360,11 +377,11 @@ is_at_or_after_latest_pointer() {
 # hide a newer sibling and allow the line tag to move backwards.
 is_newest_in_line() {
   local line="$1" releases="$2" filter max
-  # Optional v for the same reason as stable_shape above, and it bites harder
-  # here: an empty result is read as "first release in line" and advances, so a
-  # bare newer patch the filter could not see let :{major}.{minor} move backwards
-  # onto an older one while every other gate behaved correctly.
-  filter="^v?${line//./\\.}\.[0-9]+$"
+  # Same shapes as stable_shape above, and the gap bites harder here: an empty
+  # result is read as "first release in line" and advances, so a newer patch this
+  # filter could not see let :{major}.{minor} move backwards onto an older one
+  # while every other gate behaved correctly.
+  filter="^v?${line//./\\.}\.[0-9]+(\+[0-9A-Za-z.-]+)?$"
   max=$(jq -r '.[].tagName' <<<"${releases}" \
     | grep -E "${filter}" \
     | semver_max) || true

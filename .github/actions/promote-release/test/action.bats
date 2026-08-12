@@ -321,6 +321,46 @@ teardown() {
   [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 6 ]
 }
 
+@test "a newer patch carrying build metadata still blocks :{major}.{minor}" {
+  # semver_key strips '+meta', so the filters have to admit it or they disagree
+  # with the ordering about which releases exist. Rejected, v9.9.10+build.1 is
+  # invisible to the line gate, the empty result reads as "first release in line",
+  # and :9.9 advances onto the older 9.9.9 - the bare-tag failure, one shape over.
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.9.10+build.1","isPrerelease":false,"isLatest":true}]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  run ! grep -qF ':9.9 ' "$CRANE_MOCK_CALLS"
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 0 ]
+}
+
+@test "the no-Latest-flag fallback sees a newest release carrying build metadata" {
+  # Same disagreement on the fallback path: dropping v10.0.0+build.7 from the
+  # candidate list hands the gate v9.9.8 and advances :latest past the newer
+  # release. The verdict flipped on whether a human had set the flag, since the
+  # flagged path orders through semver_key and this one filtered first.
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.9.8","isPrerelease":false,"isLatest":false},{"tagName":"v10.0.0+build.7","isPrerelease":false,"isLatest":false}]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"newest stable tag v10.0.0+build.7;"* ]]
+  run ! grep -qF ':latest ' "$CRANE_MOCK_CALLS"
+  run ! grep -qF ':9 ' "$CRANE_MOCK_CALLS"
+}
+
+@test "a Latest flag on a tag that is not a version warns and withholds" {
+  # Dropping the v means a non-version tag sorts above every release, so this
+  # withholds forever and no re-run clears it: the operator has to move the flag.
+  # A notice buries that, and the run is otherwise green and ships without :latest.
+  # Pinned so a later change to semver_key cannot flip it to fail-open unseen.
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"stable","isLatest":true}]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"::warning::"*"tagged 'stable', which is not a version"* ]]
+  run ! grep -qF ':latest ' "$CRANE_MOCK_CALLS"
+  run ! grep -qF ':9 ' "$CRANE_MOCK_CALLS"
+  # No 9.9.x sibling exists, so 9.9.9 is trivially newest in its own line.
+  grep -qF ':9.9 ' "$CRANE_MOCK_CALLS"
+}
+
 @test "a bare newer patch in the same line still blocks :{major}.{minor}" {
   # The line filter is the last place the v was still required. A bare 9.9.10
   # doesn't match ^v9\.9\.[0-9]+$, so max comes back empty, which this gate reads
