@@ -1,0 +1,190 @@
+name: Test commitlint
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/test-commitlint.yaml'
+      - '.github/actions/commitlint/**'
+
+permissions:
+  contents: read
+
+jobs:
+  bats:
+    name: Run bats tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      # This action installs bats, it does not run anything. It has no `tests`
+      # input, and an unknown input is a warning rather than an error, so a job
+      # that only calls it passes without executing a single test.
+      - uses: bats-core/bats-action@77d6fb60505b4d0d1d73e48bd035b55074bbfb43 # 4.0.0
+        with:
+          support-install: false
+          assert-install: false
+          detik-install: false
+          file-install: false
+      - name: Run commitlint tests
+        run: bats .github/actions/commitlint/test/*.bats
+
+  smoke:
+    name: Exercise the composite wiring
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # The range scenario below resolves HEAD~1, which the default
+          # single-commit checkout does not have.
+          fetch-depth: 2
+          persist-credentials: false
+
+      # The bats suite calls src/action.sh directly with hand-exported INPUT_*,
+      # so it cannot reach the `inputs:` -> `env:` mapping or the `outputs:`
+      # block in action.yml. A typo in either is invisible to every one of those
+      # tests: an input silently becomes empty, so a check quietly does not run,
+      # or an output silently becomes '' for every caller's gate.
+      - name: A conforming title passes
+        id: pass
+        uses: ./.github/actions/commitlint
+        with:
+          pr-title: 'fix(smoke): a conforming subject'
+          working-directory: .github/actions/commitlint/test/fixture
+
+      - name: Verify the pass result reached the caller
+        env:
+          RESULT: ${{ steps.pass.outputs.pr-title-result }}
+          SKIPPED: ${{ steps.pass.outputs.skipped }}
+          COMMITS: ${{ steps.pass.outputs.commits-result }}
+        run: |
+          test "$RESULT" = pass
+          test "$SKIPPED" = false
+          test "$COMMITS" = skipped
+
+      - name: Produce an expression that resolves to nothing
+        id: nothing
+        run: echo "value=" >>"$GITHUB_OUTPUT"
+
+      # The README tells callers to read the outputs behind
+      # `continue-on-error: true` to tell `error` from `fail`. That only works
+      # if a composite's `outputs:` block is still evaluated when its inner step
+      # exits non-zero, which is not documented anywhere. Pin it here, or the
+      # whole error-vs-fail contract rests on an assumption.
+      #
+      # `fail-on-warnings` rides along carrying an expression that resolved to
+      # nothing, which src/action.sh treats differently from an input nobody
+      # passed - it expands that input and `to` with `-` rather than `:-` so it
+      # can warn about the difference. The only thing observable from a later
+      # step is that such a caller still gets a working run; the warning is an
+      # annotation, and a step cannot read another's, so its text is the bats
+      # suite's to cover. It rides on this step because this one is expected to
+      # annotate: the conforming-title step above is green, and a permanent
+      # warning there is one every future reader rediscovers as deliberate.
+      - name: A non-conforming title fails
+        id: fail
+        continue-on-error: true
+        uses: ./.github/actions/commitlint
+        with:
+          pr-title: 'bugfix(smoke): not a permitted type'
+          fail-on-warnings: ${{ steps.nothing.outputs.value }}
+          working-directory: .github/actions/commitlint/test/fixture
+
+      - name: Verify the outputs survive a failing run
+        env:
+          OUTCOME: ${{ steps.fail.outcome }}
+          RESULT: ${{ steps.fail.outputs.pr-title-result }}
+        run: |
+          test "$OUTCOME" = failure
+          test "$RESULT" = fail
+
+      # skip-branches is the one input whose whole purpose is to stop the action
+      # doing anything, so a wiring typo on it reads as a green pass.
+      - name: An exempt branch is skipped
+        id: skip
+        uses: ./.github/actions/commitlint
+        with:
+          pr-title: 'bugfix(smoke): never linted'
+          branch: sync-from-oss/main
+          skip-branches: 'sync-from-oss/*'
+          head-repository: ${{ github.repository }}
+          working-directory: .github/actions/commitlint/test/fixture
+
+      - name: Verify the skip reached the caller
+        env:
+          SKIPPED: ${{ steps.skip.outputs.skipped }}
+          RESULT: ${{ steps.skip.outputs.pr-title-result }}
+        run: |
+          test "$SKIPPED" = true
+          test "$RESULT" = skipped
+
+      # `from`/`to` is the other check the action advertises, and a mapping typo
+      # on it does not fail: the input arrives empty, the script reports
+      # commits-result=skipped and exits zero. That is the green run that linted
+      # no commits which the warnings in main() exist to prevent, except none of
+      # them fires either, because from the script's side the caller simply did
+      # not ask for range linting.
+      - name: Resolve a real commit range
+        id: range
+        run: |
+          {
+            echo "from=$(git rev-parse HEAD~1)"
+            echo "to=$(git rev-parse HEAD)"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: A commit range is linted
+        id: range-lint
+        continue-on-error: true
+        uses: ./.github/actions/commitlint
+        with:
+          from: ${{ steps.range.outputs.from }}
+          to: ${{ steps.range.outputs.to }}
+          working-directory: .github/actions/commitlint/test/fixture
+
+      # Either verdict proves the range was wired and walked; which one depends
+      # on whichever commit subjects happen to be in range, so asserting a
+      # specific one would make this scenario fail on unrelated history. What it
+      # must never be is `skipped`, the value a mis-wired `from` produces.
+      - name: Verify the range result reached the caller
+        env:
+          RESULT: ${{ steps.range-lint.outputs.commits-result }}
+        run: test "$RESULT" = pass || test "$RESULT" = fail
+
+      # A broken config-path mapping does not fail either: the flag is dropped
+      # and commitlint discovers the config in the working directory, which for
+      # every scenario here is the fixture. So the scenario has to point at a
+      # config that disagrees with the discoverable one and assert the verdict
+      # follows the input rather than the fallback. strict.config.js rejects a
+      # scope, which commitlint.config.js accepts.
+      - name: A non-default config-path is honoured
+        id: cfg
+        continue-on-error: true
+        uses: ./.github/actions/commitlint
+        with:
+          pr-title: 'fix(smoke): a conforming subject'
+          config-path: strict.config.js
+          working-directory: .github/actions/commitlint/test/fixture
+
+      - name: Verify the custom config was the one applied
+        env:
+          RESULT: ${{ steps.cfg.outputs.pr-title-result }}
+        run: test "$RESULT" = fail
+
+      # Same shape for commitlint-version: the script's own fallback restores
+      # the manifest default, so a broken mapping silently ignores the caller's
+      # pin. A version that cannot exist is the only value whose effect is
+      # visible from out here, and it doubles as coverage of the path where
+      # commitlint never starts.
+      - name: A commitlint-version that cannot be fetched is a CI problem
+        id: version
+        continue-on-error: true
+        uses: ./.github/actions/commitlint
+        with:
+          pr-title: 'fix(smoke): a conforming subject'
+          commitlint-version: 0.0.0-does-not-exist
+          working-directory: .github/actions/commitlint/test/fixture
+
+      - name: Verify the pinned version was the one used
+        env:
+          RESULT: ${{ steps.version.outputs.pr-title-result }}
+        run: test "$RESULT" = error

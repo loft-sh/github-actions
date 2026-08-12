@@ -1,0 +1,129 @@
+# No literal ${{ }} anywhere in this file outside the expression fields at the
+# bottom - not in this description, not in an input's. The runner parses
+# expressions across the whole manifest and rejects the `github` context in
+# these positions ("Unrecognized named-value"), failing the action load for
+# every caller. Name the contexts in prose; the README carries the exact caller
+# expressions.
+name: Commitlint
+description: |
+  Lints commit messages and pull request titles against the calling
+  repository's own commitlint config.
+
+  Two independent checks, both optional:
+
+  - pr-title: lints a single message, normally the pull request title. This
+    is what protects history on a squash-merged repo, where the title is what
+    lands on the default branch.
+  - from/to: lints every commit in a range. Merge commits and reverts are
+    skipped by commitlint's own default ignores. Needs the caller to check out
+    with fetch-depth: 0, since a shallow clone cannot walk the range.
+
+  Both checks run even when the first one fails, so a contributor sees every
+  problem in one go rather than one per push.
+
+  The commitlint config comes from the calling repository, never from this
+  action. When that repository's package.json mentions commitlint, its
+  dependencies are installed and the local binary is used; otherwise
+  commitlint-version is fetched on the fly, which brings the CLI only.
+
+inputs:
+  pr-title:
+    description: |
+      Message to lint on its own. Pass the pull request title, the
+      github.event.pull_request.title context. Leave empty to skip the check.
+    required: false
+    default: ''
+  from:
+    description: |
+      Range start for per-commit linting. Pass the
+      github.event.pull_request.base.sha context. Requires to as well; leave
+      both empty to skip the check.
+    required: false
+    default: ''
+  to:
+    description: 'Range end for per-commit linting, normally HEAD.'
+    required: false
+    default: 'HEAD'
+  skip-branches:
+    description: |
+      Comma-separated glob patterns. When branch matches one of them the
+      action exits successfully without linting anything. Intended for
+      branches carrying commits that cannot be rewritten, such as the
+      rebase-merged sync-from-oss branches that replay community authorship
+      verbatim.
+    required: false
+    default: ''
+  branch:
+    description: |
+      Branch name matched against skip-branches. Pass the
+      github.event.pull_request.head.ref context.
+    required: false
+    default: ''
+  head-repository:
+    description: |
+      Repository the branch lives on. Pass the
+      github.event.pull_request.head.repo.full_name context. When this is set
+      and differs from github.repository the pull request comes from a fork,
+      where the branch name is chosen by its author, and skip-branches is
+      ignored. Always pass this alongside skip-branches.
+    required: false
+    default: ''
+  config-path:
+    description: |
+      Path to the commitlint config. Empty lets commitlint discover it, which
+      finds commitlint.config.js at the repository root.
+    required: false
+    default: ''
+  working-directory:
+    description: 'Directory to run in. Must contain the commitlint config.'
+    required: false
+    default: '.'
+  commitlint-version:
+    description: |
+      Version of @commitlint/cli used when the calling repository does not pin
+      one itself.
+    required: false
+    # renovate: datasource=npm depName=@commitlint/cli
+    default: 19.8.1
+  fail-on-warnings:
+    description: 'Treat commitlint warnings as failures.'
+    required: false
+    default: 'false'
+
+outputs:
+  skipped:
+    description: 'true when skip-branches matched and nothing was linted.'
+    value: ${{ steps.run.outputs.skipped }}
+  pr-title-result:
+    description: |
+      pass, fail, skipped, or error when commitlint itself could not run and
+      the message was never judged.
+    value: ${{ steps.run.outputs.pr-title-result }}
+  commits-result:
+    description: |
+      pass, fail, skipped, or error when commitlint itself could not run and
+      the commits were never judged.
+    value: ${{ steps.run.outputs.commits-result }}
+
+runs:
+  using: composite
+  steps:
+    - name: Lint commit messages
+      id: run
+      shell: bash
+      env:
+        INPUT_PR_TITLE: ${{ inputs.pr-title }}
+        INPUT_FROM: ${{ inputs.from }}
+        INPUT_TO: ${{ inputs.to }}
+        INPUT_SKIP_BRANCHES: ${{ inputs.skip-branches }}
+        INPUT_BRANCH: ${{ inputs.branch }}
+        INPUT_HEAD_REPOSITORY: ${{ inputs.head-repository }}
+        INPUT_CONFIG_PATH: ${{ inputs.config-path }}
+        INPUT_WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        INPUT_COMMITLINT_VERSION: ${{ inputs.commitlint-version }}
+        INPUT_FAIL_ON_WARNINGS: ${{ inputs.fail-on-warnings }}
+      run: ${{ github.action_path }}/src/action.sh
+
+branding:
+  icon: 'check-square'
+  color: 'orange'
