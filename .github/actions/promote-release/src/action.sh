@@ -271,6 +271,25 @@ semver_sort() {
   tr '-' '~' | sort -V | tr '~' '-'
 }
 
+# Highest of the tags on stdin, by the same precedence, printed in its ORIGINAL
+# form. Selecting has to sort on a normalized key held in a separate field rather
+# than on the tag itself, because the winner is handed back to callers who need
+# the real tag: it names the release in LATEST_BASELINE_NOTE and is compared
+# against GitHub's own tag names. A stripped or '~'-translated form would name a
+# release that does not exist.
+#
+# Keying also covers the dimension a whole-line sort cannot. GitHub does not
+# require the leading v, so one hand-made release makes the list mixed, and `v`
+# outranks a digit: a raw sort of a Latest-flagged 10.0.0 alongside a co-flagged
+# v9.9.8 returns v9.9.8, the LOWER of the two, and the gate then lets :latest move
+# backwards past 10.0.0. Same failure the rc case has, on the v dimension.
+semver_max() {
+  awk 'NF { key = $0; sub(/^v/, "", key); gsub(/-/, "~", key); print key "\t" $0 }' \
+    | sort -t"$(printf '\t')" -k1,1V \
+    | tail -1 \
+    | cut -f2-
+}
+
 # The 'v' comes off both operands first. GitHub does not require a release tag to
 # carry it, and it only takes one hand-made release for the baseline to arrive
 # bare: `sort -V` then ranks v0.36.1 above 0.36.2 - 'v' outranks a digit - so the
@@ -288,20 +307,19 @@ is_at_or_after_latest_pointer() {
   local stable_shape='^v[0-9]+\.[0-9]+\.[0-9]+$'
 
   # Whatever GitHub flags Latest is the baseline, even when its tag is not a
-  # stable release shape. Sorting also makes a corrupt multi-Latest response
-  # conservative and deterministic by selecting the newest flagged tag - which
-  # needs semver order too: a bare sort would pick v10.0.0-rc.1 over a
-  # co-flagged v10.0.0 and hand the gate the LOWER of the two, the opposite of
-  # conservative.
-  max=$(jq -r '[.[] | select(.isLatest) | .tagName][]' <<<"${releases}" | semver_sort | tail -1)
+  # stable release shape. Selecting the highest also makes a corrupt multi-Latest
+  # response conservative and deterministic - which needs semver_max rather than
+  # any whole-line sort: this list is the one place tags arrive exactly as a human
+  # created them, so it is where both a co-flagged rc and a co-flagged bare tag
+  # can hand the gate the LOWER of the two.
+  max=$(jq -r '[.[] | select(.isLatest) | .tagName][]' <<<"${releases}" | semver_max)
   if [[ -z "${max}" ]]; then
-    # semver_sort is a no-op while stable_shape excludes every hyphen, and is
-    # here so that stays a detail of the filter rather than something this sort
-    # depends on being true.
+    # semver_max's normalization is inert while stable_shape excludes every
+    # hyphen and requires the v, and is here so that stays a detail of the filter
+    # rather than something this selection depends on being true.
     max=$(jq -r '.[].tagName' <<<"${releases}" \
       | grep -E "${stable_shape}" \
-      | semver_sort \
-      | tail -1) || true
+      | semver_max) || true
     if [[ -n "${max}" ]]; then
       LATEST_BASELINE_NOTE="newest stable tag ${max}; no release currently flagged Latest"
       echo "::notice::no release on ${repo} carries the Latest flag; using the newest stable tag (${max}) as the conservative promotion baseline. This is expected after a release-build re-run; promote the version that should be Latest to restore the pointer."
@@ -325,8 +343,7 @@ is_newest_in_line() {
   filter="^v${line//./\\.}\.[0-9]+$"
   max=$(jq -r '.[].tagName' <<<"${releases}" \
     | grep -E "${filter}" \
-    | semver_sort \
-    | tail -1) || true
+    | semver_max) || true
 
   version_at_or_after "${max}"
 }

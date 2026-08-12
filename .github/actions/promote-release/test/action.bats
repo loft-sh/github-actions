@@ -1307,6 +1307,21 @@ teardown() {
   grep -qF 'version "9.9.9"' "$put_out"
 }
 
+@test "a bare tag co-flagged Latest with a v-prefixed one is ordered by version, not by prefix" {
+  # The Latest-flagged list is the one place tags arrive exactly as a human made
+  # them, so it is where the two dimensions meet: 'v' outranks a digit, so a
+  # whole-line sort of a flagged 10.0.0 next to a co-flagged v9.9.8 returns
+  # v9.9.8. The gate then reads the dispatched v9.9.9 as newer than its baseline
+  # and advances :latest/:9 - backwards past the flagged 10.0.0. Stripping inside
+  # version_at_or_after cannot catch this; by then the wrong tag has been picked.
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"10.0.0","isLatest":true},{"tagName":"v9.9.8","isLatest":true}]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Latest-flagged release 10.0.0)"* ]]
+  run ! grep -qF ':latest ' "$CRANE_MOCK_CALLS"
+  run ! grep -qF ':9 ' "$CRANE_MOCK_CALLS"
+}
+
 @test "homebrew-tap-repo without oss-repo -> fails fast" {
   export INPUT_OSS_REPO=""
   export INPUT_HOMEBREW_TAP_REPO="example-org/example-tap"
