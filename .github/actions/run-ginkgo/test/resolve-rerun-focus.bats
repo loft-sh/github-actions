@@ -56,6 +56,20 @@ MOCK
   grep -q '^focused-rerun=false$' "$GITHUB_OUTPUT"
 }
 
+@test "annotates nothing when the feature is not enabled" {
+  # The step runs for every caller of the action, including those that never opted in.
+  RERUN_FAILED_ONLY=false run_with mixed-failures
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"::notice::"* ]]
+  [[ "$output" != *"::warning::"* ]]
+}
+
+@test "still annotates the fallback when the feature is enabled" {
+  GITHUB_RUN_ATTEMPT=1 run_with mixed-failures
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"::notice::"* ]]
+}
+
 @test "falls back to a full run on the first attempt" {
   GITHUB_RUN_ATTEMPT=1 run_with mixed-failures
   [ "$status" -eq 0 ]
