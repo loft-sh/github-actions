@@ -260,13 +260,132 @@ teardown() {
 
 @test "a prerelease-shaped tag flagged Latest remains the overall baseline" {
   # GitHub permits a human to flag any release Latest. The overall gate must
-  # respect that pointer even when its immutable tag is not stable-shaped.
+  # respect that pointer even when its immutable tag is not stable-shaped. The
+  # rc here belongs to a LATER line than VERSION, so respecting it and ordering
+  # it correctly both say the same thing: withhold.
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v10.0.0-rc.1","isLatest":true}]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Latest-flagged release v10.0.0-rc.1)"* ]]
+  run ! grep -qF ':latest ' "$CRANE_MOCK_CALLS"
+  run ! grep -qF ':9 ' "$CRANE_MOCK_CALLS"
+  grep -qF ':9.9 ' "$CRANE_MOCK_CALLS"
+}
+
+@test "an rc flagged Latest does not outrank the stable release it precedes" {
+  # `sort -V` ranks v9.9.9-rc.1 above v9.9.9, so unnormalized this state - which
+  # any hand-cleared prerelease flag on an rc produces - read the baseline as
+  # newer than the version being promoted and withheld :latest, :{major}, both
+  # --latest edits and the Homebrew patch while still exiting 0. Only
+  # :{major}.{minor} moved, on its own line-scoped gate. Semver puts the final
+  # release above its own rc, so this promotion has to complete.
   set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.9.9-rc.1","isLatest":true}]'
   run "$SCRIPT"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"Latest-flagged release v9.9.9-rc.1"* ]]
+  [[ "$output" != *"older than the promotion baseline"* ]]
+
+  grep -qF 'CREATE ghcr.io/example-org/example-image:latest ghcr.io/example-org/example-image:9.9.9' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9 ghcr.io/example-org/example-image:9.9.9' "$CRANE_MOCK_CALLS"
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 6 ]
+  grep -qF -- 'EDIT example-org/example-repo v9.9.9 --prerelease=false --latest' "$GH_MOCK_CALLS"
+}
+
+@test "a newer baseline tagged without the v prefix still blocks :latest" {
+  # GitHub does not require the v, and one hand-made release is enough for the
+  # baseline to arrive bare. `sort -V` ranks v9.9.9 above 10.0.0 because 'v'
+  # outranks a digit, so without stripping it the gate reads the OLDER version as
+  # newer and moves :latest BACKWARDS - the failure it exists to prevent, and the
+  # opposite direction from the rc bug above.
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"10.0.0","isPrerelease":false,"isLatest":true}]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"older than the promotion baseline"* ]]
   run ! grep -qF ':latest ' "$CRANE_MOCK_CALLS"
   run ! grep -qF ':9 ' "$CRANE_MOCK_CALLS"
+  # Withholding is scoped to the two unscoped tags. Without this the test cannot
+  # tell a correct withhold from the script short-circuiting after the gate.
+  grep -qF ':9.9 ' "$CRANE_MOCK_CALLS"
+}
+
+@test "build metadata on the baseline has equal precedence, so the promotion proceeds" {
+  # Semver gives 1.2.3 and 1.2.3+build.1 EQUAL precedence; `sort -V` ranks the
+  # metadata form higher. Left in, promoting v9.9.9 against a Latest-flagged
+  # v9.9.9+meta reads as older than its own baseline and withholds :latest,
+  # :{major}, both --latest edits and the Homebrew patch on a green run. git
+  # permits '+' in a tag name, and the baseline is whatever a human flagged.
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.9.9+meta","isLatest":true}]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"older than the promotion baseline"* ]]
+  grep -qF 'CREATE ghcr.io/example-org/example-image:latest ghcr.io/example-org/example-image:9.9.9' "$CRANE_MOCK_CALLS"
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 6 ]
+}
+
+@test "a newer patch carrying build metadata still blocks :{major}.{minor}" {
+  # semver_key strips '+meta', so the filters have to admit it or they disagree
+  # with the ordering about which releases exist. Rejected, v9.9.10+build.1 is
+  # invisible to the line gate, the empty result reads as "first release in line",
+  # and :9.9 advances onto the older 9.9.9 - the bare-tag failure, one shape over.
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.9.10+build.1","isPrerelease":false,"isLatest":true}]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  run ! grep -qF ':9.9 ' "$CRANE_MOCK_CALLS"
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 0 ]
+}
+
+@test "the no-Latest-flag fallback sees a newest release carrying build metadata" {
+  # Same disagreement on the fallback path: dropping v10.0.0+build.7 from the
+  # candidate list hands the gate v9.9.8 and advances :latest past the newer
+  # release. The verdict flipped on whether a human had set the flag, since the
+  # flagged path orders through semver_key and this one filtered first.
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.9.8","isPrerelease":false,"isLatest":false},{"tagName":"v10.0.0+build.7","isPrerelease":false,"isLatest":false}]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"newest stable tag v10.0.0+build.7;"* ]]
+  run ! grep -qF ':latest ' "$CRANE_MOCK_CALLS"
+  run ! grep -qF ':9 ' "$CRANE_MOCK_CALLS"
+}
+
+@test "a Latest flag on a tag that is not a version warns and withholds" {
+  # Dropping the v means a non-version tag sorts above every release, so this
+  # withholds forever and no re-run clears it: the operator has to move the flag.
+  # A notice buries that, and the run is otherwise green and ships without :latest.
+  # Pinned so a later change to semver_key cannot flip it to fail-open unseen.
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"stable","isLatest":true}]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"::warning::"*"tagged 'stable', which is not a version"* ]]
+  run ! grep -qF ':latest ' "$CRANE_MOCK_CALLS"
+  run ! grep -qF ':9 ' "$CRANE_MOCK_CALLS"
+  # No 9.9.x sibling exists, so 9.9.9 is trivially newest in its own line.
+  grep -qF ':9.9 ' "$CRANE_MOCK_CALLS"
+}
+
+@test "a bare newer patch in the same line still blocks :{major}.{minor}" {
+  # The line filter is the last place the v was still required. A bare 9.9.10
+  # doesn't match ^v9\.9\.[0-9]+$, so max comes back empty, which this gate reads
+  # as "first release in line" and advances - regressing :9.9 from 9.9.10 to
+  # 9.9.9. The unscoped gate catches the same tag correctly, so nothing else
+  # moves and the run is green: exactly the shape this whole fix is about.
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"9.9.10","isPrerelease":false,"isLatest":true}]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  run ! grep -qF ':9.9 ' "$CRANE_MOCK_CALLS"
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 0 ]
+}
+
+@test "the no-Latest-flag fallback sees a bare newest release" {
+  # The fallback exists to stop an older dispatch advancing when the flag has been
+  # cleared. Requiring the v let a bare 10.0.0 be filtered out of the candidate
+  # list entirely, so the baseline resolved to v9.9.8 and :latest advanced onto
+  # 9.9.9 - past 10.0.0 - on the one path built to fail closed.
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.9.8","isPrerelease":false,"isLatest":false},{"tagName":"10.0.0","isPrerelease":false,"isLatest":false}]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"newest stable tag 10.0.0;"* ]]
+  run ! grep -qF ':latest ' "$CRANE_MOCK_CALLS"
+  run ! grep -qF ':9 ' "$CRANE_MOCK_CALLS"
+  # 9.9.9 IS the newest in its own 9.9 line, so the line tag still advances.
   grep -qF ':9.9 ' "$CRANE_MOCK_CALLS"
 }
 
@@ -274,7 +393,22 @@ teardown() {
   set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.9.8","isLatest":true},{"tagName":"v10.0.0","isLatest":true}]'
   run "$SCRIPT"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"Latest-flagged release v10.0.0"* ]]
+  [[ "$output" == *"Latest-flagged release v10.0.0)"* ]]
+  run ! grep -qF ':latest ' "$CRANE_MOCK_CALLS"
+}
+
+@test "a release co-flagged Latest with its own rc uses the final release, not the rc" {
+  # Conservative means the HIGHER of the flagged tags. Under a bare sort the rc
+  # won, which is the lower of the two, so the selection itself leaked
+  # permissiveness into the gate independently of version_at_or_after.
+  #
+  # Anchored on the notice's closing paren: "release v10.0.0" is a substring of
+  # "release v10.0.0-rc.1", so an unanchored match passes on the wrong pick and
+  # this test can't fail.
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v10.0.0-rc.1","isLatest":true},{"tagName":"v10.0.0","isLatest":true}]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Latest-flagged release v10.0.0)"* ]]
   run ! grep -qF ':latest ' "$CRANE_MOCK_CALLS"
 }
 
@@ -1230,6 +1364,48 @@ teardown() {
   run ! grep -q '^DOWNLOAD \|^API ' "$GH_MOCK_CALLS"
   grep -qF -- 'EDIT example-org/example-repo v9.9.9 --prerelease=false' "$GH_MOCK_CALLS"
   run ! grep -qF -- 'EDIT example-org/example-repo v9.9.9 --prerelease=false --latest' "$GH_MOCK_CALLS"
+}
+
+@test "homebrew tap -> an rc holding Latest on BOTH repos still promotes the tap" {
+  # The OSS gate and the tap are the half of the DEVOPS-1319 regression that the
+  # caller-side tests cannot see: is_at_or_after_latest_pointer runs a second time
+  # against OSS_REPO, and its verdict is what decides OSS_IS_LATEST and therefore
+  # whether the formula is patched at all. With an rc holding Latest on both
+  # repos, a bare sort withheld --latest from the OSS release AND skipped the tap
+  # entirely, on a green run. Pinned here so a regression on either gate fails
+  # rather than passing quietly through the caller-side assertions.
+  export INPUT_HOMEBREW_TAP_REPO="example-org/example-tap"
+  export INPUT_HOMEBREW_FORMULA_PATHS='["Formula/vcluster.rb"]'
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.9.9-rc.1","isLatest":true}]'
+  set_release_list "$INPUT_OSS_REPO" '[{"tagName":"v9.9.9-rc.1","isLatest":true}]'
+  set_checksums_fixture "example-org/example-repo" "$FIXTURES_DIR/checksums.txt"
+  set_contents_fixture "repos/example-org/example-tap/contents/Formula/vcluster.rb" "$FIXTURES_DIR/vcluster.rb"
+
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"skipping Homebrew tap promotion entirely"* ]]
+  [[ "$output" != *"older than the promotion baseline"* ]]
+
+  grep -qF -- 'EDIT example-org/example-repo v9.9.9 --prerelease=false --latest' "$GH_MOCK_CALLS"
+  grep -qF 'API PUT repos/example-org/example-tap/contents/Formula/vcluster.rb sha=fakesha' "$GH_MOCK_CALLS"
+  put_out="$(put_output_path 'repos/example-org/example-tap/contents/Formula/vcluster.rb')"
+  grep -qF 'version "9.9.9"' "$put_out"
+}
+
+@test "a bare tag co-flagged Latest with a v-prefixed one is ordered by version, not by prefix" {
+  # The Latest-flagged list is the one place tags arrive exactly as a human made
+  # them, so it is where the two dimensions meet: 'v' outranks a digit, so a
+  # whole-line sort of a flagged 10.0.0 next to a co-flagged v9.9.8 returns
+  # v9.9.8. The gate then reads the dispatched v9.9.9 as newer than its baseline
+  # and advances :latest/:9 - backwards past the flagged 10.0.0. Stripping inside
+  # version_at_or_after cannot catch this; by then the wrong tag has been picked.
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"10.0.0","isLatest":true},{"tagName":"v9.9.8","isLatest":true}]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Latest-flagged release 10.0.0)"* ]]
+  run ! grep -qF ':latest ' "$CRANE_MOCK_CALLS"
+  run ! grep -qF ':9 ' "$CRANE_MOCK_CALLS"
+  grep -qF ':9.9 ' "$CRANE_MOCK_CALLS"
 }
 
 @test "homebrew-tap-repo without oss-repo -> fails fast" {

@@ -233,6 +233,85 @@ fetch_release_list() {
   exit 1
 }
 
+# The precedence key for one tag. Every comparison and selection in this file is
+# defined in terms of this one function, so there is no second normalization for a
+# future call site to reach for by mistake - which is the shape of the bug this
+# gate keeps being fixed for. Two tags share a key exactly when semver gives them
+# equal precedence, so key equality IS the equality test and `sort -V` over keys
+# is the ordering.
+#
+# `sort -V` gets all three of these wrong on the raw tag:
+#
+#   - it ranks v9.9.9-rc.1 ABOVE v9.9.9, the reverse of semver. '~' sorts before
+#     end-of-string, so mapping '-' to '~' restores it.
+#   - it ranks any v-prefixed tag above any bare one, because 'v' outranks a
+#     digit, so a flagged 10.0.0 next to a co-flagged v9.9.8 resolves to v9.9.8 -
+#     the LOWER of the two - and lets :latest move backwards past 10.0.0. GitHub
+#     does not require the v, so one hand-made release mixes the list.
+#   - it orders 1.2.3+build.1 above 1.2.3, which semver gives EQUAL precedence.
+#     Left in, promoting v1.2.3 against a Latest-flagged v1.2.3+meta reads as
+#     older than the baseline and withholds the whole promotion on a green run.
+#
+# Needs GNU coreutils: `sort -V` must rank '~' below everything, which BSD and
+# macOS sort do not. The runners are Ubuntu; running the bats suite on a Mac will
+# disagree. resolve-versions.sh states the same requirement for its sort_key.
+#
+# One caveat this creates: dropping the v means a Latest-flagged tag that is not a
+# version at all ('stable', 'nightly') now sorts ABOVE any release, since its
+# first character beats a digit, where the prefixed form sorted below. Every
+# promotion then withholds :latest/:{major} until the flag is moved. That is the
+# conservative direction and the notice names the baseline, but no re-run clears
+# it - moving the flag is the only remedy.
+semver_key() {
+  local key="${1#v}"
+  key="${key%%+*}"
+  # The backslash is load-bearing: an unescaped '~' in the replacement is
+  # tilde-expanded, turning '9.9.9-rc.1' into '9.9.9/home/youruserrc.1', which
+  # sorts ABOVE 9.9.9 and reinstates the original bug.
+  printf '%s' "${key//-/\~}"
+}
+
+# Highest of the tags on stdin, printed in its ORIGINAL form. Sorts on the key in
+# a separate field rather than on the tag, because the winner goes to callers who
+# need the real tag: it names the release in LATEST_BASELINE_NOTE and is matched
+# against GitHub's own tag names, and a normalized form would name a release that
+# does not exist. The per-line subshell is bounded by the same 1000-release window
+# the callers fetch.
+semver_max() {
+  local tag
+  while IFS= read -r tag; do
+    [ -z "${tag}" ] && continue
+    printf '%s\t%s\n' "$(semver_key "${tag}")" "${tag}"
+  done \
+    | sort -t"$(printf '\t')" -k1,1V \
+    | tail -1 \
+    | cut -f2-
+}
+
+# Whether a tag is a version at all, tested on its key so the same normalization
+# decides this and the ordering. Nothing branches on it: ordering a non-version is
+# not wrong so much as meaningless, and the only use is telling an operator that
+# the baseline they flagged cannot be compared and no re-run will change that.
+is_version_shaped() {
+  [[ "$(semver_key "$1")" =~ ^[0-9]+\.[0-9]+\.[0-9]+(~.*)?$ ]]
+}
+
+# Comparing the KEYS rather than the tags is what makes equality pass, so a
+# partially failed promotion stays re-runnable: equal precedence means byte-equal
+# keys, so the sort returns that key either way and no separate equality test is
+# needed. 9.9.9, v9.9.9 and v9.9.9+meta are one release and compare as one.
+#
+# This is also why the comparison does not use semver_max: keys are already
+# normalized, so a plain `sort -V` is correct here, and there is no tag to hand
+# back. semver_max exists for the selections, which must return the real tag.
+version_at_or_after() {
+  local baseline="$1" vkey bkey
+  [ -z "${baseline}" ] && return 0
+  vkey="$(semver_key "${VERSION}")"
+  bkey="$(semver_key "${baseline}")"
+  [ "$(printf '%s\n%s\n' "${vkey}" "${bkey}" | sort -V | tail -1)" = "${vkey}" ]
+}
+
 # True if VERSION is at or after the GitHub Latest pointer in $1, using the
 # release-list JSON snapshot in $2. This gates :latest, :{major}, and the
 # repository's GitHub Latest pointer.
@@ -246,25 +325,30 @@ fetch_release_list() {
 # stable-shaped tag. A build re-run can clear that flag by re-applying
 # make_latest:false, so absence must not be mistaken for a first promotion.
 LATEST_BASELINE_NOTE=""
-version_at_or_after() {
-  local baseline="$1"
-  [ -z "${baseline}" ] && return 0
-  [ "$(printf '%s\n%s\n' "${VERSION}" "${baseline}" | sort -V | tail -1)" = "${VERSION}" ]
-}
-
 is_at_or_after_latest_pointer() {
   local repo="$1" releases="$2" max
-  local stable_shape='^v[0-9]+\.[0-9]+\.[0-9]+$'
+  # These filters select which releases are CANDIDATES, so a shape they reject is
+  # invisible to the ordering below rather than merely sorted oddly: it drops a
+  # newest release out of the list and hands this gate an older baseline, on the
+  # path whose whole purpose is to fail closed. So the filter has to admit
+  # everything semver_key normalizes away - the optional v and build metadata -
+  # or the two disagree about which releases exist. It stays stricter in the one
+  # way that matters: no pre-release component.
+  local stable_shape='^v?[0-9]+\.[0-9]+\.[0-9]+(\+[0-9A-Za-z.-]+)?$'
 
   # Whatever GitHub flags Latest is the baseline, even when its tag is not a
-  # stable release shape. Sorting also makes a corrupt multi-Latest response
-  # conservative and deterministic by selecting the newest flagged tag.
-  max=$(jq -r '[.[] | select(.isLatest) | .tagName][]' <<<"${releases}" | sort -V | tail -1)
+  # stable release shape. Selecting the highest also makes a corrupt multi-Latest
+  # response conservative and deterministic - which needs semver_max rather than
+  # any whole-line sort: this list is the one place tags arrive exactly as a human
+  # created them, so it is where both a co-flagged rc and a co-flagged bare tag
+  # can hand the gate the LOWER of the two.
+  max=$(jq -r '[.[] | select(.isLatest) | .tagName][]' <<<"${releases}" | semver_max)
   if [[ -z "${max}" ]]; then
+    # stable_shape admits both prefixes now, so this selection does the ordering
+    # that the filter no longer implies: 10.0.0 and v9.9.8 both reach it.
     max=$(jq -r '.[].tagName' <<<"${releases}" \
       | grep -E "${stable_shape}" \
-      | sort -V \
-      | tail -1) || true
+      | semver_max) || true
     if [[ -n "${max}" ]]; then
       LATEST_BASELINE_NOTE="newest stable tag ${max}; no release currently flagged Latest"
       echo "::notice::no release on ${repo} carries the Latest flag; using the newest stable tag (${max}) as the conservative promotion baseline. This is expected after a release-build re-run; promote the version that should be Latest to restore the pointer."
@@ -273,6 +357,14 @@ is_at_or_after_latest_pointer() {
     fi
   else
     LATEST_BASELINE_NOTE="Latest-flagged release ${max}"
+    # A warning rather than a notice, and rather than an error: the run below is
+    # otherwise correct and still moves :{major}.{minor}, so failing would block a
+    # promotion that partly succeeds. But a non-version baseline outranks every
+    # release, so this repo withholds :latest/:{major} on every promotion from now
+    # on, and re-running is the one thing that cannot fix it.
+    if ! is_version_shaped "${max}"; then
+      echo "::warning::the release flagged Latest on ${repo} is tagged '${max}', which is not a version, so nothing can be ordered against it. :latest/:${MAJOR} will be withheld on every promotion until the Latest flag is moved to a released version - a re-run will not clear this."
+    fi
   fi
 
   version_at_or_after "${max}"
@@ -285,11 +377,14 @@ is_at_or_after_latest_pointer() {
 # hide a newer sibling and allow the line tag to move backwards.
 is_newest_in_line() {
   local line="$1" releases="$2" filter max
-  filter="^v${line//./\\.}\.[0-9]+$"
+  # Same shapes as stable_shape above, and the gap bites harder here: an empty
+  # result is read as "first release in line" and advances, so a newer patch this
+  # filter could not see let :{major}.{minor} move backwards onto an older one
+  # while every other gate behaved correctly.
+  filter="^v?${line//./\\.}\.[0-9]+(\+[0-9A-Za-z.-]+)?$"
   max=$(jq -r '.[].tagName' <<<"${releases}" \
     | grep -E "${filter}" \
-    | sort -V \
-    | tail -1) || true
+    | semver_max) || true
 
   version_at_or_after "${max}"
 }
