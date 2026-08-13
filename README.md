@@ -459,6 +459,53 @@ Blocks until a GitHub Release for a version exists in another repository, for pi
 
 See [wait-for-release README](./.github/actions/wait-for-release/README.md) for the full behaviour table.
 
+### Commitlint
+
+Lints commit messages and pull request titles against the calling repository's own [commitlint](https://commitlint.js.org/) config. The config always comes from the caller: this action decides what gets linted and when to skip, the repository decides what the rules are. Note the trust model in the action README - the config is read from the checkout, so on a fork pull request it is a contributor-facing aid rather than an enforcement boundary. On a squash-merged repository the pull request title is what lands on the default branch, so linting the title is the check that actually protects history; per-commit range linting is the secondary one. When the calling repository's `package.json` mentions `commitlint`, its dependencies are installed and the local binary is used, so CI runs exactly what contributors run locally; otherwise the CLI alone is fetched with `npx`.
+
+**Location:** `.github/actions/commitlint`
+
+**Usage:**
+
+```yaml
+- uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+  with:
+    fetch-depth: 0
+    persist-credentials: false
+
+- uses: loft-sh/github-actions/.github/actions/commitlint@commitlint/v1
+  with:
+    pr-title: ${{ github.event.pull_request.title }}
+    from: ${{ github.event.pull_request.base.sha }}
+    to: ${{ github.event.pull_request.head.sha }}
+    branch: ${{ github.event.pull_request.head.ref }}
+    head-repository: ${{ github.event.pull_request.head.repo.full_name }}
+    skip-branches: 'sync-from-oss/*'
+```
+
+**Inputs:**
+
+- `pr-title` (optional): Message to lint on its own. Empty skips the check.
+- `from` (optional): Range start for per-commit linting. Empty skips the check. Needs `fetch-depth: 0`.
+- `to` (optional, default `HEAD`): Range end for per-commit linting.
+- `branch` (optional): Branch name matched against `skip-branches`.
+- `head-repository` (optional): Repository the branch lives on. Pass this whenever `skip-branches` is set: on a fork PR the branch name is author-chosen, so the skip list is ignored when this differs from `github.repository`.
+- `skip-branches` (optional): Comma-separated globs; a match exits successfully without linting. For branches whose commits cannot be rewritten, such as the rebase-merged `sync-from-oss` branches.
+- `config-path` (optional): Config path. Empty uses commitlint's own discovery.
+- `working-directory` (optional, default `.`): Directory to run in.
+- `commitlint-version` (optional): Version used when the caller pins none. The default lives in `action.yml`, which is the copy Renovate keeps current.
+- `fail-on-warnings` (optional, default `false`): Treat warnings as failures.
+
+**Outputs:**
+
+- `skipped`: `true` when `skip-branches` matched and nothing was linted.
+- `pr-title-result`: `pass`, `fail`, `skipped`, or `error` when commitlint could not run.
+- `commits-result`: `pass`, `fail`, `skipped`, or `error` when commitlint could not run.
+
+Reading an output requires `continue-on-error: true` on the step, since a failing step skips the rest of the job. See the action README for the full pattern.
+
+See [commitlint README](./.github/actions/commitlint/README.md) for detailed documentation.
+
 ## Available Reusable Workflows
 
 ### Validate Renovate Config
