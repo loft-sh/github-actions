@@ -105,8 +105,12 @@ if [ "$branch_absent" = "false" ]; then
   # absorption commit was necessarily merged after RESUME on the first-parent
   # chain. Older absorptions belong to externals before the anchor, which the
   # guard never inspects.
+  #
+  # every_trailer_value, not the last-wins lookup: one squash-merged import PR
+  # records every commit it replayed on a single commit, and all of them count
+  # as absorbed.
   absorbed_file="$(mktemp)"
-  all_trailer_entries "${RESUME}..HEAD" "$OSS_TRAILER" | awk '{print $2}' > "$absorbed_file"
+  every_trailer_value "${RESUME}..HEAD" "$OSS_TRAILER" > "$absorbed_file"
   unabsorbed=()
   for s in $(git rev-list --first-parent "${OSS_ANCHOR}..${OSS_TIP}"); do
     has_trailer "$s" "$MONOREPO_TRAILER" && continue

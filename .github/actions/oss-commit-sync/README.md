@@ -143,15 +143,16 @@ whole point of the replay. Treat rebase-merge as review policy rather than
 wiring auto-merge (which some compliance postures disallow), and use
 `direction: health` to detect violations after the fact.
 
-A squash does not corrupt the sync, but only because the anchor is defended
-against it in three places. GitHub's squash appends `Co-authored-by:` as a *new
+A squash does not corrupt the sync, but only because both directions are
+defended against it. GitHub's squash appends `Co-authored-by:` as a *new
 paragraph*, which pushes an `Oss-Commit` trailer out of the block git's own
 `%(trailers)` parser reads. The trailer stays in the message verbatim while
 becoming invisible to that parser, so the anchor freezes and every import
 re-walks commits already in the subtree — silently, for as long as each
 re-walked patch still applies as a no-op, then as a hard conflict once a later
-OSS commit touches the same lines. The three defenses, all regression-tested in
-`test/squash-tolerance.bats`:
+OSS commit touches the same lines. A squash also collapses several imports onto
+one commit, which is what the last defense covers. All four are regression-tested
+in `test/squash-tolerance.bats`:
 
 - the trailer lookup scans the **whole commit message**, not just git's trailer
   block, so a squash-orphaned trailer is still read (the value must be a bare
@@ -160,6 +161,14 @@ OSS commit touches the same lines. The three defenses, all regression-tested in
   outright cannot drag it backwards
 - the anchor heals from subtree content, so even a trailer destroyed beyond
   recovery costs nothing but the provenance record
+- the export divergence guard reads **every** `Oss-Commit` line instead of the
+  newest one per commit, because it asks set membership ("was this sha ever
+  absorbed") and not "which record is newest". Last-wins reported all but the
+  last sha of a squashed import PR as unabsorbed, on every push, while the import
+  direction reported nothing to import — a deadlock no re-run can clear. Content
+  cannot settle that one either: an import absorbing a commit *and* the revert
+  that superseded it leaves the older commit's content nowhere in the subtree, so
+  the trailer record is the only surviving evidence
 
 If a maintainer needs to fix up a sync PR, they must add new commits (without an
 `Oss-Commit` trailer), never amend the replayed ones; amendments are caught later

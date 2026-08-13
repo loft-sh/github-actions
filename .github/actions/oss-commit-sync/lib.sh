@@ -55,11 +55,11 @@ die() {
 # run is too generic to be confidently a sha.
 TRAILER_SHA_MIN_LEN=7
 
-# trailer_entries <key> <git-log-args...>
-# Print "<commit-sha> <value>" for every commit in the log that carries <key>,
-# in log order. With several same-key lines on one commit the last one wins:
-# GitHub's squash concatenates the branch's commit messages, so the last
-# occurrence is the newest import.
+# trailer_scan <key> <multi> <git-log-args...>
+# Print "<commit-sha> <value>" per match. With multi=0 a commit carrying several
+# same-key lines yields one entry, the last line winning; with multi=1 it yields
+# one entry per line, in message order. Callers pick by what they are asking:
+# "which record is newest" wants last-wins, "was this ever recorded" wants all.
 #
 # The awk consumer must NOT `exit` on the first match: closing the pipe early
 # while `git log` is still writing a large history makes git receive SIGPIPE,
@@ -71,10 +71,10 @@ TRAILER_SHA_MIN_LEN=7
 # RS: a NUL or control-char RS is not portable across awk implementations
 # (mawk treats an empty RS as paragraph mode), and a control character cannot
 # occur at column 0 of a real commit message.
-trailer_entries() {
-  local key="$1"
-  shift
-  git log --format="%x01%H%n%B" "$@" | awk -v key="$key" -v minlen="$TRAILER_SHA_MIN_LEN" '
+trailer_scan() {
+  local key="$1" multi="$2"
+  shift 2
+  git log --format="%x01%H%n%B" "$@" | awk -v key="$key" -v minlen="$TRAILER_SHA_MIN_LEN" -v multi="$multi" '
     function flush() {
       if (sha != "" && value != "") print sha " " value
       sha = ""
@@ -88,16 +88,43 @@ trailer_entries() {
       if (tolower(substr(line, 1, plen)) != prefix) next
       candidate = substr(line, plen + 1)
       if (candidate ~ /^[0-9a-f]+$/ && length(candidate) >= minlen && length(candidate) <= 40) {
-        value = candidate
+        if (multi == 1) print sha " " candidate
+        else value = candidate
       }
     }
     END { flush() }'
+}
+
+# trailer_entries <key> <git-log-args...>
+# Print "<commit-sha> <value>" for every commit in the log that carries <key>,
+# in log order. With several same-key lines on one commit the last one wins:
+# GitHub's squash concatenates the branch's commit messages, so the last
+# occurrence is the newest import.
+trailer_entries() {
+  local key="$1"
+  shift
+  trailer_scan "$key" 0 "$@"
 }
 
 # all_trailer_entries <ref-or-range> <key>
 # Every "<commit-sha> <value>" pair on the first-parent chain, newest first.
 all_trailer_entries() {
   trailer_entries "$2" --first-parent "$1"
+}
+
+# every_trailer_value <ref-or-range> <key>
+# Every value recorded anywhere on the first-parent chain, newest commit first,
+# including several recorded by one commit.
+#
+# This is the set-membership question — "is this sha recorded at all" — and it
+# must not use last-wins. A squash-merged import PR that replayed N commits
+# carries N same-key lines on one commit, and last-wins would report only the
+# newest, leaving the other N-1 looking unrecorded forever. That is not
+# theoretical: it deadlocked the vcluster-pro export for a week, because the
+# content fallback misses too whenever one of the hidden commits was reverted
+# upstream inside the same import.
+every_trailer_value() {
+  trailer_scan "$2" 1 --first-parent "$1" | awk '{print $2}'
 }
 
 # newest_trailer_entry <ref> <key>

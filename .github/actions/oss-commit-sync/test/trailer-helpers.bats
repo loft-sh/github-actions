@@ -134,6 +134,48 @@ Co-authored-by: someone <s@example.com>"
   [ "$(echo "$output" | awk 'NR==2 {print $2}')" = "$OLD_SHA" ]
 }
 
+@test "every_trailer_value reports all same-key lines on one commit" {
+  # The squash shape again, but read as a set instead of a resume point: both
+  # replayed commits were absorbed, so both must come back. Last-wins here is
+  # what deadlocked the export divergence guard.
+  git commit -q --allow-empty -m "chore: sync from oss (#42)
+
+feat: first
+
+Oss-Commit: $OLD_SHA
+
+revert: first
+
+Oss-Commit: $NEW_SHA
+
+Co-authored-by: alice <alice@contributor.example>"
+  run every_trailer_value HEAD Oss-Commit
+  [ "$status" -eq 0 ]
+  [ "$(echo "$output" | wc -l)" -eq 2 ]
+  [ "$(echo "$output" | awk 'NR==1')" = "$OLD_SHA" ]
+  [ "$(echo "$output" | awk 'NR==2')" = "$NEW_SHA" ]
+  # The resume-point lookup keeps its last-wins contract.
+  [ "$(trailer_value HEAD Oss-Commit)" = "$NEW_SHA" ]
+}
+
+@test "every_trailer_value spans commits newest first and keeps the shape filters" {
+  git commit -q --allow-empty -m "one
+
+Oss-Commit: $OLD_SHA"
+  git commit -q --allow-empty -m "two
+
+    Oss-Commit: $OTHER_SHA
+
+Oss-Commit: $NEW_SHA"
+  run every_trailer_value HEAD Oss-Commit
+  [ "$status" -eq 0 ]
+  [ "$(echo "$output" | wc -l)" -eq 2 ]
+  [ "$(echo "$output" | awk 'NR==1')" = "$NEW_SHA" ]
+  [ "$(echo "$output" | awk 'NR==2')" = "$OLD_SHA" ]
+  # The indented line is a quoted body, not sync state.
+  [[ "$output" != *"$OTHER_SHA"* ]]
+}
+
 @test "an abbreviated hand-written trailer is still read" {
   git commit -q --allow-empty -m "chore: hand-written import
 
