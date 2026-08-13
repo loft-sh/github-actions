@@ -777,6 +777,85 @@ jobs:
 - The caller checks out its own source and controls `runs-on`/`timeout-minutes`/fork guarding at the job level.
 - A composite action cannot declare `timeout-minutes` on its steps; set `timeout-minutes` on the caller job (default ~10m is reasonable for most modules).
 
+### CVE Scan
+
+Scans a container image for CVEs with a swappable scanner backend (Snyk ships
+first) and reports via Slack, a short markdown summary, and the scanner's own
+SARIF for the Security tab. Three
+outcomes, handled differently on purpose: a **scanner error** (registry
+failure, timeout) never fails the job; **findings** only fail it when
+`block-on-findings: true` is explicitly turned on, so the default is
+advisory-only; and a **config error** (bad threshold,
+or a scanner that can't be set up) always fails it, regardless of
+`block-on-findings`.
+
+**Location:** `.github/actions/cve-scan`
+
+**Usage (release event, scanning the just-published prerelease image):**
+
+```yaml
+name: cve-scan (release)
+
+on:
+  release:
+    types: [created]
+
+jobs:
+  scan:
+    if: github.event.release.prerelease == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          persist-credentials: false
+
+      # Release tags are `v0.36.1-rc.4`; the published image tag is
+      # `0.36.1-rc.4`. Passing the release tag straight through yields a tag
+      # that doesn't resolve, which reports as a scanner error and leaves the
+      # job green having scanned nothing.
+      - id: image-tag
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: echo "tag=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - uses: loft-sh/github-actions/.github/actions/cve-scan@cve-scan/v1
+        with:
+          image-ref: ghcr.io/loft-sh/vcluster-pro:${{ steps.image-tag.outputs.tag }}
+          enabled: ${{ vars.CVE_SCAN_ENABLED }}
+          block-on-findings: ${{ vars.CVE_SCAN_BLOCK_ON_FINDINGS }}
+          scanner-token: ${{ secrets.SNYK_TOKEN }}
+          registry-username: ${{ github.actor }}
+          registry-password: ${{ secrets.GITHUB_TOKEN }}
+          slack-webhook-url: ${{ secrets.SLACK_WEBHOOK_URL_CI_TESTS_ALERTS }}
+```
+
+**Inputs:**
+
+- `image-ref` (required): full registry reference to scan
+- `dockerfile-path` (optional, default: empty): passed to the scanner as `--file` for base-image remediation advice; it does not change which vulnerabilities are found
+- `scanner` (optional, default: `snyk`): selects `src/scanners/<scanner>.sh`
+- `scanner-token` (required by the snyk adapter): named generically so a tool swap never renames this input
+- `scanner-version` (optional, renovate-pinned): scanner CLI version to install and checksum-verify
+- `severity-threshold` (optional, default: `high`)
+- `enabled` (optional, default: `true`): kill switch; resolves toward scanning on an unrecognised value
+- `block-on-findings` (optional, default: `false`): advisory vs. blocking posture
+- `registry` (optional, default: `ghcr.io`) / `registry-username` / `registry-password`: the action pulls the image with the caller's own credentials rather than relying on the scanner vendor's registry integration
+- `notify` / `slack-webhook-url` (optional, default: `true` / —)
+
+**Outputs:**
+
+- `has-vulnerabilities`, `critical-count`, `high-count`, `medium-count`, `low-count`
+- `scanner-error`: `true` if the scan couldn't complete — distinct both from finding CVEs and from a setup error, which fails the job
+- `report-path`, `sarif-path` (written by the scanner), `summary` (Slack-ready text)
+
+See [cve-scan README](./.github/actions/cve-scan/README.md) for suppressing findings via `.snyk`, the scanner-adapter exit-code contract, how to resolve the image tag per repo, and the SARIF upload example.
+
 ### Checkov
 
 Runs [Checkov](https://www.checkov.io/) against infrastructure as code, open
