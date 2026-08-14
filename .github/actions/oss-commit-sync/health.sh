@@ -208,7 +208,10 @@ if scanned_all="$(trailer_scan "$OSS_TRAILER" 1 --first-parent HEAD)"; then
       # physical lines and its first line would match a scanned sha here, scoring a
       # commit clean that the export treats as having no block record.
       if parsed="$(git log -1 --format="%(trailers:key=${OSS_TRAILER},valueonly,unfold)" "$M")"; then
-        parsed_norm="$(printf '%s\n' "$parsed" | sed 's/[[:space:]]*$//')"
+        # Lowercased as well as space-stripped, because the scan lowercases its values
+    # (git accepts uppercase hex) and a case-sensitive comparison would call a
+    # perfectly in-block uppercase record orphaned.
+    parsed_norm="$(printf '%s\n' "$parsed" | sed 's/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]')"
       else
         degraded=true
         cur_usable=false

@@ -362,3 +362,20 @@ Oss-Commit: $E1
   [ "$(output_value squashed-trailer-count)" = "1" ]
   [ "$(output_value degraded)" = "false" ]
 }
+
+@test "an uppercase in-block trailer is not reported as orphaned" {
+  # The scan lowercases block values, so a case-sensitive comparison on health's
+  # side would call a perfectly in-block record orphaned and tell a maintainer who
+  # rebase-merged correctly that they squashed.
+  E1=$(external_commit ext1.go "one" "feat: alice first")
+  bash "$IMPORT"
+  squash_merge_pr_branch "feat: alice first (#42)
+
+Oss-Commit:$(echo "$E1" | tr 'a-f' 'A-F')"
+
+  run bash "$HEALTH"
+  [ "$status" -eq 0 ]
+  [ "$(output_value squashed-trailer-count)" = "0" ]
+  [ "$(output_value degraded)" = "false" ]
+  [[ "$output" != *"Rebase and merge"* ]]
+}

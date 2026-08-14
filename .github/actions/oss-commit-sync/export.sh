@@ -123,20 +123,16 @@ if [ "$branch_absent" = "false" ]; then
   # match those.
   absorbed_file="$(mktemp)"
   every_trailer_value "${RESUME}..HEAD" "$OSS_TRAILER" | resolve_sha_set > "$absorbed_file"
-  # The same values as git's own trailer parser sees them, which is BOTH a wider
-  # and a narrower set than the scan above.
+  # A second, narrower read: only what git's own trailer parser sees. This is a
+  # strict subset of the set above, which is why it is not merged into it. It exists
+  # to tell strong evidence from weak, nothing else.
   #
-  # Wider: git accepts forms trailer_scan ignores ("Oss-Commit:<sha>" with no
-  # space, several spaces, a tab, uppercase hex), so a record git reads perfectly
-  # can be invisible to the scan. Those must count as absorbed too, or the export
-  # deadlocks on a commit whose trailer is right there in the block.
+  # The scan reads the whole message on purpose, so it also reads an Oss-Commit line
+  # quoted at column 0 in a body. No textual rule separates that from a real
+  # trailer, because the neighbouring line may be "Signed-off-by: x" or "Note: still
+  # pending is" and both are trailer-shaped. Such a value still counts as absorbed;
+  # it is merely recorded as weaker evidence for the align-tree gate further down.
   #
-  # Narrower: the scan reads the whole message on purpose, so it also reads an
-  # Oss-Commit line quoted at column 0 in a body. No textual rule separates that
-  # from a real trailer, because the neighbouring line may be "Signed-off-by: x"
-  # or "Note: still pending is" and both are trailer-shaped. So a value the block
-  # does not carry still counts, and is merely recorded as weaker evidence for the
-  # align-tree gate further down.
   # unfold is load-bearing, not tidiness: without it a folded value stays several
   # physical lines, so
   #     Oss-Commit:<sha>
@@ -147,7 +143,6 @@ if [ "$branch_absent" = "false" ]; then
   block_absorbed_file="$(mktemp)"
   git log --first-parent --format="%(trailers:key=${OSS_TRAILER},valueonly,unfold)" "${RESUME}..HEAD" \
     | filter_sha_values | resolve_sha_set > "$block_absorbed_file"
-  cat "$block_absorbed_file" >> "$absorbed_file"
   unabsorbed=()
   loose_absorbed=()
   # Captured first: a failing command substitution in a `for` word list is

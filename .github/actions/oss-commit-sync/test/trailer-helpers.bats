@@ -357,3 +357,38 @@ Monorepo-Commit: $NEW_SHA")
   [ "$status" -eq 0 ]
   [ "$(echo "$output" | awk '{print $2}')" = "$NEW_SHA" ]
 }
+
+@test "the last record wins even when only git's parser sees it" {
+  # git's block IS the final paragraph, so a value there is later than any body line
+  # above it. Preferring the earlier body line moves the import anchor forward past
+  # commits still waiting to be imported.
+  git commit -q --allow-empty -m "chore: two records, newest in a lax form
+
+Oss-Commit: $OLD_SHA
+
+prose in between
+
+Oss-Commit:$NEW_SHA"
+  run trailer_value HEAD Oss-Commit
+  [ "$status" -eq 0 ]
+  [ "$output" = "$NEW_SHA" ]
+}
+
+@test "a control byte inside a trailer value cannot end the block early" {
+  # git preserves control bytes in values. A prefix-only delimiter test would treat
+  # such a value as the frame terminator and hide every record after it.
+  printf 'chore: hostile value\n\nOss-Commit: \002not-a-sha\nOss-Commit:%s\n' "$NEW_SHA" > "$ROOT/msg"
+  git commit -q --allow-empty -F "$ROOT/msg"
+  run trailer_value HEAD Oss-Commit
+  [ "$status" -eq 0 ]
+  [ "$output" = "$NEW_SHA" ]
+}
+
+@test "an uppercase in-block value is read, lowercased" {
+  git commit -q --allow-empty -m "chore: uppercase record
+
+Oss-Commit:$(echo "$NEW_SHA" | tr 'a-f' 'A-F')"
+  run trailer_value HEAD Oss-Commit
+  [ "$status" -eq 0 ]
+  [ "$output" = "$NEW_SHA" ]
+}

@@ -49,8 +49,9 @@ die() {
 #
 # The other way round, git's parser is laxer about the line itself: it accepts
 # "Key:<sha>" with no space, with a tab, with several spaces, and uppercase hex,
-# none of which the scan matches. A record git reads perfectly would otherwise be
-# invisible here, which deadlocked the export from the opposite direction.
+# none of which the body scan matches. A record git reads perfectly would otherwise
+# be invisible, which deadlocked the export from the opposite direction, so
+# trailer_scan reads git's block as well and returns the union.
 #
 # The scan's value shape is what keeps most prose out: every trailer this action
 # reads or writes carries a commit sha and nothing else, so the line must start at
@@ -66,9 +67,13 @@ TRAILER_SHA_MIN_LEN=7
 
 # trailer_scan <key> <multi> <git-log-args...>
 # Print "<commit-sha> <value>" per match. With multi=0 a commit carrying several
-# same-key lines yields one entry, the last line winning; with multi=1 it yields
-# one entry per line, in message order. Callers pick by what they are asking:
-# "which record is newest" wants last-wins, "was this ever recorded" wants all.
+# same-key lines yields one entry, the last record winning; with multi=1 it yields
+# one entry per distinct value. Callers pick by what they are asking: "which record
+# is newest" wants last-wins, "was this ever recorded" wants all.
+#
+# multi=1 order is body-scan values in message order, then any value only git's
+# parser saw. Treat the output as a SET: it is not a reliable message ordering, and
+# no caller may take its first or last line to mean anything.
 #
 # The awk consumer must NOT `exit` on the first match: closing the pipe early
 # while `git log` is still writing a large history makes git receive SIGPIPE,
@@ -89,43 +94,57 @@ TRAILER_SHA_MIN_LEN=7
 # resurrecting content the mirror had moved past. One function, one answer, so a new
 # caller cannot get it wrong.
 #
-# Block values are emitted BEFORE the scanned ones so multi=0 (last-wins) still
-# lands on the final line of the message when the message has one, which is what
-# the import anchor means by "newest". A well-formed trailer appears in both
-# readings; the duplicate is harmless to every caller (set membership, or last-wins).
+# Block values are held back and applied AFTER the body scan, because git's block is
+# by definition the message's final trailer paragraph: anything in it comes later
+# than any body line above it. So for multi=0 a block value wins, which is what
+# last-wins means and what the import anchor reads as "newest". Emitting them first
+# instead let an earlier, well-formed body line overwrite the genuinely final record
+# and move the anchor forward past commits still waiting to be imported.
+#
+# A well-formed trailer is seen by both readings; the duplicate is dropped per
+# commit so the output stays a clean set.
 trailer_scan() {
   local key="$1" multi="$2"
   shift 2
   git log --format="%x01%H%n%(trailers:key=${key},valueonly,unfold)%x02%n%B" "$@" \
     | awk -v key="$key" -v minlen="$TRAILER_SHA_MIN_LEN" -v multi="$multi" '
-    function flush() {
-      if (sha != "" && value != "") print sha " " value
-      sha = ""
-      value = ""
-      delete seen
+    function shaped(candidate) {
+      return (candidate ~ /^[0-9a-f]+$/ && length(candidate) >= minlen && length(candidate) <= 40)
     }
     function take(candidate) {
-      if (candidate ~ /^[0-9a-f]+$/ && length(candidate) >= minlen && length(candidate) <= 40) {
-        if (multi == 1) {
-          # A well-formed trailer is seen by both readings, so dedupe per commit:
-          # every caller treats the output as a set, and emitting each value twice
-          # would double the stream over a long range for nothing.
-          if (seen[candidate]++) return
-          print sha " " candidate
-        }
-        else value = candidate
+      if (!shaped(candidate)) return
+      if (multi == 1) {
+        if (seen[candidate]++) return
+        print sha " " candidate
       }
+      else value = candidate
     }
-    BEGIN { prefix = tolower(key) ": "; plen = length(prefix); inblock = 0 }
+    function flush() {
+      # The held-back block values, applied last: they sit in the final paragraph
+      # of the message, so they are its latest records.
+      if (sha != "") {
+        for (i = 1; i <= nblock; i++) take(block[i])
+        if (value != "") print sha " " value
+      }
+      sha = ""
+      value = ""
+      nblock = 0
+      delete block
+      delete seen
+    }
+    BEGIN { prefix = tolower(key) ": "; plen = length(prefix); inblock = 0; nblock = 0 }
     substr($0, 1, 1) == "\001" { flush(); sha = substr($0, 2); inblock = 1; next }
-    substr($0, 1, 1) == "\002" { inblock = 0; next }
+    # Whole-line match, not a prefix: git preserves control bytes inside a trailer
+    # value, so a value beginning with \002 would otherwise end the block early and
+    # hide every parser-only record after it.
+    $0 == "\002" { inblock = 0; next }
     inblock {
       # Already key-stripped and unfolded by git, so a folded value arrives whole
       # and fails the shape test rather than donating its first line. Lowercased
       # because git accepts uppercase hex and the shas we compare against do not.
       line = tolower($0)
       sub(/[ \t\r]+$/, "", line)
-      take(line)
+      if (shaped(line)) block[++nblock] = line
       next
     }
     {
@@ -155,10 +174,10 @@ all_trailer_entries() {
 }
 
 # every_trailer_value <ref-or-range> <key>
-# Every value recorded anywhere on the first-parent chain, newest commit first;
-# within one commit, in message order, so the oldest record of that commit comes
-# first. Set-only: never use it to pick "the newest record", which is what
-# newest_trailer_entry answers.
+# Every value recorded anywhere on the first-parent chain, newest commit first.
+# Within one commit the order is unspecified (see trailer_scan): this is a set.
+# Never use it to pick "the newest record", which is what newest_trailer_entry
+# answers.
 #
 # This is the set-membership question, "is this sha recorded at all", and it
 # must not use last-wins. A squash-merged import PR that replayed N commits
