@@ -155,31 +155,52 @@ every_trailer_value() {
 # Unresolvable values are printed verbatim too, keeping a trailer that names a
 # commit this repo does not hold matching literally as before.
 resolve_sha_set() {
-  local v full
+  local v full rc
   # `|| [ -n "$v" ]` so a final line with no trailing newline is not dropped:
   # losing a sha here is the same deadlock class this function exists to close.
   while IFS= read -r v || [ -n "$v" ]; do
     [ -n "$v" ] || continue
     printf '%s\n' "$v"
     [ "${#v}" -lt 40 ] || continue
-    full="$(resolve_commit_prefix "$v")" || continue
-    printf '%s\n' "$full"
+    rc=0
+    full="$(resolve_commit_prefix "$v")" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      printf '%s\n' "$full"
+    elif [ "$rc" -eq 2 ]; then
+      # A broken git must not quietly shrink the absorbed set. That reports an
+      # absorbed commit as unabsorbed and sends the operator after a divergence
+      # that is not there, which is this action's most expensive failure to
+      # diagnose. Returning non-zero aborts the caller under pipefail instead.
+      echo "::error::git failed while resolving the trailer record ${v}; refusing to judge divergence on an incomplete absorbed set" >&2
+      return 1
+    fi
   done
 }
 
 # resolve_commit_prefix <value>
-# Print the full sha of the commit <value> names; print nothing and return 1 when
-# it names none. Prefix-checked, because every caller is asking "which commit
-# does this trailer name", never "what does this object point at": `^{commit}`
-# peels an annotated tag object to a commit sharing none of the value's digits,
-# and `git merge-base --is-ancestor` peels one the same way.
+# Print the full sha of the commit <value> names and return 0. Return 1 when it
+# names no commit here, and 2 when git itself failed. Callers MUST keep those two
+# apart: "names no commit" is an ordinary answer about the value, while a git
+# failure is no answer at all, and reading one as the other turns a broken repo
+# into a clean report.
+#
+# Prefix-checked, because every caller is asking "which commit does this trailer
+# name", never "what does this object point at": `^{commit}` peels an annotated
+# tag object to a commit sharing none of the value's digits, and both
+# `git merge-base --is-ancestor` and `git cat-file -e` peel one the same way.
 #
 # --quiet is not quiet on a type mismatch: an abbreviation that uniquely names a
 # tree or blob still prints "expected commit type" to stderr, which would put a
 # bare error line in an otherwise green log.
 resolve_commit_prefix() {
-  local full
-  full="$(git rev-parse --verify --quiet "${1}^{commit}" 2>/dev/null)" || return 1
+  local full rc=0
+  full="$(git rev-parse --verify --quiet "${1}^{commit}" 2>/dev/null)" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    # rev-parse answers 1 for absent, ambiguous and type-mismatch alike, which
+    # are all "names no commit". Anything else is git failing.
+    [ "$rc" -eq 1 ] && return 1
+    return 2
+  fi
   case "$full" in
     "$1"*) printf '%s\n' "$full" ;;
     *) return 1 ;;
@@ -373,7 +394,7 @@ classify_healed_range() {
 #  3. content healing (see content_anchor), which reconciles the record against
 #     the evidence in the subtree.
 resolve_import_anchor() {
-  local oss_tip="$1" best="" candidate entries healed
+  local oss_tip="$1" best="" candidate entries healed rc
   IMPORT_ANCHOR=""
   IMPORT_ANCHOR_RECORDED=""
   IMPORT_ANCHOR_HEALED=0
@@ -390,7 +411,18 @@ resolve_import_anchor() {
   while read -r _ candidate; do
     [ -n "$candidate" ] || continue
     IMPORT_ANCHOR_SAW_TRAILER=true
-    git cat-file -e "${candidate}^{commit}" 2>/dev/null || continue
+    # Prefix-checked like the export guard's absorbed set: cat-file -e and
+    # merge-base both peel an annotated tag object, so without this a value that
+    # names no recorded commit can win `best`. The anchor decides where the
+    # import starts, so a wrong winner skips real imports with nothing to show
+    # for it: no replay, no conflict, no pending count.
+    rc=0
+    candidate="$(resolve_commit_prefix "$candidate")" || rc=$?
+    if [ "$rc" -eq 2 ]; then
+      return 1
+    elif [ "$rc" -ne 0 ]; then
+      continue
+    fi
     git merge-base --is-ancestor "$candidate" "$oss_tip" 2>/dev/null || continue
     if [ -z "$best" ] || git merge-base --is-ancestor "$best" "$candidate"; then
       best="$candidate"

@@ -231,6 +231,33 @@ teardown() {
   [[ "$output" == *"merge commit"* ]]
 }
 
+@test "an annotated tag sha cannot win the anchor and swallow pending imports" {
+  # cat-file -e and merge-base both peel a tag object, so an Oss-Commit value
+  # naming a tag would resolve to a commit no trailer records and could win the
+  # anchor. That failure is silent in the worst way: the pending externals are
+  # neither replayed nor skipped nor counted, they just never arrive.
+  E1=$(external_commit ext1.go "one" "feat: alice first")
+  E2=$(external_commit ext2.go "two" "feat: alice second")
+  git -C "$ROOT/oss.git" tag -a v0.2.0 -m "release" "$E2"
+  tag=$(git -C "$ROOT/oss.git" rev-parse v0.2.0)
+  [ "$tag" != "$E2" ]
+  # The action's own fetch does not pull tag objects; this is the case where the
+  # monorepo happens to hold them, without which the probe proves nothing.
+  git -C "$MONO" fetch -q "$OSS_REMOTE" 'refs/tags/*:refs/tags/*'
+  git -C "$MONO" cat-file -e "$tag"
+
+  git -C "$MONO" commit -q --allow-empty -m "chore: note the release
+
+Oss-Commit: $tag"
+
+  run bash "$IMPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value has-changes)" = "true" ]
+  [ "$(output_value replayed-count)" = "2" ]
+  [ "$(git -C "$MONO" show "automation/sync-from-oss-main:$PFX/ext1.go")" = "one" ]
+  [ "$(git -C "$MONO" show "automation/sync-from-oss-main:$PFX/ext2.go")" = "two" ]
+}
+
 @test "no-op external (same change already in staging) is skipped, not a crash" {
   company_commit pkg/dup.go "same-content" "feat: company version" >/dev/null
   external_commit pkg/dup.go "same-content" "feat: external identical version" >/dev/null

@@ -110,7 +110,7 @@ outputs:
     description: "Health: of redundant-count, the external commits carrying no readable Oss-Commit trailer. This is what stale-anchor reports on."
     value: ${{ steps.sync.outputs.redundant-unrecorded-count }}
   squashed-trailer-count:
-    description: "Health: number of sync commits carrying an Oss-Commit value outside the trailer block git parses, the fingerprint of a squash-merge. Corroborated against OSS history, so it under-reports rather than accusing a clean merge; see the README."
+    description: "Health: number of sync commits carrying an Oss-Commit value outside the trailer block git parses, which a squash-merge produces. A reason to look, not proof: a real trailer line quoted in a commit body looks the same. See the README for what it misses."
     value: ${{ steps.sync.outputs.squashed-trailer-count }}
   degraded:
     description: "Health: true when a git or network step failed and some figures in this report are therefore incomplete. The health direction never exits non-zero, so gate on this rather than on the job result."

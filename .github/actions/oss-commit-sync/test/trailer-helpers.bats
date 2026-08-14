@@ -261,6 +261,31 @@ Oss-Commit: 7b20042"
   [ "$output" = "$commit" ]
 }
 
+@test "resolve_commit_prefix separates naming no commit from git failing" {
+  git commit -q --allow-empty -m "a commit"
+  full=$(git rev-parse HEAD)
+
+  # Absent, ambiguous and type-mismatch are all "names no commit": rc 1.
+  run resolve_commit_prefix "${OLD_SHA:0:12}"
+  [ "$status" -eq 1 ]
+
+  # A broken object store is git failing: rc 2, so no caller can read it as an
+  # answer about the value.
+  GIT_OBJECT_DIRECTORY=/nonexistent run resolve_commit_prefix "${full:0:12}"
+  [ "$status" -eq 2 ]
+}
+
+@test "resolve_sha_set fails the run when git breaks instead of shrinking the set" {
+  # Silently dropping a resolved sha reports an absorbed commit as unabsorbed,
+  # which is the deadlock this action exists to avoid, with a misleading message
+  # on top. Aborting is the honest outcome.
+  git commit -q --allow-empty -m "a commit"
+  full=$(git rev-parse HEAD)
+  GIT_OBJECT_DIRECTORY=/nonexistent run resolve_sha_set <<< "${full:0:12}"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"refusing to judge divergence"* ]]
+}
+
 @test "resolve_sha_set spawns no lookup for a full-length value" {
   # The normal case: every trailer this action writes is already full length, so
   # resolution must not cost a git process per absorbed commit.

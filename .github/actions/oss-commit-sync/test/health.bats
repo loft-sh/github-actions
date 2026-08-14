@@ -216,6 +216,50 @@ WRAP
   [[ "$output" == *"Could not test whether"* ]]
 }
 
+@test "each commit is judged against its own trailer block" {
+  # The scan is walked in one pass and grouped by sha, so a group boundary that
+  # leaked would judge one commit's values against another's block: either an
+  # orphan attributed to the clean commit, or both counted from one violation.
+  E1=$(external_commit ext1.go "one" "feat: alice first")
+  bash "$IMPORT"
+  squash_merge_pr_branch "feat: alice first (#42)
+
+Oss-Commit: $E1
+
+Co-authored-by: alice <alice@contributor.example>"
+  squashed_sha=$(git -C "$MONO" rev-parse HEAD)
+
+  # A later, properly recorded import on top: one carrier per commit, in-block.
+  E2=$(external_commit ext2.go "two" "feat: alice second")
+  absorb_external
+
+  run bash "$HEALTH"
+  [ "$status" -eq 0 ]
+  [ "$(output_value squashed-trailer-count)" = "1" ]
+  [[ "$output" == *"$squashed_sha"* ]]
+  [[ "$output" != *"$(git -C "$MONO" rev-parse HEAD)"* ]]
+}
+
+@test "the oldest trailer-carrying commit is still counted" {
+  # Groups close when the next sha arrives, so the last group in log order (the
+  # oldest commit) is only ever counted by the flush after the loop. Dropping
+  # that flush loses a real violation silently.
+  E1=$(external_commit ext1.go "one" "feat: alice first")
+  git -C "$MONO" reset -q --hard "$M0"
+  # The only carrier on the branch, and its value sits outside git's block
+  # because the message ends in prose.
+  git -C "$MONO" commit -q --allow-empty -m "chore: sync from oss (#42)
+
+Oss-Commit: $E1
+
+Discussion continued after the merge."
+
+  run bash "$HEALTH"
+  [ "$status" -eq 0 ]
+  [ "$(output_value squashed-trailer-count)" = "1" ]
+  [[ "$output" == *"Rebase and merge"* ]]
+}
+
 @test "a rebase-merged import reports no squash-orphaned trailers" {
   # The negative side of the set comparison: one trailer per commit, inside the
   # block, must never be counted.
