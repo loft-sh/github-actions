@@ -542,3 +542,43 @@ Monorepo-Commit:$(echo "$C1" | tr 'a-f' 'A-F')"
   [ "$(oss_file pkg/app.go)" = "v2" ]
   [ "$(git -C "$OSS_REMOTE" rev-parse 'main^{tree}')" = "$(git -C "$MONO" rev-parse "HEAD:$PFX")" ]
 }
+
+@test "guard: a failing rev-list refuses to judge divergence instead of passing" {
+  # The guard's verdict is "no unabsorbed externals". Reached with a producer that
+  # failed rather than a range that was empty, that verdict is not an answer: the
+  # loop runs zero times, the arrays stay empty, and the export proceeds past a
+  # guard that never ran. With align-tree that flattens the OSS tree with nothing
+  # holding it back, so the range has to be listed successfully or not at all.
+  external_commit ext.go "external" "feat: external contribution"
+  before=$(oss_tip)
+  company_commit pkg/app.go "l1-company" "feat: company change"
+
+  real_git="$(command -v git)"
+  mkdir -p "$ROOT/bin"
+  # Only the guard's own walk: --first-parent over a range, and not the --reverse
+  # replay walk further down.
+  cat > "$ROOT/bin/git" <<WRAP
+#!/usr/bin/env bash
+rl=false; fp=false; rev=false; range=false
+for a in "\$@"; do
+  case "\$a" in
+    rev-list) rl=true ;;
+    --reverse) rev=true ;;
+    --first-parent) fp=true ;;
+    *..*) range=true ;;
+  esac
+done
+if [ "\$rl" = true ] && [ "\$fp" = true ] && [ "\$rev" = false ] && [ "\$range" = true ]; then
+  exit 128
+fi
+exec "$real_git" "\$@"
+WRAP
+  chmod +x "$ROOT/bin/git"
+
+  PATH="$ROOT/bin:$PATH" run bash "$EXPORT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"refusing to judge divergence"* ]]
+  # The external is still there: nothing was pushed over it.
+  [ "$(oss_tip)" = "$before" ]
+  [ "$(oss_file ext.go)" = "external" ]
+}

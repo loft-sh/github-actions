@@ -135,6 +135,12 @@ replayed=0
 # Seeded with the healed range: those commits were considered and not replayed,
 # which is exactly what skipped-count reports.
 skipped="$healed"
+# Captured first: a producer that fails inside `done < <(...)` is invisible to
+# set -e, so a broken rev-list would replay nothing and the run would report
+# has-changes=false with commits still waiting to be imported.
+if ! replay_range="$(git rev-list --reverse --first-parent "${RESUME}..${OSS_TIP}")"; then
+  die "failed to list the replay range ${RESUME}..${OSS_TIP}; refusing to import"
+fi
 while read -r E; do
   [ -n "$E" ] || continue
   ensure_not_merge "$E"
@@ -177,7 +183,7 @@ while read -r E; do
   replay_commit "$E" "$OSS_TRAILER" "."
   replayed=$((replayed + 1))
   echo "Replayed ${E} -> $(git rev-parse HEAD) ($(git log -1 --format=%s "$E"))"
-done < <(git rev-list --reverse --first-parent "${RESUME}..${OSS_TIP}")
+done <<< "$replay_range"
 
 emit replayed-count "$replayed"
 emit skipped-count "$skipped"

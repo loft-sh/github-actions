@@ -103,8 +103,19 @@ if [ "$branch_absent" = "false" ]; then
     die "no ${MONOREPO_TRAILER} trailer found on OSS ${BRANCH} and no seed provided; set SEED_MONOREPO_COMMIT + SEED_OSS_COMMIT for the first run"
   fi
 
-  git cat-file -e "${RESUME}^{commit}" \
-    || die "resume point ${RESUME} (from ${MONOREPO_TRAILER} trailer) is not a commit in this repo"
+  # Prefix-checked, like every other value read out of a trailer: RESUME may be
+  # any 7-40 char hex a human wrote, and `cat-file -e` accepts a value that peels
+  # to a commit rather than one that names it, so an abbreviation colliding with an
+  # annotated tag resumes the replay from an unrelated commit. Normalised to the
+  # full sha here so the ranges below are built from what it actually resolved to.
+  resume_rc=0
+  resume_full="$(resolve_commit_prefix "$RESUME")" || resume_rc=$?
+  if [ "$resume_rc" -eq 2 ]; then
+    die "git failed while resolving the resume point ${RESUME} (from ${MONOREPO_TRAILER} trailer); refusing to export"
+  elif [ "$resume_rc" -ne 0 ]; then
+    die "resume point ${RESUME} (from ${MONOREPO_TRAILER} trailer) is not a commit in this repo"
+  fi
+  RESUME="$resume_full"
   git merge-base --is-ancestor "$OSS_ANCHOR" "$OSS_TIP" \
     || die "resume anchor ${OSS_ANCHOR} is not an ancestor of OSS ${BRANCH} tip"
 
@@ -139,7 +150,9 @@ if [ "$branch_absent" = "false" ]; then
   #       this was not an absorption record
   # would hand its first line to the shape filter and promote a sha nobody
   # recorded to the strongest evidence there is. Unfolded, the whole value arrives
-  # on one line and fails the hex test, which is the correct answer.
+  # on one line and fails the hex test, which is the correct answer. trailer_scan
+  # reaches the same verdict on the same lines, so the two sets cannot disagree
+  # about a folded value and call it weak evidence rather than none at all.
   block_absorbed_file="$(mktemp)"
   git log --first-parent --format="%(trailers:key=${OSS_TRAILER},valueonly,unfold)" "${RESUME}..HEAD" \
     | filter_sha_values | resolve_sha_set > "$block_absorbed_file"
@@ -229,6 +242,13 @@ git worktree add --detach --quiet "$WT" "$OSS_TIP"
 trap 'git worktree remove --force "$WT" 2>/dev/null || true; rm -rf "$WT_PARENT"' EXIT
 
 count=0
+# Captured first, like the divergence guard's walk: a producer that fails inside
+# `done < <(...)` is invisible to set -e, so a broken rev-list replays nothing and
+# the run reports a clean, empty export. With align-tree it then pushes a snapshot
+# built from a range nobody managed to list.
+if ! replay_range="$(git rev-list --reverse --first-parent "${RESUME}..HEAD" -- "$SUBTREE_PREFIX")"; then
+  die "failed to list the replay range ${RESUME}..HEAD; refusing to export"
+fi
 while read -r M; do
   [ -n "$M" ] || continue
   ensure_not_merge "$M"
@@ -257,7 +277,7 @@ while read -r M; do
   replay_commit "$M" "$MONOREPO_TRAILER" "$WT"
   count=$((count + 1))
   echo "Replayed ${M} -> $(git -C "$WT" rev-parse HEAD) ($(git log -1 --format=%s "$M"))"
-done < <(git rev-list --reverse --first-parent "${RESUME}..HEAD" -- "$SUBTREE_PREFIX")
+done <<< "$replay_range"
 
 NEW_TIP="$(git -C "$WT" rev-parse HEAD)"
 
@@ -287,7 +307,10 @@ if [ "$STAGING_TREE" != "$OSS_TREE" ]; then
       # has nothing to replay. Saying otherwise sends the operator, or a caller
       # dispatching on an output, round a loop that cannot terminate.
       echo "::error::The import direction cannot clear this: the anchor already reaches past them, so it has nothing to replay. Decide per commit."
-      echo "::error::  absorbed, then superseded upstream -> record it where git's own parser reads it, i.e. an empty commit on ${BRANCH} whose message ends with a paragraph containing only '${OSS_TRAILER}: <sha>', then re-run with align-tree."
+      # The monorepo branch, not ${BRANCH}: the block set is read from this repo's
+      # own first-parent chain (RESUME..HEAD), so a commit pushed to OSS instead
+      # changes nothing and every retry fails the same way.
+      echo "::error::  absorbed, then superseded upstream -> record it where git's own parser reads it, i.e. an empty commit on the monorepo branch this action runs from, whose message ends with a paragraph containing only '${OSS_TRAILER}: <sha>', then re-run with align-tree."
       # Not seed-oss-commit: the seed is a forward floor only (it replaces the
       # anchor when the anchor is an ancestor of it), so a seed placed behind the
       # falsely recorded commit is silently ignored and the import still resumes
