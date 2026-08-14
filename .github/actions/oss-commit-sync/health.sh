@@ -199,7 +199,18 @@ if entries="$(all_trailer_entries HEAD "$OSS_TRAILER")"; then
     orphaned=false
     while IFS= read -r v; do
       [ -n "$v" ] || continue
-      printf '%s\n' "$parsed_norm" | grep -qxF "$v" || orphaned=true
+      # A here-string, not printf into a pipe: grep -q exits at the first match
+      # and would SIGPIPE the writer, which under pipefail reads as failure and
+      # would flag a clean commit.
+      grep -qxF "$v" <<< "$parsed_norm" && continue
+      # Outside the block is only evidence of a lost record if the value names a
+      # real OSS commit. The scan reads the whole message by design, so a
+      # column-0 "Oss-Commit:" line quoted in prose lands here too, and this
+      # warning tells humans they violated the merge policy: it must not fire on
+      # a commit that was rebase-merged properly. An unknown object or a commit
+      # outside OSS history is prose, not a squashed record.
+      git merge-base --is-ancestor "$v" "$OSS_TIP" 2>/dev/null || continue
+      orphaned=true
     done <<< "$scanned"
     if [ "$orphaned" = "true" ]; then
       squashed=$((squashed + 1))

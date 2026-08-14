@@ -168,9 +168,13 @@ in `test/squash-tolerance.bats`:
   direction reported nothing to import — a deadlock no re-run can clear. Content
   cannot settle that one either: an import absorbing a commit *and* the revert
   that superseded it leaves the older commit's content nowhere in the subtree, so
-  the trailer record is the only surviving evidence. Each value is resolved to a
-  full sha before the comparison, because a trailer may be abbreviated while the
-  shas it is checked against never are
+  the trailer record is the only surviving evidence. An abbreviated value is
+  resolved to its full sha before the comparison, because a trailer may be
+  shortened while the shas it is checked against never are; resolution is
+  prefix-checked so it can only ever name the commit the trailer names, which
+  matters because `align-tree: true` converges by overwriting the OSS tree
+  instead of failing, and a commit wrongly believed absorbed would lose its
+  content there
 
 If a maintainer needs to fix up a sync PR, they must add new commits (without an
 `Oss-Commit` trailer), never amend the replayed ones; amendments are caught later
@@ -204,9 +208,11 @@ describe.
   trailer the whole-message scan finds but git's trailer block does not, which is
   the fingerprint of a squash. The comparison is per value, not "is the block
   empty": a squash of N imports leaves only the last of its N trailers in the
-  block, so asking about emptiness would score exactly that commit clean. This is
-  the actionable one: it is the cause of the
-  lag above, and the lost per-commit authorship cannot be recovered after the
+  block, so asking about emptiness would score exactly that commit clean. A value
+  that names no commit in OSS history is prose rather than a lost record and is
+  not counted, since this warning tells a human they merged the wrong way and
+  must not fire on one who did not. This is the actionable one: it is the cause of
+  the lag above, and the lost per-commit authorship cannot be recovered after the
   fact. Enforce rebase-merge.
 - **Backlog.** `pending-count` is how many OSS commits genuinely await import.
 

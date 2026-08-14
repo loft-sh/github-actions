@@ -137,6 +137,27 @@ Oss-Commit: $E2"
   [[ "$output" == *"Rebase and merge"* ]]
 }
 
+@test "a hex line quoted in a commit body is not reported as a squash" {
+  # The scan reads the whole message by design, so prose at column 0 reaches the
+  # comparison. Counting it would tell a maintainer who rebase-merged correctly
+  # that they squashed, which is worse than missing a real one.
+  E1=$(external_commit ext1.go "one" "feat: alice first")
+  bash "$IMPORT"
+  squash_merge_pr_branch "feat: alice first (#42)
+
+Reviewers asked why the trailer below looks like this:
+Oss-Commit: 1111111111111111111111111111111111111111
+
+Oss-Commit: $E1"
+
+  run bash "$HEALTH"
+  [ "$status" -eq 0 ]
+  # The fabricated sha is no OSS commit, so nothing was orphaned.
+  [ "$(output_value squashed-trailer-count)" = "0" ]
+  [ "$(output_value degraded)" = "false" ]
+  [[ "$output" != *"Rebase and merge"* ]]
+}
+
 @test "a rebase-merged import reports no squash-orphaned trailers" {
   # The negative side of the set comparison: one trailer per commit, inside the
   # block, must never be counted.

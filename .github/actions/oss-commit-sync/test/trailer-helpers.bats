@@ -205,6 +205,56 @@ Oss-Commit: 7b20042"
   [ "$output" = "$OLD_SHA" ]
 }
 
+@test "resolve_sha_set stays quiet when an abbreviation names a non-commit" {
+  # --quiet does not cover a type mismatch: unguarded, rev-parse prints
+  # "expected commit type" and the export log grows a bare error line.
+  git commit -q --allow-empty -m "a commit"
+  tree=$(git rev-parse "HEAD^{tree}")
+  run resolve_sha_set <<< "${tree:0:12}"
+  [ "$status" -eq 0 ]
+  [ "$output" = "${tree:0:12}" ]
+  [[ "$output" != *"error"* ]]
+  [[ "$output" != *"expected commit type"* ]]
+}
+
+@test "resolve_sha_set never emits a sha the value is not a prefix of" {
+  # ^{commit} also peels an annotated tag to a commit sharing none of its
+  # digits. Emitting that would put a commit no trailer names into the absorbed
+  # set, and align-tree=true converges by overwriting OSS rather than failing.
+  git commit -q --allow-empty -m "tagged commit"
+  commit=$(git rev-parse HEAD)
+  git tag -a v1 -m "annotated" HEAD
+  tag=$(git rev-parse v1)
+  [ "$tag" != "$commit" ]
+
+  # Abbreviated, or the full-length pass-through would skip the lookup and the
+  # prefix guard would never run.
+  run resolve_sha_set <<< "${tag:0:12}"
+  [ "$status" -eq 0 ]
+  [ "$output" = "${tag:0:12}" ]
+  [[ "$output" != *"$commit"* ]]
+}
+
+@test "resolve_sha_set spawns no lookup for a full-length value" {
+  # The normal case: every trailer this action writes is already full length, so
+  # resolution must not cost a git process per absorbed commit.
+  git commit -q --allow-empty -m "a commit"
+  full=$(git rev-parse HEAD)
+  # A marker file, not stderr: bats does not fold a shim's stderr into $output
+  # here, so an stderr-based probe passes even when git IS called.
+  mkdir -p "$ROOT/bin"
+  cat > "$ROOT/bin/git" <<WRAP
+#!/usr/bin/env bash
+echo "\$*" >> "$ROOT/git-was-called"
+exit 99
+WRAP
+  chmod +x "$ROOT/bin/git"
+  PATH="$ROOT/bin:$PATH" run resolve_sha_set <<< "$full"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$full" ]
+  [ ! -f "$ROOT/git-was-called" ]
+}
+
 @test "resolve_sha_set emits a full sha once, not twice" {
   git commit -q --allow-empty -m "already full"
   full=$(git rev-parse HEAD)

@@ -131,7 +131,7 @@ every_trailer_value() {
 
 # resolve_sha_set
 # Read candidate shas on stdin; print each one, plus its full 40-char form
-# whenever that resolves to a commit in this repo.
+# whenever an abbreviation resolves to a commit in this repo.
 #
 # Membership sets built from trailer values are compared against shas that come
 # out of `git rev-list` full-length, while a trailer value need only be a hex run
@@ -139,18 +139,29 @@ every_trailer_value() {
 # never matches, and the commit it absorbed reads as unabsorbed forever. Same
 # deadlock every_trailer_value exists to fix, reached by the other road.
 #
-# Unresolvable values are still printed verbatim, so a trailer naming a commit
-# this repo does not hold keeps matching literally as before. An abbreviation
-# short enough to collide with an unrelated commit can widen the set, which is
-# the safe direction here: the export still refuses to push unless the trees
-# converge.
+# Resolution is prefix-checked, so a resolved sha can only ever be the commit
+# the trailer names: `^{commit}` also peels an annotated tag object to a commit
+# sharing none of its digits, which would put a commit nobody recorded into the
+# set. Widening the set is NOT harmless here. The guard is the only thing
+# standing between an unabsorbed external commit and align-tree=true, which
+# converges by overwriting the OSS tree rather than by failing, so a commit
+# wrongly believed absorbed can have its content flattened out of OSS.
+#
+# Values that are already full length are passed through without a lookup: every
+# trailer this action writes is one, so the normal case spawns no git at all.
+# Unresolvable values are printed verbatim too, keeping a trailer that names a
+# commit this repo does not hold matching literally as before.
 resolve_sha_set() {
   local v full
   while IFS= read -r v; do
     [ -n "$v" ] || continue
     printf '%s\n' "$v"
-    full="$(git rev-parse --verify --quiet "${v}^{commit}")" || continue
-    [ "$full" = "$v" ] || printf '%s\n' "$full"
+    [ "${#v}" -lt 40 ] || continue
+    # --quiet is not quiet on a type mismatch: an abbreviation that uniquely
+    # names a tree or blob still prints "expected commit type" to stderr, which
+    # would put a bare error line in an otherwise green export log.
+    full="$(git rev-parse --verify --quiet "${v}^{commit}" 2>/dev/null)" || continue
+    case "$full" in "$v"*) printf '%s\n' "$full" ;; esac
   done
 }
 
