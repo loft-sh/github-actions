@@ -182,9 +182,10 @@ trailer_scan() {
     substr($0, 1, hlen) == hdr {
       flush(); sha = substr($0, hlen + 1); inblock = 1; next
     }
-    # Whole-line match, not a prefix: git preserves control bytes inside a trailer
-    # value, so a value beginning with the delimiter would otherwise end the block
-    # early and hide every parser-only record after it.
+    # Whole-line match, not a prefix: git preserves a trailer value verbatim, and a
+    # prefix test would end the block on any value that merely starts the same way,
+    # hiding every parser-only record below it. (No apostrophes in here: the awk
+    # program is a single-quoted shell string.)
     $0 == blkend { inblock = 0; next }
     inblock {
       # Already key-stripped and unfolded by git, so a folded value arrives whole
