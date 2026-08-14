@@ -108,9 +108,11 @@ if [ "$branch_absent" = "false" ]; then
   #
   # every_trailer_value, not the last-wins lookup: one squash-merged import PR
   # records every commit it replayed on a single commit, and all of them count
-  # as absorbed.
+  # as absorbed. Piped through resolve_sha_set because the shas below are full
+  # length while a trailer value may be abbreviated, and grep -x would never
+  # match those.
   absorbed_file="$(mktemp)"
-  every_trailer_value "${RESUME}..HEAD" "$OSS_TRAILER" > "$absorbed_file"
+  every_trailer_value "${RESUME}..HEAD" "$OSS_TRAILER" | resolve_sha_set > "$absorbed_file"
   unabsorbed=()
   for s in $(git rev-list --first-parent "${OSS_ANCHOR}..${OSS_TIP}"); do
     has_trailer "$s" "$MONOREPO_TRAILER" && continue

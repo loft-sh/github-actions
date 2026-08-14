@@ -168,7 +168,9 @@ in `test/squash-tolerance.bats`:
   direction reported nothing to import — a deadlock no re-run can clear. Content
   cannot settle that one either: an import absorbing a commit *and* the revert
   that superseded it leaves the older commit's content nowhere in the subtree, so
-  the trailer record is the only surviving evidence
+  the trailer record is the only surviving evidence. Each value is resolved to a
+  full sha before the comparison, because a trailer may be abbreviated while the
+  shas it is checked against never are
 
 If a maintainer needs to fix up a sync PR, they must add new commits (without an
 `Oss-Commit` trailer), never amend the replayed ones; amendments are caught later

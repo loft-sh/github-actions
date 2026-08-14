@@ -113,10 +113,12 @@ all_trailer_entries() {
 }
 
 # every_trailer_value <ref-or-range> <key>
-# Every value recorded anywhere on the first-parent chain, newest commit first,
-# including several recorded by one commit.
+# Every value recorded anywhere on the first-parent chain, newest commit first;
+# within one commit, in message order, so the oldest record of that commit comes
+# first. Set-only: never use it to pick "the newest record", which is what
+# newest_trailer_entry answers.
 #
-# This is the set-membership question — "is this sha recorded at all" — and it
+# This is the set-membership question, "is this sha recorded at all", and it
 # must not use last-wins. A squash-merged import PR that replayed N commits
 # carries N same-key lines on one commit, and last-wins would report only the
 # newest, leaving the other N-1 looking unrecorded forever. That is not
@@ -125,6 +127,31 @@ all_trailer_entries() {
 # upstream inside the same import.
 every_trailer_value() {
   trailer_scan "$2" 1 --first-parent "$1" | awk '{print $2}'
+}
+
+# resolve_sha_set
+# Read candidate shas on stdin; print each one, plus its full 40-char form
+# whenever that resolves to a commit in this repo.
+#
+# Membership sets built from trailer values are compared against shas that come
+# out of `git rev-list` full-length, while a trailer value need only be a hex run
+# of TRAILER_SHA_MIN_LEN or more: a hand-written or shortened record therefore
+# never matches, and the commit it absorbed reads as unabsorbed forever. Same
+# deadlock every_trailer_value exists to fix, reached by the other road.
+#
+# Unresolvable values are still printed verbatim, so a trailer naming a commit
+# this repo does not hold keeps matching literally as before. An abbreviation
+# short enough to collide with an unrelated commit can widen the set, which is
+# the safe direction here: the export still refuses to push unless the trees
+# converge.
+resolve_sha_set() {
+  local v full
+  while IFS= read -r v; do
+    [ -n "$v" ] || continue
+    printf '%s\n' "$v"
+    full="$(git rev-parse --verify --quiet "${v}^{commit}")" || continue
+    [ "$full" = "$v" ] || printf '%s\n' "$full"
+  done
 }
 
 # newest_trailer_entry <ref> <key>

@@ -185,6 +185,34 @@ Oss-Commit: 7b20042"
   [ "$output" = "7b20042" ]
 }
 
+@test "resolve_sha_set expands an abbreviated value to its full sha" {
+  git commit -q --allow-empty -m "a commit to abbreviate"
+  full=$(git rev-parse HEAD)
+  run resolve_sha_set <<< "${full:0:12}"
+  [ "$status" -eq 0 ]
+  # Both forms, so a set built from trailer values matches full shas from
+  # git rev-list as well as the abbreviation as written.
+  [ "$(echo "$output" | wc -l)" -eq 2 ]
+  [ "$(echo "$output" | awk 'NR==1')" = "${full:0:12}" ]
+  [ "$(echo "$output" | awk 'NR==2')" = "$full" ]
+}
+
+@test "resolve_sha_set passes through what it cannot resolve and stays quiet" {
+  # A trailer may name a commit this repo does not hold; it must keep matching
+  # literally rather than dropping out of the set.
+  run resolve_sha_set <<< "$OLD_SHA"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$OLD_SHA" ]
+}
+
+@test "resolve_sha_set emits a full sha once, not twice" {
+  git commit -q --allow-empty -m "already full"
+  full=$(git rev-parse HEAD)
+  run resolve_sha_set <<< "$full"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$full" ]
+}
+
 @test "newest_trailer_entry survives a large history under pipefail (SIGPIPE regression)" {
   # Fabricate ~2500 commits cheaply; newest carries the trailer so a naive
   # early-exit consumer would close the pipe after line 1 while git streams

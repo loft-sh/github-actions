@@ -216,6 +216,44 @@ Co-authored-by: alice <alice@contributor.example>"
   [ "$(git -C "$OSS_REMOTE" rev-parse 'main^{tree}')" = "$(git -C "$MONO" rev-parse "HEAD:$PFX")" ]
 }
 
+@test "squash WITH an abbreviated trailer, superseded upstream: export stays green" {
+  # The same deadlock as above reached by abbreviation instead of last-wins.
+  # trailer_scan deliberately accepts a shortened hand-written value, but the
+  # guard compares against full shas from git rev-list, so an abbreviated record
+  # matched nothing and its commit read as unabsorbed on every push.
+  E1=$(external_commit pkg/app.go "with-banner" "feat: add banner (#3915)")
+  E2=$(external_commit pkg/app.go "banner-trimmed" "revert: most of the banner (#4143)")
+  bash "$IMPORT"
+
+  squash_merge_pr_branch "chore: sync from oss (#2177)
+
+feat: add banner (#3915)
+
+Oss-Commit: ${E1:0:12}
+
+revert: most of the banner (#4143)
+
+Oss-Commit: $E2
+
+Co-authored-by: alice <alice@contributor.example>"
+
+  # Same premise: E1's content is gone from staging, so only the trailer record
+  # can prove it was absorbed.
+  [ "$(cat "$MONO/$PFX/pkg/app.go")" = "banner-trimmed" ]
+
+  run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value diverged)" = "false" ]
+  [[ "$output" != *"not yet absorbed"* ]]
+  [[ "$output" != *"$E1"* ]]
+
+  company_commit pkg/other.go "after-revert" "feat: company after revert" >/dev/null
+  run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value exported-count)" = "1" ]
+  [ "$(git -C "$OSS_REMOTE" rev-parse 'main^{tree}')" = "$(git -C "$MONO" rev-parse "HEAD:$PFX")" ]
+}
+
 @test "squash WITH trailers in the body: resume takes the newest trailer" {
   E1=$(external_commit ext1.go "one" "feat: alice first")
   E2=$(external_commit ext2.go "two" "feat: alice second")
