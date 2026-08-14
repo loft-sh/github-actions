@@ -287,7 +287,10 @@ if [ -z "$ANCHOR" ]; then
 fi
 
 if [ "$squashed" -gt 0 ]; then
-  echo "::warning::${squashed} sync commit(s) on ${BRANCH} carry an ${OSS_TRAILER} trailer that GitHub's squash-merge orphaned from the trailer block. The sync reads it anyway, but per-commit authorship of the external contributions was collapsed on ${BRANCH}. Merge sync PRs with \"Rebase and merge\"."
+  # Hedged like the README and the output description: this is the shape a squash
+  # leaves, and also the shape of a real trailer line quoted in a body. Telling a
+  # maintainer flatly that they squashed is the one thing this must not get wrong.
+  echo "::warning::${squashed} commit(s) on ${BRANCH} carry an ${OSS_TRAILER} value outside the block git's own trailer parser reads. GitHub's squash-merge does that, and if that is the cause then per-commit authorship of those external contributions was collapsed and cannot be recovered; merge sync PRs with \"Rebase and merge\". A real ${OSS_TRAILER} line quoted in a commit body looks identical here, so check the commits below before concluding."
   printf '::warning::  squash-merged: %s\n' "${squashed_list[@]}"
 fi
 

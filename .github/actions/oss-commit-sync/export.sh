@@ -113,23 +113,52 @@ if [ "$branch_absent" = "false" ]; then
   # match those.
   absorbed_file="$(mktemp)"
   every_trailer_value "${RESUME}..HEAD" "$OSS_TRAILER" | resolve_sha_set > "$absorbed_file"
+  # The same values as git's own trailer parser sees them. The scan above reads
+  # the whole message on purpose, so it also reads an Oss-Commit line quoted at
+  # column 0 in a body, and no textual rule separates that from a real trailer:
+  # the line above it may be "Signed-off-by: x" or "Note: still pending is", both
+  # trailer-shaped. Keeping absorption ordinary while marking the evidence weak is
+  # what lets align-tree refuse below without breaking the squash rescue.
+  block_absorbed_file="$(mktemp)"
+  git log --first-parent --format="%(trailers:key=${OSS_TRAILER},valueonly)" "${RESUME}..HEAD" \
+    | resolve_sha_set > "$block_absorbed_file"
   unabsorbed=()
+  loose_absorbed=()
   for s in $(git rev-list --first-parent "${OSS_ANCHOR}..${OSS_TIP}"); do
     has_trailer "$s" "$MONOREPO_TRAILER" && continue
-    grep -qxF "$s" "$absorbed_file" && continue
+    if grep -qxF "$s" "$absorbed_file"; then
+      grep -qxF "$s" "$block_absorbed_file" || loose_absorbed+=("$s")
+      continue
+    fi
     if external_is_benign "$s"; then
       echo "External ${s} is benign (excluded paths only, or content already in ${SUBTREE_PREFIX})"
       continue
     fi
     unabsorbed+=("$s")
   done
-  rm -f "$absorbed_file"
+  rm -f "$absorbed_file" "$block_absorbed_file"
   if [ "${#unabsorbed[@]}" -gt 0 ]; then
     emit diverged true
     echo "::error::OSS ${BRANCH} has external commits not yet absorbed into ${SUBTREE_PREFIX}:"
     printf '::error::  %s\n' "${unabsorbed[@]}"
     echo "::error::Run the import direction (sync-from-oss) and merge its PR, then retry."
     exit 1
+  fi
+  # An external counted as absorbed only by a line outside git's trailer block is
+  # believed, because that is the squash rescue this guard exists for. It is not
+  # enough to authorise deleting that commit's content from OSS, which is what
+  # align-tree does on any difference: content the monorepo never held cannot be
+  # distinguished from content a later commit superseded, so the value's origin is
+  # the only signal left. Fail closed and make the operator absorb it properly.
+  if [ "${#loose_absorbed[@]}" -gt 0 ]; then
+    printf '::notice::External %s counts as absorbed only via an Oss-Commit line outside git trailer block\n' "${loose_absorbed[@]}"
+    if [ "$ALIGN_TREE" = "true" ]; then
+      emit diverged true
+      echo "::error::align-tree would overwrite the OSS tree while these external commits are absorbed only by an Oss-Commit line outside git's trailer block:"
+      printf '::error::  %s\n' "${loose_absorbed[@]}"
+      echo "::error::That evidence is enough to keep exporting, not to delete their content from OSS. Import them and merge the sync PR (rebase-merge, so each trailer lands in its own block), then re-run with align-tree."
+      exit 1
+    fi
   fi
 else
   # Fresh release line: anchor where the monorepo branch history was last

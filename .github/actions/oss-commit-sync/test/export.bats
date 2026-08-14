@@ -308,3 +308,50 @@ Monorepo-Commit: $M0"
   [ "$(output_value exported-count)" = "1" ]
   [ "$(oss_file pkg/app.go)" = "post-migration" ]
 }
+
+@test "align-tree refuses to overwrite an external absorbed only outside the trailer block" {
+  # The whole-message scan reads an Oss-Commit line anywhere, which is what
+  # rescues a squash-orphaned trailer. That evidence keeps the export moving; it
+  # must not authorise align-tree to delete the commit's content from OSS, since
+  # "never absorbed" and "absorbed then superseded" look identical in content.
+  E1=$(external_commit pkg/app.go "external-only-content" "feat: alice never imported")
+  E2=$(external_commit ext2.go "two" "feat: alice second")
+  bash "$IMPORT" >/dev/null
+  git -C "$MONO" switch -q main
+  # Records E2 in git's block, and E1 only on a line above it.
+  git -C "$MONO" commit -q --allow-empty -m "chore: absorb the second
+
+Note: still pending is
+Oss-Commit: $E1
+
+Oss-Commit: $E2"
+
+  ALIGN_TREE=true run bash "$EXPORT"
+  [ "$status" -eq 1 ]
+  [ "$(output_value diverged)" = "true" ]
+  [ "$(output_value pushed)" = "false" ]
+  [[ "$output" == *"align-tree would overwrite"* ]]
+  [[ "$output" == *"$E1"* ]]
+  # The contributor's commit is still on the mirror.
+  [ "$(oss_file pkg/app.go)" = "external-only-content" ]
+}
+
+@test "an external absorbed outside the trailer block still exports without align-tree" {
+  # The squash rescue itself must keep working: the guard passes, the run notes
+  # the weak evidence, and the convergence assertion stays the backstop.
+  E1=$(external_commit pkg/app.go "banner" "feat: add banner")
+  E2=$(external_commit pkg/app.go "banner-trimmed" "revert: most of the banner")
+  bash "$IMPORT" >/dev/null
+  squash_merge_pr_branch "chore: sync from oss (#2177)
+
+Oss-Commit: $E1
+
+Oss-Commit: $E2
+
+Co-authored-by: alice <alice@contributor.example>"
+
+  run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value diverged)" = "false" ]
+  [[ "$output" == *"absorbed only via an Oss-Commit line outside git trailer block"* ]]
+}

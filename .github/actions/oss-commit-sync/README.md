@@ -79,6 +79,15 @@ Safety mechanisms, in order:
    explicit operator escape hatch, and at migration it is what deletes the
    OSS-only producer workflows and seeds the first trailer.
 
+   Because that overwrite deletes whatever OSS holds and the monorepo does not,
+   `align-tree: true` demands stronger absorption evidence than an ordinary run:
+   an external counted as absorbed only by an `Oss-Commit` line *outside* the
+   block git's own trailer parser reads fails the run instead. Ordinary runs
+   accept that line, which is what rescues a squash-orphaned trailer, but it
+   cannot tell "never absorbed" from "absorbed, then superseded", and only one of
+   those is safe to flatten. Import the commit and rebase-merge the sync PR so its
+   trailer lands in a block, then re-run with `align-tree`.
+
 New release lines: when the branch does not exist on OSS, it is created from
 the OSS commit corresponding to the monorepo branch point (found via trailers
 on the OSS default branch), then the branch-only commits are replayed.
@@ -221,9 +230,12 @@ describe.
   chosen one, because the warning tells a human they merged the wrong way.
 
   Write trailers as full 40-character shas. An abbreviated hand-written value is
-  read, but it stops resolving if another object later shares its prefix, and the
-  export guard then reports its commit as unabsorbed with no way out but a longer
-  trailer.
+  read, and the `^{commit}` lookup disambiguates by type, so a prefix it shares
+  with a tree or a blob still resolves. It stops resolving once a second *commit*
+  shares the prefix, and from then on the export guard can only fall back to the
+  content check: absorbed commits whose content was later superseded are the ones
+  that then read as unabsorbed, which is exactly the case that deadlocked the
+  export in the first place.
 
   It is still the actionable signal: it is the cause of the lag above, and the lost
   per-commit authorship cannot be recovered after the fact. Enforce rebase-merge.

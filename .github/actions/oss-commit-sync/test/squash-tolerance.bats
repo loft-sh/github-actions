@@ -245,7 +245,10 @@ Co-authored-by: alice <alice@contributor.example>"
   [ "$status" -eq 0 ]
   [ "$(output_value diverged)" = "false" ]
   [[ "$output" != *"not yet absorbed"* ]]
-  [[ "$output" != *"$E1"* ]]
+  # E1 is named, but as weak absorption evidence rather than as a divergence: a
+  # squash-orphaned trailer is exactly the case that carries no block record.
+  [[ "$output" != *"::error::"* ]]
+  [[ "$output" == *"absorbed only via an Oss-Commit line outside git trailer block"* ]]
 
   company_commit pkg/other.go "after-revert" "feat: company after revert" >/dev/null
   run bash "$EXPORT"
