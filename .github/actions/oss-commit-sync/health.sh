@@ -18,9 +18,13 @@ set -euo pipefail
 #
 #   2. Was a sync PR squash-merged? GitHub's squash appends "Co-authored-by:" as
 #      a new paragraph, which orphans our trailer from the block git's own
-#      %(trailers) parser reads. The trailer helpers scan the whole message so
-#      this no longer breaks the sync, but the merge policy was violated and
-#      per-commit authorship of external contributions was collapsed.
+#      %(trailers) parser reads. Even without that paragraph, a squash of N
+#      replayed commits leaves only the last of its N trailers in the block, so
+#      the check compares the whole-message scan against the block as sets rather
+#      than asking whether the block came back empty. The trailer helpers scan
+#      the whole message so none of this breaks the sync, but the merge policy
+#      was violated and per-commit authorship of external contributions was
+#      collapsed.
 #
 #   3. How many OSS commits are genuinely waiting to be imported?
 #
@@ -180,7 +184,24 @@ if entries="$(all_trailer_entries HEAD "$OSS_TRAILER")"; then
       echo "::warning::Could not read the trailer block of ${M}; squashed-trailer-count may be understated."
       continue
     fi
-    if [ -z "$(printf '%s' "$parsed" | tr -d '[:space:]')" ]; then
+    if ! scanned="$(trailer_scan "$OSS_TRAILER" 1 -1 "$M" | awk '{print $2}')"; then
+      degraded=true
+      echo "::warning::Could not scan the message of ${M}; squashed-trailer-count may be understated."
+      continue
+    fi
+    # A set comparison, not "is git's block empty". A squash that appends no
+    # Co-authored-by paragraph leaves the LAST trailer inside the block git
+    # parses while every earlier one stays orphaned above it, so an emptiness
+    # test scores that commit clean and misses the shape this check exists to
+    # catch. Values are compared as written, since both sides read the same
+    # lines; the trailing-space strip mirrors what trailer_scan already does.
+    parsed_norm="$(printf '%s\n' "$parsed" | sed 's/[[:space:]]*$//')"
+    orphaned=false
+    while IFS= read -r v; do
+      [ -n "$v" ] || continue
+      printf '%s\n' "$parsed_norm" | grep -qxF "$v" || orphaned=true
+    done <<< "$scanned"
+    if [ "$orphaned" = "true" ]; then
       squashed=$((squashed + 1))
       squashed_list+=("$M")
     fi

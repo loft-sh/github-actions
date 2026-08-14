@@ -200,9 +200,12 @@ describe.
   counts `redundant-unrecorded-count` only: `redundant-export-count`, the
   commits we exported ourselves, lags the anchor after every export and is
   never a finding.
-- **Squash-merged sync PRs.** `squashed-trailer-count` counts commits whose
+- **Squash-merged sync PRs.** `squashed-trailer-count` counts commits carrying a
   trailer the whole-message scan finds but git's trailer block does not, which is
-  the fingerprint of a squash. This is the actionable one: it is the cause of the
+  the fingerprint of a squash. The comparison is per value, not "is the block
+  empty": a squash of N imports leaves only the last of its N trailers in the
+  block, so asking about emptiness would score exactly that commit clean. This is
+  the actionable one: it is the cause of the
   lag above, and the lost per-commit authorship cannot be recovered after the
   fact. Enforce rebase-merge.
 - **Backlog.** `pending-count` is how many OSS commits genuinely await import.

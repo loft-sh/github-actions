@@ -110,6 +110,45 @@ Co-authored-by: alice <alice@contributor.example>"
   [[ "$output" == *"Rebase and merge"* ]]
 }
 
+@test "a squash whose last trailer stays in the block still reports the orphaned ones" {
+  # No Co-authored-by paragraph, so git parses the LAST Oss-Commit fine and an
+  # emptiness test scores this commit clean. E1's trailer is orphaned above it
+  # all the same, which is the exact shape that deadlocked the export.
+  E1=$(external_commit ext1.go "one" "feat: alice first")
+  E2=$(external_commit ext2.go "two" "feat: alice second")
+  bash "$IMPORT"
+  squash_merge_pr_branch "chore: sync from oss (#42)
+
+feat: alice first
+
+Oss-Commit: $E1
+
+feat: alice second
+
+Oss-Commit: $E2"
+
+  run bash "$HEALTH"
+  [ "$status" -eq 0 ]
+  # Git's own parser sees E2, so the anchor is intact and the sync is fine ...
+  [ "$(output_value anchor)" = "$E2" ]
+  [ "$(output_value stale-anchor)" = "false" ]
+  # ... but the squash collapsed authorship and hid E1's record.
+  [ "$(output_value squashed-trailer-count)" = "1" ]
+  [[ "$output" == *"Rebase and merge"* ]]
+}
+
+@test "a rebase-merged import reports no squash-orphaned trailers" {
+  # The negative side of the set comparison: one trailer per commit, inside the
+  # block, must never be counted.
+  external_commit ext1.go "one" "feat: alice first" >/dev/null
+  absorb_external
+
+  run bash "$HEALTH"
+  [ "$status" -eq 0 ]
+  [ "$(output_value squashed-trailer-count)" = "0" ]
+  [ "$(output_value degraded)" = "false" ]
+}
+
 @test "health never mutates the repository" {
   external_commit ext.go "one" "feat: alice first" >/dev/null
   before_head="$(git -C "$MONO" rev-parse HEAD)"
