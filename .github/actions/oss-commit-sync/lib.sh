@@ -242,6 +242,26 @@ trailer_value() {
 
 has_trailer() { [ -n "$(trailer_value "$1" "$2")" ]; }
 
+# has_trailer_any <sha> <key>
+# True when the commit records <key> by EITHER reading: the whole-message scan, or
+# git's own trailer parser.
+#
+# The two readings genuinely disagree, in both directions. The scan misses forms
+# git accepts ("Key:<sha>" with no space, a tab, uppercase hex); git misses any
+# line outside the block it recognises, which is the squash-orphan case. Every
+# decision about whether a commit IS a sync record has to use both, or the same
+# trailer line can be absorption evidence to one caller and invisible to another:
+# an export that treats a commit as absorbed but not as OSS-originated replays it
+# straight back to OSS and resurrects content the mirror had already moved past.
+has_trailer_any() {
+  has_trailer "$1" "$2" && return 0
+  local block
+  # No `head`: closing this pipe early would SIGPIPE the producer, which under
+  # pipefail reads as failure. The output is one commit's worth, so read it all.
+  block="$(git log -1 --format="%(trailers:key=${2},valueonly,unfold)" "$1" | filter_sha_values)"
+  [ -n "$block" ]
+}
+
 # --- shared subtree / anchor helpers ------------------------------------------
 
 # build_excludes

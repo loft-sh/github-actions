@@ -444,3 +444,70 @@ Co-authored-by: alice <alice@contributor.example>"
   [ "$(output_value diverged)" = "false" ]
   [[ "$output" == *"absorbed only via an Oss-Commit line outside git trailer block"* ]]
 }
+
+@test "a folded trailer value is not strong absorption evidence" {
+  # git keeps a folded value as several physical lines unless unfold is asked for,
+  # so reading it line-wise would take the sha off the first line and treat a
+  # commit nobody recorded as block-recorded, which is what align-tree trusts.
+  E1=$(external_commit pkg/app.go "external-only-content" "feat: alice never imported")
+  company_commit pkg/other.go "company" "feat: company change" >/dev/null
+  git -C "$MONO" commit -q --allow-empty -m "chore: not a record at all
+
+Oss-Commit:$E1
+  this was not an absorption record"
+
+  ALIGN_TREE=true run bash "$EXPORT"
+  [ "$status" -eq 1 ]
+  # Not absorbed at all: the folded value is no record, by either reading.
+  [ "$(output_value diverged)" = "true" ]
+  [ "$(output_value pushed)" = "false" ]
+  [[ "$output" == *"not yet absorbed"* ]]
+  [ "$(oss_file pkg/app.go)" = "external-only-content" ]
+}
+
+@test "loose-absorption is reported even when the run also diverges" {
+  # Two findings in one run: the divergence exit must not swallow the other one.
+  E1=$(external_commit pkg/app.go "banner" "feat: add banner")
+  E2=$(external_commit pkg/app.go "banner-trimmed" "revert: most of the banner")
+  bash "$IMPORT" >/dev/null
+  squash_merge_pr_branch "chore: sync from oss (#42)
+
+Oss-Commit: $E1
+
+Oss-Commit: $E2
+
+Co-authored-by: alice <alice@contributor.example>"
+  # And now a genuinely unabsorbed external on top.
+  external_commit ext9.go "pending" "feat: alice pending" >/dev/null
+
+  run bash "$EXPORT"
+  [ "$status" -eq 1 ]
+  [ "$(output_value diverged)" = "true" ]
+  [ "$(output_value loose-absorption)" = "true" ]
+}
+
+@test "a commit recorded only in git's laxer form is not replayed back to OSS" {
+  # The guard and the loop guard must agree about the same trailer line. If the
+  # guard counts a commit as absorbed but the loop does not count it as
+  # OSS-originated, its diff is replayed and content the mirror already moved past
+  # comes back, authored by the contributor.
+  E1=$(external_commit pkg/app.go "banner" "feat: add banner")
+  bash "$IMPORT" >/dev/null
+  # Sole record, in a form only git's own parser reads (no space after the key).
+  squash_merge_pr_branch "chore: sync from oss (#1)
+
+Oss-Commit:$E1"
+
+  # Upstream reverts the banner; we absorb that properly.
+  external_commit pkg/app.go "l1-l2-l3" "revert: the banner" >/dev/null
+  absorb_external
+
+  run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value diverged)" = "false" ]
+  # Nothing replayed: both sync commits are recognised as OSS-originated.
+  [ "$(output_value exported-count)" = "0" ]
+  # The revert stands; the banner was not resurrected.
+  [ "$(oss_file pkg/app.go)" = "l1-l2-l3" ]
+  [ "$(git -C "$OSS_REMOTE" rev-parse 'main^{tree}')" = "$(git -C "$MONO" rev-parse "HEAD:$PFX")" ]
+}

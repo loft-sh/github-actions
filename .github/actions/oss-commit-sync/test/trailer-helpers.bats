@@ -261,6 +261,33 @@ Oss-Commit: 7b20042"
   [ "$output" = "$commit" ]
 }
 
+@test "filter_sha_values keeps sha-shaped values and drops everything else" {
+  run filter_sha_values <<'VALUES'
+1111111111111111111111111111111111111111
+2222222222222222222222222222222222222222222
+abc123
+7b20042
+DEADBEEFCAFE
+@{9999}
+:/subject search
+1111111111111111111111111111111111111111 with a folded tail
+VALUES
+  [ "$status" -eq 0 ]
+  # Kept: the 40-char value, the 7-char abbreviation, and the uppercase run
+  # (lowercased), since git's own parser accepts uppercase hex.
+  [ "$(echo "$output" | wc -l)" -eq 3 ]
+  [ "$(echo "$output" | awk 'NR==1')" = "1111111111111111111111111111111111111111" ]
+  [ "$(echo "$output" | awk 'NR==2')" = "7b20042" ]
+  [ "$(echo "$output" | awk 'NR==3')" = "deadbeefcafe" ]
+  # Dropped: 43 chars (over 40), 6 chars (under TRAILER_SHA_MIN_LEN), non-hex, and
+  # anything with a tail. The last two matter most: reflog syntax reaching
+  # rev-parse exits 128, which the resolver escalates into a failed export.
+  [[ "$output" != *"2222222222222222222222222222222222222222222"* ]]
+  [[ "$output" != *"abc123"* ]]
+  [[ "$output" != *"@"* ]]
+  [[ "$output" != *"folded tail"* ]]
+}
+
 @test "resolve_commit_prefix separates naming no commit from git failing" {
   git commit -q --allow-empty -m "a commit"
   full=$(git rev-parse HEAD)
