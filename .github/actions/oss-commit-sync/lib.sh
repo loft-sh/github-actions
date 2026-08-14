@@ -76,6 +76,16 @@ TRAILER_SHA_MIN_LEN=7
 # per-process mark is exactly as unguessable as a per-call one.
 TRAILER_FRAME_MARK="$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')" || TRAILER_FRAME_MARK=""
 if [ "${#TRAILER_FRAME_MARK}" -ne 32 ]; then
+  # Still the kernel's pool, just reached another way.
+  TRAILER_FRAME_MARK="$(tr -d '\n-' < /proc/sys/kernel/random/uuid 2>/dev/null)" || TRAILER_FRAME_MARK=""
+fi
+if [ "${#TRAILER_FRAME_MARK}" -ne 32 ]; then
+  # Last resort, and weaker on purpose rather than by accident: $RANDOM is a PRNG
+  # seeded from time and pid, so a determined attacker who could both force this
+  # branch and enumerate that state could aim at the frame. Reaching it means the
+  # kernel pool was unavailable twice, which on the runners this action targets
+  # does not happen; failing the sync outright would trade a real outage for a
+  # theoretical attack.
   TRAILER_FRAME_MARK="$(printf '%04x%04x%04x%04x%04x%04x%04x%04x' \
     "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM")"
 fi
