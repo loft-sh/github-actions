@@ -150,10 +150,15 @@ if [ "$branch_absent" = "false" ]; then
   cat "$block_absorbed_file" >> "$absorbed_file"
   unabsorbed=()
   loose_absorbed=()
-  for s in $(git rev-list --first-parent "${OSS_ANCHOR}..${OSS_TIP}"); do
-    # Both readings here too: a Monorepo-Commit in a form only git parses would
-    # otherwise make our own export look like an external commit needing absorption.
-    has_trailer_any "$s" "$MONOREPO_TRAILER" && continue
+  # Captured first: a failing command substitution in a `for` word list is
+  # invisible to set -e, so the guard would run zero times, leave both arrays empty
+  # and let the run proceed -- with align-tree that flattens the OSS tree with no
+  # gate at all. Every other producer here is captured and checked for this reason.
+  if ! externals="$(git rev-list --first-parent "${OSS_ANCHOR}..${OSS_TIP}")"; then
+    die "failed to list OSS commits in ${OSS_ANCHOR}..${OSS_TIP}; refusing to judge divergence"
+  fi
+  for s in $externals; do
+    has_trailer "$s" "$MONOREPO_TRAILER" && continue
     if grep -qxF "$s" "$absorbed_file"; then
       grep -qxF "$s" "$block_absorbed_file" && continue
       # Absorbed on evidence git's parser cannot see. Harmless unless alignment
@@ -232,11 +237,7 @@ count=0
 while read -r M; do
   [ -n "$M" ] || continue
   ensure_not_merge "$M"
-  # has_trailer_any, matching the divergence guard's reading: a commit the guard
-  # counted as absorbed via a form only git's parser sees must also count as
-  # OSS-originated here, or its diff is replayed back onto OSS and resurrects
-  # content the mirror had already moved past.
-  if has_trailer_any "$M" "$OSS_TRAILER"; then
+  if has_trailer "$M" "$OSS_TRAILER"; then
     echo "Skipping ${M} (originated on OSS)"
     continue
   fi

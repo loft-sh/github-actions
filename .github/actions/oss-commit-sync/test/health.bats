@@ -343,3 +343,22 @@ WRAP
   grep -q "OSS sync health" "$GITHUB_STEP_SUMMARY"
   grep -q "Commits pending import | 1" "$GITHUB_STEP_SUMMARY"
 }
+
+@test "a folded block value does not hide an orphaned record" {
+  # The scan reads "Oss-Commit: <sha>" from the first physical line, so the record
+  # exists. git folds the indented line into the value, so its block does NOT carry
+  # that sha. Without unfold the block read would appear to contain the bare sha,
+  # match, and score the commit clean, disagreeing with the export about the very
+  # same line.
+  E1=$(external_commit ext1.go "one" "feat: alice first")
+  bash "$IMPORT"
+  squash_merge_pr_branch "feat: alice first (#42)
+
+Oss-Commit: $E1
+  this trailing line makes it a folded value"
+
+  run bash "$HEALTH"
+  [ "$status" -eq 0 ]
+  [ "$(output_value squashed-trailer-count)" = "1" ]
+  [ "$(output_value degraded)" = "false" ]
+}

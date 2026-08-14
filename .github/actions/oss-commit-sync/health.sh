@@ -204,7 +204,10 @@ if scanned_all="$(trailer_scan "$OSS_TRAILER" 1 --first-parent HEAD)"; then
       # failure yields empty output, which here reads as "git could not see the
       # trailer", i.e. a squash, and would raise a false alarm against a clean
       # commit. The trailing-space strip mirrors what trailer_scan already does.
-      if parsed="$(git log -1 --format="%(trailers:key=${OSS_TRAILER},valueonly)" "$M")"; then
+      # unfold, matching the export guard: without it a folded value stays several
+      # physical lines and its first line would match a scanned sha here, scoring a
+      # commit clean that the export treats as having no block record.
+      if parsed="$(git log -1 --format="%(trailers:key=${OSS_TRAILER},valueonly,unfold)" "$M")"; then
         parsed_norm="$(printf '%s\n' "$parsed" | sed 's/[[:space:]]*$//')"
       else
         degraded=true

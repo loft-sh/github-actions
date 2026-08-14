@@ -36,23 +36,29 @@ die() {
 
 # --- trailer lookup ----------------------------------------------------------
 #
-# Deliberately NOT git's own %(trailers) parsing. Git recognizes only the LAST
-# paragraph of a message as the trailer block, and GitHub's "Squash and merge"
-# appends "Co-authored-by:" lines as a NEW paragraph. That pushes a trailer we
-# wrote out of the block git will parse: the line is still in the message
-# verbatim, but %(trailers) stops seeing it, so the sync silently loses its
-# resume point and re-walks history it already holds. Not hypothetical: it
-# froze the vcluster-pro import anchor for a week, then hard-failed once one of
-# the re-walked commits stopped applying as a no-op.
+# Not git's %(trailers) parsing ALONE, and not the whole-message scan alone. Each
+# misses records the other sees, so the lookup is the union of both.
 #
-# So the scan reads the whole message. The value shape is what keeps most prose
-# out: every trailer this action reads or writes carries a commit sha and nothing
-# else, so the line must start at column 0 with the exact key and be followed
-# only by hex. It reduces accidental matches rather than ruling them out, and a
-# line of that exact shape quoted in a body does match, so callers that draw a
-# conclusion about a human's behaviour from a match (health's squash detector)
-# corroborate it against OSS history first. The key match is case-insensitive,
-# matching git's own trailer semantics.
+# Git recognizes only the LAST paragraph of a message as the trailer block, and
+# GitHub's "Squash and merge" appends "Co-authored-by:" lines as a NEW paragraph.
+# That pushes a trailer we wrote out of the block git will parse: the line is
+# still in the message verbatim, but %(trailers) stops seeing it, so the sync
+# silently loses its resume point and re-walks history it already holds. Not
+# hypothetical: it froze the vcluster-pro import anchor for a week, then
+# hard-failed once one of the re-walked commits stopped applying as a no-op.
+#
+# The other way round, git's parser is laxer about the line itself: it accepts
+# "Key:<sha>" with no space, with a tab, with several spaces, and uppercase hex,
+# none of which the scan matches. A record git reads perfectly would otherwise be
+# invisible here, which deadlocked the export from the opposite direction.
+#
+# The scan's value shape is what keeps most prose out: every trailer this action
+# reads or writes carries a commit sha and nothing else, so the line must start at
+# column 0 with the exact key and be followed only by hex. It reduces accidental
+# matches rather than ruling them out, and a line of that exact shape quoted in a
+# body does match, so callers that draw a conclusion about a human's behaviour
+# from a match (health's squash detector) corroborate it against OSS history
+# first. The key match is case-insensitive, matching git's own trailer semantics.
 
 # Shortest abbreviation accepted from a hand-written trailer. Below this a hex
 # run is too generic to be confidently a sha.
@@ -70,30 +76,63 @@ TRAILER_SHA_MIN_LEN=7
 # is build-dependent, so this only bites on big repos on some runners). It
 # reads the whole stream instead; callers keep the entries they want.
 #
-# Commits are framed by a leading \001 on the header line rather than an awk
-# RS: a NUL or control-char RS is not portable across awk implementations
-# (mawk treats an empty RS as paragraph mode), and a control character cannot
-# occur at column 0 of a real commit message.
+# Commits are framed by a leading \001 on the header line, and git's block values
+# are separated from the message by \002, rather than an awk RS: a NUL or
+# control-char RS is not portable across awk implementations (mawk treats an empty
+# RS as paragraph mode), and a control character cannot occur at column 0 of a real
+# commit message.
+#
+# Both readings come from THIS function, and nowhere else. Keeping them in separate
+# callers meant "is this commit a record" had two answers, and every caller had to
+# remember to ask both. It did not stay consistent: a commit counted as absorbed by
+# one reading and not OSS-originated by the other was replayed back to OSS,
+# resurrecting content the mirror had moved past. One function, one answer, so a new
+# caller cannot get it wrong.
+#
+# Block values are emitted BEFORE the scanned ones so multi=0 (last-wins) still
+# lands on the final line of the message when the message has one, which is what
+# the import anchor means by "newest". A well-formed trailer appears in both
+# readings; the duplicate is harmless to every caller (set membership, or last-wins).
 trailer_scan() {
   local key="$1" multi="$2"
   shift 2
-  git log --format="%x01%H%n%B" "$@" | awk -v key="$key" -v minlen="$TRAILER_SHA_MIN_LEN" -v multi="$multi" '
+  git log --format="%x01%H%n%(trailers:key=${key},valueonly,unfold)%x02%n%B" "$@" \
+    | awk -v key="$key" -v minlen="$TRAILER_SHA_MIN_LEN" -v multi="$multi" '
     function flush() {
       if (sha != "" && value != "") print sha " " value
       sha = ""
       value = ""
+      delete seen
     }
-    BEGIN { prefix = tolower(key) ": "; plen = length(prefix) }
-    substr($0, 1, 1) == "\001" { flush(); sha = substr($0, 2); next }
+    function take(candidate) {
+      if (candidate ~ /^[0-9a-f]+$/ && length(candidate) >= minlen && length(candidate) <= 40) {
+        if (multi == 1) {
+          # A well-formed trailer is seen by both readings, so dedupe per commit:
+          # every caller treats the output as a set, and emitting each value twice
+          # would double the stream over a long range for nothing.
+          if (seen[candidate]++) return
+          print sha " " candidate
+        }
+        else value = candidate
+      }
+    }
+    BEGIN { prefix = tolower(key) ": "; plen = length(prefix); inblock = 0 }
+    substr($0, 1, 1) == "\001" { flush(); sha = substr($0, 2); inblock = 1; next }
+    substr($0, 1, 1) == "\002" { inblock = 0; next }
+    inblock {
+      # Already key-stripped and unfolded by git, so a folded value arrives whole
+      # and fails the shape test rather than donating its first line. Lowercased
+      # because git accepts uppercase hex and the shas we compare against do not.
+      line = tolower($0)
+      sub(/[ \t\r]+$/, "", line)
+      take(line)
+      next
+    }
     {
       line = $0
       sub(/[ \t\r]+$/, "", line)
       if (tolower(substr(line, 1, plen)) != prefix) next
-      candidate = substr(line, plen + 1)
-      if (candidate ~ /^[0-9a-f]+$/ && length(candidate) >= minlen && length(candidate) <= 40) {
-        if (multi == 1) print sha " " candidate
-        else value = candidate
-      }
+      take(substr(line, plen + 1))
     }
     END { flush() }'
 }
@@ -241,26 +280,6 @@ trailer_value() {
 }
 
 has_trailer() { [ -n "$(trailer_value "$1" "$2")" ]; }
-
-# has_trailer_any <sha> <key>
-# True when the commit records <key> by EITHER reading: the whole-message scan, or
-# git's own trailer parser.
-#
-# The two readings genuinely disagree, in both directions. The scan misses forms
-# git accepts ("Key:<sha>" with no space, a tab, uppercase hex); git misses any
-# line outside the block it recognises, which is the squash-orphan case. Every
-# decision about whether a commit IS a sync record has to use both, or the same
-# trailer line can be absorption evidence to one caller and invisible to another:
-# an export that treats a commit as absorbed but not as OSS-originated replays it
-# straight back to OSS and resurrects content the mirror had already moved past.
-has_trailer_any() {
-  has_trailer "$1" "$2" && return 0
-  local block
-  # No `head`: closing this pipe early would SIGPIPE the producer, which under
-  # pipefail reads as failure. The output is one commit's worth, so read it all.
-  block="$(git log -1 --format="%(trailers:key=${2},valueonly,unfold)" "$1" | filter_sha_values)"
-  [ -n "$block" ]
-}
 
 # --- shared subtree / anchor helpers ------------------------------------------
 

@@ -511,3 +511,34 @@ Oss-Commit:$E1"
   [ "$(oss_file pkg/app.go)" = "l1-l2-l3" ]
   [ "$(git -C "$OSS_REMOTE" rev-parse 'main^{tree}')" = "$(git -C "$MONO" rev-parse "HEAD:$PFX")" ]
 }
+
+@test "our own export is recognised from a Monorepo-Commit only git parses" {
+  # The guard asks "did we create this OSS commit", and the resume point comes from
+  # the same reading. If a Monorepo-Commit written in git's laxer form is invisible
+  # to it, our own export looks like an unabsorbed external commit. The content it
+  # carried has to be superseded for this to bite, otherwise external_is_benign
+  # rescues it and the test proves nothing.
+  C1=$(company_commit pkg/app.go "v1" "feat: company v1")
+  bash "$EXPORT"
+  ours=$(oss_tip)
+  # Rewrite that OSS commit's trailer into a form only git's parser reads.
+  (
+    cd "$ROOT"
+    git clone -q "$OSS_REMOTE" relabel
+    cd relabel
+    git commit -q --amend -m "feat: company v1
+
+Monorepo-Commit:$(echo "$C1" | tr 'a-f' 'A-F')"
+    git push -q --force origin main
+  )
+  [ "$(oss_tip)" != "$ours" ]
+  # Supersede v1, so the exported content is no longer in the subtree.
+  company_commit pkg/app.go "v2" "feat: company v2" >/dev/null
+
+  run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value diverged)" = "false" ]
+  [[ "$output" != *"not yet absorbed"* ]]
+  [ "$(oss_file pkg/app.go)" = "v2" ]
+  [ "$(git -C "$OSS_REMOTE" rev-parse 'main^{tree}')" = "$(git -C "$MONO" rev-parse "HEAD:$PFX")" ]
+}
