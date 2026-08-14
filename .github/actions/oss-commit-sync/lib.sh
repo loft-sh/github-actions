@@ -119,21 +119,34 @@ trailer_scan() {
       }
       else value = candidate
     }
+    # A body line is only taken once the NEXT line has been seen, because that is
+    # the earliest point at which we know it was not folded.
+    function body_take() {
+      if (pending != "") { take(pending); pending = "" }
+    }
     function flush() {
       # The held-back block values, applied last: they sit in the final paragraph
       # of the message, so they are its latest records.
       if (sha != "") {
+        body_take()
         for (i = 1; i <= nblock; i++) take(block[i])
         if (value != "") print sha " " value
       }
       sha = ""
       value = ""
+      pending = ""
       nblock = 0
       delete block
       delete seen
     }
-    BEGIN { prefix = tolower(key) ": "; plen = length(prefix); inblock = 0; nblock = 0 }
-    substr($0, 1, 1) == "\001" { flush(); sha = substr($0, 2); inblock = 1; next }
+    BEGIN { keycolon = tolower(key) ":"; klen = length(keycolon); inblock = 0; nblock = 0 }
+    # The framing line must be \001 followed by a whole object name and nothing
+    # else. A leading-byte test alone is forgeable: \001 is legal at column 0 of a
+    # commit message, and a body line starting with it used to re-frame the scan
+    # mid-record, silently dropping every trailer that followed.
+    substr($0, 1, 1) == "\001" && substr($0, 2) ~ /^[0-9a-f]{40}$/ {
+      flush(); sha = substr($0, 2); inblock = 1; next
+    }
     # Whole-line match, not a prefix: git preserves control bytes inside a trailer
     # value, so a value beginning with \002 would otherwise end the block early and
     # hide every parser-only record after it.
@@ -147,11 +160,24 @@ trailer_scan() {
       if (shaped(line)) block[++nblock] = line
       next
     }
+    # A continuation line, so whatever we were holding was a folded value rather
+    # than a bare sha. Dropping it here is what makes the body scan agree with the
+    # unfolded block reading; keeping only its first line promoted a sha nobody
+    # recorded, which is the one direction of disagreement that can lose content.
+    /^[ \t]/ { pending = ""; next }
     {
+      body_take()
       line = $0
       sub(/[ \t\r]+$/, "", line)
-      if (tolower(substr(line, 1, plen)) != prefix) next
-      take(substr(line, plen + 1))
+      # Separator and case follow git, not our own stricter spelling: git reads
+      # "Key:<sha>", a tab, several spaces, and uppercase hex, and a record in any
+      # of those forms is invisible to git the moment a squash orphans it from the
+      # block. Reading them here is the whole reason this scan exists.
+      low = tolower(line)
+      if (substr(low, 1, klen) != keycolon) next
+      rest = substr(low, klen + 1)
+      sub(/^[ \t]+/, "", rest)
+      pending = rest
     }
     END { flush() }'
 }
@@ -235,17 +261,26 @@ resolve_sha_set() {
   done
 }
 
+# lines_contain <haystack> <needle>
+# True when <needle> equals one whole line of <haystack>.
+#
+# A here-string, not printf into a pipe: grep -q exits at the first match, and a
+# haystack past the pipe buffer leaves the writer blocked, so it dies of SIGPIPE
+# and pipefail turns a found value into a failed lookup. The caller reads that as
+# "not present" and reports a clean commit as a squash.
+lines_contain() {
+  grep -qxF "$2" <<< "$1"
+}
+
 # filter_sha_values
 # Read candidate values on stdin; print those shaped like a commit sha, lowercased.
 #
 # Values taken from git's own %(trailers) have NOT been through trailer_scan's
-# shape filter, and git's parser is laxer than ours: it accepts "Key:<value>" with
-# no space, several spaces, a tab, and uppercase hex, all of which trailer_scan
-# ignores. Two things follow. Such a value is a real record that our scan cannot
-# see, so it has to be read from the block to be counted at all; and whatever a
-# human wrote reaches this point, so it must not go to rev-parse unchecked, where
-# reflog syntax like @{9999} exits 128 and resolve_sha_set escalates that into a
-# failed export.
+# shape filter. They arrive already key-stripped and unfolded, so the line syntax
+# git was lax about is gone by this point and only the value shape is left to
+# check. Whatever a human wrote still reaches here, so it must not go to rev-parse
+# unchecked, where reflog syntax like @{9999} exits 128 and resolve_sha_set
+# escalates that into a failed export.
 #
 # Length bounds and the hex test rather than a regex interval, matching
 # trailer_scan: awk interval support is not portable across implementations.

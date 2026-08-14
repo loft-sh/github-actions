@@ -392,3 +392,76 @@ Oss-Commit:$(echo "$NEW_SHA" | tr 'a-f' 'A-F')"
   [ "$status" -eq 0 ]
   [ "$output" = "$NEW_SHA" ]
 }
+
+@test "a forged frame byte cannot inject a record with no key present" {
+  # \001 is legal at column 0 of a commit message, and import.sh replays OSS
+  # messages verbatim, so this content is contributor-controlled. A leading-byte
+  # frame test let such a line reopen the block, after which a bare hex line was
+  # read as a keyless block value: an absorbed-set entry with no Oss-Commit
+  # anywhere in the message. With align-tree that authorises deleting OSS content.
+  printf 'feat: innocent looking\n\n\001bogus\n%s\n' "$NEW_SHA" > "$ROOT/msg"
+  git commit -q --allow-empty -F "$ROOT/msg"
+  run every_trailer_value HEAD Oss-Commit
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "a frame byte mid-message does not swallow the records after it" {
+  # The same forged frame, read from the other side: it used to reset the scan
+  # mid-commit, so every trailer below it was dropped and the export reported
+  # commits it had genuinely absorbed as divergence.
+  printf 'squashed import\n\nOss-Commit: %s\n\001noise\nOss-Commit: %s\n\nCo-authored-by: x <x@y>\n' \
+    "$OLD_SHA" "$NEW_SHA" > "$ROOT/msg"
+  git commit -q --allow-empty -F "$ROOT/msg"
+  run every_trailer_value HEAD Oss-Commit
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -qxF "$OLD_SHA"
+  echo "$output" | grep -qxF "$NEW_SHA"
+}
+
+@test "an orphaned record is read in every form git itself accepts" {
+  # The whole-message scan exists for records a squash orphaned from git's block.
+  # It was stricter than git in exactly that spot -- requiring ": " and lowercase
+  # hex -- so a record git reads perfectly became invisible the moment it was
+  # orphaned, which is the deadlock this scan was added to prevent.
+  printf 'squashed\n\nOss-Commit: %s\nOss-Commit:%s\nOss-Commit:\t%s\n\nCo-authored-by: x <x@y>\n' \
+    "$(echo "$OLD_SHA" | tr 'a-f' 'A-F')" "$NEW_SHA" "$OTHER_SHA" > "$ROOT/msg"
+  git commit -q --allow-empty -F "$ROOT/msg"
+  # git's own block sees none of them: the Co-authored-by paragraph orphaned all three.
+  [ -z "$(git log -1 --format='%(trailers:key=Oss-Commit,valueonly,unfold)' | tr -d '[:space:]')" ]
+  run every_trailer_value HEAD Oss-Commit
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -qxF "$OLD_SHA"
+  echo "$output" | grep -qxF "$NEW_SHA"
+  echo "$output" | grep -qxF "$OTHER_SHA"
+}
+
+@test "a folded value is not a record for the body scan either" {
+  # git folds the indented line into the value, so the value is not a sha and not
+  # a record. Handing the bare first line to the shape filter promoted a sha
+  # nobody recorded to absorption strong enough for align-tree to delete against.
+  printf 'chore: folded\n\nOss-Commit: %s\n  this line makes it a folded value\n' "$NEW_SHA" > "$ROOT/msg"
+  git commit -q --allow-empty -F "$ROOT/msg"
+  run every_trailer_value HEAD Oss-Commit
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "lines_contain finds an early match in a haystack past the pipe buffer" {
+  # The SIGPIPE regression, at the only place it is cheap to pin: grep -q exits at
+  # the first match, so a writer still pushing a >64KB haystack dies of SIGPIPE and
+  # pipefail turns a found value into a failed lookup. health.sh reads that as "git
+  # never saw this record" and reports a clean rebase-merge as a squash.
+  needle="$NEW_SHA"
+  haystack="$needle"
+  for i in $(seq 1 3000); do haystack="${haystack}"$'\n'"$OTHER_SHA"; done
+  [ "${#haystack}" -gt 65536 ]
+  set -o pipefail
+  run lines_contain "$haystack" "$needle"
+  [ "$status" -eq 0 ]
+}
+
+@test "lines_contain says no when the needle is not a whole line" {
+  run lines_contain "${NEW_SHA}extra"$'\n'"prefix${NEW_SHA}" "$NEW_SHA"
+  [ "$status" -ne 0 ]
+}

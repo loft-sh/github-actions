@@ -208,10 +208,10 @@ if scanned_all="$(trailer_scan "$OSS_TRAILER" 1 --first-parent HEAD)"; then
       # physical lines and its first line would match a scanned sha here, scoring a
       # commit clean that the export treats as having no block record.
       if parsed="$(git log -1 --format="%(trailers:key=${OSS_TRAILER},valueonly,unfold)" "$M")"; then
-        # Lowercased as well as space-stripped, because the scan lowercases its values
-    # (git accepts uppercase hex) and a case-sensitive comparison would call a
-    # perfectly in-block uppercase record orphaned.
-    parsed_norm="$(printf '%s\n' "$parsed" | sed 's/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]')"
+        # Lowercased as well as space-stripped, because the scan lowercases its
+        # values (git accepts uppercase hex) and a case-sensitive comparison would
+        # call a perfectly in-block uppercase record orphaned.
+        parsed_norm="$(printf '%s\n' "$parsed" | sed 's/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]')"
       else
         degraded=true
         cur_usable=false
@@ -224,11 +224,7 @@ if scanned_all="$(trailer_scan "$OSS_TRAILER" 1 --first-parent HEAD)"; then
     # parses while every earlier one stays orphaned above it, so an emptiness
     # test scores that commit clean and misses the shape this check exists to
     # catch.
-    #
-    # A here-string, not printf into a pipe: grep -q exits at the first match and
-    # would SIGPIPE the writer, which under pipefail reads as failure and would
-    # flag a clean commit.
-    grep -qxF "$v" <<< "$parsed_norm" && continue
+    lines_contain "$parsed_norm" "$v" && continue
     # The deliberate trade in the other direction: a real orphaned record whose
     # commit has left OSS history (force-push, recreated branch) or whose
     # abbreviation has since become ambiguous is NOT counted. Under-reporting

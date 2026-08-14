@@ -344,12 +344,18 @@ WRAP
   grep -q "Commits pending import | 1" "$GITHUB_STEP_SUMMARY"
 }
 
-@test "a folded block value does not hide an orphaned record" {
-  # The scan reads "Oss-Commit: <sha>" from the first physical line, so the record
-  # exists. git folds the indented line into the value, so its block does NOT carry
-  # that sha. Without unfold the block read would appear to contain the bare sha,
-  # match, and score the commit clean, disagreeing with the export about the very
-  # same line.
+@test "a folded value is a record for neither reader" {
+  # git folds the indented line into the value, so the value is "<sha> this
+  # trailing line...", which is not a sha and so not an absorption record. The body
+  # scan must reach the same verdict rather than handing the bare first line to the
+  # shape filter: promoting a sha nobody recorded is the one disagreement between
+  # the two readers that can lose content, because it counts as absorption strong
+  # enough for align-tree to delete what OSS holds.
+  #
+  # So this commit carries no readable record at all, and health reports no orphan.
+  # A malformed record is a different shape from a squashed one, and claiming a
+  # squash here would send a maintainer who merged correctly after a merge policy
+  # they did not violate.
   E1=$(external_commit ext1.go "one" "feat: alice first")
   bash "$IMPORT"
   squash_merge_pr_branch "feat: alice first (#42)
@@ -359,7 +365,7 @@ Oss-Commit: $E1
 
   run bash "$HEALTH"
   [ "$status" -eq 0 ]
-  [ "$(output_value squashed-trailer-count)" = "1" ]
+  [ "$(output_value squashed-trailer-count)" = "0" ]
   [ "$(output_value degraded)" = "false" ]
 }
 
