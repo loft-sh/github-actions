@@ -110,14 +110,20 @@ if [ "$branch_absent" = "false" ]; then
     fi
     RESUME="$resume_full"
   elif [ -n "$SEED_MONOREPO_COMMIT" ] && [ -n "$SEED_OSS_COMMIT" ]; then
-    OSS_ANCHOR="$SEED_OSS_COMMIT"
-    # NOT prefix-checked: this one is typed by an operator doing a first run, and
-    # the peel guard exists for values a contributor can write, not for them.
-    # Holding the seed to the trailer spelling rejects an uppercase sha and any
-    # ref name, both of which git resolves happily, and fails the one path that
-    # has no trailer to fall back to with "is not a commit in this repo".
-    RESUME="$(git rev-parse --verify --quiet "${SEED_MONOREPO_COMMIT}^{commit}")" \
+    # NOT prefix-checked: these are typed by an operator doing a first run, and the
+    # peel guard exists for values a contributor can write, not for them. Holding
+    # the seed to the trailer spelling rejects an uppercase sha and any ref name,
+    # both of which git resolves happily, and fails the one path that has no
+    # trailer to fall back to with "is not a commit in this repo".
+    #
+    # Both are stored peeled, so what the ranges below are built from is the commit
+    # each seed named rather than, say, the tag object rev-parse printed for it.
+    # 2>/dev/null because --quiet still speaks up on a type mismatch, and die says
+    # it better.
+    RESUME="$(git rev-parse --verify --quiet "${SEED_MONOREPO_COMMIT}^{commit}" 2>/dev/null)" \
       || die "seed resume point ${SEED_MONOREPO_COMMIT} is not a commit in this repo"
+    OSS_ANCHOR="$(git rev-parse --verify --quiet "${SEED_OSS_COMMIT}^{commit}" 2>/dev/null)" \
+      || die "seed OSS anchor ${SEED_OSS_COMMIT} is not a commit in this repo"
   else
     die "no ${MONOREPO_TRAILER} trailer found on OSS ${BRANCH} and no seed provided; set SEED_MONOREPO_COMMIT + SEED_OSS_COMMIT for the first run"
   fi
