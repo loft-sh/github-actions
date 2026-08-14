@@ -235,6 +235,32 @@ Oss-Commit: 7b20042"
   [[ "$output" != *"$commit"* ]]
 }
 
+@test "resolve_sha_set keeps a final line with no trailing newline" {
+  # A dropped sha here is the deadlock this helper exists to close, and it reads
+  # as a generic stdin filter, so it must not depend on its producer's newline.
+  git commit -q --allow-empty -m "a commit"
+  full=$(git rev-parse HEAD)
+  run resolve_sha_set < <(printf '%s' "${full:0:12}")
+  [ "$status" -eq 0 ]
+  [ "$(echo "$output" | awk 'NR==1')" = "${full:0:12}" ]
+  [ "$(echo "$output" | awk 'NR==2')" = "$full" ]
+}
+
+@test "resolve_commit_prefix rejects a value that names no commit by prefix" {
+  git commit -q --allow-empty -m "tagged"
+  commit=$(git rev-parse HEAD)
+  git tag -a v1 -m annotated HEAD
+  tag=$(git rev-parse v1)
+
+  run resolve_commit_prefix "${tag:0:12}"
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+
+  run resolve_commit_prefix "${commit:0:12}"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$commit" ]
+}
+
 @test "resolve_sha_set spawns no lookup for a full-length value" {
   # The normal case: every trailer this action writes is already full length, so
   # resolution must not cost a git process per absorbed commit.

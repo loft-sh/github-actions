@@ -167,13 +167,24 @@ emit pending-count "$pending"
 
 # --- detect squash-orphaned trailers ----------------------------------------
 
-# A commit where our whole-message scan finds the trailer but git's own trailer
-# block does not is the fingerprint of a squash-merged sync PR.
+# A commit carrying an Oss-Commit value that our whole-message scan finds and
+# git's own trailer block does not is the likely fingerprint of a squash-merged
+# sync PR. Likely, not certain: a squash-orphaned line and a trailer-shaped line
+# quoted in prose leave identical local evidence, so the value must also name a
+# commit in OSS history to count. What that trades away is recorded below.
 squashed=0
 squashed_list=()
+# Hoisted out of the loop: one pass over history instead of a git log plus an awk
+# per trailer-carrying commit, and that set only grows.
+scan_ok=true
+if ! scanned_all="$(trailer_scan "$OSS_TRAILER" 1 --first-parent HEAD)"; then
+  scan_ok=false
+  degraded=true
+  echo "::warning::Could not scan ${BRANCH} for ${OSS_TRAILER} lines; squashed-trailer-count is not reliable in this run."
+fi
 # Same capture-first reason as the pending loop: a broken producer must not read
 # as "no policy violations".
-if entries="$(all_trailer_entries HEAD "$OSS_TRAILER")"; then
+if [ "$scan_ok" = "true" ] && entries="$(all_trailer_entries HEAD "$OSS_TRAILER")"; then
   while read -r M value; do
     [ -n "$value" ] || continue
     # Guarded in the other direction from the pending loop: an unguarded failure
@@ -184,11 +195,7 @@ if entries="$(all_trailer_entries HEAD "$OSS_TRAILER")"; then
       echo "::warning::Could not read the trailer block of ${M}; squashed-trailer-count may be understated."
       continue
     fi
-    if ! scanned="$(trailer_scan "$OSS_TRAILER" 1 -1 "$M" | awk '{print $2}')"; then
-      degraded=true
-      echo "::warning::Could not scan the message of ${M}; squashed-trailer-count may be understated."
-      continue
-    fi
+    scanned="$(awk -v m="$M" '$1 == m { print $2 }' <<< "$scanned_all")"
     # A set comparison, not "is git's block empty". A squash that appends no
     # Co-authored-by paragraph leaves the LAST trailer inside the block git
     # parses while every earlier one stays orphaned above it, so an emptiness
@@ -204,20 +211,39 @@ if entries="$(all_trailer_entries HEAD "$OSS_TRAILER")"; then
       # would flag a clean commit.
       grep -qxF "$v" <<< "$parsed_norm" && continue
       # Outside the block is only evidence of a lost record if the value names a
-      # real OSS commit. The scan reads the whole message by design, so a
+      # commit in OSS history. The scan reads the whole message by design, so a
       # column-0 "Oss-Commit:" line quoted in prose lands here too, and this
       # warning tells humans they violated the merge policy: it must not fire on
-      # a commit that was rebase-merged properly. An unknown object or a commit
-      # outside OSS history is prose, not a squashed record.
-      git merge-base --is-ancestor "$v" "$OSS_TIP" 2>/dev/null || continue
-      orphaned=true
+      # a commit that was rebase-merged properly.
+      #
+      # The deliberate trade: a real orphaned record whose commit left OSS
+      # history (force-push, recreated branch) or whose abbreviation has since
+      # become ambiguous is NOT counted. Under-reporting a policy violation the
+      # sync survives anyway beats accusing a maintainer who merged correctly.
+      if ! v_full="$(resolve_commit_prefix "$v")"; then
+        continue
+      fi
+      # rc 1 is "not in OSS history"; anything else is git failing, and the two
+      # must not collapse, or a broken merge-base reads as a clean bill of health.
+      anc_rc=0
+      git merge-base --is-ancestor "$v_full" "$OSS_TIP" 2>/dev/null || anc_rc=$?
+      case "$anc_rc" in
+        0) orphaned=true ;;
+        1) ;;
+        *)
+          degraded=true
+          echo "::warning::Could not test whether ${v_full} is in OSS ${BRANCH} history; squashed-trailer-count may be understated."
+          ;;
+      esac
     done <<< "$scanned"
     if [ "$orphaned" = "true" ]; then
       squashed=$((squashed + 1))
       squashed_list+=("$M")
     fi
   done <<< "$entries"
-else
+elif [ "$scan_ok" = "true" ]; then
+  # Only when the scan itself succeeded: a failed scan already warned, and
+  # saying the trailers could not be read as well would name the wrong producer.
   degraded=true
   echo "::warning::Could not read ${OSS_TRAILER} trailers from ${BRANCH}; squashed-trailer-count is not reliable in this run."
 fi

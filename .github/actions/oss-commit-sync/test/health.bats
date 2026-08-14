@@ -158,6 +158,64 @@ Oss-Commit: $E1"
   [[ "$output" != *"Rebase and merge"* ]]
 }
 
+@test "an annotated tag sha in a commit body is not reported as a squash" {
+  # merge-base --is-ancestor peels a tag object to its commit, so an unguarded
+  # ancestry test would call a tag sha a lost record even though no trailer names
+  # that commit. Same type confusion the export guard already rejects.
+  E1=$(external_commit ext1.go "one" "feat: alice first")
+  git -C "$ROOT/oss.git" tag -a v0.1.0 -m "release" "$E1"
+  tag=$(git -C "$ROOT/oss.git" rev-parse v0.1.0)
+  [ "$tag" != "$E1" ]
+  # The monorepo must actually hold the tag object, or rev-parse fails on it for
+  # the wrong reason and this pins nothing.
+  git -C "$MONO" fetch -q "$OSS_REMOTE" 'refs/tags/*:refs/tags/*'
+  git -C "$MONO" cat-file -e "$tag"
+  bash "$IMPORT"
+  squash_merge_pr_branch "feat: alice first (#42)
+
+Tagged as v0.1.0, whose object is:
+Oss-Commit: $tag
+
+Oss-Commit: $E1"
+
+  run bash "$HEALTH"
+  [ "$status" -eq 0 ]
+  [ "$(output_value squashed-trailer-count)" = "0" ]
+  [ "$(output_value degraded)" = "false" ]
+}
+
+@test "a failing ancestry test degrades instead of reporting a clean policy" {
+  # rc 1 means "not in OSS history"; anything else is git failing. Collapsing the
+  # two would let a broken merge-base issue a clean bill of health.
+  E1=$(external_commit ext1.go "one" "feat: alice first")
+  E2=$(external_commit ext2.go "two" "feat: alice second")
+  bash "$IMPORT"
+  squash_merge_pr_branch "chore: sync from oss (#42)
+
+Oss-Commit: $E1
+
+Oss-Commit: $E2"
+
+  real_git="$(command -v git)"
+  mkdir -p "$ROOT/bin"
+  cat > "$ROOT/bin/git" <<WRAP
+#!/usr/bin/env bash
+for a in "\$@"; do
+  case "\$a" in
+    merge-base) exit 128 ;;
+  esac
+done
+exec "$real_git" "\$@"
+WRAP
+  chmod +x "$ROOT/bin/git"
+
+  PATH="$ROOT/bin:$PATH" run bash "$HEALTH"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"::error::"* ]]
+  [ "$(output_value degraded)" = "true" ]
+  [[ "$output" == *"Could not test whether"* ]]
+}
+
 @test "a rebase-merged import reports no squash-orphaned trailers" {
   # The negative side of the set comparison: one trailer per commit, inside the
   # block, must never be counted.

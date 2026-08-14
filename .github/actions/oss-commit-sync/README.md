@@ -156,7 +156,8 @@ in `test/squash-tolerance.bats`:
 
 - the trailer lookup scans the **whole commit message**, not just git's trailer
   block, so a squash-orphaned trailer is still read (the value must be a bare
-  commit sha at column 0, which is what keeps prose from matching)
+  commit sha at column 0, which keeps most prose from matching, though a line of
+  that exact shape quoted in a body does match)
 - the anchor is the farthest-reaching recorded import, so a trailer lost
   outright cannot drag it backwards
 - the anchor heals from subtree content, so even a trailer destroyed beyond
@@ -208,12 +209,19 @@ describe.
   trailer the whole-message scan finds but git's trailer block does not, which is
   the fingerprint of a squash. The comparison is per value, not "is the block
   empty": a squash of N imports leaves only the last of its N trailers in the
-  block, so asking about emptiness would score exactly that commit clean. A value
-  that names no commit in OSS history is prose rather than a lost record and is
-  not counted, since this warning tells a human they merged the wrong way and
-  must not fire on one who did not. This is the actionable one: it is the cause of
-  the lag above, and the lost per-commit authorship cannot be recovered after the
-  fact. Enforce rebase-merge.
+  block, so asking about emptiness would score exactly that commit clean.
+
+  The count is a strong signal, not a proof: a squash-orphaned line and the same
+  line quoted in a commit body are locally identical, so a value only counts when
+  it also names a commit in OSS history. That corroboration is chosen to protect
+  the false-positive side, because the warning tells a human they merged the wrong
+  way and must not fire on one who did not. It costs the other side: a real
+  orphaned record is missed if its commit has left OSS history (force-push,
+  recreated branch) or if its abbreviation has since become ambiguous. Missing a
+  policy violation the sync survives anyway beats accusing the wrong person.
+
+  This is still the actionable one: it is the cause of the lag above, and the lost
+  per-commit authorship cannot be recovered after the fact. Enforce rebase-merge.
 - **Backlog.** `pending-count` is how many OSS commits genuinely await import.
 
 There is deliberately no repair commit or repair PR, because there is nothing
@@ -274,7 +282,7 @@ it sees that.
 | redundant-unrecorded-count | string |                                                                       Health: of redundant-count, the external commits <br>carrying no readable Oss-Commit trailer. This <br>is what stale-anchor reports on.                                                                         |
 |       replayed-count       | string |                                                                                                                     Import: number of external commits replayed.                                                                                                                      |
 |       skipped-count        | string |                                                            Import: number of external commits considered <br>but not replayed, because they touch <br>only excluded paths or their content <br>is already in the subtree.                                                             |
-|   squashed-trailer-count   | string |                                                                                Health: number of sync commits whose <br>Oss-Commit trailer GitHub's squash-merge orphaned from <br>the trailer block.                                                                                 |
+|   squashed-trailer-count   | string |          Health: number of sync commits carrying <br>an Oss-Commit value outside the trailer <br>block git parses, the fingerprint of <br>a squash-merge. Corroborated against OSS history, <br>so it under-reports rather than accusing <br>a clean merge; see the README.           |
 |        stale-anchor        | string | Health: true when external commits sit <br>in the subtree with no trailer <br>recording them. The import heals this <br>itself; it means those commits carry <br>no recorded provenance on the base <br>branch. Our own exports lag the <br>anchor by design and never set <br>this.  |
 |      suggested-anchor      | string |                                                                                    Health: the content-derived anchor, i.e. what <br>the import heals to. Empty unless <br>stale-anchor is true.                                                                                      |
 

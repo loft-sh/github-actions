@@ -45,11 +45,14 @@ die() {
 # froze the vcluster-pro import anchor for a week, then hard-failed once one of
 # the re-walked commits stopped applying as a no-op.
 #
-# So the scan reads the whole message. What keeps that safe from prose that
-# merely mentions a trailer is the value shape: every trailer this action reads
-# or writes carries a commit sha and nothing else, so the line must start at
-# column 0 with the exact key and be followed only by hex. The key match is
-# case-insensitive, matching git's own trailer semantics.
+# So the scan reads the whole message. The value shape is what keeps most prose
+# out: every trailer this action reads or writes carries a commit sha and nothing
+# else, so the line must start at column 0 with the exact key and be followed
+# only by hex. It reduces accidental matches rather than ruling them out, and a
+# line of that exact shape quoted in a body does match, so callers that draw a
+# conclusion about a human's behaviour from a match (health's squash detector)
+# corroborate it against OSS history first. The key match is case-insensitive,
+# matching git's own trailer semantics.
 
 # Shortest abbreviation accepted from a hand-written trailer. Below this a hex
 # run is too generic to be confidently a sha.
@@ -153,16 +156,34 @@ every_trailer_value() {
 # commit this repo does not hold matching literally as before.
 resolve_sha_set() {
   local v full
-  while IFS= read -r v; do
+  # `|| [ -n "$v" ]` so a final line with no trailing newline is not dropped:
+  # losing a sha here is the same deadlock class this function exists to close.
+  while IFS= read -r v || [ -n "$v" ]; do
     [ -n "$v" ] || continue
     printf '%s\n' "$v"
     [ "${#v}" -lt 40 ] || continue
-    # --quiet is not quiet on a type mismatch: an abbreviation that uniquely
-    # names a tree or blob still prints "expected commit type" to stderr, which
-    # would put a bare error line in an otherwise green export log.
-    full="$(git rev-parse --verify --quiet "${v}^{commit}" 2>/dev/null)" || continue
-    case "$full" in "$v"*) printf '%s\n' "$full" ;; esac
+    full="$(resolve_commit_prefix "$v")" || continue
+    printf '%s\n' "$full"
   done
+}
+
+# resolve_commit_prefix <value>
+# Print the full sha of the commit <value> names; print nothing and return 1 when
+# it names none. Prefix-checked, because every caller is asking "which commit
+# does this trailer name", never "what does this object point at": `^{commit}`
+# peels an annotated tag object to a commit sharing none of the value's digits,
+# and `git merge-base --is-ancestor` peels one the same way.
+#
+# --quiet is not quiet on a type mismatch: an abbreviation that uniquely names a
+# tree or blob still prints "expected commit type" to stderr, which would put a
+# bare error line in an otherwise green log.
+resolve_commit_prefix() {
+  local full
+  full="$(git rev-parse --verify --quiet "${1}^{commit}" 2>/dev/null)" || return 1
+  case "$full" in
+    "$1"*) printf '%s\n' "$full" ;;
+    *) return 1 ;;
+  esac
 }
 
 # newest_trailer_entry <ref> <key>
