@@ -465,3 +465,19 @@ Oss-Commit:$(echo "$NEW_SHA" | tr 'a-f' 'A-F')"
   run lines_contain "${NEW_SHA}extra"$'\n'"prefix${NEW_SHA}" "$NEW_SHA"
   [ "$status" -ne 0 ]
 }
+
+@test "records are read in a sha256 repository too" {
+  # %H is 64 hex there, so a frame test written for 40 matches no header at all
+  # and the whole history reads as carrying no records -- silently, since "no
+  # trailers anywhere" is a legitimate answer the callers act on.
+  git init -q --object-format=sha256 "$ROOT/r256" || skip "git has no sha256 support"
+  cd "$ROOT/r256"
+  git commit -q --allow-empty -m "chore: a record
+
+Oss-Commit: $NEW_SHA"
+  # Confirm the premise rather than assuming it: 64 hex plus the newline.
+  [ "$(git log -1 --format=%H | wc -c)" -eq 65 ]
+  run trailer_value HEAD Oss-Commit
+  [ "$status" -eq 0 ]
+  [ "$output" = "$NEW_SHA" ]
+}

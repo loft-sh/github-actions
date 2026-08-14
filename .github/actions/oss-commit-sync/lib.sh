@@ -111,6 +111,11 @@ trailer_scan() {
     function shaped(candidate) {
       return (candidate ~ /^[0-9a-f]+$/ && length(candidate) >= minlen && length(candidate) <= 40)
     }
+    # A whole object name, as git prints one for %H, rather than the abbreviation
+    # a trailer value is allowed to be.
+    function objname(candidate) {
+      return (candidate ~ /^[0-9a-f]+$/ && (length(candidate) == 40 || length(candidate) == 64))
+    }
     function take(candidate) {
       if (!shaped(candidate)) return
       if (multi == 1) {
@@ -144,7 +149,12 @@ trailer_scan() {
     # else. A leading-byte test alone is forgeable: \001 is legal at column 0 of a
     # commit message, and a body line starting with it used to re-frame the scan
     # mid-record, silently dropping every trailer that followed.
-    substr($0, 1, 1) == "\001" && substr($0, 2) ~ /^[0-9a-f]{40}$/ {
+    #
+    # Both hash lengths, and a length test rather than a regex interval: %H is 64
+    # hex in a SHA-256 repository, and awk interval support is not portable across
+    # implementations. Getting either wrong matches no header at all, which reads
+    # as a history carrying no records whatsoever.
+    substr($0, 1, 1) == "\001" && objname(substr($0, 2)) {
       flush(); sha = substr($0, 2); inblock = 1; next
     }
     # Whole-line match, not a prefix: git preserves control bytes inside a trailer
