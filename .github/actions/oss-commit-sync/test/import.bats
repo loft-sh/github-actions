@@ -273,3 +273,27 @@ Oss-Commit: $tag"
   [ "$status" -eq 0 ]
   [ "$(output_value skipped-count)" = "1" ]
 }
+
+@test "a tag sha seeded as the anchor is stored peeled, so re-runs settle" {
+  # `git rev-parse v1.2.3` prints the tag object, which is the natural thing for
+  # an operator to paste into seed-oss-commit. Accepting it is right; keeping it
+  # is not. The anchor is compared against commit shas -- import's
+  # "$RESUME" = "$OSS_TIP" nothing-to-do shortcut, health's anchor output -- and a
+  # tag sha equals none of them, so the shortcut never fires and every run
+  # rebuilds the PR branch to replay an empty range.
+  E1=$(external_commit ext1.go "one" "feat: alice first")
+  git -C "$ROOT/oss.git" tag -a v0.3.0 -m "release" "$E1"
+  tag=$(git -C "$ROOT/oss.git" rev-parse v0.3.0)
+  [ "$tag" != "$E1" ]
+  git -C "$MONO" fetch -q "$OSS_REMOTE" 'refs/tags/*:refs/tags/*'
+
+  # Seeded at the tip: there is genuinely nothing left to import, and the
+  # shortcut must say so rather than rebuilding the PR branch for an empty range.
+  SEED_OSS_COMMIT="$tag" run bash "$IMPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value has-changes)" = "false" ]
+  [[ "$output" == *"nothing to import"* ]]
+  # The shortcut is the only thing that skips the branch switch, so its absence
+  # is observable: an unresolved tag sha leaves this branch behind.
+  ! git -C "$MONO" rev-parse --verify --quiet "$PR_BRANCH" >/dev/null
+}

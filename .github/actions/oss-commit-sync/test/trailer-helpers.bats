@@ -399,7 +399,10 @@ Oss-Commit:$(echo "$NEW_SHA" | tr 'a-f' 'A-F')"
   # frame test let such a line reopen the block, after which a bare hex line was
   # read as a keyless block value: an absorbed-set entry with no Oss-Commit
   # anywhere in the message. With align-tree that authorises deleting OSS content.
-  printf 'feat: innocent looking\n\n\001bogus\n%s\n' "$NEW_SHA" > "$ROOT/msg"
+  # The payload imitates a real header line, so requiring a whole object name
+  # after the byte does not stop it. Only a delimiter the message cannot contain
+  # does, which is why the frame is drawn fresh per call rather than fixed.
+  printf 'feat: innocent looking\n\n\001%s\n%s\n' "$OTHER_SHA" "$NEW_SHA" > "$ROOT/msg"
   git commit -q --allow-empty -F "$ROOT/msg"
   run every_trailer_value HEAD Oss-Commit
   [ "$status" -eq 0 ]
@@ -466,10 +469,16 @@ Oss-Commit:$(echo "$NEW_SHA" | tr 'a-f' 'A-F')"
   [ "$status" -ne 0 ]
 }
 
-@test "records are read in a sha256 repository too" {
-  # %H is 64 hex there, so a frame test written for 40 matches no header at all
-  # and the whole history reads as carrying no records -- silently, since "no
-  # trailers anywhere" is a legitimate answer the callers act on.
+@test "the frame does not depend on how long the hash is" {
+  # %H is 64 hex in a sha256 repository. Any length test on the header line has to
+  # accept that too, or it matches no header at all and the whole history reads as
+  # carrying no records -- silently, since "no trailers anywhere" is a legitimate
+  # answer the callers act on. The delimiter is what makes the frame trustworthy,
+  # so there is no length test to get wrong; this keeps one from coming back.
+  #
+  # Only the framing is covered here. Trailer VALUES are still sha1-shaped, so a
+  # sha256 repository is not actually supported end to end; the sync runs on
+  # GitHub, which does not host one.
   git init -q --object-format=sha256 "$ROOT/r256" || skip "git has no sha256 support"
   cd "$ROOT/r256"
   git commit -q --allow-empty -m "chore: a record
@@ -480,4 +489,47 @@ Oss-Commit: $NEW_SHA"
   run trailer_value HEAD Oss-Commit
   [ "$status" -eq 0 ]
   [ "$output" = "$NEW_SHA" ]
+}
+
+@test "an orphaned record with space before the colon is read" {
+  # git accepts "Key : <sha>" and yields the bare sha, so requiring the colon
+  # immediately after the key loses that record once a squash orphans it.
+  printf 'squashed\n\nOss-Commit : %s\n\nCo-authored-by: x <x@y>\n' "$NEW_SHA" > "$ROOT/msg"
+  git commit -q --allow-empty -F "$ROOT/msg"
+  [ -z "$(git log -1 --format='%(trailers:key=Oss-Commit,valueonly,unfold)' | tr -d '[:space:]')" ]
+  run trailer_value HEAD Oss-Commit
+  [ "$status" -eq 0 ]
+  [ "$output" = "$NEW_SHA" ]
+}
+
+@test "a whitespace-only line below a record does not fold it away" {
+  # git leaves the value above a blank-but-indented line intact, so treating that
+  # line as a continuation drops a record git reads perfectly.
+  #
+  # --cleanup=verbatim because git's own default strips a whitespace-only line
+  # out of the message, which would leave this pinning nothing. Messages that
+  # never went through that cleanup do carry them.
+  printf 'squashed\n\nOss-Commit: %s\n   \n\nCo-authored-by: x <x@y>\n' "$NEW_SHA" > "$ROOT/msg"
+  git commit -q --allow-empty --cleanup=verbatim -F "$ROOT/msg"
+  # Confirm the premise: the line really is still in the message.
+  git log -1 --format=%B | grep -qx '   '
+  run trailer_value HEAD Oss-Commit
+  [ "$status" -eq 0 ]
+  [ "$output" = "$NEW_SHA" ]
+}
+
+@test "a key that merely starts with the key does not match" {
+  git commit -q --allow-empty -m "chore: a longer key
+
+Oss-Commit-Extra: $NEW_SHA"
+  run every_trailer_value HEAD Oss-Commit
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "lines_contain treats a leading-dash needle as a pattern, not an option" {
+  run lines_contain "-n"$'\n'"$NEW_SHA" "-n"
+  [ "$status" -eq 0 ]
+  run lines_contain "" ""
+  [ "$status" -ne 0 ]
 }

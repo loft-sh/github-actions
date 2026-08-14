@@ -582,3 +582,29 @@ WRAP
   [ "$(oss_tip)" = "$before" ]
   [ "$(oss_file ext.go)" = "external" ]
 }
+
+@test "seed: an uppercase sha and a ref name are both accepted" {
+  # The seed is typed by an operator on the one path with no trailer to fall back
+  # to. Holding it to the spelling a trailer value has -- lowercase hex, checked
+  # as a prefix of what it resolves to -- rejects both of these, which git
+  # resolves happily, and fails the run with "is not a commit in this repo".
+  M0=$(git -C "$MONO" rev-parse HEAD)
+  # Same rebuild the seeding test does: an OSS branch carrying no trailer at all.
+  rm -rf "$OSS_REMOTE" "$ROOT/ossseed2"
+  git init -q --bare "$OSS_REMOTE"
+  git init -q "$ROOT/ossseed2"
+  (
+    cd "$ROOT/ossseed2"
+    git checkout -q -b main
+    mkdir -p pkg && printf 'l1\nl2\nl3\n' > pkg/app.go
+    git add . && git commit -qm "pre-migration oss"
+    git push -q "$OSS_REMOTE" main
+  )
+  seed_oss=$(oss_tip)
+  company_commit pkg/app.go "l1-upper" "feat: uppercase seed change"
+
+  upper=$(echo "$M0" | tr 'a-f' 'A-F')
+  SEED_MONOREPO_COMMIT="$upper" SEED_OSS_COMMIT="$seed_oss" run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value exported-count)" = "1" ]
+}

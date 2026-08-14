@@ -65,6 +65,21 @@ die() {
 # run is too generic to be confidently a sha.
 TRAILER_SHA_MIN_LEN=7
 
+# The frame delimiter trailer_scan builds its git-log format from. 32 hex from
+# the kernel, with a $RANDOM fallback for a runner without /dev/urandom.
+#
+# Drawn once per process rather than per call: trailer_scan runs once per commit
+# inside three O(n) walks (the export divergence guard, health's pending loop,
+# classify_healed_range), and two extra forks each would be paid n times over for
+# nothing. Every commit these scripts read was written before this process
+# started -- replay_commit only copies messages that already existed -- so a
+# per-process mark is exactly as unguessable as a per-call one.
+TRAILER_FRAME_MARK="$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')" || TRAILER_FRAME_MARK=""
+if [ "${#TRAILER_FRAME_MARK}" -ne 32 ]; then
+  TRAILER_FRAME_MARK="$(printf '%04x%04x%04x%04x%04x%04x%04x%04x' \
+    "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM")"
+fi
+
 # trailer_scan <key> <multi> <git-log-args...>
 # Print "<commit-sha> <value>" per match. With multi=0 a commit carrying several
 # same-key lines yields one entry, the last record winning; with multi=1 it yields
@@ -81,11 +96,17 @@ TRAILER_SHA_MIN_LEN=7
 # is build-dependent, so this only bites on big repos on some runners). It
 # reads the whole stream instead; callers keep the entries they want.
 #
-# Commits are framed by a leading \001 on the header line, and git's block values
-# are separated from the message by \002, rather than an awk RS: a NUL or
-# control-char RS is not portable across awk implementations (mawk treats an empty
-# RS as paragraph mode), and a control character cannot occur at column 0 of a real
-# commit message.
+# Records are framed by a delimiter drawn fresh on every call, rather than an awk
+# RS: a NUL or control-char RS is not portable across awk implementations (mawk
+# treats an empty RS as paragraph mode).
+#
+# It has to be unpredictable, not merely unusual. Framing on a fixed control byte
+# is forgeable, because every byte except NUL is legal in a commit message and
+# import.sh replays OSS messages into the monorepo verbatim: a body line holding
+# the delimiter reopened the frame mid-record, and the bare hex line after it was
+# read as a block value, putting a sha into the absorbed set with no trailer key
+# present anywhere. Nothing written before this call can contain this call's
+# delimiter, so the frame cannot be forged rather than merely being awkward to.
 #
 # Both readings come from THIS function, and nowhere else. Keeping them in separate
 # callers meant "is this commit a record" had two answers, and every caller had to
@@ -106,15 +127,11 @@ TRAILER_SHA_MIN_LEN=7
 trailer_scan() {
   local key="$1" multi="$2"
   shift 2
-  git log --format="%x01%H%n%(trailers:key=${key},valueonly,unfold)%x02%n%B" "$@" \
-    | awk -v key="$key" -v minlen="$TRAILER_SHA_MIN_LEN" -v multi="$multi" '
+  local mark="$TRAILER_FRAME_MARK"
+  git log --format="${mark}H%H%n%(trailers:key=${key},valueonly,unfold)${mark}B%n%B" "$@" \
+    | awk -v key="$key" -v minlen="$TRAILER_SHA_MIN_LEN" -v multi="$multi" -v mark="$mark" '
     function shaped(candidate) {
       return (candidate ~ /^[0-9a-f]+$/ && length(candidate) >= minlen && length(candidate) <= 40)
-    }
-    # A whole object name, as git prints one for %H, rather than the abbreviation
-    # a trailer value is allowed to be.
-    function objname(candidate) {
-      return (candidate ~ /^[0-9a-f]+$/ && (length(candidate) == 40 || length(candidate) == 64))
     }
     function take(candidate) {
       if (!shaped(candidate)) return
@@ -144,23 +161,21 @@ trailer_scan() {
       delete block
       delete seen
     }
-    BEGIN { keycolon = tolower(key) ":"; klen = length(keycolon); inblock = 0; nblock = 0 }
-    # The framing line must be \001 followed by a whole object name and nothing
-    # else. A leading-byte test alone is forgeable: \001 is legal at column 0 of a
-    # commit message, and a body line starting with it used to re-frame the scan
-    # mid-record, silently dropping every trailer that followed.
-    #
-    # Both hash lengths, and a length test rather than a regex interval: %H is 64
-    # hex in a SHA-256 repository, and awk interval support is not portable across
-    # implementations. Getting either wrong matches no header at all, which reads
-    # as a history carrying no records whatsoever.
-    substr($0, 1, 1) == "\001" && objname(substr($0, 2)) {
-      flush(); sha = substr($0, 2); inblock = 1; next
+    BEGIN {
+      keyname = tolower(key); klen = length(keyname)
+      hdr = mark "H"; hlen = length(hdr); blkend = mark "B"
+      inblock = 0; nblock = 0
+    }
+    # No length test on what follows: the delimiter already makes this line
+    # unforgeable, so whatever git printed for %H is the sha, whichever hash the
+    # repository uses.
+    substr($0, 1, hlen) == hdr {
+      flush(); sha = substr($0, hlen + 1); inblock = 1; next
     }
     # Whole-line match, not a prefix: git preserves control bytes inside a trailer
-    # value, so a value beginning with \002 would otherwise end the block early and
-    # hide every parser-only record after it.
-    $0 == "\002" { inblock = 0; next }
+    # value, so a value beginning with the delimiter would otherwise end the block
+    # early and hide every parser-only record after it.
+    $0 == blkend { inblock = 0; next }
     inblock {
       # Already key-stripped and unfolded by git, so a folded value arrives whole
       # and fails the shape test rather than donating its first line. Lowercased
@@ -174,18 +189,27 @@ trailer_scan() {
     # than a bare sha. Dropping it here is what makes the body scan agree with the
     # unfolded block reading; keeping only its first line promoted a sha nobody
     # recorded, which is the one direction of disagreement that can lose content.
-    /^[ \t]/ { pending = ""; next }
+    #
+    # It must carry something other than whitespace to count: git leaves the value
+    # above a blank-but-indented line intact, so treating that line as a fold would
+    # drop a record git reads perfectly.
+    /^[ \t]/ && /[^ \t\r]/ { pending = ""; next }
     {
       body_take()
       line = $0
       sub(/[ \t\r]+$/, "", line)
       # Separator and case follow git, not our own stricter spelling: git reads
-      # "Key:<sha>", a tab, several spaces, and uppercase hex, and a record in any
-      # of those forms is invisible to git the moment a squash orphans it from the
-      # block. Reading them here is the whole reason this scan exists.
+      # "Key:<sha>", a tab, several spaces, whitespace BEFORE the colon, and
+      # uppercase hex. A record in any of those forms is invisible to git the
+      # moment a squash orphans it from the block, and reading those is the whole
+      # reason this scan exists. The colon is still required, so a longer key that
+      # merely starts with this one does not match.
       low = tolower(line)
-      if (substr(low, 1, klen) != keycolon) next
+      if (substr(low, 1, klen) != keyname) next
       rest = substr(low, klen + 1)
+      sub(/^[ \t]+/, "", rest)
+      if (substr(rest, 1, 1) != ":") next
+      rest = substr(rest, 2)
       sub(/^[ \t]+/, "", rest)
       pending = rest
     }
@@ -279,7 +303,11 @@ resolve_sha_set() {
 # and pipefail turns a found value into a failed lookup. The caller reads that as
 # "not present" and reports a clean commit as a squash.
 lines_contain() {
-  grep -qxF "$2" <<< "$1"
+  # -- so a needle that begins with a dash is a pattern rather than an option,
+  # and an explicit empty-needle answer: the here-string always supplies a final
+  # newline, so an empty haystack would otherwise report an empty needle present.
+  [ -n "$2" ] || return 1
+  grep -qxF -- "$2" <<< "$1"
 }
 
 # filter_sha_values
@@ -517,7 +545,7 @@ classify_healed_range() {
 #  3. content healing (see content_anchor), which reconciles the record against
 #     the evidence in the subtree.
 resolve_import_anchor() {
-  local oss_tip="$1" best="" candidate entries healed rc
+  local oss_tip="$1" best="" candidate entries healed rc seed_commit
   IMPORT_ANCHOR=""
   IMPORT_ANCHOR_RECORDED=""
   IMPORT_ANCHOR_HEALED=0
@@ -554,10 +582,17 @@ resolve_import_anchor() {
   IMPORT_ANCHOR_RECORDED="$best"
 
   if [ -n "${SEED_OSS_COMMIT:-}" ]; then
-    if git cat-file -e "${SEED_OSS_COMMIT}^{commit}" 2>/dev/null \
-      && git merge-base --is-ancestor "$SEED_OSS_COMMIT" "$oss_tip" 2>/dev/null; then
-      if [ -z "$best" ] || git merge-base --is-ancestor "$best" "$SEED_OSS_COMMIT"; then
-        best="$SEED_OSS_COMMIT"
+    # Peeled, then stored peeled. An operator naturally seeds with what
+    # `git rev-parse v1.2.3` printed, which is the tag object; accepting that is
+    # right, but keeping it is not. The anchor is compared against commit shas
+    # elsewhere -- import's "$RESUME" = "$OSS_TIP" nothing-to-do shortcut, and
+    # health's anchor output -- and a tag sha never equals any of them, so the
+    # shortcut can never fire and every run replays an empty range.
+    seed_commit="$(git rev-parse --verify --quiet "${SEED_OSS_COMMIT}^{commit}" 2>/dev/null)" || seed_commit=""
+    if [ -n "$seed_commit" ] \
+      && git merge-base --is-ancestor "$seed_commit" "$oss_tip" 2>/dev/null; then
+      if [ -z "$best" ] || git merge-base --is-ancestor "$best" "$seed_commit"; then
+        best="$seed_commit"
       fi
     else
       IMPORT_ANCHOR_SEED_BAD=true
