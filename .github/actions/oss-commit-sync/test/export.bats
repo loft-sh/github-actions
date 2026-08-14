@@ -328,12 +328,101 @@ Oss-Commit: $E2"
 
   ALIGN_TREE=true run bash "$EXPORT"
   [ "$status" -eq 1 ]
-  [ "$(output_value diverged)" = "true" ]
   [ "$(output_value pushed)" = "false" ]
+  [ "$(output_value loose-absorption)" = "true" ]
+  # Not diverged: these commits ARE absorbed, and a caller wired to the documented
+  # meaning of diverged would dispatch an import that has nothing to replay.
+  [ "$(output_value diverged)" = "false" ]
   [[ "$output" == *"align-tree would overwrite"* ]]
   [[ "$output" == *"$E1"* ]]
+  [[ "$output" == *"cannot clear this"* ]]
   # The contributor's commit is still on the mirror.
   [ "$(oss_file pkg/app.go)" = "external-only-content" ]
+}
+
+@test "align-tree still runs when the trees already agree despite weak evidence" {
+  # The gate belongs at the alignment commit, not at the guard: with nothing to
+  # align there is nothing to delete, and failing here would make align-tree
+  # unusable forever on any branch that ever took a squash-merged import.
+  E1=$(external_commit pkg/app.go "banner" "feat: add banner")
+  E2=$(external_commit pkg/app.go "banner-trimmed" "revert: most of the banner")
+  bash "$IMPORT" >/dev/null
+  squash_merge_pr_branch "chore: sync from oss (#2177)
+
+Oss-Commit: $E1
+
+Oss-Commit: $E2
+
+Co-authored-by: alice <alice@contributor.example>"
+
+  # Premise: E1 is loosely absorbed and its content is gone, but the trees match.
+  [ "$(git -C "$OSS_REMOTE" rev-parse 'main^{tree}')" = "$(git -C "$MONO" rev-parse "HEAD:$PFX")" ]
+
+  ALIGN_TREE=true run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value loose-absorption)" = "true" ]
+  [[ "$output" != *"::error::"* ]]
+}
+
+@test "a trailer only git's parser accepts still counts as absorbed" {
+  # git reads "Oss-Commit:<sha>" with no space, and uppercase hex, while the
+  # whole-message scan requires a lowercase hex value after "key: ". A record git
+  # sees perfectly must not read as unabsorbed, or the deadlock returns by a third
+  # road, with the content fallback unable to help once E1 is superseded.
+  E1=$(external_commit pkg/app.go "banner" "feat: add banner")
+  E2=$(external_commit pkg/app.go "banner-trimmed" "revert: most of the banner")
+  bash "$IMPORT" >/dev/null
+  # Squash-merged, so the branch's own well-formed trailers never reach main and
+  # these two lines are the ONLY record. Both are forms the scan cannot read.
+  squash_merge_pr_branch "chore: sync from oss (#42)
+
+Oss-Commit:$(echo "$E1" | tr 'a-f' 'A-F')
+Oss-Commit:$E2"
+
+  # Premise: E1's content is superseded, so only the record can prove absorption.
+  [ "$(cat "$MONO/$PFX/pkg/app.go")" = "banner-trimmed" ]
+
+  run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value diverged)" = "false" ]
+  [[ "$output" != *"not yet absorbed"* ]]
+}
+
+@test "align-tree proceeds when the loose external's content is present" {
+  # Weak evidence only matters if alignment could delete something. Here the
+  # import applied E1's content, so there is nothing to lose and the run must not
+  # be blocked: otherwise align-tree is unusable after any squashed import.
+  E1=$(external_commit pkg/app.go "alice-content" "feat: alice change")
+  bash "$IMPORT" >/dev/null
+  squash_merge_pr_branch "feat: alice change (#42)
+
+Oss-Commit: $E1
+
+Co-authored-by: alice <alice@contributor.example>"
+  [ "$(cat "$MONO/$PFX/pkg/app.go")" = "alice-content" ]
+
+  # Something for alignment to actually do, in an excluded path.
+  external_commit .github/workflows/release.yaml "oss-only" "chore: oss-only workflow" >/dev/null
+
+  EXCLUDE_PATHS=".github/workflows/release.yaml" ALIGN_TREE=true run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value loose-absorption)" = "false" ]
+  [[ "$output" != *"align-tree would overwrite"* ]]
+}
+
+@test "a trailer value that is not a sha cannot red the export" {
+  # Block values reach rev-parse unfiltered unless they are shape-checked, and
+  # reflog syntax exits 128, which the resolver escalates into a failed run: one
+  # such line anywhere in the range would break every export from then on.
+  company_commit pkg/app.go "company" "feat: company change" >/dev/null
+  git -C "$MONO" commit -q --allow-empty -m "chore: a human wrote nonsense
+
+Oss-Commit: @{9999}"
+
+  run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"git failed while resolving"* ]]
+  [ "$(output_value exported-count)" = "1" ]
 }
 
 @test "an external absorbed outside the trailer block still exports without align-tree" {

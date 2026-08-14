@@ -291,7 +291,9 @@ if [ "$squashed" -gt 0 ]; then
   # leaves, and also the shape of a real trailer line quoted in a body. Telling a
   # maintainer flatly that they squashed is the one thing this must not get wrong.
   echo "::warning::${squashed} commit(s) on ${BRANCH} carry an ${OSS_TRAILER} value outside the block git's own trailer parser reads. GitHub's squash-merge does that, and if that is the cause then per-commit authorship of those external contributions was collapsed and cannot be recovered; merge sync PRs with \"Rebase and merge\". A real ${OSS_TRAILER} line quoted in a commit body looks identical here, so check the commits below before concluding."
-  printf '::warning::  squash-merged: %s\n' "${squashed_list[@]}"
+  # Labelled by what was observed, not by the conclusion the line above declines
+  # to draw for the reader.
+  printf '::warning::  value outside the trailer block: %s\n' "${squashed_list[@]}"
 fi
 
 if [ "$stale" = "true" ]; then

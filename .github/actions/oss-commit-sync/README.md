@@ -80,13 +80,22 @@ Safety mechanisms, in order:
    OSS-only producer workflows and seeds the first trailer.
 
    Because that overwrite deletes whatever OSS holds and the monorepo does not,
-   `align-tree: true` demands stronger absorption evidence than an ordinary run:
-   an external counted as absorbed only by an `Oss-Commit` line *outside* the
-   block git's own trailer parser reads fails the run instead. Ordinary runs
-   accept that line, which is what rescues a squash-orphaned trailer, but it
-   cannot tell "never absorbed" from "absorbed, then superseded", and only one of
-   those is safe to flatten. Import the commit and rebase-merge the sync PR so its
-   trailer lands in a block, then re-run with `align-tree`.
+   the alignment commit demands stronger absorption evidence than an ordinary run.
+   If an external counts as absorbed only by an `Oss-Commit` line *outside* the
+   block git's own trailer parser reads, and its content is not in the subtree, the
+   run fails instead of aligning. Ordinary exports accept that line, which is what
+   rescues a squash-orphaned trailer, but it cannot tell "never absorbed" from
+   "absorbed, then superseded", and only one of those is safe to flatten. The check
+   sits at the alignment commit itself, so a run whose trees already agree is
+   unaffected, and `loose-absorption=true` reports the weak evidence on any run.
+
+   Do not dispatch the import direction on it. The anchor comes from the same
+   whole-message scan, so it already reaches past those commits and the import has
+   nothing to replay. To clear it, confirm per commit whether the content really
+   was absorbed. If it was and a later commit superseded it, record that where
+   git's parser reads it, i.e. an empty commit whose message ends with a paragraph
+   containing only `Oss-Commit: <sha>`. If it was not absorbed, do not record it:
+   re-anchor behind it with `seed-oss-commit` so its content can be imported.
 
 New release lines: when the branch does not exist on OSS, it is created from
 the OSS commit corresponding to the monorepo branch point (found via trailers
@@ -231,8 +240,9 @@ describe.
 
   Write trailers as full 40-character shas. An abbreviated hand-written value is
   read, and the `^{commit}` lookup disambiguates by type, so a prefix it shares
-  with a tree or a blob still resolves. It stops resolving once a second *commit*
-  shares the prefix, and from then on the export guard can only fall back to the
+  with a tree or a blob still resolves. It stops resolving once a second
+  *commit-ish* shares the prefix, meaning another commit or an annotated tag that
+  points at one, and from then on the export guard can only fall back to the
   content check: absorbed commits whose content was later superseded are the ones
   that then read as unabsorbed, which is exactly the case that deadlocked the
   export in the first place.
@@ -282,12 +292,13 @@ it sees that.
 |        conflict-sha        | string |                                                                                              Import: the OSS commit that failed <br>the 3-way apply, when the run <br>failed on a conflict.                                                                                               |
 |         converged          | string |                                                                                         Health: true when the subtree already <br>holds the OSS branch tip content <br>(ignoring exclude-paths).                                                                                          |
 |          degraded          | string |                                  Health: true when a git or <br>network step failed and some figures <br>in this report are therefore incomplete. <br>The health direction never exits non-zero, <br>so gate on this rather than <br>on the job result.                                   |
-|          diverged          | string |                                                                                              Export: true when OSS has external <br>commits not yet absorbed and the <br>run failed closed.                                                                                               |
+|          diverged          | string |                                                             Export: true when OSS has external <br>commits not yet absorbed and the <br>run failed closed. The documented reaction <br>is to dispatch the import direction.                                                               |
 |       exported-count       | string |                                                                                             Export: number of commits created on <br>the OSS branch (including an alignment commit, if any).                                                                                              |
 |        has-changes         | string |                                                                                                 Import: true when at least one <br>external commit was replayed onto the <br>PR branch.                                                                                                   |
 |        healed-count        | string |                                    Import: number of OSS commits the <br>anchor advanced over because the subtree <br>already held their content. Mostly our <br>own exports; see healed-unrecorded-count for the <br>part that indicates a problem.                                      |
 |    healed-export-count     | string |                 Import: of healed-count, the commits we <br>created ourselves (Monorepo-Commit trailer). They never carry <br>an Oss-Commit trailer, so the anchor <br>trails every export until the next <br>import records one past them. Expected, <br>not a finding.                  |
 |  healed-unrecorded-count   | string |                                                      Import: of healed-count, the commits carrying <br>neither trailer, i.e. imports whose provenance <br>record was lost. Non-zero means trailers <br>are being lost during merge.                                                       |
+|      loose-absorption      | string |         Export: true when an external counts <br>as absorbed only via an Oss-Commit <br>line outside the block git's own <br>trailer parser reads. The export proceeds; <br>align-tree refuses. Do NOT dispatch the <br>import direction on this, it has <br>nothing to replay.           |
 |          oss-tip           | string |                                                                                                                      Export: the OSS branch tip after <br>the run.                                                                                                                        |
 |       pending-count        | string |                                                                                                           Health: number of OSS commits genuinely <br>waiting to be imported.                                                                                                             |
 |         pr-branch          | string |                                                                                                                Import: the local branch holding the <br>replayed commits.                                                                                                                 |

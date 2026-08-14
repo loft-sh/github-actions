@@ -63,6 +63,11 @@ emit diverged false
 emit pushed false
 emit push-rejected false
 emit exported-count 0
+emit loose-absorption false
+
+# Declared before the branch split so the alignment gate can test it on the
+# fresh-branch path too, where the divergence guard never runs.
+loose_absorbed=()
 
 # --- locate the OSS branch tip and the resume point ------------------------
 
@@ -113,21 +118,36 @@ if [ "$branch_absent" = "false" ]; then
   # match those.
   absorbed_file="$(mktemp)"
   every_trailer_value "${RESUME}..HEAD" "$OSS_TRAILER" | resolve_sha_set > "$absorbed_file"
-  # The same values as git's own trailer parser sees them. The scan above reads
-  # the whole message on purpose, so it also reads an Oss-Commit line quoted at
-  # column 0 in a body, and no textual rule separates that from a real trailer:
-  # the line above it may be "Signed-off-by: x" or "Note: still pending is", both
-  # trailer-shaped. Keeping absorption ordinary while marking the evidence weak is
-  # what lets align-tree refuse below without breaking the squash rescue.
+  # The same values as git's own trailer parser sees them, which is BOTH a wider
+  # and a narrower set than the scan above.
+  #
+  # Wider: git accepts forms trailer_scan ignores ("Oss-Commit:<sha>" with no
+  # space, several spaces, a tab, uppercase hex), so a record git reads perfectly
+  # can be invisible to the scan. Those must count as absorbed too, or the export
+  # deadlocks on a commit whose trailer is right there in the block.
+  #
+  # Narrower: the scan reads the whole message on purpose, so it also reads an
+  # Oss-Commit line quoted at column 0 in a body. No textual rule separates that
+  # from a real trailer, because the neighbouring line may be "Signed-off-by: x"
+  # or "Note: still pending is" and both are trailer-shaped. So a value the block
+  # does not carry still counts, and is merely recorded as weaker evidence for the
+  # align-tree gate further down.
   block_absorbed_file="$(mktemp)"
   git log --first-parent --format="%(trailers:key=${OSS_TRAILER},valueonly)" "${RESUME}..HEAD" \
-    | resolve_sha_set > "$block_absorbed_file"
+    | filter_sha_values | resolve_sha_set > "$block_absorbed_file"
+  cat "$block_absorbed_file" >> "$absorbed_file"
   unabsorbed=()
   loose_absorbed=()
   for s in $(git rev-list --first-parent "${OSS_ANCHOR}..${OSS_TIP}"); do
     has_trailer "$s" "$MONOREPO_TRAILER" && continue
     if grep -qxF "$s" "$absorbed_file"; then
-      grep -qxF "$s" "$block_absorbed_file" || loose_absorbed+=("$s")
+      grep -qxF "$s" "$block_absorbed_file" && continue
+      # Absorbed on evidence git's parser cannot see. Harmless unless alignment
+      # could delete the commit's content, so ask the content question first:
+      # benign means the content is already in the subtree, or lives only in
+      # excluded paths, and there is nothing for alignment to remove.
+      external_is_benign "$s" && continue
+      loose_absorbed+=("$s")
       continue
     fi
     if external_is_benign "$s"; then
@@ -144,21 +164,13 @@ if [ "$branch_absent" = "false" ]; then
     echo "::error::Run the import direction (sync-from-oss) and merge its PR, then retry."
     exit 1
   fi
-  # An external counted as absorbed only by a line outside git's trailer block is
-  # believed, because that is the squash rescue this guard exists for. It is not
-  # enough to authorise deleting that commit's content from OSS, which is what
-  # align-tree does on any difference: content the monorepo never held cannot be
-  # distinguished from content a later commit superseded, so the value's origin is
-  # the only signal left. Fail closed and make the operator absorb it properly.
+  # Noted here, gated at the alignment commit itself (see the convergence
+  # assertion): the evidence is weak enough to refuse a destructive overwrite, and
+  # nowhere near weak enough to refuse an ordinary export. Deciding it here would
+  # fail runs where the trees already agree and alignment would create nothing.
   if [ "${#loose_absorbed[@]}" -gt 0 ]; then
+    emit loose-absorption true
     printf '::notice::External %s counts as absorbed only via an Oss-Commit line outside git trailer block\n' "${loose_absorbed[@]}"
-    if [ "$ALIGN_TREE" = "true" ]; then
-      emit diverged true
-      echo "::error::align-tree would overwrite the OSS tree while these external commits are absorbed only by an Oss-Commit line outside git's trailer block:"
-      printf '::error::  %s\n' "${loose_absorbed[@]}"
-      echo "::error::That evidence is enough to keep exporting, not to delete their content from OSS. Import them and merge the sync PR (rebase-merge, so each trailer lands in its own block), then re-run with align-tree."
-      exit 1
-    fi
   fi
 else
   # Fresh release line: anchor where the monorepo branch history was last
@@ -244,6 +256,24 @@ STAGING_TREE="$(git rev-parse "HEAD:${SUBTREE_PREFIX}")"
 OSS_TREE="$(git -C "$WT" rev-parse "HEAD^{tree}")"
 if [ "$STAGING_TREE" != "$OSS_TREE" ]; then
   if [ "$ALIGN_TREE" = "true" ]; then
+    # The one place the weak evidence matters: this commit sets the OSS tree to the
+    # staging tree, deleting whatever OSS holds and staging does not. An external
+    # absorbed only by a line outside git's trailer block may be one of those, and
+    # "never absorbed" is indistinguishable from "absorbed, then superseded" by
+    # content alone, so the value's origin is the only signal left.
+    if [ "${#loose_absorbed[@]}" -gt 0 ]; then
+      echo "::error::align-tree would overwrite the OSS tree, deleting anything OSS holds that ${SUBTREE_PREFIX} does not, while these external commits are absorbed only by an ${OSS_TRAILER} line outside git's trailer block:"
+      printf '::error::  %s\n' "${loose_absorbed[@]}"
+      echo "::error::That evidence is enough to keep exporting, not to delete their content from OSS."
+      # Deliberately not "run the import direction": the anchor comes from the same
+      # whole-message scan, so it already reaches past these commits and the import
+      # has nothing to replay. Saying otherwise sends the operator, or a caller
+      # dispatching on an output, round a loop that cannot terminate.
+      echo "::error::The import direction cannot clear this: the anchor already reaches past them, so it has nothing to replay. Decide per commit."
+      echo "::error::  absorbed, then superseded upstream -> record it where git's own parser reads it, i.e. an empty commit on ${BRANCH} whose message ends with a paragraph containing only '${OSS_TRAILER}: <sha>', then re-run with align-tree."
+      echo "::error::  not absorbed -> do NOT record it. Re-anchor behind it with seed-oss-commit so its content can be imported, because align-tree would delete it from OSS."
+      exit 1
+    fi
     msgfile="$(mktemp)"
     {
       echo "chore: align OSS mirror with monorepo staging tree"

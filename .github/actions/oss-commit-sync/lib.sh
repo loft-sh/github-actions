@@ -177,6 +177,26 @@ resolve_sha_set() {
   done
 }
 
+# filter_sha_values
+# Read candidate values on stdin; print those shaped like a commit sha, lowercased.
+#
+# Values taken from git's own %(trailers) have NOT been through trailer_scan's
+# shape filter, and git's parser is laxer than ours: it accepts "Key:<value>" with
+# no space, several spaces, a tab, and uppercase hex, all of which trailer_scan
+# ignores. Two things follow. Such a value is a real record that our scan cannot
+# see, so it has to be read from the block to be counted at all; and whatever a
+# human wrote reaches this point, so it must not go to rev-parse unchecked, where
+# reflog syntax like @{9999} exits 128 and resolve_sha_set escalates that into a
+# failed export.
+#
+# Length bounds and the hex test rather than a regex interval, matching
+# trailer_scan: awk interval support is not portable across implementations.
+filter_sha_values() {
+  awk -v minlen="$TRAILER_SHA_MIN_LEN" '
+    { v = tolower($0) }
+    v ~ /^[0-9a-f]+$/ && length(v) >= minlen && length(v) <= 40 { print v }'
+}
+
 # resolve_commit_prefix <value>
 # Print the full sha of the commit <value> names and return 0. Return 1 when it
 # names no commit here, and 2 when git itself failed. Callers MUST keep those two
