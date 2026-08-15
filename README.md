@@ -893,7 +893,8 @@ jobs:
 - `enabled` (optional, default: `true`): kill switch; resolves toward scanning on an unrecognised value
 - `block-on-findings` (optional, default: `false`): advisory vs. blocking posture
 - `registry` (optional, default: `ghcr.io`) / `registry-username` / `registry-password`: the action pulls the image with the caller's own credentials rather than relying on the scanner vendor's registry integration
-- `notify` / `slack-webhook-url` (optional, default: `true` / —)
+- `notify` / `slack-webhook-url` (optional, default: `true` / —): gated by `notify-events` as well, so both have to admit a run before it posts
+- `notify-events` (optional, default: `schedule,release`): comma-separated allowlist of `github.event_name` values permitted to notify, so a `workflow_dispatch` or PR run stays silent unless it opts in. A `workflow_call` callee sees the caller's event name
 
 **Outputs:**
 
