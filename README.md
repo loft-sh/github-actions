@@ -539,8 +539,9 @@ catches its own errors and exits 0, self-approval is pre-empted before calling
 the external approve action.
 
 With `auto-merge: true` the merge is performed **directly**, with GitHub's
-auto-merge queue only as a fallback — so `gh-access-token` needs a merge path on
-the base branch, not just the repository's auto-merge toggle. See the action's
+auto-merge queue only as a fallback. Pass the optional `merge-token` secret when
+the approving identity has no merge path on the base branch. When omitted, the
+workflow keeps using `gh-access-token` for both operations. See the action's
 [README](.github/actions/auto-approve-bot-prs/README.md#merging).
 
 **Location:** `.github/workflows/auto-approve-bot-prs.yaml`
@@ -567,6 +568,8 @@ jobs:
       auto-merge: false
     secrets:
       gh-access-token: ${{ secrets.GH_ACCESS_TOKEN }}
+      # Optional: a separate identity with a merge path on the base branch.
+      merge-token: ${{ secrets.MERGE_TOKEN }}
 ```
 
 `gh-access-token` must be a PAT whose identity differs from PR authors you want
