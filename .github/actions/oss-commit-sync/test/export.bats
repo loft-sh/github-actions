@@ -583,6 +583,43 @@ WRAP
   [ "$(oss_file ext.go)" = "external" ]
 }
 
+@test "replay: a failing rev-list refuses to export instead of reporting nothing to do" {
+  # The other producer, and the one the guard test above deliberately leaves
+  # running. A failed --reverse walk yields an empty replay range, which is
+  # indistinguishable from "already up to date": the loop runs zero times, count
+  # stays 0, and the run reports a clean, successful export while the commits sit
+  # unexported. With align-tree it then pushes a snapshot built from a range
+  # nobody managed to list.
+  company_commit pkg/app.go "l1-company" "feat: company change" >/dev/null
+  before=$(oss_tip)
+
+  real_git="$(command -v git)"
+  mkdir -p "$ROOT/bin"
+  # Only the --reverse replay walk; the divergence guard's walk must still run,
+  # or this passes for the wrong reason.
+  cat > "$ROOT/bin/git" <<WRAP
+#!/usr/bin/env bash
+rl=false; rev=false
+for a in "\$@"; do
+  case "\$a" in
+    rev-list) rl=true ;;
+    --reverse) rev=true ;;
+  esac
+done
+if [ "\$rl" = true ] && [ "\$rev" = true ]; then
+  exit 128
+fi
+exec "$real_git" "\$@"
+WRAP
+  chmod +x "$ROOT/bin/git"
+
+  PATH="$ROOT/bin:$PATH" run bash "$EXPORT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"refusing to export"* ]]
+  # Nothing was pushed on the strength of a range that was never listed.
+  [ "$(oss_tip)" = "$before" ]
+}
+
 @test "seed: an uppercase sha and a ref name are both accepted" {
   # The seed is typed by an operator on the one path with no trailer to fall back
   # to. Holding it to the spelling a trailer value has -- lowercase hex, checked

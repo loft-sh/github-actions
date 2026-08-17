@@ -297,3 +297,35 @@ Oss-Commit: $tag"
   # is observable: an unresolved tag sha leaves this branch behind.
   ! git -C "$MONO" rev-parse --verify --quiet "$PR_BRANCH" >/dev/null
 }
+
+@test "replay: a failing rev-list refuses to import instead of reporting nothing pending" {
+  # The mirror of the export-side guard. A failed --reverse walk yields an empty
+  # replay range, which reads exactly like "no external commits to import": the
+  # loop runs zero times, has-changes stays false, and the caller opens no PR
+  # while real external contributions sit unimported. The range has to be listed
+  # successfully or the run has to stop.
+  external_commit ext.go "external" "feat: external contribution" >/dev/null
+
+  real_git="$(command -v git)"
+  mkdir -p "$ROOT/bin"
+  cat > "$ROOT/bin/git" <<WRAP
+#!/usr/bin/env bash
+rl=false; rev=false
+for a in "\$@"; do
+  case "\$a" in
+    rev-list) rl=true ;;
+    --reverse) rev=true ;;
+  esac
+done
+if [ "\$rl" = true ] && [ "\$rev" = true ]; then
+  exit 128
+fi
+exec "$real_git" "\$@"
+WRAP
+  chmod +x "$ROOT/bin/git"
+
+  PATH="$ROOT/bin:$PATH" run bash "$IMPORT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"refusing to import"* ]]
+  [ "$(output_value has-changes)" = "false" ]
+}
