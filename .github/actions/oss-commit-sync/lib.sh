@@ -152,6 +152,15 @@ fi
 # git's block by a squash. That happens to Oss-Commit, which is written on the
 # monorepo side and reaches the base branch through a PR that GitHub may squash.
 #
+# That says why Oss-Commit NEEDS the body scan, not that its body is trustworthy.
+# It is not: replay_commit copies an OSS message into the monorepo verbatim, so a
+# contributor's body line arrives here too. The anchor reads those as candidates
+# and takes the one reaching farthest. What keeps that safe is not the parser but
+# the range: for the line to be in our history the import had to reach the commit
+# carrying it, so everything before it was already replayed, excluded, or proven
+# benign, and advancing to it cannot skip work nobody looked at. Both repos
+# enforce linear history, which is what makes that argument hold.
+#
 # It cannot happen to Monorepo-Commit. Export writes that trailer itself and
 # pushes the commit straight to OSS -- no PR, no squash, no merge method, nothing
 # between writing it and it being in the block. So the body scan buys that key
