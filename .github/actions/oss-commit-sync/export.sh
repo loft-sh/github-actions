@@ -74,6 +74,23 @@ emit loose-absorption false
 # giving it the same treatment is a separate change.
 loose_absorbed=()
 
+# loose_absorption_recovery
+# What to do about an external absorbed only by a line outside git's trailer
+# block. Printed from both places that stop on one, so the two cannot drift: the
+# alignment gate, which refuses the overwrite, and the convergence assertion,
+# which reaches the same commits by the other road.
+loose_absorption_recovery() {
+  # The monorepo branch, not ${BRANCH}: the block set is read from this repo's
+  # own first-parent chain (RESUME..HEAD), so a commit pushed to OSS instead
+  # changes nothing and every retry fails the same way.
+  echo "::error::  absorbed, then superseded upstream -> record it where git's own parser reads it, i.e. an empty commit on the monorepo branch this action runs from, whose message ends with a paragraph containing only '${OSS_TRAILER}: <sha>', then re-run with align-tree."
+  # Not seed-oss-commit: the seed is a forward floor only (it replaces the
+  # anchor when the anchor is an ancestor of it), so a seed placed behind the
+  # falsely recorded commit is silently ignored and the import still resumes
+  # past it. Bringing the content in is the recovery that works.
+  echo "::error::  not absorbed -> apply that OSS commit's changes under ${SUBTREE_PREFIX} and commit them, so its content is present. Then align-tree has nothing to delete. Do not add a trailer for it, and do not expect seed-oss-commit to help: it only moves the anchor forward."
+}
+
 # --- locate the OSS branch tip and the resume point ------------------------
 
 # Probe branch existence; exit 2 means "absent", anything else non-zero is a
@@ -320,15 +337,7 @@ if [ "$STAGING_TREE" != "$OSS_TREE" ]; then
       # has nothing to replay. Saying otherwise sends the operator, or a caller
       # dispatching on an output, round a loop that cannot terminate.
       echo "::error::The import direction cannot clear this: the anchor already reaches past them, so it has nothing to replay. Decide per commit."
-      # The monorepo branch, not ${BRANCH}: the block set is read from this repo's
-      # own first-parent chain (RESUME..HEAD), so a commit pushed to OSS instead
-      # changes nothing and every retry fails the same way.
-      echo "::error::  absorbed, then superseded upstream -> record it where git's own parser reads it, i.e. an empty commit on the monorepo branch this action runs from, whose message ends with a paragraph containing only '${OSS_TRAILER}: <sha>', then re-run with align-tree."
-      # Not seed-oss-commit: the seed is a forward floor only (it replaces the
-      # anchor when the anchor is an ancestor of it), so a seed placed behind the
-      # falsely recorded commit is silently ignored and the import still resumes
-      # past it. Bringing the content in is the recovery that works.
-      echo "::error::  not absorbed -> apply that OSS commit's changes under ${SUBTREE_PREFIX} and commit them, so its content is present. Then align-tree has nothing to delete. Do not add a trailer for it, and do not expect seed-oss-commit to help: it only moves the anchor forward."
+      loose_absorption_recovery
       exit 1
     fi
     msgfile="$(mktemp)"
@@ -347,7 +356,19 @@ if [ "$STAGING_TREE" != "$OSS_TREE" ]; then
   elif ! git diff --quiet "$OSS_TREE" "$STAGING_TREE" -- . ${excludes[@]+"${excludes[@]}"}; then
     echo "::error::OSS tree does not match the monorepo staging tree after replay:"
     git --no-pager diff --stat "$OSS_TREE" "$STAGING_TREE" -- . ${excludes[@]+"${excludes[@]}"} || true
-    echo "::error::Re-run with align-tree=true to append a snapshot alignment commit."
+    if [ "${#loose_absorbed[@]}" -gt 0 ]; then
+      # NOT "re-run with align-tree": the gate above refuses exactly that while
+      # these commits are absorbed only outside git's trailer block, so the
+      # obvious next step is a round trip that cannot terminate. The operator has
+      # to decide per commit either way, so say that here rather than one failure
+      # later.
+      echo "::error::Do not re-run with align-tree: these external commits are absorbed only by an ${OSS_TRAILER} line outside git's trailer block, which is enough to keep exporting and not enough to delete their content, so align-tree refuses the run rather than fixing it:"
+      printf '::error::  %s\n' "${loose_absorbed[@]}"
+      echo "::error::Decide per commit first:"
+      loose_absorption_recovery
+    else
+      echo "::error::Re-run with align-tree=true to append a snapshot alignment commit."
+    fi
     exit 1
   else
     echo "OSS tree differs from staging only in excluded paths; leaving them as-is"

@@ -340,6 +340,35 @@ Oss-Commit: $E2"
   [ "$(oss_file pkg/app.go)" = "external-only-content" ]
 }
 
+@test "a convergence failure with weak evidence does not point at align-tree" {
+  # Same state as the gate test above, reached WITHOUT align-tree. The convergence
+  # assertion used to end with "re-run with align-tree=true", which the gate then
+  # hard-refuses: the operator follows the advice, fails again, and learns the real
+  # answer one round trip later. Both exits have to say the same thing.
+  E1=$(external_commit pkg/app.go "external-only-content" "feat: alice never imported")
+  E2=$(external_commit ext2.go "two" "feat: alice second")
+  bash "$IMPORT" >/dev/null
+  git -C "$MONO" switch -q main
+  git -C "$MONO" commit -q --allow-empty -m "chore: absorb the second
+
+Note: still pending is
+Oss-Commit: $E1
+
+Oss-Commit: $E2"
+
+  run bash "$EXPORT"
+  [ "$status" -eq 1 ]
+  [ "$(output_value loose-absorption)" = "true" ]
+  [[ "$output" == *"does not match the monorepo staging tree"* ]]
+  [[ "$output" == *"Do not re-run with align-tree"* ]]
+  [[ "$output" == *"$E1"* ]]
+  # The per-commit recovery, the same text the gate itself prints.
+  [[ "$output" == *"absorbed, then superseded upstream"* ]]
+  [[ "$output" == *"not absorbed ->"* ]]
+  # And crucially not the advice that sends them round the loop.
+  [[ "$output" != *"Re-run with align-tree=true to append"* ]]
+}
+
 @test "align-tree still runs when the trees already agree despite weak evidence" {
   # The gate belongs at the alignment commit, not at the guard: with nothing to
   # align there is nothing to delete, and failing here would make align-tree

@@ -77,8 +77,13 @@ TRAILER_SHA_MIN_LEN=7
 # per-process mark is exactly as unguessable as a per-call one.
 TRAILER_FRAME_MARK="$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')" || TRAILER_FRAME_MARK=""
 if [ "${#TRAILER_FRAME_MARK}" -ne 32 ]; then
-  # Still the kernel's pool, just reached another way.
-  TRAILER_FRAME_MARK="$(tr -d '\n-' < /proc/sys/kernel/random/uuid 2>/dev/null)" || TRAILER_FRAME_MARK=""
+  # Still the kernel's pool, just reached another way. The redirection is inside
+  # the braces so 2>/dev/null covers it: bash applies redirections left to right
+  # and reports a failed INPUT redirection before the stderr one is in effect, so
+  # the obvious spelling prints a bare "No such file or directory" on a runner
+  # with no /proc -- into the health direction's log, whose whole contract is that
+  # an advisory run stays clean.
+  TRAILER_FRAME_MARK="$({ tr -d '\n-' < /proc/sys/kernel/random/uuid; } 2>/dev/null)" || TRAILER_FRAME_MARK=""
 fi
 if [ "${#TRAILER_FRAME_MARK}" -ne 32 ]; then
   # Last resort, and weaker on purpose rather than by accident: $RANDOM is a PRNG
