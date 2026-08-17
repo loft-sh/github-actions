@@ -199,9 +199,11 @@ in `test/squash-tolerance.bats`:
 > distinguishes it from a record we wrote. With `align-tree` the forged anchor
 > deletes the contributor's content from the mirror and the run reports
 > `diverged=false` and succeeds. Closing it needs evidence the parser does not
-> have (who pushed the commit), so it belongs with the sync identity rather than
-> the trailer reader. Treat `align-tree` on a branch that has taken outside
-> contributions as an operation to review, not a routine one.
+> have. Not the committer name -- that is not authentication, since anyone
+> constructing a commit can set the bot's -- but something the object proves: a
+> verified signature or auditable push provenance, plus a trusted cutoff for the
+> OSS history that predates it. Until then, treat `align-tree` on a branch that
+> has taken outside contributions as an operation to review, not a routine one.
 - the anchor is the farthest-reaching recorded import, so a trailer lost
   outright cannot drag it backwards
 - the anchor heals from subtree content, so even a trailer destroyed beyond

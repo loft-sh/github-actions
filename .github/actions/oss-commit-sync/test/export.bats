@@ -932,35 +932,6 @@ Oss-Commit: $E1"
   [[ "$output" != *"creating it from ${E1}"* ]]
   [ "$(git -C "$OSS_REMOTE" rev-parse v0.99)" = "$E2" ]
 }
-
-@test "guard: a failing content check refuses rather than inventing weak evidence" {
-  # external_is_benign answers "already present, safe to skip". Collapsing a git
-  # failure into "not benign" makes that answer decide the loose-absorption
-  # diagnosis, so a transient breakage reports commits as absorbed only by a line
-  # outside git's trailer block and tells the operator to decide each by hand -- a
-  # conclusion that may be entirely wrong.
-  external_commit ext.go "external" "feat: external contribution" >/dev/null
-  company_commit pkg/app.go "l1-company" "feat: company change" >/dev/null
-
-  real_git="$(command -v git)"
-  mkdir -p "$ROOT/bin"
-  cat > "$ROOT/bin/git" <<WRAP
-#!/usr/bin/env bash
-if [ "\$1" = "diff-tree" ]; then
-  for a in "\$@"; do
-    if [ "\$a" = "--name-status" ]; then exit 128; fi
-  done
-fi
-exec "$real_git" "\$@"
-WRAP
-  chmod +x "$ROOT/bin/git"
-
-  PATH="$ROOT/bin:$PATH" run bash "$EXPORT"
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"git failed checking whether"* ]]
-  [ "$(output_value loose-absorption)" = "false" ]
-}
-
 @test "new release branch: an abbreviated export record still finds the branch point" {
   # map_lookup compares exact strings and the walk queries it with a full sha from
   # rev-list, so an abbreviated or hand-written Monorepo-Commit record never

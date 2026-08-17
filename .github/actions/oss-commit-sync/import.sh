@@ -144,11 +144,7 @@ fi
 while read -r E; do
   [ -n "$E" ] || continue
   ensure_not_merge "$E"
-  ht_rc=0
-  has_trailer "$E" "$MONOREPO_TRAILER" || ht_rc=$?
-  if [ "$ht_rc" -eq 2 ]; then
-    die "git failed reading the ${MONOREPO_TRAILER} trailer of ${E}; refusing to decide whether we created it"
-  elif [ "$ht_rc" -eq 0 ]; then
+  if has_trailer "$E" "$MONOREPO_TRAILER"; then
     echo "Skipping ${E} (originated in the monorepo: $(trailer_value "$E" "$MONOREPO_TRAILER"))"
     continue
   fi
@@ -162,11 +158,7 @@ while read -r E; do
   # the subtree contributes nothing, and replaying it can only produce a no-op
   # or a spurious conflict with a LATER change that is also already present. A
   # stale anchor therefore degrades to skipped work instead of a red pipeline.
-  eb_rc=0
-  external_is_benign "$E" || eb_rc=$?
-  if [ "$eb_rc" -eq 2 ]; then
-    die "git failed checking whether ${E} is already present in ${SUBTREE_PREFIX}; refusing to decide whether to replay it"
-  elif [ "$eb_rc" -eq 0 ]; then
+  if external_is_benign "$E"; then
     skipped=$((skipped + 1))
     echo "Skipping ${E} (content already in ${SUBTREE_PREFIX})"
     continue

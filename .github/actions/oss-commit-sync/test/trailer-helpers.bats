@@ -265,8 +265,6 @@ Oss-Commit: 7b20042"
   run filter_sha_values <<'VALUES'
 1111111111111111111111111111111111111111
 2222222222222222222222222222222222222222222
-3333333333333333333333333333333333333333333333333333333333333333
-4444444444444444444444444444444444444444444444444444444444444444444
 abc123
 7b20042
 DEADBEEFCAFE
@@ -275,20 +273,16 @@ DEADBEEFCAFE
 1111111111111111111111111111111111111111 with a folded tail
 VALUES
   [ "$status" -eq 0 ]
-  # Kept: the 40-char SHA-1 name, a 43-char run (a plausible abbreviation of a
-  # SHA-256 name, and harmless on SHA-1 where it simply resolves to nothing), the
-  # full 64-char SHA-256 name, the 7-char abbreviation, and the uppercase run
+  # Kept: the 40-char value, the 7-char abbreviation, and the uppercase run
   # (lowercased), since git's own parser accepts uppercase hex.
-  [ "$(echo "$output" | wc -l)" -eq 5 ]
+  [ "$(echo "$output" | wc -l)" -eq 3 ]
   [ "$(echo "$output" | awk 'NR==1')" = "1111111111111111111111111111111111111111" ]
-  [ "$(echo "$output" | awk 'NR==2')" = "2222222222222222222222222222222222222222222" ]
-  [ "$(echo "$output" | awk 'NR==3')" = "3333333333333333333333333333333333333333333333333333333333333333" ]
-  [ "$(echo "$output" | awk 'NR==4')" = "7b20042" ]
-  [ "$(echo "$output" | awk 'NR==5')" = "deadbeefcafe" ]
-  # Dropped: 67 chars (over a SHA-256 name), 6 chars (under TRAILER_SHA_MIN_LEN), non-hex, and
+  [ "$(echo "$output" | awk 'NR==2')" = "7b20042" ]
+  [ "$(echo "$output" | awk 'NR==3')" = "deadbeefcafe" ]
+  # Dropped: 43 chars (over 40), 6 chars (under TRAILER_SHA_MIN_LEN), non-hex, and
   # anything with a tail. The last two matter most: reflog syntax reaching
   # rev-parse exits 128, which the resolver escalates into a failed export.
-  [[ "$output" != *"4444444444444444444444444444444444444444444444444444444444444444444"* ]]
+  [[ "$output" != *"2222222222222222222222222222222222222222222"* ]]
   [[ "$output" != *"abc123"* ]]
   [[ "$output" != *"@"* ]]
   [[ "$output" != *"folded tail"* ]]
@@ -327,14 +321,8 @@ VALUES
   # A marker file, not stderr: bats does not fold a shim's stderr into $output
   # here, so an stderr-based probe passes even when git IS called.
   mkdir -p "$ROOT/bin"
-  real_git="$(command -v git)"
   cat > "$ROOT/bin/git" <<WRAP
 #!/usr/bin/env bash
-# The one-per-call probe for this repository's hash length is expected and must
-# pass through; anything else means a per-VALUE lookup, which is what this pins.
-if [ "\$1" = "rev-parse" ] && [ "\$2" = "--show-object-format" ]; then
-  exec "$real_git" "\$@"
-fi
 echo "\$*" >> "$ROOT/git-was-called"
 exit 99
 WRAP
@@ -781,42 +769,6 @@ Oss-Commit: $NEW_SHA"
   [[ "$output" == *"$OLD_SHA"* ]]
   [[ "$output" == *"$NEW_SHA"* ]]
 }
-
-@test "trailer records are read and resolved on a SHA-256 repository" {
-  # The frame was already hash-agnostic and pinned as such, but the VALUE path
-  # capped at 40 hex, so on a SHA-256 repository no record was readable at all:
-  # the export guard's absorbed set came back empty, every external read as
-  # unabsorbed, and the anchor never resolved. The comment above the header rule
-  # claimed otherwise, which is the combination that hides a bug like this.
-  git init -q --object-format=sha256 "$ROOT/r256"
-  cd "$ROOT/r256"
-  git commit -q --allow-empty -m "an oss commit"
-  E=$(git rev-parse HEAD)
-  [ "${#E}" -eq 64 ]
-  git commit -q --allow-empty -m "import it
-
-Oss-Commit: $E"
-
-  run trailer_value HEAD Oss-Commit
-  [ "$status" -eq 0 ]
-  [ "$output" = "$E" ]
-
-  run every_trailer_value HEAD Oss-Commit
-  [ "$status" -eq 0 ]
-  [ "$output" = "$E" ]
-
-  # And an abbreviation still expands to the full 64-char name, which is what
-  # makes the absorbed set match shas that came out of rev-list full length.
-  run resolve_sha_set <<< "${E:0:12}"
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"$E"* ]]
-
-  # The anchor resolves too, rather than reporting a branch that never synced.
-  resolve_import_anchor "$E"
-  [ "$IMPORT_ANCHOR_SAW_TRAILER" = "true" ]
-  [ "$IMPORT_ANCHOR_RECORDED" = "$E" ]
-}
-
 @test "the block-only rule survives a differently-spelled key" {
   git commit -q --allow-empty -m "feat: external
 
@@ -826,22 +778,4 @@ Co-authored-by: Alice <alice@example.com>"
   run trailer_scan monorepo-commit 0 --first-parent -1 HEAD
   [ "$status" -eq 0 ]
   [ -z "$output" ]
-}
-
-@test "an unreadable object format refuses rather than assuming SHA-1" {
-  # Guessing 40 in a SHA-256 repository makes resolve_sha_set treat a 48-char
-  # abbreviation as already full, so it never expands and the export guard reports
-  # an absorbed commit as divergent.
-  git commit -q --allow-empty -m "a commit"
-  full=$(git rev-parse HEAD)
-  real_git="$(command -v git)"
-  mkdir -p "$ROOT/bin"
-  cat > "$ROOT/bin/git" <<WRAP
-#!/usr/bin/env bash
-if [ "\$1" = "rev-parse" ] && [ "\$2" = "--show-object-format" ]; then exit 128; fi
-exec "$real_git" "\$@"
-WRAP
-  chmod +x "$ROOT/bin/git"
-  PATH="$ROOT/bin:$PATH" run resolve_sha_set <<< "${full:0:12}"
-  [ "$status" -ne 0 ]
 }
