@@ -835,3 +835,95 @@ WRAP
   [[ "$output" == *"git failed testing whether resume anchor"* ]]
   [[ "$output" != *"is not an ancestor of OSS"* ]]
 }
+
+@test "guard: a forged Monorepo-Commit body line cannot pass an external off as ours" {
+  # OSS is public and takes outside contributions, so a commit message there is
+  # contributor-controlled. A column-zero "Monorepo-Commit: <valid mono sha>"
+  # line in a body used to be read as ours: the commit became the export anchor,
+  # which puts it BEFORE the divergence range so it is never checked, while the
+  # import loop guard skipped it as something we created. Export could not
+  # converge because it was never absorbed and the import refused to absorb it --
+  # and with align-tree the false anchor authorises deleting its content.
+  M=$(git -C "$MONO" rev-parse HEAD)
+  clone="$ROOT/forge"
+  git clone -q "$OSS_REMOTE" "$clone"
+  (
+    cd "$clone"
+    git checkout -q main
+    echo "external" > ext.go
+    git add .
+    GIT_AUTHOR_NAME=alice GIT_AUTHOR_EMAIL=alice@contributor.example \
+      git commit -qm "feat: external contribution
+
+Monorepo-Commit: $M
+
+Co-authored-by: Bob <bob@example.com>"
+    git push -q origin main
+  )
+  forged=$(oss_tip)
+  company_commit pkg/app.go "l1-company" "feat: company change" >/dev/null
+
+  run bash "$EXPORT"
+  # Treated as the external it is: fails closed and asks for the import.
+  [ "$status" -ne 0 ]
+  [ "$(output_value diverged)" = "true" ]
+  [[ "$output" == *"$forged"* ]]
+  [ "$(oss_tip)" = "$forged" ]
+  [ "$(oss_file ext.go)" = "external" ]
+}
+
+@test "align-tree cannot be steered by a forged Monorepo-Commit body line" {
+  # The destructive half of the same forgery: with align-tree the false anchor
+  # excluded the commit from the guard entirely, and the snapshot then deleted
+  # content OSS held and the subtree did not.
+  M=$(git -C "$MONO" rev-parse HEAD)
+  clone="$ROOT/forge2"
+  git clone -q "$OSS_REMOTE" "$clone"
+  (
+    cd "$clone"
+    git checkout -q main
+    echo "external" > ext.go
+    git add .
+    GIT_AUTHOR_NAME=alice GIT_AUTHOR_EMAIL=alice@contributor.example \
+      git commit -qm "feat: external contribution
+
+Monorepo-Commit: $M
+
+Co-authored-by: Bob <bob@example.com>"
+    git push -q origin main
+  )
+
+  ALIGN_TREE=true run bash "$EXPORT"
+  [ "$status" -ne 0 ]
+  [ "$(output_value diverged)" = "true" ]
+  # The contributor's file is still on the mirror.
+  [ "$(oss_file ext.go)" = "external" ]
+}
+
+@test "new release branch: several import records on one commit anchor at the farthest" {
+  # The fresh-branch walk asks a set question too. A squash records every import
+  # it replayed on one commit, and message order is not ancestry order, so taking
+  # the last line can anchor the new release line at the NEARER commit -- behind
+  # the newest import the branch actually holds.
+  E1=$(external_commit pkg/app.go "first" "feat: alice first")
+  E2=$(external_commit pkg/app.go "second" "feat: alice second")
+  bash "$IMPORT" >/dev/null
+  (
+    cd "$MONO"
+    git switch -q main
+    git merge --squash -q automation/sync-from-oss-main
+    # E2 recorded FIRST, so last-wins keeps the nearer E1.
+    git commit -qm "chore: sync from oss (#1)
+
+Oss-Commit: $E2
+Oss-Commit: $E1"
+    git branch -q -D automation/sync-from-oss-main
+    git switch -qc v0.99
+  )
+
+  BRANCH=v0.99 run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"creating it from ${E2}"* ]]
+  [[ "$output" != *"creating it from ${E1}"* ]]
+  [ "$(git -C "$OSS_REMOTE" rev-parse v0.99)" = "$E2" ]
+}

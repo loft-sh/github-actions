@@ -141,12 +141,43 @@ fi
 #
 # A well-formed trailer is seen by both readings; the duplicate is dropped per
 # commit so the output stays a clean set.
+#
+# The body half is not applied to every key -- see trailer_reads_body.
+
+# trailer_reads_body <key>
+# True when the whole-message scan applies to this key, false when only git's own
+# trailer block may be trusted.
+#
+# The union above exists for ONE reason: a record we wrote can be orphaned from
+# git's block by a squash. That happens to Oss-Commit, which is written on the
+# monorepo side and reaches the base branch through a PR that GitHub may squash.
+#
+# It cannot happen to Monorepo-Commit. Export writes that trailer itself and
+# pushes the commit straight to OSS -- no PR, no squash, no merge method, nothing
+# between writing it and it being in the block. So the body scan buys that key
+# nothing, and it costs: OSS is a public repository taking outside contributions,
+# so an external commit's message is contributor-controlled, and a column-zero
+# "Monorepo-Commit: <any valid monorepo sha>" line in a body would otherwise be
+# read as ours. That commit then becomes the export anchor, which puts it BEFORE
+# the divergence range so it is never checked, while the import loop guard skips
+# it as something we created. Export cannot converge because it was never
+# absorbed, the import refuses to absorb it, and with align-tree the false anchor
+# authorises deleting its content from OSS instead.
+#
+# So the trust follows the threat: unioned where our own records can be orphaned,
+# block-only where they cannot and the body is someone else's to write.
+trailer_reads_body() {
+  [ "$1" != "$MONOREPO_TRAILER" ]
+}
+
 trailer_scan() {
   local key="$1" multi="$2"
   shift 2
-  local mark="$TRAILER_FRAME_MARK"
+  local mark="$TRAILER_FRAME_MARK" bodyscan=0
+  trailer_reads_body "$key" && bodyscan=1
   git log --format="${mark}H%H%n%(trailers:key=${key},valueonly,unfold)${mark}B%n%B" "$@" \
-    | awk -v key="$key" -v minlen="$TRAILER_SHA_MIN_LEN" -v multi="$multi" -v mark="$mark" '
+    | awk -v key="$key" -v minlen="$TRAILER_SHA_MIN_LEN" -v multi="$multi" -v mark="$mark" \
+          -v bodyscan="$bodyscan" '
     function shaped(candidate) {
       return (candidate ~ /^[0-9a-f]+$/ && length(candidate) >= minlen && length(candidate) <= 40)
     }
@@ -203,6 +234,10 @@ trailer_scan() {
       if (shaped(line)) block[++nblock] = line
       next
     }
+    # Everything below reads the message body. For a key whose records cannot be
+    # squash-orphaned there is nothing down there to recover, and the body is
+    # contributor-controlled, so it is not read at all.
+    !bodyscan { next }
     # A continuation line, so whatever we were holding was a folded value rather
     # than a bare sha. Dropping it here is what makes the body scan agree with the
     # unfolded block reading; keeping only its first line promoted a sha nobody

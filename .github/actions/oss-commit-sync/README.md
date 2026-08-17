@@ -181,10 +181,17 @@ OSS commit touches the same lines. A squash also collapses several imports onto
 one commit, which is what the last defense covers. All four are regression-tested
 in `test/squash-tolerance.bats`:
 
-- the trailer lookup scans the **whole commit message**, not just git's trailer
-  block, so a squash-orphaned trailer is still read (the value must be a bare
-  commit sha at column 0, which keeps most prose from matching, though a line of
-  that exact shape quoted in a body does match)
+- the `Oss-Commit` lookup scans the **whole commit message**, not just git's
+  trailer block, so a squash-orphaned trailer is still read (the value must be a
+  bare commit sha at column 0, which keeps most prose from matching, though a
+  line of that exact shape quoted in a body does match)
+- `Monorepo-Commit` is read from git's trailer **block only**. Export writes that
+  trailer itself and pushes straight to OSS, so it is never squash-orphaned and
+  the whole-message scan would buy it nothing -- while OSS is public and takes
+  outside contributions, so a body line there is contributor-controlled. Scanned,
+  a forged `Monorepo-Commit:` line would make an external commit the export
+  anchor, putting it before the divergence range so it is never checked, while
+  the import loop guard skipped it as ours
 - the anchor is the farthest-reaching recorded import, so a trailer lost
   outright cannot drag it backwards
 - the anchor heals from subtree content, so even a trailer destroyed beyond

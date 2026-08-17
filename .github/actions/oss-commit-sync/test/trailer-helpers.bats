@@ -713,3 +713,43 @@ WRAP
   SEED_OSS_COMMIT='@{9999}' PATH="$ROOT/bin:$PATH" run resolve_import_anchor "$E"
   [ "$status" -eq 1 ]
 }
+
+@test "a body-line Monorepo-Commit is not a record, but a body-line Oss-Commit is" {
+  # The trust asymmetry. Export writes Monorepo-Commit itself and pushes straight
+  # to OSS, so that record can never be squash-orphaned and the body scan buys it
+  # nothing -- while OSS takes outside contributions, so a body line there is
+  # written by someone else. Oss-Commit keeps the union because it reaches the
+  # base branch through a PR GitHub may squash.
+  git commit -q --allow-empty -m "feat: an external contribution
+
+Monorepo-Commit: $OLD_SHA
+Oss-Commit: $OTHER_SHA
+
+Co-authored-by: Alice <alice@example.com>"
+
+  # Premise: git's own parser sees neither, both are orphaned by the last
+  # paragraph.
+  [ -z "$(git log -1 --format='%(trailers:key=Monorepo-Commit,valueonly)' HEAD | tr -d '[:space:]')" ]
+
+  run trailer_value HEAD Monorepo-Commit
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  run has_trailer HEAD Monorepo-Commit
+  [ "$status" -ne 0 ]
+
+  # The other key still recovers its orphaned record.
+  run trailer_value HEAD Oss-Commit
+  [ "$status" -eq 0 ]
+  [ "$output" = "$OTHER_SHA" ]
+}
+
+@test "a Monorepo-Commit in git's own block is still read" {
+  # Block-only must not mean unread: this is how every genuine export records
+  # itself, including the spellings git is lax about.
+  git commit -q --allow-empty -m "feat: a real export
+
+Monorepo-Commit:$(echo "$NEW_SHA" | tr 'a-f' 'A-F')"
+  run trailer_value HEAD Monorepo-Commit
+  [ "$status" -eq 0 ]
+  [ "$output" = "$NEW_SHA" ]
+}
