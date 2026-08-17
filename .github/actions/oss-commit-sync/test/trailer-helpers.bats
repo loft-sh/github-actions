@@ -620,3 +620,63 @@ WRAP
   SEED_OSS_COMMIT=4444444444444444444444444444444444444444 resolve_import_anchor "$E"
   [ "$IMPORT_ANCHOR_SEED_BAD" = "true" ]
 }
+
+@test "resolve_import_anchor fails closed when comparing two candidates breaks" {
+  # The second ancestry call, not the reachability one above: it decides which of
+  # two recorded imports reaches farther. A failure here used to read as "best is
+  # not an ancestor of candidate", silently keeping the wrong winner, so the
+  # import resumes from the nearer anchor and re-walks commits it already holds.
+  git commit -q --allow-empty -m "oss one"
+  E1=$(git rev-parse HEAD)
+  git commit -q --allow-empty -m "oss two"
+  E2=$(git rev-parse HEAD)
+  git commit -q --allow-empty -m "import the older
+
+Oss-Commit: $E1"
+  git commit -q --allow-empty -m "import the newer
+
+Oss-Commit: $E2"
+
+  real_git="$(command -v git)"
+  mkdir -p "$ROOT/bin"
+  # Matched on the operand pair, so only the best-vs-candidate comparison breaks
+  # and the reachability checks against the tip still answer normally.
+  cat > "$ROOT/bin/git" <<WRAP
+#!/usr/bin/env bash
+if [ "\$1" = "merge-base" ] && [ "\$3" = "$E2" ] && [ "\$4" = "$E1" ]; then
+  exit 128
+fi
+exec "$real_git" "\$@"
+WRAP
+  chmod +x "$ROOT/bin/git"
+
+  PATH="$ROOT/bin:$PATH" run resolve_import_anchor HEAD
+  [ "$status" -eq 1 ]
+}
+
+@test "resolve_import_anchor fails closed when comparing the seed breaks" {
+  # The seed's own floor comparison. Reached with a broken merge-base it used to
+  # read as "the seed is not ahead of the recorded anchor", so the floor an
+  # operator set to re-anchor a damaged sync was quietly ignored.
+  git commit -q --allow-empty -m "oss one"
+  E1=$(git rev-parse HEAD)
+  git commit -q --allow-empty -m "oss two"
+  E2=$(git rev-parse HEAD)
+  git commit -q --allow-empty -m "import the older
+
+Oss-Commit: $E1"
+
+  real_git="$(command -v git)"
+  mkdir -p "$ROOT/bin"
+  cat > "$ROOT/bin/git" <<WRAP
+#!/usr/bin/env bash
+if [ "\$1" = "merge-base" ] && [ "\$3" = "$E1" ] && [ "\$4" = "$E2" ]; then
+  exit 128
+fi
+exec "$real_git" "\$@"
+WRAP
+  chmod +x "$ROOT/bin/git"
+
+  SEED_OSS_COMMIT="$E2" PATH="$ROOT/bin:$PATH" run resolve_import_anchor HEAD
+  [ "$status" -eq 1 ]
+}
