@@ -401,7 +401,8 @@ Oss-Commit:$(echo "$NEW_SHA" | tr 'a-f' 'A-F')"
   # anywhere in the message. With align-tree that authorises deleting OSS content.
   # The payload imitates a real header line, so requiring a whole object name
   # after the byte does not stop it. Only a delimiter the message cannot contain
-  # does, which is why the frame is drawn fresh per call rather than fixed.
+  # does, which is why the frame is drawn at random when lib.sh is sourced rather
+  # than fixed: every message it reads was written before the mark existed.
   printf 'feat: innocent looking\n\n\001%s\n%s\n' "$OTHER_SHA" "$NEW_SHA" > "$ROOT/msg"
   git commit -q --allow-empty -F "$ROOT/msg"
   run every_trailer_value HEAD Oss-Commit
@@ -532,4 +533,90 @@ Oss-Commit-Extra: $NEW_SHA"
   [ "$status" -eq 0 ]
   run lines_contain "" ""
   [ "$status" -ne 0 ]
+}
+
+@test "map_lookup compares shas as strings, not as numbers" {
+  # A field and a -v variable are both "strnum", so an all-decimal sha is compared
+  # as a double. These two differ only past the 17th significant digit, so a
+  # numeric `==` calls them equal and the fresh-branch anchor lands on the wrong
+  # OSS commit. Fixed values, not repository shas: a real sha is all-decimal only
+  # about once in 160 million, so a generated one would almost never exercise this.
+  printf '%s\t%s\n' \
+    1234567890123456789012345678901234567890 aaaa \
+    1234567890123456789012345678901234567891 bbbb > "$ROOT/map"
+  run map_lookup 1234567890123456789012345678901234567891 "$ROOT/map"
+  [ "$status" -eq 0 ]
+  [ "$output" = "bbbb" ]
+}
+
+@test "is_ancestor separates a negative answer from git failing" {
+  # `merge-base --is-ancestor` answers 1 for "no" and 128 for "I cannot tell you".
+  # Collapsing them lets a broken object store demote every anchor candidate to
+  # "not reachable", after which resolve_import_anchor returns success with an
+  # older anchor or none at all -- and nothing anywhere says git broke.
+  git commit -q --allow-empty -m one
+  A=$(git rev-parse HEAD)
+  git commit -q --allow-empty -m two
+  B=$(git rev-parse HEAD)
+
+  run is_ancestor "$A" "$B"
+  [ "$status" -eq 0 ]
+  run is_ancestor "$B" "$A"
+  [ "$status" -eq 1 ]
+  GIT_OBJECT_DIRECTORY=/nonexistent run is_ancestor "$A" "$B"
+  [ "$status" -eq 2 ]
+}
+
+@test "resolve_import_anchor fails closed when the ancestry test breaks" {
+  # Reached with a broken merge-base, "no trailer points at a reachable commit" is
+  # not an answer about the sync. import.sh would announce a history rewrite on
+  # OSS that never happened, and health would report degraded=false beside it.
+  git commit -q --allow-empty -m "an oss commit"
+  E=$(git rev-parse HEAD)
+  git commit -q --allow-empty -m "import it
+
+Oss-Commit: $E"
+
+  real_git="$(command -v git)"
+  mkdir -p "$ROOT/bin"
+  cat > "$ROOT/bin/git" <<WRAP
+#!/usr/bin/env bash
+for a in "\$@"; do
+  if [ "\$a" = "merge-base" ]; then exit 128; fi
+done
+exec "$real_git" "\$@"
+WRAP
+  chmod +x "$ROOT/bin/git"
+
+  PATH="$ROOT/bin:$PATH" run resolve_import_anchor "$E"
+  [ "$status" -eq 1 ]
+}
+
+@test "resolve_import_anchor blames the seed only when the seed is at fault" {
+  # rev-parse answers 1 for absent, ambiguous and type-mismatch alike, which are
+  # all fair to blame on the seed. Anything else is git failing, and reporting
+  # that as "SEED_OSS_COMMIT is not a commit reachable from the tip" sends the
+  # operator to re-check a value that was right all along.
+  git commit -q --allow-empty -m "an oss commit"
+  E=$(git rev-parse HEAD)
+
+  real_git="$(command -v git)"
+  mkdir -p "$ROOT/bin"
+  # Only the seed peel: nothing before it on this path shells out to rev-parse,
+  # because the trailer walk is a git log and there are no trailers to resolve.
+  cat > "$ROOT/bin/git" <<WRAP
+#!/usr/bin/env bash
+for a in "\$@"; do
+  if [ "\$a" = "rev-parse" ]; then exit 128; fi
+done
+exec "$real_git" "\$@"
+WRAP
+  chmod +x "$ROOT/bin/git"
+
+  SEED_OSS_COMMIT="$E" PATH="$ROOT/bin:$PATH" run resolve_import_anchor "$E"
+  [ "$status" -eq 1 ]
+
+  # The ordinary bad seed still reports itself as a bad seed, not as a git error.
+  SEED_OSS_COMMIT=4444444444444444444444444444444444444444 resolve_import_anchor "$E"
+  [ "$IMPORT_ANCHOR_SEED_BAD" = "true" ]
 }

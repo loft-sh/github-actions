@@ -65,8 +65,9 @@ die() {
 # run is too generic to be confidently a sha.
 TRAILER_SHA_MIN_LEN=7
 
-# The frame delimiter trailer_scan builds its git-log format from. 32 hex from
-# the kernel, with a $RANDOM fallback for a runner without /dev/urandom.
+# The frame delimiter trailer_scan builds its git-log format from. 32 hex, read
+# from the kernel pool two different ways before falling back to $RANDOM (see
+# the tiers below) for a runner that offers neither.
 #
 # Drawn once per process rather than per call: trailer_scan runs once per commit
 # inside three O(n) walks (the export divergence guard, health's pending loop,
@@ -106,17 +107,18 @@ fi
 # is build-dependent, so this only bites on big repos on some runners). It
 # reads the whole stream instead; callers keep the entries they want.
 #
-# Records are framed by a delimiter drawn fresh on every call, rather than an awk
-# RS: a NUL or control-char RS is not portable across awk implementations (mawk
-# treats an empty RS as paragraph mode).
+# Records are framed by TRAILER_FRAME_MARK, drawn once when this file is sourced,
+# rather than an awk RS: a NUL or control-char RS is not portable across awk
+# implementations (mawk treats an empty RS as paragraph mode).
 #
 # It has to be unpredictable, not merely unusual. Framing on a fixed control byte
 # is forgeable, because every byte except NUL is legal in a commit message and
 # import.sh replays OSS messages into the monorepo verbatim: a body line holding
 # the delimiter reopened the frame mid-record, and the bare hex line after it was
 # read as a block value, putting a sha into the absorbed set with no trailer key
-# present anywhere. Nothing written before this call can contain this call's
-# delimiter, so the frame cannot be forged rather than merely being awkward to.
+# present anywhere. Every commit these scripts read was written before this
+# process drew the mark, so nothing readable can contain it: the frame cannot be
+# forged rather than merely being awkward to.
 #
 # Both readings come from THIS function, and nowhere else. Keeping them in separate
 # callers meant "is this commit a record" had two answers, and every caller had to
@@ -369,6 +371,41 @@ resolve_commit_prefix() {
   esac
 }
 
+# map_lookup <key> <tsv-file>
+# Print the second field of the first line whose first field equals <key>.
+#
+# Both operands are forced to strings before comparing. A field and a -v variable
+# are both "strnum", so awk compares two all-decimal shas NUMERICALLY, as doubles:
+# 1234...890 and 1234...891 differ past the 17th significant digit and therefore
+# test equal, and the lookup returns the wrong row. Same trap the trailer scan hit
+# when it ranked hex values; the fix is the same.
+#
+# `exit` is safe here in a way it is not in the trailer scan: the input is a file,
+# not a pipe from a still-writing `git log`, so leaving early cannot SIGPIPE a
+# producer.
+map_lookup() {
+  awk -F'\t' -v k="$1" '$1 "" == k "" { print $2; exit }' "$2"
+}
+
+# is_ancestor <maybe-ancestor> <descendant>
+# Return 0 when it is one, 1 when it is not, and 2 when git itself failed.
+#
+# Same tripling as resolve_commit_prefix, and for the same reason: `merge-base
+# --is-ancestor` answers 1 for "no" and 128 for "I could not tell you", and the
+# bare `|| continue` that collapsed them let a broken object store quietly demote
+# every candidate to "not reachable". resolve_import_anchor then returns success
+# with an older anchor, or none at all, so the import re-walks absorbed commits
+# or announces a history rewrite that never happened -- while health reports
+# degraded=false, because nothing ever said anything went wrong.
+is_ancestor() {
+  local rc=0
+  git merge-base --is-ancestor "$1" "$2" 2>/dev/null || rc=$?
+  if [ "$rc" -le 1 ]; then
+    return "$rc"
+  fi
+  return 2
+}
+
 # newest_trailer_entry <ref> <key>
 # Print "<commit-sha> <value>" for the newest first-parent commit carrying the
 # trailer. Prints nothing when none does.
@@ -556,7 +593,7 @@ classify_healed_range() {
 #  3. content healing (see content_anchor), which reconciles the record against
 #     the evidence in the subtree.
 resolve_import_anchor() {
-  local oss_tip="$1" best="" candidate entries healed rc seed_commit
+  local oss_tip="$1" best="" candidate entries healed rc seed_commit anc_rc seed_ok
   IMPORT_ANCHOR=""
   IMPORT_ANCHOR_RECORDED=""
   IMPORT_ANCHOR_HEALED=0
@@ -585,8 +622,22 @@ resolve_import_anchor() {
     elif [ "$rc" -ne 0 ]; then
       continue
     fi
-    git merge-base --is-ancestor "$candidate" "$oss_tip" 2>/dev/null || continue
-    if [ -z "$best" ] || git merge-base --is-ancestor "$best" "$candidate"; then
+    anc_rc=0
+    is_ancestor "$candidate" "$oss_tip" || anc_rc=$?
+    if [ "$anc_rc" -eq 2 ]; then
+      return 1
+    elif [ "$anc_rc" -ne 0 ]; then
+      continue
+    fi
+    if [ -z "$best" ]; then
+      best="$candidate"
+      continue
+    fi
+    anc_rc=0
+    is_ancestor "$best" "$candidate" || anc_rc=$?
+    if [ "$anc_rc" -eq 2 ]; then
+      return 1
+    elif [ "$anc_rc" -eq 0 ]; then
       best="$candidate"
     fi
   done <<< "$entries"
@@ -599,11 +650,39 @@ resolve_import_anchor() {
     # elsewhere -- import's "$RESUME" = "$OSS_TIP" nothing-to-do shortcut, and
     # health's anchor output -- and a tag sha never equals any of them, so the
     # shortcut can never fire and every run replays an empty range.
-    seed_commit="$(git rev-parse --verify --quiet "${SEED_OSS_COMMIT}^{commit}" 2>/dev/null)" || seed_commit=""
-    if [ -n "$seed_commit" ] \
-      && git merge-base --is-ancestor "$seed_commit" "$oss_tip" 2>/dev/null; then
-      if [ -z "$best" ] || git merge-base --is-ancestor "$best" "$seed_commit"; then
+    #
+    # Split 1 from anything else, like resolve_commit_prefix: rev-parse answers 1
+    # for absent, ambiguous and type-mismatch alike, which are all "names no commit
+    # here" and a fair thing to blame the seed for. Anything else is git failing,
+    # and reporting that as a bad seed sends the operator to re-check a value that
+    # was right all along -- the last place in this file where a git failure could
+    # still pass itself off as an answer.
+    rc=0
+    seed_commit="$(git rev-parse --verify --quiet "${SEED_OSS_COMMIT}^{commit}" 2>/dev/null)" || rc=$?
+    if [ "$rc" -gt 1 ]; then
+      return 1
+    fi
+    seed_ok=false
+    if [ "$rc" -eq 0 ]; then
+      anc_rc=0
+      is_ancestor "$seed_commit" "$oss_tip" || anc_rc=$?
+      if [ "$anc_rc" -eq 2 ]; then
+        return 1
+      elif [ "$anc_rc" -eq 0 ]; then
+        seed_ok=true
+      fi
+    fi
+    if [ "$seed_ok" = "true" ]; then
+      if [ -z "$best" ]; then
         best="$seed_commit"
+      else
+        anc_rc=0
+        is_ancestor "$best" "$seed_commit" || anc_rc=$?
+        if [ "$anc_rc" -eq 2 ]; then
+          return 1
+        elif [ "$anc_rc" -eq 0 ]; then
+          best="$seed_commit"
+        fi
       fi
     else
       IMPORT_ANCHOR_SEED_BAD=true
