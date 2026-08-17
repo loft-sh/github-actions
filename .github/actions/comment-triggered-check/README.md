@@ -148,7 +148,7 @@ commenter's access is read from the event payload, not from an API call.
 |   check-name    | string |                                                                                                                                                                                                       Display name of the check-run, sanitized <br>and length-bounded.                                                                                                                                                                                                        |
 |  check-run-id   | string |                                                                                                                                                                                        Id of the opened check-run. Empty <br>when nothing was opened; gate the <br>finish job on it.                                                                                                                                                                                          |
 |   conclusion    | string |                                                                                                                                                                                                             finish mode. The conclusion that was <br>published.                                                                                                                                                                                                               |
-| concurrency-key | string |                                                                                                                                                                                          Filter reduced to a lowercase slug, <br>safe to interpolate into a concurrency <br>group.                                                                                                                                                                                            |
+| concurrency-key | string |                                                                                  Filter reduced to a lowercase slug <br>plus an eight-character digest of the <br>normalized filter, safe to interpolate into <br>a concurrency group. The digest is <br>not decoration: the slug alone drops <br>punctuation, so "a && b" and <br>"a || b" would share a <br>group and cancel each other.                                                                                    |
 |     filter      | string |                                                                                                                                                                                         Argument string with whitespace normalized. This <br>is what to pass to the <br>test runner.                                                                                                                                                                                          |
 |    head-sha     | string |                                                                                                                                                                                                Resolved head commit of the pull <br>request. The event does not carry <br>it.                                                                                                                                                                                                 |
 |     matched     | string |                                                                                                                                                                                                          "true" when the comment opened with <br>the command word.                                                                                                                                                                                                            |
@@ -245,9 +245,12 @@ command, and it cost three API calls plus a state machine whose own failure
 modes were worse than the problem.
 
 It matters because anything waiting on all of a commit's check-runs, including
-`auto-approve-bot-prs`, waits on a stuck one indefinitely. The recovery path is
-to re-run the workflow from the Actions tab, which re-runs `finish`, or to close
-the check by hand. The error message says so.
+`auto-approve-bot-prs`, waits on a stuck one indefinitely.
+
+The recovery path is **"Re-run failed jobs"**, not "Re-run all jobs". The
+narrow one re-runs `finish` alone and reuses the check-run id from `prepare`,
+whose outputs are preserved; the broad one runs `start` again and opens a
+second check-run for the same filter. The error message names the distinction.
 
 ## Reporting failures to the author
 

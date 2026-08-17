@@ -135,8 +135,17 @@ patches() { calls_matching "PATCH"; }
   export GH_MOCK_PATCH_FAIL=1
   export INPUT_PATCH_ATTEMPTS="1"
   run bash "$SCRIPT"
-  [[ "$output" == *"Re-run this workflow"* ]]
   [[ "$output" != *"reconcile"* ]]
+}
+
+# Re-running everything would run start again and open a second check-run for
+# the same filter, so the instruction has to name the narrower option.
+@test "the recovery instruction points at re-running only the failed job" {
+  export GH_MOCK_PATCH_FAIL=1
+  export INPUT_PATCH_ATTEMPTS="1"
+  run bash "$SCRIPT"
+  [[ "$output" == *"Re-run failed jobs"* ]]
+  [[ "$output" == *"second check-run"* ]]
 }
 
 @test "a single configured attempt makes exactly one call" {

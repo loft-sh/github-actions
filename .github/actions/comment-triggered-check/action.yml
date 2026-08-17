@@ -101,7 +101,7 @@ outputs:
     description: 'Resolved base branch of the pull request. The event does not carry it either.'
     value: ${{ steps.start.outputs.base-ref }}
   concurrency-key:
-    description: 'Filter reduced to a lowercase slug, safe to interpolate into a concurrency group.'
+    description: 'Filter reduced to a lowercase slug plus an eight-character digest of the normalized filter, safe to interpolate into a concurrency group. The digest is not decoration: the slug alone drops punctuation, so "a && b" and "a || b" would share a group and cancel each other.'
     value: ${{ steps.start.outputs.concurrency-key }}
   check-name:
     description: 'Display name of the check-run, sanitized and length-bounded.'

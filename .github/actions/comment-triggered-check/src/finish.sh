@@ -87,9 +87,13 @@ if [[ "$published" -eq 0 ]]; then
   # Accepted residual risk, stated rather than hidden: after this the check-run
   # is stuck in_progress and only a human can clear it. The alternative was a
   # reconciliation pass on the next command, which cost three API calls and a
-  # state machine whose own failure modes were worse. Re-running the workflow
-  # from the Actions tab re-runs this job and is the recovery path.
-  echo "::error::could not complete check-run ${check_run_id} after ${attempts} attempts; it is stuck in progress and will block anything waiting on this commit's checks. Re-run this workflow to retry, or close the check by hand."
+  # state machine whose own failure modes were worse.
+  #
+  # The recovery instruction has to be precise. "Re-run failed jobs" re-runs
+  # only this job, and the check-run id it needs comes from a successful job
+  # whose outputs are preserved, so the same check is closed. Re-running ALL
+  # jobs would run start again and open a second check-run for the same filter.
+  echo "::error::could not complete check-run ${check_run_id} after ${attempts} attempts; it is stuck in progress and will block anything waiting on this commit's checks. Use \"Re-run failed jobs\" to retry just this job, not \"Re-run all jobs\" which would open a second check-run, or close the check by hand."
   exit 1
 fi
 

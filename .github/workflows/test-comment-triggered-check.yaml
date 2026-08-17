@@ -46,12 +46,12 @@ jobs:
       - name: Verify it did not match and emitted the full output set
         env:
           MATCHED: ${{ steps.not-a-command.outputs.matched }}
-          AUTHORIZED: ${{ steps.not-a-command.outputs.should-run }}
+          SHOULD_RUN: ${{ steps.not-a-command.outputs.should-run }}
           CHECK_RUN_ID: ${{ steps.not-a-command.outputs.check-run-id }}
         run: |
-          echo "matched=$MATCHED should-run=$AUTHORIZED"
+          echo "matched=$MATCHED should-run=$SHOULD_RUN"
           [[ "$MATCHED" == "false" ]]
-          [[ "$AUTHORIZED" == "false" ]]
+          [[ "$SHOULD_RUN" == "false" ]]
           [[ -z "$CHECK_RUN_ID" ]]
 
       - name: A command quoted mid-thread does not fire
@@ -86,12 +86,12 @@ jobs:
         env:
           MATCHED: ${{ steps.empty-filter.outputs.matched }}
           REASON: ${{ steps.empty-filter.outputs.reason }}
-          AUTHORIZED: ${{ steps.empty-filter.outputs.should-run }}
+          SHOULD_RUN: ${{ steps.empty-filter.outputs.should-run }}
         run: |
-          echo "matched=$MATCHED reason=$REASON should-run=$AUTHORIZED"
+          echo "matched=$MATCHED reason=$REASON should-run=$SHOULD_RUN"
           [[ "$MATCHED" == "true" ]]
           [[ "$REASON" == "empty-filter" ]]
-          [[ "$AUTHORIZED" == "false" ]]
+          [[ "$SHOULD_RUN" == "false" ]]
 
       - name: An outsider cannot run the command
         id: outsider
@@ -106,11 +106,11 @@ jobs:
       - name: Verify the outsider was refused
         env:
           REASON: ${{ steps.outsider.outputs.reason }}
-          AUTHORIZED: ${{ steps.outsider.outputs.should-run }}
+          SHOULD_RUN: ${{ steps.outsider.outputs.should-run }}
         run: |
-          echo "reason=$REASON should-run=$AUTHORIZED"
+          echo "reason=$REASON should-run=$SHOULD_RUN"
           [[ "$REASON" == "insufficient-permission" ]]
-          [[ "$AUTHORIZED" == "false" ]]
+          [[ "$SHOULD_RUN" == "false" ]]
 
       - name: A comment outside a pull request is reported, not run
         id: not-a-pr
