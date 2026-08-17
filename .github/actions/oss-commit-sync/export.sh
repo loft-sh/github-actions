@@ -225,7 +225,9 @@ else
   RESUME=""
   OSS_TIP=""
   while read -r m; do
-    oss_sha="$(awk -F'\t' -v k="$m" '$1 == k { print $2; exit }' "$exported_map")"
+    # String-compared inside map_lookup: awk would otherwise rank two all-decimal
+    # shas numerically and anchor the new release line at the wrong OSS commit.
+    oss_sha="$(map_lookup "$m" "$exported_map")"
     if [ -n "$oss_sha" ]; then
       RESUME="$m"
       OSS_TIP="$oss_sha"
