@@ -260,6 +260,68 @@ WRAP
   [ "$status" -ne 0 ]
 }
 
+@test "new release branch: an abbreviated trailer naming a tag cannot anchor it" {
+  # The value decides the base commit of a branch that does not exist yet, and
+  # both the ancestry test and `git worktree add --detach` PEEL an annotated tag.
+  # Unchecked, an Oss-Commit abbreviation that uniquely names a tag object passes
+  # every check and creates the release line from a commit sharing none of its
+  # digits.
+  E=$(external_commit ext.go "external" "feat: external contribution")
+  absorb_external
+  # A tag object whose sha does NOT begin with the commit's digits, recorded on
+  # the monorepo side as if it were the import record.
+  git -C "$ROOT/oss.git" tag -a v0.5.0 -m "release" "$E"
+  tag=$(git -C "$ROOT/oss.git" rev-parse v0.5.0)
+  [ "$tag" != "$E" ]
+  git -C "$MONO" fetch -q "$OSS_REMOTE" 'refs/tags/*:refs/tags/*'
+  git -C "$MONO" commit -q --allow-empty -m "chore: a hand-made import record
+
+Oss-Commit: ${tag:0:12}"
+  (cd "$MONO" && git switch -qc v0.99)
+
+  BRANCH=v0.99 run bash "$EXPORT"
+  # Either it refuses to anchor, or it anchors somewhere legitimate -- but never
+  # at the commit the tag peels to on the strength of digits that name the tag.
+  if [ "$status" -eq 0 ]; then
+    base=$(git -C "$OSS_REMOTE" rev-parse v0.99)
+    [ "$base" != "$E" ] || [[ "$output" != *"${tag:0:12}"* ]]
+  fi
+  [[ "$output" != *"creating it from ${tag:0:12}"* ]]
+}
+
+@test "new release branch: an out-of-order squashed export record still anchors at the tip" {
+  # The map answers "was this monorepo commit ever exported", which is a set
+  # question, so it is built from every value rather than the last one. A squash
+  # concatenates messages in commit order, but a hand-made or reordered one need
+  # not: when the NEWEST export is not the last line, last-wins hides exactly the
+  # commit the branch is cut at, and the walk falls back to an older anchor and
+  # re-replays work the mirror already holds.
+  C1=$(company_commit pkg/app.go "v1" "feat: company v1")
+  C2=$(company_commit pkg/other.go "v2" "feat: company v2")
+  bash "$EXPORT"
+  (
+    cd "$ROOT"
+    rm -rf squashed
+    git clone -q "$OSS_REMOTE" squashed
+    cd squashed
+    git reset -q --soft HEAD~2
+    # C2 recorded FIRST, so last-wins keeps C1 and loses the branch point.
+    git commit -q -m "chore: both exports in one
+
+Monorepo-Commit: $C2
+Monorepo-Commit: $C1"
+    git push -q --force origin main
+  )
+  collapsed=$(git -C "$OSS_REMOTE" rev-parse main)
+  (cd "$MONO" && git switch -qc v0.99)
+
+  BRANCH=v0.99 run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"creating it from ${collapsed}"* ]]
+  # The tip, not the older commit last-wins would have left as the only match.
+  [[ "$output" == *"monorepo ${C2}"* ]]
+}
+
 @test "existing release branch: append is fast-forward" {
   bash "$EXPORT"
   (cd "$MONO" && git switch -qc v0.99)
@@ -747,4 +809,28 @@ WRAP
   SEED_MONOREPO_COMMIT="$upper" SEED_OSS_COMMIT="$seed_oss" run bash "$EXPORT"
   [ "$status" -eq 0 ]
   [ "$(output_value exported-count)" = "1" ]
+}
+
+@test "guard: a failing ancestry test on the resume anchor is not a rewritten history" {
+  # Collapsing rc 128 into "not an ancestor" reports that OSS history was
+  # rewritten and sends the operator hunting a force-push that never happened,
+  # when the truth is a partial fetch or a broken object store.
+  company_commit pkg/app.go "l1-company" "feat: company change" >/dev/null
+  bash "$EXPORT"
+  anchor=$(git -C "$OSS_REMOTE" rev-parse main)
+  company_commit pkg/other.go "more" "feat: another company change" >/dev/null
+
+  real_git="$(command -v git)"
+  mkdir -p "$ROOT/bin"
+  cat > "$ROOT/bin/git" <<WRAP
+#!/usr/bin/env bash
+if [ "\$1" = "merge-base" ] && [ "\$3" = "$anchor" ]; then exit 128; fi
+exec "$real_git" "\$@"
+WRAP
+  chmod +x "$ROOT/bin/git"
+
+  PATH="$ROOT/bin:$PATH" run bash "$EXPORT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"git failed testing whether resume anchor"* ]]
+  [[ "$output" != *"is not an ancestor of OSS"* ]]
 }

@@ -385,3 +385,29 @@ Oss-Commit:$(echo "$E1" | tr 'a-f' 'A-F')"
   [ "$(output_value degraded)" = "false" ]
   [[ "$output" != *"Rebase and merge"* ]]
 }
+
+@test "a degraded anchor resolution does not tell the operator to re-seed" {
+  # resolve_import_anchor resets its globals at entry and returns early on any
+  # git failure, so an empty anchor is also what a transient breakage looks like.
+  # Ungated, this warning tells the operator to re-seed a perfectly healthy sync
+  # because git blinked once during the candidate walk.
+  external_commit ext.go "external" "feat: external contribution" >/dev/null
+  absorb_external
+
+  real_git="$(command -v git)"
+  mkdir -p "$ROOT/bin"
+  # Break only the ancestry questions, so the anchor walk fails while the fetch
+  # and the rest of the report still work.
+  cat > "$ROOT/bin/git" <<WRAP
+#!/usr/bin/env bash
+if [ "\$1" = "merge-base" ]; then exit 128; fi
+exec "$real_git" "\$@"
+WRAP
+  chmod +x "$ROOT/bin/git"
+
+  PATH="$ROOT/bin:$PATH" run bash "$HEALTH"
+  # Advisory: never reds the caller, whatever broke.
+  [ "$status" -eq 0 ]
+  [ "$(output_value degraded)" = "true" ]
+  [[ "$output" != *"it needs seed-oss-commit"* ]]
+}

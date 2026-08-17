@@ -284,7 +284,11 @@ emit degraded "$degraded"
   echo "| Squash-orphaned trailers | ${squashed} |"
 } >> "$GITHUB_STEP_SUMMARY"
 
-if [ -z "$ANCHOR" ]; then
+# Gated on degraded: resolve_import_anchor resets its globals at entry and returns
+# early on any git failure, so an empty anchor is also what a transient breakage
+# looks like. Ungated, this tells the operator to re-seed a perfectly healthy sync
+# because git blinked once during the candidate walk.
+if [ -z "$ANCHOR" ] && [ "$degraded" = "false" ]; then
   echo "::warning::No readable ${OSS_TRAILER} trailer on this repo's ${BRANCH} points at a commit reachable from OSS ${BRANCH}, and no subtree content matches an OSS commit. This is the one state the import cannot heal by itself; it needs seed-oss-commit."
 fi
 

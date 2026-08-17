@@ -144,8 +144,17 @@ if [ "$branch_absent" = "false" ]; then
   else
     die "no ${MONOREPO_TRAILER} trailer found on OSS ${BRANCH} and no seed provided; set SEED_MONOREPO_COMMIT + SEED_OSS_COMMIT for the first run"
   fi
-  git merge-base --is-ancestor "$OSS_ANCHOR" "$OSS_TIP" \
-    || die "resume anchor ${OSS_ANCHOR} is not an ancestor of OSS ${BRANCH} tip"
+  # is_ancestor, not a bare merge-base: rc 128 collapsed into "not an ancestor"
+  # reports a rewritten OSS history and sends the operator hunting a force-push
+  # that never happened, when the truth is a partial fetch or a broken object
+  # store. Both fail closed; only one of them is answerable.
+  anchor_rc=0
+  is_ancestor "$OSS_ANCHOR" "$OSS_TIP" || anchor_rc=$?
+  if [ "$anchor_rc" -eq 2 ]; then
+    die "git failed testing whether resume anchor ${OSS_ANCHOR} is on OSS ${BRANCH}; refusing to export"
+  elif [ "$anchor_rc" -ne 0 ]; then
+    die "resume anchor ${OSS_ANCHOR} is not an ancestor of OSS ${BRANCH} tip"
+  fi
 
   # Divergence guard: every OSS commit we did not create must already be
   # absorbed (present as an Oss-Commit trailer on our first-parent chain).
@@ -237,7 +246,14 @@ else
   DEFAULT_TIP="$(git rev-parse FETCH_HEAD)"
 
   exported_map="$(mktemp)"
-  all_trailer_entries "$DEFAULT_TIP" "$MONOREPO_TRAILER" | awk '{print $2 "\t" $1}' > "$exported_map"
+  # multi=1, not the last-wins lookup: this map answers "was this monorepo commit
+  # ever exported", which is the same set-membership question every_trailer_value
+  # exists for. An OSS commit carrying several ${MONOREPO_TRAILER} lines -- a
+  # squash, or a hand-made export -- hides all but the last under last-wins, so
+  # the true branch point goes missing and the new release line is anchored behind
+  # where OSS already is, re-replaying commits the mirror holds.
+  trailer_scan "$MONOREPO_TRAILER" 1 --first-parent "$DEFAULT_TIP" \
+    | awk '{print $2 "\t" $1}' > "$exported_map"
 
   RESUME=""
   OSS_TIP=""
@@ -261,6 +277,20 @@ else
     fi
     imported_from="$(trailer_value "$m" "$OSS_TRAILER")"
     [ -n "$imported_from" ] || continue
+    # Prefix-checked like every other trailer value this action reads, and here it
+    # decides the base commit of a branch that does not exist yet. Both the
+    # ancestry test below and `git worktree add --detach` PEEL an annotated tag, so
+    # an abbreviation that uniquely names a tag object would pass every check and
+    # create the release line from a commit sharing none of the value's digits.
+    imp_rc=0
+    imported_full="$(resolve_commit_prefix "$imported_from")" || imp_rc=$?
+    if [ "$imp_rc" -eq 2 ]; then
+      rm -f "$exported_map"
+      die "git failed resolving the ${OSS_TRAILER} value ${imported_from} on ${m}; refusing to anchor a new OSS branch"
+    elif [ "$imp_rc" -ne 0 ]; then
+      continue
+    fi
+    imported_from="$imported_full"
     # is_ancestor, not a bare merge-base: rc 128 collapsed into "not reachable"
     # demotes the true branch point, and the walk settles on an older commit, so
     # the new release line is created behind where OSS actually is and re-replays
