@@ -241,7 +241,16 @@ else
 
   RESUME=""
   OSS_TIP=""
+  # Captured, like every other producer here: inside `done < <(...)` a failing
+  # rev-list is invisible to set -e, so the loop runs zero times and the run dies
+  # with "no commit on this branch is known to OSS", sending the operator after a
+  # branch-point problem that does not exist.
+  if ! branch_walk="$(git rev-list --first-parent HEAD)"; then
+    rm -f "$exported_map"
+    die "failed to walk this branch's history; refusing to anchor a new OSS branch"
+  fi
   while read -r m; do
+    [ -n "$m" ] || continue
     # String-compared inside map_lookup: awk would otherwise rank two all-decimal
     # shas numerically and anchor the new release line at the wrong OSS commit.
     oss_sha="$(map_lookup "$m" "$exported_map")"
@@ -251,12 +260,22 @@ else
       break
     fi
     imported_from="$(trailer_value "$m" "$OSS_TRAILER")"
-    if [ -n "$imported_from" ] && git merge-base --is-ancestor "$imported_from" "$DEFAULT_TIP" 2>/dev/null; then
+    [ -n "$imported_from" ] || continue
+    # is_ancestor, not a bare merge-base: rc 128 collapsed into "not reachable"
+    # demotes the true branch point, and the walk settles on an older commit, so
+    # the new release line is created behind where OSS actually is and re-replays
+    # commits it already holds -- with nothing in the log saying git ever failed.
+    anc_rc=0
+    is_ancestor "$imported_from" "$DEFAULT_TIP" || anc_rc=$?
+    if [ "$anc_rc" -eq 2 ]; then
+      rm -f "$exported_map"
+      die "git failed testing whether ${imported_from} is on OSS ${OSS_DEFAULT_BRANCH}; refusing to anchor a new OSS branch"
+    elif [ "$anc_rc" -eq 0 ]; then
       RESUME="$m"
       OSS_TIP="$imported_from"
       break
     fi
-  done < <(git rev-list --first-parent HEAD)
+  done <<< "$branch_walk"
   rm -f "$exported_map"
 
   [ -n "$RESUME" ] \

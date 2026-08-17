@@ -261,7 +261,7 @@ if scanned_all="$(trailer_scan "$OSS_TRAILER" 1 --first-parent HEAD)"; then
   fi
 else
   degraded=true
-  echo "::warning::Could not scan ${BRANCH} for ${OSS_TRAILER} lines; squashed-trailer-count is not reliable in this run."
+  echo "::warning::Could not scan this repo's ${BRANCH} for ${OSS_TRAILER} lines; squashed-trailer-count is not reliable in this run."
 fi
 emit squashed-trailer-count "$squashed"
 emit degraded "$degraded"
@@ -285,14 +285,14 @@ emit degraded "$degraded"
 } >> "$GITHUB_STEP_SUMMARY"
 
 if [ -z "$ANCHOR" ]; then
-  echo "::warning::No readable ${OSS_TRAILER} trailer on ${BRANCH} points at a commit reachable from OSS ${BRANCH}, and no subtree content matches an OSS commit. This is the one state the import cannot heal by itself; it needs seed-oss-commit."
+  echo "::warning::No readable ${OSS_TRAILER} trailer on this repo's ${BRANCH} points at a commit reachable from OSS ${BRANCH}, and no subtree content matches an OSS commit. This is the one state the import cannot heal by itself; it needs seed-oss-commit."
 fi
 
 if [ "$squashed" -gt 0 ]; then
   # Hedged like the README and the output description: this is the shape a squash
   # leaves, and also the shape of a real trailer line quoted in a body. Telling a
   # maintainer flatly that they squashed is the one thing this must not get wrong.
-  echo "::warning::${squashed} commit(s) on ${BRANCH} carry an ${OSS_TRAILER} value outside the block git's own trailer parser reads. GitHub's squash-merge does that, and if that is the cause then per-commit authorship of those external contributions was collapsed and cannot be recovered; merge sync PRs with \"Rebase and merge\". A real ${OSS_TRAILER} line quoted in a commit body looks identical here, so check the commits below before concluding."
+  echo "::warning::${squashed} commit(s) on this repo's ${BRANCH} carry an ${OSS_TRAILER} value outside the block git's own trailer parser reads. GitHub's squash-merge does that, and if that is the cause then per-commit authorship of those external contributions was collapsed and cannot be recovered; merge sync PRs with \"Rebase and merge\". A real ${OSS_TRAILER} line quoted in a commit body looks identical here, so check the commits below before concluding. They are commits in THIS repository, not on the OSS mirror: the scan walks our own first-parent chain, which is where an ${OSS_TRAILER} record lives."
   # Labelled by what was observed, not by the conclusion the line above declines
   # to draw for the reader.
   printf '::warning::  value outside the trailer block: %s\n' "${squashed_list[@]}"

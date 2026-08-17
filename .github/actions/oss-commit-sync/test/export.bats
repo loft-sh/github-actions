@@ -186,6 +186,50 @@ Monorepo-Commit: $M0"
   [ "$(git -C "$OSS_REMOTE" rev-parse 'v0.99^{tree}')" = "$(git -C "$MONO" rev-parse "v0.99:$PFX")" ]
 }
 
+@test "new release branch: a failing history walk refuses to anchor" {
+  # The last `done < <(...)` in this action. A failing rev-list runs the loop zero
+  # times, so RESUME stays empty and the run dies with "no commit on this branch
+  # is known to OSS" -- sending the operator after a branch-point problem that
+  # does not exist while the real fault was git.
+  C=$(company_commit pkg/app.go "l1-v2" "feat: pre-branch change")
+  bash "$EXPORT"
+  (
+    cd "$MONO"
+    git switch -qc v0.99
+    company_commit pkg/rel.go "rel" "fix: release-line only" >/dev/null
+  )
+
+  real_git="$(command -v git)"
+  mkdir -p "$ROOT/bin"
+  # Only the branch walk: rev-list --first-parent over a ref, with no range and
+  # no --reverse, which is the shape of this one call.
+  cat > "$ROOT/bin/git" <<WRAP
+#!/usr/bin/env bash
+rl=false; fp=false; rev=false; range=false
+for a in "\$@"; do
+  case "\$a" in
+    rev-list) rl=true ;;
+    --reverse) rev=true ;;
+    --first-parent) fp=true ;;
+    *..*) range=true ;;
+  esac
+done
+if [ "\$rl" = true ] && [ "\$fp" = true ] && [ "\$rev" = false ] && [ "\$range" = false ]; then
+  exit 128
+fi
+exec "$real_git" "\$@"
+WRAP
+  chmod +x "$ROOT/bin/git"
+
+  BRANCH=v0.99 PATH="$ROOT/bin:$PATH" run bash "$EXPORT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"refusing to anchor a new OSS branch"* ]]
+  [[ "$output" != *"no commit on this branch is known to OSS"* ]]
+  # No branch was created on the strength of a walk that never happened.
+  run git -C "$OSS_REMOTE" rev-parse --verify --quiet v0.99
+  [ "$status" -ne 0 ]
+}
+
 @test "existing release branch: append is fast-forward" {
   bash "$EXPORT"
   (cd "$MONO" && git switch -qc v0.99)

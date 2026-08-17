@@ -656,16 +656,27 @@ resolve_import_anchor() {
     # health's anchor output -- and a tag sha never equals any of them, so the
     # shortcut can never fire and every run replays an empty range.
     #
-    # Split 1 from anything else, like resolve_commit_prefix: rev-parse answers 1
-    # for absent, ambiguous and type-mismatch alike, which are all "names no commit
-    # here" and a fair thing to blame the seed for. Anything else is git failing,
-    # and reporting that as a bad seed sends the operator to re-check a value that
-    # was right all along -- the last place in this file where a git failure could
-    # still pass itself off as an answer.
+    # rev-parse answers 1 for absent, ambiguous and type-mismatch alike, which are
+    # all "names no commit here" and a fair thing to blame the seed for. Reporting
+    # a git failure as a bad seed instead sends the operator to re-check a value
+    # that was right all along.
+    #
+    # But 1 is not the only bad-seed code, and this is the one lookup where that
+    # matters. Revision syntax git refuses to parse at all -- the reflog spellings
+    # `@{9999}` and `HEAD@{99}` -- exits 128, the same code a broken repository
+    # returns, and unlike a trailer value the seed reaches here unfiltered by any
+    # shape test (see filter_sha_values, which exists to keep exactly those out of
+    # rev-parse). So corroborate before blaming either: ask git something we
+    # already know the answer to, and only call it broken if it gets that wrong
+    # too. Otherwise git is fine and the seed is simply unusable.
     rc=0
     seed_commit="$(git rev-parse --verify --quiet "${SEED_OSS_COMMIT}^{commit}" 2>/dev/null)" || rc=$?
     if [ "$rc" -gt 1 ]; then
-      return 1
+      if git rev-parse --verify --quiet "${oss_tip}^{commit}" >/dev/null 2>&1; then
+        rc=1
+      else
+        return 1
+      fi
     fi
     seed_ok=false
     if [ "$rc" -eq 0 ]; then

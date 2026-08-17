@@ -680,3 +680,25 @@ WRAP
   SEED_OSS_COMMIT="$E2" PATH="$ROOT/bin:$PATH" run resolve_import_anchor HEAD
   [ "$status" -eq 1 ]
 }
+
+@test "a seed git refuses to parse is a bad seed, not a broken repo" {
+  # rev-parse exits 128, not 1, for revision syntax it will not parse at all --
+  # the reflog spellings. A bare "anything but 1 is git failing" rule therefore
+  # tells the operator the repository is broken and to stop trusting the run,
+  # when in fact their seed value is simply unusable. Unlike a trailer value, the
+  # seed reaches rev-parse with no shape filter in front of it, so this is the one
+  # lookup where the distinction has to be corroborated rather than assumed.
+  git commit -q --allow-empty -m "oss one"
+  E=$(git rev-parse HEAD)
+
+  SEED_OSS_COMMIT='@{9999}' resolve_import_anchor "$E"
+  [ "$IMPORT_ANCHOR_SEED_BAD" = "true" ]
+
+  SEED_OSS_COMMIT='HEAD@{99}' resolve_import_anchor "$E"
+  [ "$IMPORT_ANCHOR_SEED_BAD" = "true" ]
+
+  # And the corroboration still calls a genuinely broken repo broken, rather than
+  # blaming every seed once git stops answering.
+  GIT_OBJECT_DIRECTORY=/nonexistent SEED_OSS_COMMIT='@{9999}' run resolve_import_anchor "$E"
+  [ "$status" -eq 1 ]
+}
