@@ -110,6 +110,168 @@ Co-authored-by: alice <alice@contributor.example>"
   [[ "$output" == *"Rebase and merge"* ]]
 }
 
+@test "a squash whose last trailer stays in the block still reports the orphaned ones" {
+  # No Co-authored-by paragraph, so git parses the LAST Oss-Commit fine and an
+  # emptiness test scores this commit clean. E1's trailer is orphaned above it
+  # all the same, which is the exact shape that deadlocked the export.
+  E1=$(external_commit ext1.go "one" "feat: alice first")
+  E2=$(external_commit ext2.go "two" "feat: alice second")
+  bash "$IMPORT"
+  squash_merge_pr_branch "chore: sync from oss (#42)
+
+feat: alice first
+
+Oss-Commit: $E1
+
+feat: alice second
+
+Oss-Commit: $E2"
+
+  run bash "$HEALTH"
+  [ "$status" -eq 0 ]
+  # Git's own parser sees E2, so the anchor is intact and the sync is fine ...
+  [ "$(output_value anchor)" = "$E2" ]
+  [ "$(output_value stale-anchor)" = "false" ]
+  # ... but the squash collapsed authorship and hid E1's record.
+  [ "$(output_value squashed-trailer-count)" = "1" ]
+  [[ "$output" == *"Rebase and merge"* ]]
+}
+
+@test "a hex line quoted in a commit body is not reported as a squash" {
+  # The scan reads the whole message by design, so prose at column 0 reaches the
+  # comparison. Counting it would tell a maintainer who rebase-merged correctly
+  # that they squashed, which is worse than missing a real one.
+  E1=$(external_commit ext1.go "one" "feat: alice first")
+  bash "$IMPORT"
+  squash_merge_pr_branch "feat: alice first (#42)
+
+Reviewers asked why the trailer below looks like this:
+Oss-Commit: 1111111111111111111111111111111111111111
+
+Oss-Commit: $E1"
+
+  run bash "$HEALTH"
+  [ "$status" -eq 0 ]
+  # The fabricated sha is no OSS commit, so nothing was orphaned.
+  [ "$(output_value squashed-trailer-count)" = "0" ]
+  [ "$(output_value degraded)" = "false" ]
+  [[ "$output" != *"Rebase and merge"* ]]
+}
+
+@test "an annotated tag sha in a commit body is not reported as a squash" {
+  # merge-base --is-ancestor peels a tag object to its commit, so an unguarded
+  # ancestry test would call a tag sha a lost record even though no trailer names
+  # that commit. Same type confusion the export guard already rejects.
+  E1=$(external_commit ext1.go "one" "feat: alice first")
+  git -C "$ROOT/oss.git" tag -a v0.1.0 -m "release" "$E1"
+  tag=$(git -C "$ROOT/oss.git" rev-parse v0.1.0)
+  [ "$tag" != "$E1" ]
+  # The monorepo must actually hold the tag object, or rev-parse fails on it for
+  # the wrong reason and this pins nothing.
+  git -C "$MONO" fetch -q "$OSS_REMOTE" 'refs/tags/*:refs/tags/*'
+  git -C "$MONO" cat-file -e "$tag"
+  bash "$IMPORT"
+  squash_merge_pr_branch "feat: alice first (#42)
+
+Tagged as v0.1.0, whose object is:
+Oss-Commit: $tag
+
+Oss-Commit: $E1"
+
+  run bash "$HEALTH"
+  [ "$status" -eq 0 ]
+  [ "$(output_value squashed-trailer-count)" = "0" ]
+  [ "$(output_value degraded)" = "false" ]
+}
+
+@test "a failing ancestry test degrades instead of reporting a clean policy" {
+  # rc 1 means "not in OSS history"; anything else is git failing. Collapsing the
+  # two would let a broken merge-base issue a clean bill of health.
+  E1=$(external_commit ext1.go "one" "feat: alice first")
+  E2=$(external_commit ext2.go "two" "feat: alice second")
+  bash "$IMPORT"
+  squash_merge_pr_branch "chore: sync from oss (#42)
+
+Oss-Commit: $E1
+
+Oss-Commit: $E2"
+
+  real_git="$(command -v git)"
+  mkdir -p "$ROOT/bin"
+  cat > "$ROOT/bin/git" <<WRAP
+#!/usr/bin/env bash
+for a in "\$@"; do
+  case "\$a" in
+    merge-base) exit 128 ;;
+  esac
+done
+exec "$real_git" "\$@"
+WRAP
+  chmod +x "$ROOT/bin/git"
+
+  PATH="$ROOT/bin:$PATH" run bash "$HEALTH"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"::error::"* ]]
+  [ "$(output_value degraded)" = "true" ]
+  [[ "$output" == *"Could not test whether"* ]]
+}
+
+@test "each commit is judged against its own trailer block" {
+  # The scan is walked in one pass and grouped by sha, so a group boundary that
+  # leaked would judge one commit's values against another's block: either an
+  # orphan attributed to the clean commit, or both counted from one violation.
+  E1=$(external_commit ext1.go "one" "feat: alice first")
+  bash "$IMPORT"
+  squash_merge_pr_branch "feat: alice first (#42)
+
+Oss-Commit: $E1
+
+Co-authored-by: alice <alice@contributor.example>"
+  squashed_sha=$(git -C "$MONO" rev-parse HEAD)
+
+  # A later, properly recorded import on top: one carrier per commit, in-block.
+  E2=$(external_commit ext2.go "two" "feat: alice second")
+  absorb_external
+
+  run bash "$HEALTH"
+  [ "$status" -eq 0 ]
+  [ "$(output_value squashed-trailer-count)" = "1" ]
+  [[ "$output" == *"$squashed_sha"* ]]
+  [[ "$output" != *"$(git -C "$MONO" rev-parse HEAD)"* ]]
+}
+
+@test "the oldest trailer-carrying commit is still counted" {
+  # Groups close when the next sha arrives, so the last group in log order (the
+  # oldest commit) is only ever counted by the flush after the loop. Dropping
+  # that flush loses a real violation silently.
+  E1=$(external_commit ext1.go "one" "feat: alice first")
+  git -C "$MONO" reset -q --hard "$M0"
+  # The only carrier on the branch, and its value sits outside git's block
+  # because the message ends in prose.
+  git -C "$MONO" commit -q --allow-empty -m "chore: sync from oss (#42)
+
+Oss-Commit: $E1
+
+Discussion continued after the merge."
+
+  run bash "$HEALTH"
+  [ "$status" -eq 0 ]
+  [ "$(output_value squashed-trailer-count)" = "1" ]
+  [[ "$output" == *"Rebase and merge"* ]]
+}
+
+@test "a rebase-merged import reports no squash-orphaned trailers" {
+  # The negative side of the set comparison: one trailer per commit, inside the
+  # block, must never be counted.
+  external_commit ext1.go "one" "feat: alice first" >/dev/null
+  absorb_external
+
+  run bash "$HEALTH"
+  [ "$status" -eq 0 ]
+  [ "$(output_value squashed-trailer-count)" = "0" ]
+  [ "$(output_value degraded)" = "false" ]
+}
+
 @test "health never mutates the repository" {
   external_commit ext.go "one" "feat: alice first" >/dev/null
   before_head="$(git -C "$MONO" rev-parse HEAD)"
@@ -180,4 +342,146 @@ WRAP
   [ "$status" -eq 0 ]
   grep -q "OSS sync health" "$GITHUB_STEP_SUMMARY"
   grep -q "Commits pending import | 1" "$GITHUB_STEP_SUMMARY"
+}
+
+@test "a folded value is a record for neither reader" {
+  # git folds the indented line into the value, so the value is "<sha> this
+  # trailing line...", which is not a sha and so not an absorption record. The body
+  # scan must reach the same verdict rather than handing the bare first line to the
+  # shape filter: promoting a sha nobody recorded is the one disagreement between
+  # the two readers that can lose content, because it counts as absorption strong
+  # enough for align-tree to delete what OSS holds.
+  #
+  # So this commit carries no readable record at all, and health reports no orphan.
+  # A malformed record is a different shape from a squashed one, and claiming a
+  # squash here would send a maintainer who merged correctly after a merge policy
+  # they did not violate.
+  E1=$(external_commit ext1.go "one" "feat: alice first")
+  bash "$IMPORT"
+  squash_merge_pr_branch "feat: alice first (#42)
+
+Oss-Commit: $E1
+  this trailing line makes it a folded value"
+
+  run bash "$HEALTH"
+  [ "$status" -eq 0 ]
+  [ "$(output_value squashed-trailer-count)" = "0" ]
+  [ "$(output_value degraded)" = "false" ]
+}
+
+@test "an uppercase in-block trailer is not reported as orphaned" {
+  # The scan lowercases block values, so a case-sensitive comparison on health's
+  # side would call a perfectly in-block record orphaned and tell a maintainer who
+  # rebase-merged correctly that they squashed.
+  E1=$(external_commit ext1.go "one" "feat: alice first")
+  bash "$IMPORT"
+  squash_merge_pr_branch "feat: alice first (#42)
+
+Oss-Commit:$(echo "$E1" | tr 'a-f' 'A-F')"
+
+  run bash "$HEALTH"
+  [ "$status" -eq 0 ]
+  [ "$(output_value squashed-trailer-count)" = "0" ]
+  [ "$(output_value degraded)" = "false" ]
+  [[ "$output" != *"Rebase and merge"* ]]
+}
+
+@test "a degraded anchor resolution does not tell the operator to re-seed" {
+  # resolve_import_anchor resets its globals at entry and returns early on any
+  # git failure, so an empty anchor is also what a transient breakage looks like.
+  # Ungated, this warning tells the operator to re-seed a perfectly healthy sync
+  # because git blinked once during the candidate walk.
+  external_commit ext.go "external" "feat: external contribution" >/dev/null
+  absorb_external
+
+  real_git="$(command -v git)"
+  mkdir -p "$ROOT/bin"
+  # Break only the ancestry questions, so the anchor walk fails while the fetch
+  # and the rest of the report still work.
+  cat > "$ROOT/bin/git" <<WRAP
+#!/usr/bin/env bash
+if [ "\$1" = "merge-base" ]; then exit 128; fi
+exec "$real_git" "\$@"
+WRAP
+  chmod +x "$ROOT/bin/git"
+
+  PATH="$ROOT/bin:$PATH" run bash "$HEALTH"
+  # Advisory: never reds the caller, whatever broke.
+  [ "$status" -eq 0 ]
+  [ "$(output_value degraded)" = "true" ]
+  [[ "$output" != *"it needs seed-oss-commit"* ]]
+}
+
+@test "an unrelated failure does not suppress the missing-anchor diagnosis" {
+  # The converse of the gate above. `degraded` accumulates every failure in the
+  # report, so gating on it lets a broken squash scan swallow a missing-anchor
+  # finding that was established correctly -- and that finding is the one state
+  # the import cannot heal by itself.
+  #
+  # The anchor is genuinely absent here: reset past the fixture's seeded
+  # Oss-Commit record, so nothing on this branch points at OSS at all. That is
+  # the one state the import cannot heal by itself, and the state this warning
+  # exists for.
+  external_commit ext.go "external" "feat: external contribution" >/dev/null
+  git -C "$MONO" reset -q --hard "$M0"
+
+  real_git="$(command -v git)"
+  mkdir -p "$ROOT/bin"
+  # Break only the per-commit trailer-block read the squash scan does, which runs
+  # long after the anchor was resolved.
+  # The anchor walk and the squash scan issue an IDENTICAL git log (multi is an
+  # awk variable, not a git argument), so they can only be told apart by order:
+  # the anchor resolves first. Fail the second one and nothing else.
+  cat > "$ROOT/bin/git" <<WRAP
+#!/usr/bin/env bash
+for a in "\$@"; do
+  case "\$a" in
+    *trailers:key=Oss-Commit*)
+      n=\$(cat "$ROOT/n" 2>/dev/null || echo 0)
+      n=\$((n + 1))
+      echo "\$n" > "$ROOT/n"
+      if [ "\$n" -ge 2 ]; then exit 128; fi
+      ;;
+  esac
+done
+exec "$real_git" "\$@"
+WRAP
+  chmod +x "$ROOT/bin/git"
+
+  PATH="$ROOT/bin:$PATH" run bash "$HEALTH"
+  [ "$status" -eq 0 ]
+  [ "$(output_value anchor)" = "" ]
+  [[ "$output" == *"it needs seed-oss-commit"* ]]
+}
+
+@test "a failing trailer read in the pending loop degrades instead of reporting a clean backlog" {
+  # "We created this commit" is how the pending loop drops our own exports from
+  # the backlog. Reached with a trailer read that failed, it drops a genuinely
+  # pending external the same way, and the report hands back pending-count=0
+  # beside degraded=false -- the one answer an advisory check must never give.
+  external_commit ext.go "one" "feat: alice first" >/dev/null
+
+  real_git="$(command -v git)"
+  mkdir -p "$ROOT/bin"
+  cat > "$ROOT/bin/git" <<WRAP
+#!/usr/bin/env bash
+one=false; mono=false
+for a in "\$@"; do
+  case "\$a" in
+    -1) one=true ;;
+    *trailers:key=Monorepo-Commit*) mono=true ;;
+  esac
+done
+if [ "\$one" = true ] && [ "\$mono" = true ]; then
+  exit 128
+fi
+exec "$real_git" "\$@"
+WRAP
+  chmod +x "$ROOT/bin/git"
+
+  PATH="$ROOT/bin:$PATH" run bash "$HEALTH"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"::error::"* ]]
+  [ "$(output_value degraded)" = "true" ]
+  [[ "$output" == *"pending-count may be understated"* ]]
 }

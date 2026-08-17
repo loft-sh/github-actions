@@ -41,7 +41,8 @@ set -euo pipefail
 # paths that are never mirrored; the guard and the convergence assertion
 # ignore them), GITHUB_OUTPUT.
 #
-# Outputs: pushed, diverged, push-rejected, exported-count, oss-tip.
+# Outputs: pushed, diverged, push-rejected, exported-count, oss-tip,
+# loose-absorption.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -63,6 +64,32 @@ emit diverged false
 emit pushed false
 emit push-rejected false
 emit exported-count 0
+emit loose-absorption false
+
+# Declared before the branch split so the alignment gate can test it unguarded on
+# both paths. It stays empty on the fresh-branch path, which never runs the
+# divergence guard and so never classifies evidence: alignment there is not gated,
+# exactly as it was before this guard existed. That path builds a branch from the
+# default branch's trailers rather than reconciling against an existing one, and
+# giving it the same treatment is a separate change.
+loose_absorbed=()
+
+# loose_absorption_recovery
+# What to do about an external absorbed only by a line outside git's trailer
+# block. Printed from both places that stop on one, so the two cannot drift: the
+# alignment gate, which refuses the overwrite, and the convergence assertion,
+# which reaches the same commits by the other road.
+loose_absorption_recovery() {
+  # The monorepo branch, not ${BRANCH}: the block set is read from this repo's
+  # own first-parent chain (RESUME..HEAD), so a commit pushed to OSS instead
+  # changes nothing and every retry fails the same way.
+  echo "::error::  absorbed, then superseded upstream -> record it where git's own parser reads it, i.e. an empty commit on the monorepo branch this action runs from, whose message ends with a paragraph containing only '${OSS_TRAILER}: <sha>', then re-run with align-tree."
+  # Not seed-oss-commit: the seed is a forward floor only (it replaces the
+  # anchor when the anchor is an ancestor of it), so a seed placed behind the
+  # falsely recorded commit is silently ignored and the import still resumes
+  # past it. Bringing the content in is the recovery that works.
+  echo "::error::  not absorbed -> apply that OSS commit's changes under ${SUBTREE_PREFIX} and commit them, so its content is present. Then align-tree has nothing to delete. Do not add a trailer for it, and do not expect seed-oss-commit to help: it only moves the anchor forward."
+}
 
 # --- locate the OSS branch tip and the resume point ------------------------
 
@@ -86,17 +113,48 @@ if [ "$branch_absent" = "false" ]; then
   if [ -n "$entry" ]; then
     OSS_ANCHOR="${entry%% *}"
     RESUME="${entry#* }"
+    # Prefix-checked, like every other value read out of a trailer: RESUME may be
+    # any 7-40 char hex a human wrote, and `cat-file -e` accepts a value that peels
+    # to a commit rather than one that names it, so an abbreviation colliding with
+    # an annotated tag resumes the replay from an unrelated commit. Normalised to
+    # the full sha so the ranges below are built from what it resolved to.
+    resume_rc=0
+    resume_full="$(resolve_commit_prefix "$RESUME")" || resume_rc=$?
+    if [ "$resume_rc" -eq 2 ]; then
+      die "git failed while resolving the resume point ${RESUME} (from ${MONOREPO_TRAILER} trailer); refusing to export"
+    elif [ "$resume_rc" -ne 0 ]; then
+      die "resume point ${RESUME} (from ${MONOREPO_TRAILER} trailer) is not a commit in this repo"
+    fi
+    RESUME="$resume_full"
   elif [ -n "$SEED_MONOREPO_COMMIT" ] && [ -n "$SEED_OSS_COMMIT" ]; then
-    OSS_ANCHOR="$SEED_OSS_COMMIT"
-    RESUME="$SEED_MONOREPO_COMMIT"
+    # NOT prefix-checked: these are typed by an operator doing a first run, and the
+    # peel guard exists for values a contributor can write, not for them. Holding
+    # the seed to the trailer spelling rejects an uppercase sha and any ref name,
+    # both of which git resolves happily, and fails the one path that has no
+    # trailer to fall back to with "is not a commit in this repo".
+    #
+    # Both are stored peeled, so what the ranges below are built from is the commit
+    # each seed named rather than, say, the tag object rev-parse printed for it.
+    # 2>/dev/null because --quiet still speaks up on a type mismatch, and die says
+    # it better.
+    RESUME="$(git rev-parse --verify --quiet "${SEED_MONOREPO_COMMIT}^{commit}" 2>/dev/null)" \
+      || die "seed resume point ${SEED_MONOREPO_COMMIT} is not a commit in this repo"
+    OSS_ANCHOR="$(git rev-parse --verify --quiet "${SEED_OSS_COMMIT}^{commit}" 2>/dev/null)" \
+      || die "seed OSS anchor ${SEED_OSS_COMMIT} is not a commit in this repo"
   else
     die "no ${MONOREPO_TRAILER} trailer found on OSS ${BRANCH} and no seed provided; set SEED_MONOREPO_COMMIT + SEED_OSS_COMMIT for the first run"
   fi
-
-  git cat-file -e "${RESUME}^{commit}" \
-    || die "resume point ${RESUME} (from ${MONOREPO_TRAILER} trailer) is not a commit in this repo"
-  git merge-base --is-ancestor "$OSS_ANCHOR" "$OSS_TIP" \
-    || die "resume anchor ${OSS_ANCHOR} is not an ancestor of OSS ${BRANCH} tip"
+  # is_ancestor, not a bare merge-base: rc 128 collapsed into "not an ancestor"
+  # reports a rewritten OSS history and sends the operator hunting a force-push
+  # that never happened, when the truth is a partial fetch or a broken object
+  # store. Both fail closed; only one of them is answerable.
+  anchor_rc=0
+  is_ancestor "$OSS_ANCHOR" "$OSS_TIP" || anchor_rc=$?
+  if [ "$anchor_rc" -eq 2 ]; then
+    die "git failed testing whether resume anchor ${OSS_ANCHOR} is on OSS ${BRANCH}; refusing to export"
+  elif [ "$anchor_rc" -ne 0 ]; then
+    die "resume anchor ${OSS_ANCHOR} is not an ancestor of OSS ${BRANCH} tip"
+  fi
 
   # Divergence guard: every OSS commit we did not create must already be
   # absorbed (present as an Oss-Commit trailer on our first-parent chain).
@@ -105,19 +163,85 @@ if [ "$branch_absent" = "false" ]; then
   # absorption commit was necessarily merged after RESUME on the first-parent
   # chain. Older absorptions belong to externals before the anchor, which the
   # guard never inspects.
+  #
+  # every_trailer_value, not the last-wins lookup: one squash-merged import PR
+  # records every commit it replayed on a single commit, and all of them count
+  # as absorbed. Piped through resolve_sha_set because the shas below are full
+  # length while a trailer value may be abbreviated, and grep -x would never
+  # match those.
   absorbed_file="$(mktemp)"
-  all_trailer_entries "${RESUME}..HEAD" "$OSS_TRAILER" | awk '{print $2}' > "$absorbed_file"
+  every_trailer_value "${RESUME}..HEAD" "$OSS_TRAILER" | resolve_sha_set > "$absorbed_file"
+  # A second, narrower read: only what git's own trailer parser sees. This is a
+  # strict subset of the set above, which is why it is not merged into it. It exists
+  # to tell strong evidence from weak, nothing else.
+  #
+  # The scan reads the whole message on purpose, so it also reads an Oss-Commit line
+  # quoted at column 0 in a body. No textual rule separates that from a real
+  # trailer, because the neighbouring line may be "Signed-off-by: x" or "Note: still
+  # pending is" and both are trailer-shaped. Such a value still counts as absorbed;
+  # it is merely recorded as weaker evidence for the align-tree gate further down.
+  #
+  # unfold is load-bearing, not tidiness: without it a folded value stays several
+  # physical lines, so
+  #     Oss-Commit:<sha>
+  #       this was not an absorption record
+  # would hand its first line to the shape filter and promote a sha nobody
+  # recorded to the strongest evidence there is. Unfolded, the whole value arrives
+  # on one line and fails the hex test, which is the correct answer. trailer_scan
+  # reaches the same verdict on the same lines, so the two sets cannot disagree
+  # about a folded value and call it weak evidence rather than none at all.
+  block_absorbed_file="$(mktemp)"
+  git log --first-parent --format="%(trailers:key=${OSS_TRAILER},valueonly,unfold)" "${RESUME}..HEAD" \
+    | filter_sha_values | resolve_sha_set > "$block_absorbed_file"
   unabsorbed=()
-  for s in $(git rev-list --first-parent "${OSS_ANCHOR}..${OSS_TIP}"); do
-    has_trailer "$s" "$MONOREPO_TRAILER" && continue
-    grep -qxF "$s" "$absorbed_file" && continue
+  loose_absorbed=()
+  # Captured first: a failing command substitution in a `for` word list is
+  # invisible to set -e, so the guard would run zero times, leave both arrays empty
+  # and let the run proceed -- with align-tree that flattens the OSS tree with no
+  # gate at all. Every other producer here is captured and checked for this reason.
+  if ! externals="$(git rev-list --first-parent "${OSS_ANCHOR}..${OSS_TIP}")"; then
+    die "failed to list OSS commits in ${OSS_ANCHOR}..${OSS_TIP}; refusing to judge divergence"
+  fi
+  for s in $externals; do
+    # rc 2 is git failing, not an answer about the commit. Collapsed into "not
+    # ours" it would send a commit we created down the absorbed/benign path,
+    # where a false verdict either fails the run for nothing or, with
+    # align-tree, gates an overwrite on evidence nobody managed to read.
+    ours_rc=0
+    has_trailer "$s" "$MONOREPO_TRAILER" || ours_rc=$?
+    if [ "$ours_rc" -eq 2 ]; then
+      die "git failed reading the ${MONOREPO_TRAILER} trailer of OSS commit ${s}; refusing to judge divergence"
+    elif [ "$ours_rc" -eq 0 ]; then
+      continue
+    fi
+    if grep -qxF "$s" "$absorbed_file"; then
+      grep -qxF "$s" "$block_absorbed_file" && continue
+      # Absorbed on evidence git's parser cannot see. Harmless unless alignment
+      # could delete the commit's content, so ask the content question first:
+      # benign means the content is already in the subtree, or lives only in
+      # excluded paths, and there is nothing for alignment to remove.
+      external_is_benign "$s" && continue
+      # Only recorded here. The refusal lives at the alignment commit itself: this
+      # evidence is weak enough to decline a destructive overwrite and nowhere near
+      # weak enough to decline an ordinary export, so deciding it here would fail
+      # runs whose trees already agree and where alignment would create nothing.
+      loose_absorbed+=("$s")
+      continue
+    fi
     if external_is_benign "$s"; then
       echo "External ${s} is benign (excluded paths only, or content already in ${SUBTREE_PREFIX})"
       continue
     fi
     unabsorbed+=("$s")
   done
-  rm -f "$absorbed_file"
+  rm -f "$absorbed_file" "$block_absorbed_file"
+  # Emitted before the divergence exit below, or a run that has both a loose
+  # absorption and a genuine divergence would report loose-absorption=false and
+  # hide half of what it found.
+  if [ "${#loose_absorbed[@]}" -gt 0 ]; then
+    emit loose-absorption true
+    printf '::notice::External %s counts as absorbed only via an Oss-Commit line outside git trailer block\n' "${loose_absorbed[@]}"
+  fi
   if [ "${#unabsorbed[@]}" -gt 0 ]; then
     emit diverged true
     echo "::error::OSS ${BRANCH} has external commits not yet absorbed into ${SUBTREE_PREFIX}:"
@@ -132,24 +256,115 @@ else
   DEFAULT_TIP="$(git rev-parse FETCH_HEAD)"
 
   exported_map="$(mktemp)"
-  all_trailer_entries "$DEFAULT_TIP" "$MONOREPO_TRAILER" | awk '{print $2 "\t" $1}' > "$exported_map"
+  # multi=1, not the last-wins lookup: this map answers "was this monorepo commit
+  # ever exported", which is the same set-membership question every_trailer_value
+  # exists for. An OSS commit carrying several ${MONOREPO_TRAILER} lines -- a
+  # squash, or a hand-made export -- hides all but the last under last-wins, so
+  # the true branch point goes missing and the new release line is anchored behind
+  # where OSS already is, re-replaying commits the mirror holds.
+  # Keys resolved, not raw: map_lookup compares exact strings while the walk below
+  # queries with a full sha from rev-list, so an abbreviated or hand-written
+  # record never matched and the walk fell past the very branch point this map
+  # exists to find -- anchoring the release line further back and re-replaying
+  # commits OSS already holds. Every other trailer read in this action resolves;
+  # this was the last one that did not. Both spellings are emitted so a record
+  # that resolves to nothing still matches literally, as before.
+  if ! map_rows="$(trailer_scan "$MONOREPO_TRAILER" 1 --first-parent "$DEFAULT_TIP")"; then
+    rm -f "$exported_map"
+    die "failed to read ${MONOREPO_TRAILER} records on OSS ${OSS_DEFAULT_BRANCH}; refusing to anchor a new OSS branch"
+  fi
+  map_out=""
+  while read -r oss_c val; do
+    [ -n "$val" ] || continue
+    map_out+="${val}"$'\t'"${oss_c}"$'\n'
+    [ "${#val}" -lt 40 ] || continue
+    map_rc=0
+    val_full="$(resolve_commit_prefix "$val")" || map_rc=$?
+    if [ "$map_rc" -eq 2 ]; then
+      rm -f "$exported_map"
+      die "git failed resolving the ${MONOREPO_TRAILER} value ${val} on ${oss_c}; refusing to anchor a new OSS branch"
+    elif [ "$map_rc" -eq 0 ]; then
+      map_out+="${val_full}"$'\t'"${oss_c}"$'\n'
+    fi
+  done <<< "$map_rows"
+  printf '%s' "$map_out" > "$exported_map"
 
   RESUME=""
   OSS_TIP=""
+  # Captured, like every other producer here: inside `done < <(...)` a failing
+  # rev-list is invisible to set -e, so the loop runs zero times and the run dies
+  # with "no commit on this branch is known to OSS", sending the operator after a
+  # branch-point problem that does not exist.
+  if ! branch_walk="$(git rev-list --first-parent HEAD)"; then
+    rm -f "$exported_map"
+    die "failed to walk this branch's history; refusing to anchor a new OSS branch"
+  fi
   while read -r m; do
-    oss_sha="$(awk -F'\t' -v k="$m" '$1 == k { print $2; exit }' "$exported_map")"
+    [ -n "$m" ] || continue
+    # String-compared inside map_lookup: awk would otherwise rank two all-decimal
+    # shas numerically and anchor the new release line at the wrong OSS commit.
+    oss_sha="$(map_lookup "$m" "$exported_map")"
     if [ -n "$oss_sha" ]; then
       RESUME="$m"
       OSS_TIP="$oss_sha"
       break
     fi
-    imported_from="$(trailer_value "$m" "$OSS_TRAILER")"
-    if [ -n "$imported_from" ] && git merge-base --is-ancestor "$imported_from" "$DEFAULT_TIP" 2>/dev/null; then
+    # Every recorded import on this commit, not the last line: a squash records
+    # several, and if they are not in ancestry order the last one is the nearer.
+    # The walk wants the FARTHEST reachable, same as resolve_import_anchor, so it
+    # compares them rather than trusting message order.
+    if ! imported_values="$(trailer_scan "$OSS_TRAILER" 1 -1 "$m" | awk '{print $2}')"; then
+      rm -f "$exported_map"
+      die "git failed reading the ${OSS_TRAILER} records on ${m}; refusing to anchor a new OSS branch"
+    fi
+    imported_best=""
+    while read -r imported_from; do
+      [ -n "$imported_from" ] || continue
+      # Prefix-checked like every other trailer value this action reads, and here
+      # it decides the base commit of a branch that does not exist yet. Both the
+      # ancestry test below and `git worktree add --detach` PEEL an annotated tag,
+      # so an abbreviation that uniquely names a tag object would otherwise pass
+      # every check and create the release line from a commit sharing none of the
+      # value's digits.
+      imp_rc=0
+      imported_full="$(resolve_commit_prefix "$imported_from")" || imp_rc=$?
+      if [ "$imp_rc" -eq 2 ]; then
+        rm -f "$exported_map"
+        die "git failed resolving the ${OSS_TRAILER} value ${imported_from} on ${m}; refusing to anchor a new OSS branch"
+      elif [ "$imp_rc" -ne 0 ]; then
+        continue
+      fi
+      # is_ancestor, not a bare merge-base: rc 128 collapsed into "not reachable"
+      # demotes the true branch point, and the walk settles on an older commit, so
+      # the new release line is created behind where OSS actually is and re-replays
+      # commits it already holds -- with nothing in the log saying git ever failed.
+      anc_rc=0
+      is_ancestor "$imported_full" "$DEFAULT_TIP" || anc_rc=$?
+      if [ "$anc_rc" -eq 2 ]; then
+        rm -f "$exported_map"
+        die "git failed testing whether ${imported_full} is on OSS ${OSS_DEFAULT_BRANCH}; refusing to anchor a new OSS branch"
+      elif [ "$anc_rc" -ne 0 ]; then
+        continue
+      fi
+      if [ -z "$imported_best" ]; then
+        imported_best="$imported_full"
+        continue
+      fi
+      anc_rc=0
+      is_ancestor "$imported_best" "$imported_full" || anc_rc=$?
+      if [ "$anc_rc" -eq 2 ]; then
+        rm -f "$exported_map"
+        die "git failed comparing ${OSS_TRAILER} records on ${m}; refusing to anchor a new OSS branch"
+      elif [ "$anc_rc" -eq 0 ]; then
+        imported_best="$imported_full"
+      fi
+    done <<< "$imported_values"
+    if [ -n "$imported_best" ]; then
       RESUME="$m"
-      OSS_TIP="$imported_from"
+      OSS_TIP="$imported_best"
       break
     fi
-  done < <(git rev-list --first-parent HEAD)
+  done <<< "$branch_walk"
   rm -f "$exported_map"
 
   [ -n "$RESUME" ] \
@@ -165,11 +380,25 @@ git worktree add --detach --quiet "$WT" "$OSS_TIP"
 trap 'git worktree remove --force "$WT" 2>/dev/null || true; rm -rf "$WT_PARENT"' EXIT
 
 count=0
+# Captured first, like the divergence guard's walk: a producer that fails inside
+# `done < <(...)` is invisible to set -e, so a broken rev-list replays nothing and
+# the run reports a clean, empty export. With align-tree it then pushes a snapshot
+# built from a range nobody managed to list.
+if ! replay_range="$(git rev-list --reverse --first-parent "${RESUME}..HEAD" -- "$SUBTREE_PREFIX")"; then
+  die "failed to list the replay range ${RESUME}..HEAD; refusing to export"
+fi
 while read -r M; do
   [ -n "$M" ] || continue
   ensure_not_merge "$M"
-  if has_trailer "$M" "$OSS_TRAILER"; then
-    echo "Skipping ${M} (originated on OSS: $(trailer_value "$M" "$OSS_TRAILER"))"
+  # The loop guard, and the one place a swallowed git failure destroys content:
+  # read as "no trailer", a commit that came FROM OSS is replayed back onto it,
+  # reapplying whatever the mirror has since changed or reverted.
+  guard_rc=0
+  has_trailer "$M" "$OSS_TRAILER" || guard_rc=$?
+  if [ "$guard_rc" -eq 2 ]; then
+    die "git failed reading the ${OSS_TRAILER} trailer of ${M}; refusing to export without the loop guard"
+  elif [ "$guard_rc" -eq 0 ]; then
+    echo "Skipping ${M} (originated on OSS)"
     continue
   fi
   # The trailing slash matters: --relative does string-prefix matching, so
@@ -193,7 +422,7 @@ while read -r M; do
   replay_commit "$M" "$MONOREPO_TRAILER" "$WT"
   count=$((count + 1))
   echo "Replayed ${M} -> $(git -C "$WT" rev-parse HEAD) ($(git log -1 --format=%s "$M"))"
-done < <(git rev-list --reverse --first-parent "${RESUME}..HEAD" -- "$SUBTREE_PREFIX")
+done <<< "$replay_range"
 
 NEW_TIP="$(git -C "$WT" rev-parse HEAD)"
 
@@ -209,6 +438,23 @@ STAGING_TREE="$(git rev-parse "HEAD:${SUBTREE_PREFIX}")"
 OSS_TREE="$(git -C "$WT" rev-parse "HEAD^{tree}")"
 if [ "$STAGING_TREE" != "$OSS_TREE" ]; then
   if [ "$ALIGN_TREE" = "true" ]; then
+    # The one place the weak evidence matters: this commit sets the OSS tree to the
+    # staging tree, deleting whatever OSS holds and staging does not. An external
+    # absorbed only by a line outside git's trailer block may be one of those, and
+    # "never absorbed" is indistinguishable from "absorbed, then superseded" by
+    # content alone, so the value's origin is the only signal left.
+    if [ "${#loose_absorbed[@]}" -gt 0 ]; then
+      echo "::error::align-tree would overwrite the OSS tree, deleting anything OSS holds that ${SUBTREE_PREFIX} does not, while these external commits are absorbed only by an ${OSS_TRAILER} line outside git's trailer block:"
+      printf '::error::  %s\n' "${loose_absorbed[@]}"
+      echo "::error::That evidence is enough to keep exporting, not to delete their content from OSS."
+      # Deliberately not "run the import direction": the anchor comes from the same
+      # whole-message scan, so it already reaches past these commits and the import
+      # has nothing to replay. Saying otherwise sends the operator, or a caller
+      # dispatching on an output, round a loop that cannot terminate.
+      echo "::error::The import direction cannot clear this: the anchor already reaches past them, so it has nothing to replay. Decide per commit."
+      loose_absorption_recovery
+      exit 1
+    fi
     msgfile="$(mktemp)"
     {
       echo "chore: align OSS mirror with monorepo staging tree"
@@ -225,7 +471,19 @@ if [ "$STAGING_TREE" != "$OSS_TREE" ]; then
   elif ! git diff --quiet "$OSS_TREE" "$STAGING_TREE" -- . ${excludes[@]+"${excludes[@]}"}; then
     echo "::error::OSS tree does not match the monorepo staging tree after replay:"
     git --no-pager diff --stat "$OSS_TREE" "$STAGING_TREE" -- . ${excludes[@]+"${excludes[@]}"} || true
-    echo "::error::Re-run with align-tree=true to append a snapshot alignment commit."
+    if [ "${#loose_absorbed[@]}" -gt 0 ]; then
+      # NOT "re-run with align-tree": the gate above refuses exactly that while
+      # these commits are absorbed only outside git's trailer block, so the
+      # obvious next step is a round trip that cannot terminate. The operator has
+      # to decide per commit either way, so say that here rather than one failure
+      # later.
+      echo "::error::Do not re-run with align-tree: these external commits are absorbed only by an ${OSS_TRAILER} line outside git's trailer block, which is enough to keep exporting and not enough to delete their content, so align-tree refuses the run rather than fixing it:"
+      printf '::error::  %s\n' "${loose_absorbed[@]}"
+      echo "::error::Decide per commit first:"
+      loose_absorption_recovery
+    else
+      echo "::error::Re-run with align-tree=true to append a snapshot alignment commit."
+    fi
     exit 1
   else
     echo "OSS tree differs from staging only in excluded paths; leaving them as-is"

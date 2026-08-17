@@ -175,6 +175,88 @@ Oss-Commit: $E1"
   [ "$(output_value skipped-count)" = "0" ]
 }
 
+@test "squash WITH trailers, an earlier one superseded upstream: export stays green" {
+  # The second production deadlock. One import PR absorbed a commit and the
+  # revert that partly undid it, and the squash put both Oss-Commit trailers on
+  # one commit. Reading the trailers last-wins hid the first sha, and the
+  # content fallback could not rescue it either -- being superseded is exactly
+  # what removes that content from staging. The guard then reported an absorbed
+  # commit as unabsorbed on every push, while the import direction insisted
+  # there was nothing to import: a deadlock no re-run could clear.
+  E1=$(external_commit pkg/app.go "with-banner" "feat: add banner (#3915)")
+  E2=$(external_commit pkg/app.go "banner-trimmed" "revert: most of the banner (#4143)")
+  bash "$IMPORT"
+
+  squash_merge_pr_branch "chore: sync from oss (#2177)
+
+feat: add banner (#3915)
+
+Oss-Commit: $E1
+
+revert: most of the banner (#4143)
+
+Oss-Commit: $E2
+
+Co-authored-by: alice <alice@contributor.example>"
+
+  # Premise: E1's content is gone from staging, so nothing but the trailer
+  # record can prove it was absorbed.
+  [ "$(cat "$MONO/$PFX/pkg/app.go")" = "banner-trimmed" ]
+
+  run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value diverged)" = "false" ]
+  [[ "$output" != *"not yet absorbed"* ]]
+
+  # And the pipeline keeps running: the next company commit exports cleanly.
+  company_commit pkg/other.go "after-revert" "feat: company after revert" >/dev/null
+  run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value exported-count)" = "1" ]
+  [ "$(git -C "$OSS_REMOTE" rev-parse 'main^{tree}')" = "$(git -C "$MONO" rev-parse "HEAD:$PFX")" ]
+}
+
+@test "squash WITH an abbreviated trailer, superseded upstream: export stays green" {
+  # The same deadlock as above reached by abbreviation instead of last-wins.
+  # trailer_scan deliberately accepts a shortened hand-written value, but the
+  # guard compares against full shas from git rev-list, so an abbreviated record
+  # matched nothing and its commit read as unabsorbed on every push.
+  E1=$(external_commit pkg/app.go "with-banner" "feat: add banner (#3915)")
+  E2=$(external_commit pkg/app.go "banner-trimmed" "revert: most of the banner (#4143)")
+  bash "$IMPORT"
+
+  squash_merge_pr_branch "chore: sync from oss (#2177)
+
+feat: add banner (#3915)
+
+Oss-Commit: ${E1:0:12}
+
+revert: most of the banner (#4143)
+
+Oss-Commit: $E2
+
+Co-authored-by: alice <alice@contributor.example>"
+
+  # Same premise: E1's content is gone from staging, so only the trailer record
+  # can prove it was absorbed.
+  [ "$(cat "$MONO/$PFX/pkg/app.go")" = "banner-trimmed" ]
+
+  run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value diverged)" = "false" ]
+  [[ "$output" != *"not yet absorbed"* ]]
+  # E1 is named, but as weak absorption evidence rather than as a divergence: a
+  # squash-orphaned trailer is exactly the case that carries no block record.
+  [[ "$output" != *"::error::"* ]]
+  [[ "$output" == *"absorbed only via an Oss-Commit line outside git trailer block"* ]]
+
+  company_commit pkg/other.go "after-revert" "feat: company after revert" >/dev/null
+  run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value exported-count)" = "1" ]
+  [ "$(git -C "$OSS_REMOTE" rev-parse 'main^{tree}')" = "$(git -C "$MONO" rev-parse "HEAD:$PFX")" ]
+}
+
 @test "squash WITH trailers in the body: resume takes the newest trailer" {
   E1=$(external_commit ext1.go "one" "feat: alice first")
   E2=$(external_commit ext2.go "two" "feat: alice second")

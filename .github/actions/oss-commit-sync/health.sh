@@ -18,9 +18,13 @@ set -euo pipefail
 #
 #   2. Was a sync PR squash-merged? GitHub's squash appends "Co-authored-by:" as
 #      a new paragraph, which orphans our trailer from the block git's own
-#      %(trailers) parser reads. The trailer helpers scan the whole message so
-#      this no longer breaks the sync, but the merge policy was violated and
-#      per-commit authorship of external contributions was collapsed.
+#      %(trailers) parser reads. Even without that paragraph, a squash of N
+#      replayed commits leaves only the last of its N trailers in the block, so
+#      the check compares the whole-message scan against the block as sets rather
+#      than asking whether the block came back empty. The trailer helpers scan
+#      the whole message so none of this breaks the sync, but the merge policy
+#      was violated and per-commit authorship of external contributions was
+#      collapsed.
 #
 #   3. How many OSS commits are genuinely waiting to be imported?
 #
@@ -87,8 +91,14 @@ emit converged "$converged"
 # the two directions cannot disagree about where the sync stands. That matters
 # most in the damaged-state cases this report exists to diagnose.
 degraded=false
+# Tracked separately from `degraded`, which accumulates every failure in the
+# report: the missing-anchor warning below is a statement about the anchor alone,
+# and gating it on the report-wide flag lets an unrelated later failure (a broken
+# squash scan) suppress a diagnosis that was established correctly.
+anchor_degraded=false
 if ! resolve_import_anchor "$OSS_TIP"; then
   degraded=true
+  anchor_degraded=true
   echo "::warning::Could not resolve the import anchor (git error); the anchor figures below are incomplete."
 fi
 ANCHOR="$IMPORT_ANCHOR"
@@ -140,7 +150,17 @@ if [ -n "$ANCHOR" ]; then
   if pending_shas="$(git rev-list --reverse --first-parent "${ANCHOR}..${OSS_TIP}")"; then
     while read -r E; do
       [ -n "$E" ] || continue
-      has_trailer "$E" "$MONOREPO_TRAILER" && continue
+      # Guarded like the diff below, and for the same reason: a git failure read
+      # as "not ours" would count the commit as pending, and read as "ours" would
+      # drop it, either way with nothing saying git broke. Degrade and skip.
+      ours_rc=0
+      has_trailer "$E" "$MONOREPO_TRAILER" || ours_rc=$?
+      if [ "$ours_rc" -eq 2 ]; then
+        degraded=true
+        echo "::warning::Could not read the ${MONOREPO_TRAILER} trailer of ${E}; pending-count may be understated."
+        continue
+      fi
+      [ "$ours_rc" -eq 0 ] && continue
       # Captured for the same reason as the outer rev-list: an unguarded failure
       # here yields empty output, which reads as "touches only excluded paths"
       # and drops the commit from the backlog with no degraded signal.
@@ -163,31 +183,101 @@ emit pending-count "$pending"
 
 # --- detect squash-orphaned trailers ----------------------------------------
 
-# A commit where our whole-message scan finds the trailer but git's own trailer
-# block does not is the fingerprint of a squash-merged sync PR.
+# Counts commits carrying an Oss-Commit value that our whole-message scan finds
+# and git's own trailer block does not. A squash produces that; so does a
+# trailer-shaped line quoted in a commit body, and the two are locally
+# indistinguishable. Requiring the value to name a commit in OSS history rules
+# out fabricated and unrelated hex, not a real sha someone quoted, so read a
+# non-zero count as a reason to look rather than as proof. What it misses is
+# recorded below.
 squashed=0
 squashed_list=()
+# One pass, walked in groups. trailer_scan emits every value in log order, so a
+# commit's values arrive consecutively and the group boundary is just a change of
+# sha. The previous shape (a second history walk, plus an awk over the whole scan
+# per commit) was quadratic in a set that only grows, and the two walks could
+# disagree about which commits exist if HEAD moved between them.
+#
 # Same capture-first reason as the pending loop: a broken producer must not read
 # as "no policy violations".
-if entries="$(all_trailer_entries HEAD "$OSS_TRAILER")"; then
-  while read -r M value; do
-    [ -n "$value" ] || continue
-    # Guarded in the other direction from the pending loop: an unguarded failure
-    # yields empty output, which here reads as "git could not see the trailer",
-    # i.e. a squash, and would raise a false policy alarm against a clean commit.
-    if ! parsed="$(git log -1 --format="%(trailers:key=${OSS_TRAILER},valueonly)" "$M")"; then
+if scanned_all="$(trailer_scan "$OSS_TRAILER" 1 --first-parent HEAD)"; then
+  cur=""
+  orphaned=false
+  parsed_norm=""
+  cur_usable=false
+  while read -r M v; do
+    [ -n "$v" ] || continue
+    if [ "$M" != "$cur" ]; then
+      # Close out the previous group before starting this one.
+      if [ "$orphaned" = "true" ]; then
+        squashed=$((squashed + 1))
+        squashed_list+=("$cur")
+      fi
+      cur="$M"
+      orphaned=false
+      cur_usable=true
+      # Guarded in the other direction from the pending loop: an unguarded
+      # failure yields empty output, which here reads as "git could not see the
+      # trailer", i.e. a squash, and would raise a false alarm against a clean
+      # commit. The trailing-space strip mirrors what trailer_scan already does.
+      # unfold, matching the export guard: without it a folded value stays several
+      # physical lines and its first line would match a scanned sha here, scoring a
+      # commit clean that the export treats as having no block record.
+      if parsed="$(git log -1 --format="%(trailers:key=${OSS_TRAILER},valueonly,unfold)" "$M")"; then
+        # Lowercased as well as space-stripped, because the scan lowercases its
+        # values (git accepts uppercase hex) and a case-sensitive comparison would
+        # call a perfectly in-block uppercase record orphaned.
+        parsed_norm="$(printf '%s\n' "$parsed" | sed 's/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]')"
+      else
+        degraded=true
+        cur_usable=false
+        echo "::warning::Could not read the trailer block of ${M}; squashed-trailer-count may be understated."
+      fi
+    fi
+    [ "$cur_usable" = "true" ] || continue
+    # A set comparison, not "is git's block empty". A squash that appends no
+    # Co-authored-by paragraph leaves the LAST trailer inside the block git
+    # parses while every earlier one stays orphaned above it, so an emptiness
+    # test scores that commit clean and misses the shape this check exists to
+    # catch.
+    lines_contain "$parsed_norm" "$v" && continue
+    # The deliberate trade in the other direction: a real orphaned record whose
+    # commit has left OSS history (force-push, recreated branch) or whose
+    # abbreviation has since become ambiguous is NOT counted. Under-reporting
+    # beats accusing a maintainer who merged correctly.
+    res_rc=0
+    v_full="$(resolve_commit_prefix "$v")" || res_rc=$?
+    if [ "$res_rc" -eq 2 ]; then
+      # Same reason the ancestry rc is split below: a git failure is not an
+      # answer about the value, and counting it as one would let a broken
+      # rev-parse hand back a clean bill of health.
       degraded=true
-      echo "::warning::Could not read the trailer block of ${M}; squashed-trailer-count may be understated."
+      echo "::warning::Could not resolve the ${OSS_TRAILER} value ${v} on ${M}; squashed-trailer-count may be understated."
+      continue
+    elif [ "$res_rc" -ne 0 ]; then
       continue
     fi
-    if [ -z "$(printf '%s' "$parsed" | tr -d '[:space:]')" ]; then
-      squashed=$((squashed + 1))
-      squashed_list+=("$M")
-    fi
-  done <<< "$entries"
+    # rc 1 is "not in OSS history"; anything else is git failing, and the two
+    # must not collapse, or a broken merge-base reads as a clean bill of health.
+    anc_rc=0
+    git merge-base --is-ancestor "$v_full" "$OSS_TIP" 2>/dev/null || anc_rc=$?
+    case "$anc_rc" in
+      0) orphaned=true ;;
+      1) ;;
+      *)
+        degraded=true
+        echo "::warning::Could not test whether ${v_full} is in OSS ${BRANCH} history; squashed-trailer-count may be understated."
+        ;;
+    esac
+  done <<< "$scanned_all"
+  # The last group has no successor to close it.
+  if [ "$orphaned" = "true" ]; then
+    squashed=$((squashed + 1))
+    squashed_list+=("$cur")
+  fi
 else
   degraded=true
-  echo "::warning::Could not read ${OSS_TRAILER} trailers from ${BRANCH}; squashed-trailer-count is not reliable in this run."
+  echo "::warning::Could not scan this repo's ${BRANCH} for ${OSS_TRAILER} lines; squashed-trailer-count is not reliable in this run."
 fi
 emit squashed-trailer-count "$squashed"
 emit degraded "$degraded"
@@ -210,13 +300,24 @@ emit degraded "$degraded"
   echo "| Squash-orphaned trailers | ${squashed} |"
 } >> "$GITHUB_STEP_SUMMARY"
 
-if [ -z "$ANCHOR" ]; then
-  echo "::warning::No readable ${OSS_TRAILER} trailer on ${BRANCH} points at a commit reachable from OSS ${BRANCH}, and no subtree content matches an OSS commit. This is the one state the import cannot heal by itself; it needs seed-oss-commit."
+# Gated on anchor_degraded: resolve_import_anchor resets its globals at entry and
+# returns early on any git failure, so an empty anchor is also what a transient
+# breakage looks like. Ungated, this tells the operator to re-seed a perfectly
+# healthy sync because git blinked once during the candidate walk. Gated on the
+# report-wide `degraded` instead, an unrelated later failure would suppress this
+# warning when it is the one thing the operator actually needs.
+if [ -z "$ANCHOR" ] && [ "$anchor_degraded" = "false" ]; then
+  echo "::warning::No readable ${OSS_TRAILER} trailer on this repo's ${BRANCH} points at a commit reachable from OSS ${BRANCH}, and no subtree content matches an OSS commit. This is the one state the import cannot heal by itself; it needs seed-oss-commit."
 fi
 
 if [ "$squashed" -gt 0 ]; then
-  echo "::warning::${squashed} sync commit(s) on ${BRANCH} carry an ${OSS_TRAILER} trailer that GitHub's squash-merge orphaned from the trailer block. The sync reads it anyway, but per-commit authorship of the external contributions was collapsed on ${BRANCH}. Merge sync PRs with \"Rebase and merge\"."
-  printf '::warning::  squash-merged: %s\n' "${squashed_list[@]}"
+  # Hedged like the README and the output description: this is the shape a squash
+  # leaves, and also the shape of a real trailer line quoted in a body. Telling a
+  # maintainer flatly that they squashed is the one thing this must not get wrong.
+  echo "::warning::${squashed} commit(s) on this repo's ${BRANCH} carry an ${OSS_TRAILER} value outside the block git's own trailer parser reads. GitHub's squash-merge does that, and if that is the cause then per-commit authorship of those external contributions was collapsed and cannot be recovered; merge sync PRs with \"Rebase and merge\". A real ${OSS_TRAILER} line quoted in a commit body looks identical here, so check the commits below before concluding. They are commits in THIS repository, not on the OSS mirror: the scan walks our own first-parent chain, which is where an ${OSS_TRAILER} record lives."
+  # Labelled by what was observed, not by the conclusion the line above declines
+  # to draw for the reader.
+  printf '::warning::  value outside the trailer block: %s\n' "${squashed_list[@]}"
 fi
 
 if [ "$stale" = "true" ]; then

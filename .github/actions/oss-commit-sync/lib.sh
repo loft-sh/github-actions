@@ -36,30 +36,75 @@ die() {
 
 # --- trailer lookup ----------------------------------------------------------
 #
-# Deliberately NOT git's own %(trailers) parsing. Git recognizes only the LAST
-# paragraph of a message as the trailer block, and GitHub's "Squash and merge"
-# appends "Co-authored-by:" lines as a NEW paragraph. That pushes a trailer we
-# wrote out of the block git will parse: the line is still in the message
-# verbatim, but %(trailers) stops seeing it, so the sync silently loses its
-# resume point and re-walks history it already holds. Not hypothetical: it
-# froze the vcluster-pro import anchor for a week, then hard-failed once one of
-# the re-walked commits stopped applying as a no-op.
+# Not git's %(trailers) parsing ALONE, and not the whole-message scan alone. Each
+# misses records the other sees, so the lookup is the union of both.
 #
-# So the scan reads the whole message. What keeps that safe from prose that
-# merely mentions a trailer is the value shape: every trailer this action reads
-# or writes carries a commit sha and nothing else, so the line must start at
-# column 0 with the exact key and be followed only by hex. The key match is
-# case-insensitive, matching git's own trailer semantics.
+# Git recognizes only the LAST paragraph of a message as the trailer block, and
+# GitHub's "Squash and merge" appends "Co-authored-by:" lines as a NEW paragraph.
+# That pushes a trailer we wrote out of the block git will parse: the line is
+# still in the message verbatim, but %(trailers) stops seeing it, so the sync
+# silently loses its resume point and re-walks history it already holds. Not
+# hypothetical: it froze the vcluster-pro import anchor for a week, then
+# hard-failed once one of the re-walked commits stopped applying as a no-op.
+#
+# The other way round, git's parser is laxer about the line itself: it accepts
+# "Key:<sha>" with no space, with a tab, with several spaces, and uppercase hex,
+# none of which the body scan matches. A record git reads perfectly would otherwise
+# be invisible, which deadlocked the export from the opposite direction, so
+# trailer_scan reads git's block as well and returns the union.
+#
+# The scan's value shape is what keeps most prose out: every trailer this action
+# reads or writes carries a commit sha and nothing else, so the line must start at
+# column 0 with the exact key and be followed only by hex. It reduces accidental
+# matches rather than ruling them out, and a line of that exact shape quoted in a
+# body does match, so callers that draw a conclusion about a human's behaviour
+# from a match (health's squash detector) corroborate it against OSS history
+# first. The key match is case-insensitive, matching git's own trailer semantics.
 
 # Shortest abbreviation accepted from a hand-written trailer. Below this a hex
 # run is too generic to be confidently a sha.
 TRAILER_SHA_MIN_LEN=7
 
-# trailer_entries <key> <git-log-args...>
-# Print "<commit-sha> <value>" for every commit in the log that carries <key>,
-# in log order. With several same-key lines on one commit the last one wins:
-# GitHub's squash concatenates the branch's commit messages, so the last
-# occurrence is the newest import.
+# The frame delimiter trailer_scan builds its git-log format from. 32 hex, read
+# from the kernel pool two different ways before falling back to $RANDOM (see
+# the tiers below) for a runner that offers neither.
+#
+# Drawn once per process rather than per call: trailer_scan runs once per commit
+# inside three O(n) walks (the export divergence guard, health's pending loop,
+# classify_healed_range), and two extra forks each would be paid n times over for
+# nothing. Every commit these scripts read was written before this process
+# started -- replay_commit only copies messages that already existed -- so a
+# per-process mark is exactly as unguessable as a per-call one.
+TRAILER_FRAME_MARK="$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')" || TRAILER_FRAME_MARK=""
+if [ "${#TRAILER_FRAME_MARK}" -ne 32 ]; then
+  # Still the kernel's pool, just reached another way. The redirection is inside
+  # the braces so 2>/dev/null covers it: bash applies redirections left to right
+  # and reports a failed INPUT redirection before the stderr one is in effect, so
+  # the obvious spelling prints a bare "No such file or directory" on a runner
+  # with no /proc -- into the health direction's log, whose whole contract is that
+  # an advisory run stays clean.
+  TRAILER_FRAME_MARK="$({ tr -d '\n-' < /proc/sys/kernel/random/uuid; } 2>/dev/null)" || TRAILER_FRAME_MARK=""
+fi
+if [ "${#TRAILER_FRAME_MARK}" -ne 32 ]; then
+  # Last resort, and weaker on purpose rather than by accident: $RANDOM is a PRNG
+  # seeded from time and pid, so a determined attacker who could both force this
+  # branch and enumerate that state could aim at the frame. Reaching it means the
+  # kernel pool was unavailable twice, which on the runners this action targets
+  # does not happen; failing the sync outright would trade a real outage for a
+  # theoretical attack.
+  TRAILER_FRAME_MARK="$(printf '%04x%04x%04x%04x%04x%04x%04x%04x' \
+    "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM")"
+fi
+
+# trailer_scan <key> <multi> <git-log-args...>
+# Print "<commit-sha> <value>" per match. With multi=0 a commit carrying several
+# same-key lines yields one entry, the last record winning; with multi=1 it yields
+# one entry per distinct value. Callers pick by what they are asking: "which record
+# is newest" wants last-wins, "was this ever recorded" wants all.
+#
+# multi=1 order is body-scan values in message order, then any value only git's
+# parser saw. Treat the output as a SET: it is not a reliable message ordering, and
+# no caller may take its first or last line to mean anything.
 #
 # The awk consumer must NOT `exit` on the first match: closing the pipe early
 # while `git log` is still writing a large history makes git receive SIGPIPE,
@@ -67,37 +112,369 @@ TRAILER_SHA_MIN_LEN=7
 # is build-dependent, so this only bites on big repos on some runners). It
 # reads the whole stream instead; callers keep the entries they want.
 #
-# Commits are framed by a leading \001 on the header line rather than an awk
-# RS: a NUL or control-char RS is not portable across awk implementations
-# (mawk treats an empty RS as paragraph mode), and a control character cannot
-# occur at column 0 of a real commit message.
+# Records are framed by TRAILER_FRAME_MARK, drawn once when this file is sourced,
+# rather than an awk RS: a NUL or control-char RS is not portable across awk
+# implementations (mawk treats an empty RS as paragraph mode).
+#
+# It has to be unpredictable, not merely unusual. Framing on a fixed control byte
+# is forgeable, because every byte except NUL is legal in a commit message and
+# import.sh replays OSS messages into the monorepo verbatim: a body line holding
+# the delimiter reopened the frame mid-record, and the bare hex line after it was
+# read as a block value, putting a sha into the absorbed set with no trailer key
+# present anywhere. Every commit these scripts read was written before this
+# process drew the mark, so nothing readable can contain it: the frame cannot be
+# forged rather than merely being awkward to.
+#
+# Both readings come from THIS function, and nowhere else. Keeping them in separate
+# callers meant "is this commit a record" had two answers, and every caller had to
+# remember to ask both. It did not stay consistent: a commit counted as absorbed by
+# one reading and not OSS-originated by the other was replayed back to OSS,
+# resurrecting content the mirror had moved past. One function, one answer, so a new
+# caller cannot get it wrong.
+#
+# Block values are held back and applied AFTER the body scan, because git's block is
+# by definition the message's final trailer paragraph: anything in it comes later
+# than any body line above it. So for multi=0 a block value wins, which is what
+# last-wins means and what the import anchor reads as "newest". Emitting them first
+# instead let an earlier, well-formed body line overwrite the genuinely final record
+# and move the anchor forward past commits still waiting to be imported.
+#
+# A well-formed trailer is seen by both readings; the duplicate is dropped per
+# commit so the output stays a clean set.
+#
+# The body half is not applied to every key -- see trailer_reads_body.
+
+# trailer_reads_body <key>
+# True when the whole-message scan applies to this key, false when only git's own
+# trailer block may be trusted.
+#
+# The union above exists for ONE reason: a record we wrote can be orphaned from
+# git's block by a squash. That happens to Oss-Commit, which is written on the
+# monorepo side and reaches the base branch through a PR that GitHub may squash.
+#
+# That says why Oss-Commit NEEDS the body scan, not that its body is trustworthy.
+# It is not: replay_commit copies an OSS message into the monorepo verbatim, so a
+# contributor's body line arrives here too. The anchor reads those as candidates
+# and takes the one reaching farthest. What keeps that safe is not the parser but
+# the range: for the line to be in our history the import had to reach the commit
+# carrying it, so everything before it was already replayed, excluded, or proven
+# benign, and advancing to it cannot skip work nobody looked at. Both repos
+# enforce linear history, which is what makes that argument hold.
+#
+# It cannot happen to Monorepo-Commit. Export writes that trailer itself and
+# pushes the commit straight to OSS -- no PR, no squash, no merge method, nothing
+# between writing it and it being in the block. So the body scan buys that key
+# nothing, and it costs: OSS is a public repository taking outside contributions,
+# so an external commit's message is contributor-controlled, and a column-zero
+# "Monorepo-Commit: <any valid monorepo sha>" line in a body would otherwise be
+# read as ours. That commit then becomes the export anchor, which puts it BEFORE
+# the divergence range so it is never checked, while the import loop guard skips
+# it as something we created. Export cannot converge because it was never
+# absorbed, the import refuses to absorb it, and with align-tree the false anchor
+# authorises deleting its content from OSS instead.
+#
+# So the trust follows the threat: unioned where our own records can be orphaned,
+# block-only where they cannot and the body is someone else's to write.
+#
+# READ THIS BEFORE TRUSTING THE ABOVE. This narrows the forgery, it does not end
+# it. The same line written as a REAL trailer -- last paragraph of the message,
+# where git's own parser reads it -- is still accepted, because at this layer
+# there is nothing to tell it apart from a record we wrote: both are a valid
+# monorepo sha under the right key in the right place. Verified on this branch:
+# with align-tree the forged anchor still deletes the contributor's file from the
+# mirror and the run reports diverged=false and exits 0.
+#
+# What is closed is the variant that survives a squash, which is the one a
+# contributor gets for free by writing the line anywhere in a PR description.
+#
+# Closing the rest needs evidence this layer does not have: not the committer
+# name, which is not authentication -- anyone constructing a commit can set the
+# bot's -- but something the object proves, a verified signature or auditable
+# push provenance, plus a trusted cutoff for the OSS history that predates it.
+# That is a change to what the sync treats as authentic, not to how it reads a
+# trailer. Until then the exposure is real and stated, not implied away.
+trailer_reads_body() {
+  # Case-folded, because trailer_scan matches keys case-insensitively "matching
+  # git's own trailer semantics" and this decides a trust boundary: compared
+  # exactly, a caller spelling the key "monorepo-commit" would silently re-enable
+  # the body scan for the one key that must not have it.
+  [ "${1,,}" != "${MONOREPO_TRAILER,,}" ]
+}
+
+trailer_scan() {
+  local key="$1" multi="$2"
+  shift 2
+  local mark="$TRAILER_FRAME_MARK" bodyscan=0
+  trailer_reads_body "$key" && bodyscan=1
+  git log --format="${mark}H%H%n%(trailers:key=${key},valueonly,unfold)${mark}B%n%B" "$@" \
+    | awk -v key="$key" -v minlen="$TRAILER_SHA_MIN_LEN" -v multi="$multi" -v mark="$mark" \
+          -v bodyscan="$bodyscan" '
+    function shaped(candidate) {
+      return (candidate ~ /^[0-9a-f]+$/ && length(candidate) >= minlen && length(candidate) <= 40)
+    }
+    function take(candidate) {
+      if (!shaped(candidate)) return
+      if (multi == 1) {
+        if (seen[candidate]++) return
+        print sha " " candidate
+      }
+      else value = candidate
+    }
+    # A body line is only taken once the NEXT line has been seen, because that is
+    # the earliest point at which we know it was not folded.
+    function body_take() {
+      if (pending != "") { take(pending); pending = "" }
+    }
+    function flush() {
+      # The held-back block values, applied last: they sit in the final paragraph
+      # of the message, so they are its latest records.
+      if (sha != "") {
+        body_take()
+        for (i = 1; i <= nblock; i++) take(block[i])
+        if (value != "") print sha " " value
+      }
+      sha = ""
+      value = ""
+      pending = ""
+      nblock = 0
+      delete block
+      delete seen
+    }
+    BEGIN {
+      keyname = tolower(key); klen = length(keyname)
+      hdr = mark "H"; hlen = length(hdr); blkend = mark "B"
+      inblock = 0; nblock = 0
+    }
+    # No length test on what follows: the delimiter already makes this line
+    # unforgeable, so whatever git printed for %H is the sha, whichever hash the
+    # repository uses.
+    substr($0, 1, hlen) == hdr {
+      flush(); sha = substr($0, hlen + 1); inblock = 1; next
+    }
+    # Whole-line match, not a prefix: git preserves a trailer value verbatim, and a
+    # prefix test would end the block on any value that merely starts the same way,
+    # hiding every parser-only record below it. (No apostrophes in here: the awk
+    # program is a single-quoted shell string.)
+    $0 == blkend { inblock = 0; next }
+    inblock {
+      # Already key-stripped and unfolded by git, so a folded value arrives whole
+      # and fails the shape test rather than donating its first line. Lowercased
+      # because git accepts uppercase hex and the shas we compare against do not.
+      line = tolower($0)
+      sub(/[ \t\r]+$/, "", line)
+      if (shaped(line)) block[++nblock] = line
+      next
+    }
+    # Everything below reads the message body. For a key whose records cannot be
+    # squash-orphaned there is nothing down there to recover, and the body is
+    # contributor-controlled, so it is not read at all.
+    !bodyscan { next }
+    # A continuation line, so whatever we were holding was a folded value rather
+    # than a bare sha. Dropping it here is what makes the body scan agree with the
+    # unfolded block reading; keeping only its first line promoted a sha nobody
+    # recorded, which is the one direction of disagreement that can lose content.
+    #
+    # It must carry something other than whitespace to count: git leaves the value
+    # above a blank-but-indented line intact, so treating that line as a fold would
+    # drop a record git reads perfectly.
+    /^[ \t]/ && /[^ \t\r]/ { pending = ""; next }
+    {
+      body_take()
+      line = $0
+      sub(/[ \t\r]+$/, "", line)
+      # Separator and case follow git, not our own stricter spelling: git reads
+      # "Key:<sha>", a tab, several spaces, whitespace BEFORE the colon, and
+      # uppercase hex. A record in any of those forms is invisible to git the
+      # moment a squash orphans it from the block, and reading those is the whole
+      # reason this scan exists. The colon is still required, so a longer key that
+      # merely starts with this one does not match.
+      low = tolower(line)
+      if (substr(low, 1, klen) != keyname) next
+      rest = substr(low, klen + 1)
+      sub(/^[ \t]+/, "", rest)
+      if (substr(rest, 1, 1) != ":") next
+      rest = substr(rest, 2)
+      sub(/^[ \t]+/, "", rest)
+      pending = rest
+    }
+    END { flush() }'
+}
+
+# trailer_entries <key> <git-log-args...>
+# Print "<commit-sha> <value>" for every commit in the log that carries <key>,
+# in log order. With several same-key lines on one commit the last one wins:
+# GitHub's squash concatenates the branch's commit messages, so the last
+# occurrence is the newest import.
 trailer_entries() {
   local key="$1"
   shift
-  git log --format="%x01%H%n%B" "$@" | awk -v key="$key" -v minlen="$TRAILER_SHA_MIN_LEN" '
-    function flush() {
-      if (sha != "" && value != "") print sha " " value
-      sha = ""
-      value = ""
-    }
-    BEGIN { prefix = tolower(key) ": "; plen = length(prefix) }
-    substr($0, 1, 1) == "\001" { flush(); sha = substr($0, 2); next }
-    {
-      line = $0
-      sub(/[ \t\r]+$/, "", line)
-      if (tolower(substr(line, 1, plen)) != prefix) next
-      candidate = substr(line, plen + 1)
-      if (candidate ~ /^[0-9a-f]+$/ && length(candidate) >= minlen && length(candidate) <= 40) {
-        value = candidate
-      }
-    }
-    END { flush() }'
+  trailer_scan "$key" 0 "$@"
 }
 
 # all_trailer_entries <ref-or-range> <key>
 # Every "<commit-sha> <value>" pair on the first-parent chain, newest first.
 all_trailer_entries() {
   trailer_entries "$2" --first-parent "$1"
+}
+
+# every_trailer_value <ref-or-range> <key>
+# Every value recorded anywhere on the first-parent chain, newest commit first.
+# Within one commit the order is unspecified (see trailer_scan): this is a set.
+# Never use it to pick "the newest record", which is what newest_trailer_entry
+# answers.
+#
+# This is the set-membership question, "is this sha recorded at all", and it
+# must not use last-wins. A squash-merged import PR that replayed N commits
+# carries N same-key lines on one commit, and last-wins would report only the
+# newest, leaving the other N-1 looking unrecorded forever. That is not
+# theoretical: it deadlocked the vcluster-pro export for a week, because the
+# content fallback misses too whenever one of the hidden commits was reverted
+# upstream inside the same import.
+every_trailer_value() {
+  trailer_scan "$2" 1 --first-parent "$1" | awk '{print $2}'
+}
+
+# resolve_sha_set
+# Read candidate shas on stdin; print each one, plus its full 40-char form
+# whenever an abbreviation resolves to a commit in this repo.
+#
+# Membership sets built from trailer values are compared against shas that come
+# out of `git rev-list` full-length, while a trailer value need only be a hex run
+# of TRAILER_SHA_MIN_LEN or more: a hand-written or shortened record therefore
+# never matches, and the commit it absorbed reads as unabsorbed forever. Same
+# deadlock every_trailer_value exists to fix, reached by the other road.
+#
+# Resolution is prefix-checked, so a resolved sha can only ever be the commit
+# the trailer names: `^{commit}` also peels an annotated tag object to a commit
+# sharing none of its digits, which would put a commit nobody recorded into the
+# set. Widening the set is NOT harmless here. The guard is the only thing
+# standing between an unabsorbed external commit and align-tree=true, which
+# converges by overwriting the OSS tree rather than by failing, so a commit
+# wrongly believed absorbed can have its content flattened out of OSS.
+#
+# Values that are already full length are passed through without a lookup: every
+# trailer this action writes is one, so the normal case spawns no git at all.
+# Unresolvable values are printed verbatim too, keeping a trailer that names a
+# commit this repo does not hold matching literally as before.
+resolve_sha_set() {
+  local v full rc
+  # `|| [ -n "$v" ]` so a final line with no trailing newline is not dropped:
+  # losing a sha here is the same deadlock class this function exists to close.
+  while IFS= read -r v || [ -n "$v" ]; do
+    [ -n "$v" ] || continue
+    printf '%s\n' "$v"
+    [ "${#v}" -lt 40 ] || continue
+    rc=0
+    full="$(resolve_commit_prefix "$v")" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      printf '%s\n' "$full"
+    elif [ "$rc" -eq 2 ]; then
+      # A broken git must not quietly shrink the absorbed set. That reports an
+      # absorbed commit as unabsorbed and sends the operator after a divergence
+      # that is not there, which is this action's most expensive failure to
+      # diagnose. Returning non-zero aborts the caller under pipefail instead.
+      echo "::error::git failed while resolving the trailer record ${v}; refusing to judge divergence on an incomplete absorbed set" >&2
+      return 1
+    fi
+  done
+}
+
+# lines_contain <haystack> <needle>
+# True when <needle> equals one whole line of <haystack>.
+#
+# A here-string, not printf into a pipe: grep -q exits at the first match, and a
+# haystack past the pipe buffer leaves the writer blocked, so it dies of SIGPIPE
+# and pipefail turns a found value into a failed lookup. The caller reads that as
+# "not present" and reports a clean commit as a squash.
+lines_contain() {
+  # -- so a needle that begins with a dash is a pattern rather than an option,
+  # and an explicit empty-needle answer: the here-string always supplies a final
+  # newline, so an empty haystack would otherwise report an empty needle present.
+  [ -n "$2" ] || return 1
+  grep -qxF -- "$2" <<< "$1"
+}
+
+# filter_sha_values
+# Read candidate values on stdin; print those shaped like a commit sha, lowercased.
+#
+# Values taken from git's own %(trailers) have NOT been through trailer_scan's
+# shape filter. They arrive already key-stripped and unfolded, so the line syntax
+# git was lax about is gone by this point and only the value shape is left to
+# check. Whatever a human wrote still reaches here, so it must not go to rev-parse
+# unchecked, where reflog syntax like @{9999} exits 128 and resolve_sha_set
+# escalates that into a failed export.
+#
+# Length bounds and the hex test rather than a regex interval, matching
+# trailer_scan: awk interval support is not portable across implementations.
+filter_sha_values() {
+  awk -v minlen="$TRAILER_SHA_MIN_LEN" '
+    { v = tolower($0) }
+    v ~ /^[0-9a-f]+$/ && length(v) >= minlen && length(v) <= 40 { print v }'
+}
+
+# resolve_commit_prefix <value>
+# Print the full sha of the commit <value> names and return 0. Return 1 when it
+# names no commit here, and 2 when git itself failed. Callers MUST keep those two
+# apart: "names no commit" is an ordinary answer about the value, while a git
+# failure is no answer at all, and reading one as the other turns a broken repo
+# into a clean report.
+#
+# Prefix-checked, because every caller is asking "which commit does this trailer
+# name", never "what does this object point at": `^{commit}` peels an annotated
+# tag object to a commit sharing none of the value's digits, and both
+# `git merge-base --is-ancestor` and `git cat-file -e` peel one the same way.
+#
+# --quiet is not quiet on a type mismatch: an abbreviation that uniquely names a
+# tree or blob still prints "expected commit type" to stderr, which would put a
+# bare error line in an otherwise green log.
+resolve_commit_prefix() {
+  local full rc=0
+  full="$(git rev-parse --verify --quiet "${1}^{commit}" 2>/dev/null)" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    # rev-parse answers 1 for absent, ambiguous and type-mismatch alike, which
+    # are all "names no commit". Anything else is git failing.
+    [ "$rc" -eq 1 ] && return 1
+    return 2
+  fi
+  case "$full" in
+    "$1"*) printf '%s\n' "$full" ;;
+    *) return 1 ;;
+  esac
+}
+
+# map_lookup <key> <tsv-file>
+# Print the second field of the first line whose first field equals <key>.
+#
+# Both operands are forced to strings before comparing. A field and a -v variable
+# are both "strnum", so awk compares two all-decimal shas NUMERICALLY, as doubles:
+# 1234...890 and 1234...891 differ past the 17th significant digit and therefore
+# test equal, and the lookup returns the wrong row. Same trap the trailer scan hit
+# when it ranked hex values; the fix is the same.
+#
+# `exit` is safe here in a way it is not in the trailer scan: the input is a file,
+# not a pipe from a still-writing `git log`, so leaving early cannot SIGPIPE a
+# producer.
+map_lookup() {
+  awk -F'\t' -v k="$1" '$1 "" == k "" { print $2; exit }' "$2"
+}
+
+# is_ancestor <maybe-ancestor> <descendant>
+# Return 0 when it is one, 1 when it is not, and 2 when git itself failed.
+#
+# Same tripling as resolve_commit_prefix, and for the same reason: `merge-base
+# --is-ancestor` answers 1 for "no" and 128 for "I could not tell you", and the
+# bare `|| continue` that collapsed them let a broken object store quietly demote
+# every candidate to "not reachable". resolve_import_anchor then returns success
+# with an older anchor, or none at all, so the import re-walks absorbed commits
+# or announces a history rewrite that never happened -- while health reports
+# degraded=false, because nothing ever said anything went wrong.
+is_ancestor() {
+  local rc=0
+  git merge-base --is-ancestor "$1" "$2" 2>/dev/null || rc=$?
+  if [ "$rc" -le 1 ]; then
+    return "$rc"
+  fi
+  return 2
 }
 
 # newest_trailer_entry <ref> <key>
@@ -113,7 +490,22 @@ trailer_value() {
   trailer_entries "$2" -1 "$1" | awk 'NR == 1 { print $2 }'
 }
 
-has_trailer() { [ -n "$(trailer_value "$1" "$2")" ]; }
+# has_trailer <sha> <key>
+# Return 0 when the commit carries the trailer, 1 when it does not, and 2 when
+# git itself failed.
+#
+# Tripled like resolve_commit_prefix and is_ancestor, and for the same reason:
+# `[ -n "$(trailer_value ...)" ]` throws the substitution's exit status away, so
+# a git failure came back as "no trailer". Every caller is a loop guard asking
+# "did we create this commit", and answering no to that on error replays a
+# commit back to the side it came from -- resurrecting content the other side
+# had moved past, which is the one failure the trailer layer exists to prevent.
+has_trailer() {
+  local v rc=0
+  v="$(trailer_value "$1" "$2")" || rc=$?
+  [ "$rc" -eq 0 ] || return 2
+  [ -n "$v" ]
+}
 
 # --- shared subtree / anchor helpers ------------------------------------------
 
@@ -231,7 +623,7 @@ content_anchor() {
 # two sum to the first). Returns non-zero on a git failure so callers can fail
 # closed rather than under-report.
 classify_healed_range() {
-  local from="$1" to="$2" range c
+  local from="$1" to="$2" range c ht_rc
   HEALED_TOTAL=0
   HEALED_EXPORTS=0
   HEALED_UNRECORDED=0
@@ -242,7 +634,14 @@ classify_healed_range() {
   while read -r c; do
     [ -n "$c" ] || continue
     HEALED_TOTAL=$((HEALED_TOTAL + 1))
-    if has_trailer "$c" "$MONOREPO_TRAILER"; then
+    ht_rc=0
+    has_trailer "$c" "$MONOREPO_TRAILER" || ht_rc=$?
+    if [ "$ht_rc" -eq 2 ]; then
+      # Same fail-closed rule as the rev-list above: a split built from a trailer
+      # read that failed is not a split. Reported as "unrecorded" it accuses a
+      # maintainer of losing provenance; as "export" it hides a real loss.
+      return 1
+    elif [ "$ht_rc" -eq 0 ]; then
       HEALED_EXPORTS=$((HEALED_EXPORTS + 1))
     else
       HEALED_UNRECORDED=$((HEALED_UNRECORDED + 1))
@@ -287,7 +686,7 @@ classify_healed_range() {
 #  3. content healing (see content_anchor), which reconciles the record against
 #     the evidence in the subtree.
 resolve_import_anchor() {
-  local oss_tip="$1" best="" candidate entries healed
+  local oss_tip="$1" best="" candidate entries healed rc seed_commit anc_rc seed_ok
   IMPORT_ANCHOR=""
   IMPORT_ANCHOR_RECORDED=""
   IMPORT_ANCHOR_HEALED=0
@@ -296,27 +695,109 @@ resolve_import_anchor() {
   IMPORT_ANCHOR_SAW_TRAILER=false
   IMPORT_ANCHOR_SEED_BAD=false
 
+  # multi=1, not the last-wins lookup: the loop below already picks the record
+  # that reaches FARTHEST along OSS history, so it wants every candidate, and
+  # narrowing to one per commit first throws away the very values it exists to
+  # compare. A squash-merged import PR records every commit it replayed on one
+  # commit, and if those lines are not in ancestry order the farther one is the
+  # one discarded -- the anchor then lands behind a commit that is demonstrably
+  # absorbed, content healing cannot reach it because the subtree matches no
+  # single OSS commit, and the replay dies conflicting on work already imported.
+  # Same wrong contract, and same deadlock, that every_trailer_value fixed on the
+  # export side.
+  #
   # Captured first so a failing producer is observed: inside `done < <(...)` a
   # non-zero exit is invisible to `set -e`, and the loop would just run zero
   # times and report "no anchor" as if the branch had never synced.
-  entries="$(all_trailer_entries HEAD "$OSS_TRAILER")" || return 1
+  entries="$(trailer_scan "$OSS_TRAILER" 1 --first-parent HEAD)" || return 1
 
   while read -r _ candidate; do
     [ -n "$candidate" ] || continue
     IMPORT_ANCHOR_SAW_TRAILER=true
-    git cat-file -e "${candidate}^{commit}" 2>/dev/null || continue
-    git merge-base --is-ancestor "$candidate" "$oss_tip" 2>/dev/null || continue
-    if [ -z "$best" ] || git merge-base --is-ancestor "$best" "$candidate"; then
+    # Prefix-checked like the export guard's absorbed set: cat-file -e and
+    # merge-base both peel an annotated tag object, so without this a value that
+    # names no recorded commit can win `best`. The anchor decides where the
+    # import starts, so a wrong winner skips real imports with nothing to show
+    # for it: no replay, no conflict, no pending count.
+    rc=0
+    candidate="$(resolve_commit_prefix "$candidate")" || rc=$?
+    if [ "$rc" -eq 2 ]; then
+      return 1
+    elif [ "$rc" -ne 0 ]; then
+      continue
+    fi
+    anc_rc=0
+    is_ancestor "$candidate" "$oss_tip" || anc_rc=$?
+    if [ "$anc_rc" -eq 2 ]; then
+      return 1
+    elif [ "$anc_rc" -ne 0 ]; then
+      continue
+    fi
+    if [ -z "$best" ]; then
+      best="$candidate"
+      continue
+    fi
+    anc_rc=0
+    is_ancestor "$best" "$candidate" || anc_rc=$?
+    if [ "$anc_rc" -eq 2 ]; then
+      return 1
+    elif [ "$anc_rc" -eq 0 ]; then
       best="$candidate"
     fi
   done <<< "$entries"
   IMPORT_ANCHOR_RECORDED="$best"
 
   if [ -n "${SEED_OSS_COMMIT:-}" ]; then
-    if git cat-file -e "${SEED_OSS_COMMIT}^{commit}" 2>/dev/null \
-      && git merge-base --is-ancestor "$SEED_OSS_COMMIT" "$oss_tip" 2>/dev/null; then
-      if [ -z "$best" ] || git merge-base --is-ancestor "$best" "$SEED_OSS_COMMIT"; then
-        best="$SEED_OSS_COMMIT"
+    # Peeled, then stored peeled. An operator naturally seeds with what
+    # `git rev-parse v1.2.3` printed, which is the tag object; accepting that is
+    # right, but keeping it is not. The anchor is compared against commit shas
+    # elsewhere -- import's "$RESUME" = "$OSS_TIP" nothing-to-do shortcut, and
+    # health's anchor output -- and a tag sha never equals any of them, so the
+    # shortcut can never fire and every run replays an empty range.
+    #
+    # rev-parse answers 1 for absent, ambiguous and type-mismatch alike, which are
+    # all "names no commit here" and a fair thing to blame the seed for. Reporting
+    # a git failure as a bad seed instead sends the operator to re-check a value
+    # that was right all along.
+    #
+    # But 1 is not the only bad-seed code, and this is the one lookup where that
+    # matters. Revision syntax git refuses to parse at all -- the reflog spellings
+    # `@{9999}` and `HEAD@{99}` -- exits 128, the same code a broken repository
+    # returns, and unlike a trailer value the seed reaches here unfiltered by any
+    # shape test (see filter_sha_values, which exists to keep exactly those out of
+    # rev-parse). So corroborate before blaming either: ask git something we
+    # already know the answer to, and only call it broken if it gets that wrong
+    # too. Otherwise git is fine and the seed is simply unusable.
+    rc=0
+    seed_commit="$(git rev-parse --verify --quiet "${SEED_OSS_COMMIT}^{commit}" 2>/dev/null)" || rc=$?
+    if [ "$rc" -gt 1 ]; then
+      if git rev-parse --verify --quiet "${oss_tip}^{commit}" >/dev/null 2>&1; then
+        rc=1
+      else
+        return 1
+      fi
+    fi
+    seed_ok=false
+    if [ "$rc" -eq 0 ]; then
+      anc_rc=0
+      is_ancestor "$seed_commit" "$oss_tip" || anc_rc=$?
+      if [ "$anc_rc" -eq 2 ]; then
+        return 1
+      elif [ "$anc_rc" -eq 0 ]; then
+        seed_ok=true
+      fi
+    fi
+    if [ "$seed_ok" = "true" ]; then
+      if [ -z "$best" ]; then
+        best="$seed_commit"
+      else
+        anc_rc=0
+        is_ancestor "$best" "$seed_commit" || anc_rc=$?
+        if [ "$anc_rc" -eq 2 ]; then
+          return 1
+        elif [ "$anc_rc" -eq 0 ]; then
+          best="$seed_commit"
+        fi
       fi
     else
       IMPORT_ANCHOR_SEED_BAD=true
@@ -355,7 +836,16 @@ ensure_not_merge() {
 replay_commit() {
   local src="$1" key="$2" dir="$3" msgfile author_name author_email author_date
   msgfile=$(mktemp)
-  git log -1 --format=%B "$src" | git interpret-trailers --trailer "${key}: ${src}" > "$msgfile"
+  # --no-divider, because git otherwise treats a bare "---" as end-of-message and
+  # writes the trailer above it, outside the paragraph %(trailers) reads. Every
+  # Dependabot body and any squashed PR description with a markdown rule carries
+  # one, and Monorepo-Commit is read from git's block only -- the record would
+  # simply not exist, and the export would report its own commit as unabsorbed.
+  # commentChar, because interpret-trailers strips "#" lines from the paragraph it
+  # is editing, and the message is meant to survive the replay verbatim.
+  git log -1 --format=%B "$src" \
+    | git -c core.commentChar=$'\x01' interpret-trailers \
+        --no-divider --trailer "${key}: ${src}" > "$msgfile"
   IFS=$'\x1f' read -r author_name author_email author_date \
     < <(git log -1 --format='%an%x1f%ae%x1f%aI' "$src")
   GIT_AUTHOR_NAME="$author_name" \
