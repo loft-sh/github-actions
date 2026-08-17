@@ -25,10 +25,11 @@ secret.
 
 <!-- AUTO-DOC-SECRETS:START - Do not remove or modify this section -->
 
-|     SECRET      | REQUIRED |                                                                                                            DESCRIPTION                                                                                                             |
-|-----------------|----------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-|  ci-read-token  |  false   |              Optional escape hatch for the read-only <br>CI poll when the caller cannot <br>grant `checks: read` / `statuses: read`. Classic PAT <br>with `repo` scope, or an App <br>token. Never gh-access-token.                |
-| gh-access-token |   true   | GitHub PAT for approving PRs, and <br>for merging them directly when auto-merge <br>is true — so it needs <br>a merge path on the base <br>branch, not just the auto-merge toggle <br>(must be different identity from PR author)  |
+|     SECRET      | REQUIRED |                                                                                               DESCRIPTION                                                                                               |
+|-----------------|----------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|  ci-read-token  |  false   | Optional escape hatch for the read-only <br>CI poll when the caller cannot <br>grant `checks: read` / `statuses: read`. Classic PAT <br>with `repo` scope, or an App <br>token. Never gh-access-token.  |
+| gh-access-token |   true   |                                  GitHub PAT for approving PRs (must be different identity from PR author). <br>Also used for merging when merge-token <br>is omitted.                                   |
+|   merge-token   |  false   |                            Optional token used only for merging <br>when auto-merge is true. Defaults to <br>gh-access-token and needs a merge path <br>on the base branch.                             |
 
 <!-- AUTO-DOC-SECRETS:END -->
 

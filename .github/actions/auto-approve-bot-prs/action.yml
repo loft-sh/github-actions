@@ -21,10 +21,13 @@ inputs:
     required: false
     default: 'false'
   github-token:
-    description: 'PAT used to read PR state, approve, and — when auto-merge is true — merge the PR directly, so it needs a merge path on the base branch, not just the auto-merge toggle. Must NOT match the PR author.'
+    description: 'PAT used to read PR state and approve. Must NOT match the PR author. Also used to merge when merge-token is omitted.'
     required: true
+  merge-token:
+    description: 'Optional token used only to merge when auto-merge is true. Defaults to github-token. It may match the PR author, but needs a merge path on the base branch.'
+    required: false
   ci-read-token:
-    description: 'Token for the read-only CI poll only; defaults to the caller GITHUB_TOKEN, which needs `checks: read` and `statuses: read`. Never the approving PAT. See README "Two tokens, on purpose".'
+    description: 'Token for the read-only CI poll only; defaults to the caller GITHUB_TOKEN, which needs `checks: read` and `statuses: read`. Never the approving PAT. See README "Tokens by purpose".'
     required: false
   wait-max-attempts:
     description: 'Max polling attempts waiting for other CI checks'
@@ -96,7 +99,7 @@ runs:
       if: steps.ci.outputs.ci_green == 'true' && inputs.auto-merge == 'true'
       shell: bash
       env:
-        GH_TOKEN: ${{ inputs.github-token }}
+        GH_TOKEN: ${{ inputs.merge-token || inputs.github-token }}
         PR_NUMBER: ${{ github.event.pull_request.number }}
         MERGE_METHOD: ${{ inputs.merge-method }}
       run: ${{ github.action_path }}/src/enable-auto-merge.sh

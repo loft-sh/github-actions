@@ -80,6 +80,12 @@ rerun that was still coming. That stalled the `v0.34.7` cut
 With `auto-merge: true` the action tries a **plain merge first**, and uses
 GitHub's auto-merge queue (`--auto`) only as a fallback.
 
+The merge step uses `merge-token` when supplied, otherwise it keeps the existing
+behavior and uses `github-token`. This lets a caller approve with an identity
+that differs from the PR author, then merge with an identity that has a path
+through branch protection. The merge identity may match the PR author because
+GitHub forbids self-review, not self-merge.
+
 By the time the merge step runs, every other check is already green and the PR
 is approved, so there is normally nothing left for the queue to wait on.
 `--auto` additionally requires the repository's `allow_auto_merge` setting,
@@ -118,29 +124,32 @@ PR is benign, and a PR closed unmerged is a human decision.
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-|       INPUT        |  TYPE  | REQUIRED |                    DEFAULT                     |                                                                                                          DESCRIPTION                                                                                                           |
-|--------------------|--------|----------|------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-|     auto-merge     | string |  false   |                   `"false"`                    |                                                                      Merge the PR after approving it, <br>directly where possible. See README "Merging".                                                                       |
-|   ci-read-token    | string |  false   |                                                |           Token for the read-only CI poll <br>only; defaults to the caller GITHUB_TOKEN, <br>which needs `checks: read` and `statuses: read`. Never <br>the approving PAT. See README "Two <br>tokens, on purpose".            |
-|    github-token    | string |   true   |                                                | PAT used to read PR state, <br>approve, and — when auto-merge is <br>true — merge the PR directly, <br>so it needs a merge path <br>on the base branch, not just <br>the auto-merge toggle. Must NOT match <br>the PR author.  |
-|    merge-method    | string |  false   |                   `"squash"`                   |                                                                                               Merge method (squash|merge|rebase)                                                                                               |
-|  trusted-authors   | string |  false   | `"renovate[bot],loft-bot,github-actions[bot]"` |                                                                                           Comma-separated list of trusted bot logins                                                                                           |
-| wait-max-attempts  | string |  false   |                     `"90"`                     |                                                                                     Max polling attempts waiting for other <br>CI checks                                                                                       |
-| wait-min-attempts  | string |  false   |                     `"12"`                     |                                       Minimum polls before ci_green=true is allowed. <br>Prevents early approval while slow external <br>checks (e.g. Netlify) have not yet registered.                                        |
-| wait-sleep-seconds | string |  false   |                     `"10"`                     |                                                                                                Seconds between polling attempts                                                                                                |
+|       INPUT        |  TYPE  | REQUIRED |                    DEFAULT                     |                                                                                              DESCRIPTION                                                                                              |
+|--------------------|--------|----------|------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|     auto-merge     | string |  false   |                   `"false"`                    |                                                         Merge the PR after approving it, <br>directly where possible. See README "Merging".                                                           |
+|   ci-read-token    | string |  false   |                                                | Token for the read-only CI poll <br>only; defaults to the caller GITHUB_TOKEN, <br>which needs `checks: read` and `statuses: read`. Never <br>the approving PAT. See README "Tokens <br>by purpose".  |
+|    github-token    | string |   true   |                                                |                                   PAT used to read PR state <br>and approve. Must NOT match the <br>PR author. Also used to merge <br>when merge-token is omitted.                                    |
+|    merge-method    | string |  false   |                   `"squash"`                   |                                                                                  Merge method (squash|merge|rebase)                                                                                   |
+|    merge-token     | string |  false   |                                                |             Optional token used only to merge <br>when auto-merge is true. Defaults to <br>github-token. It may match the PR <br>author, but needs a merge path <br>on the base branch.               |
+|  trusted-authors   | string |  false   | `"renovate[bot],loft-bot,github-actions[bot]"` |                                                                              Comma-separated list of trusted bot logins                                                                               |
+| wait-max-attempts  | string |  false   |                     `"90"`                     |                                                                         Max polling attempts waiting for other <br>CI checks                                                                          |
+| wait-min-attempts  | string |  false   |                     `"12"`                     |                          Minimum polls before ci_green=true is allowed. <br>Prevents early approval while slow external <br>checks (e.g. Netlify) have not yet registered.                            |
+| wait-sleep-seconds | string |  false   |                     `"10"`                     |                                                                                   Seconds between polling attempts                                                                                    |
 
 <!-- AUTO-DOC-INPUT:END -->
 
-## Two tokens, on purpose
+## Tokens by purpose
 
 Approving needs a PAT, because GitHub forbids self-approval and the approver
-identity must differ from the PR author. **Reading CI state does not.** The two
-are split:
+identity must differ from the PR author. Reading CI state does not. Merging may
+need another identity when branch protection restricts pushes. The steps are
+split:
 
 | Step | Token |
 |------|-------|
-| `check-pr-ready`, *Approve PR*, *Enable auto-merge* | `github-token` (PAT) |
+| `check-pr-ready`, *Approve PR* | `github-token` (PAT) |
 | *Wait for other CI to pass* | `ci-read-token`, defaulting to `GITHUB_TOKEN` |
+| *Merge PR* | `merge-token`, defaulting to `github-token` |
 
 Do not point `ci-read-token` at the approving PAT.
 **Fine-grained PATs cannot call the Checks API at all** — there is no `Checks`

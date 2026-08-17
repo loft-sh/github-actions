@@ -29,8 +29,11 @@ on:
         default: '10'
     secrets:
       gh-access-token:
-        description: 'GitHub PAT for approving PRs, and for merging them directly when auto-merge is true — so it needs a merge path on the base branch, not just the auto-merge toggle (must be different identity from PR author)'
+        description: 'GitHub PAT for approving PRs (must be different identity from PR author). Also used for merging when merge-token is omitted.'
         required: true
+      merge-token:
+        description: 'Optional token used only for merging when auto-merge is true. Defaults to gh-access-token and needs a merge path on the base branch.'
+        required: false
       ci-read-token:
         description: 'Optional escape hatch for the read-only CI poll when the caller cannot grant `checks: read` / `statuses: read`. Classic PAT with `repo` scope, or an App token. Never gh-access-token.'
         required: false
@@ -72,6 +75,7 @@ jobs:
           wait-min-attempts: ${{ inputs.wait-min-attempts }}
           wait-sleep-seconds: ${{ inputs.wait-sleep-seconds }}
           github-token: ${{ secrets.gh-access-token }} # zizmor: ignore[secrets-outside-env] -- PAT passed via workflow_call, not a repo secret
+          merge-token: ${{ secrets.merge-token }} # zizmor: ignore[secrets-outside-env] -- optional token passed via workflow_call
           # Empty when the caller does not set it, which falls back to
           # github.token inside the composite.
           ci-read-token: ${{ secrets.ci-read-token }} # zizmor: ignore[secrets-outside-env] -- optional token passed via workflow_call
