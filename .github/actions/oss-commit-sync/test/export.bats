@@ -836,7 +836,7 @@ WRAP
   [[ "$output" != *"is not an ancestor of OSS"* ]]
 }
 
-@test "guard: a forged Monorepo-Commit body line cannot pass an external off as ours" {
+@test "guard: a squash-orphaned forged Monorepo-Commit cannot pass an external off as ours" {
   # OSS is public and takes outside contributions, so a commit message there is
   # contributor-controlled. A column-zero "Monorepo-Commit: <valid mono sha>"
   # line in a body used to be read as ours: the commit became the export anchor,
@@ -872,10 +872,15 @@ Co-authored-by: Bob <bob@example.com>"
   [ "$(oss_file ext.go)" = "external" ]
 }
 
-@test "align-tree cannot be steered by a forged Monorepo-Commit body line" {
+@test "align-tree cannot be steered by a squash-orphaned forged Monorepo-Commit" {
   # The destructive half of the same forgery: with align-tree the false anchor
   # excluded the commit from the guard entirely, and the snapshot then deleted
   # content OSS held and the subtree did not.
+  #
+  # Covers the ORPHANED spelling only. The same trailer written into the final
+  # paragraph, where git's own parser reads it, is still accepted as ours and
+  # still deletes this file -- see the known-exposure note in the README. Do not
+  # read this test as covering the whole threat.
   M=$(git -C "$MONO" rev-parse HEAD)
   clone="$ROOT/forge2"
   git clone -q "$OSS_REMOTE" "$clone"
@@ -954,4 +959,33 @@ WRAP
   [ "$status" -ne 0 ]
   [[ "$output" == *"git failed checking whether"* ]]
   [ "$(output_value loose-absorption)" = "false" ]
+}
+
+@test "new release branch: an abbreviated export record still finds the branch point" {
+  # map_lookup compares exact strings and the walk queries it with a full sha from
+  # rev-list, so an abbreviated or hand-written Monorepo-Commit record never
+  # matched: the walk fell past the very branch point the map exists to find and
+  # anchored the release line further back, re-replaying commits OSS already has.
+  C=$(company_commit pkg/app.go "l1-v2" "feat: pre-branch change")
+  bash "$EXPORT"
+  exported=$(oss_tip)
+  # Rewrite that OSS commit's record as a 12-char abbreviation.
+  (
+    cd "$ROOT"
+    rm -rf abbrev
+    git clone -q "$OSS_REMOTE" abbrev
+    cd abbrev
+    git commit -q --amend -m "feat: pre-branch change
+
+Monorepo-Commit: ${C:0:12}"
+    git push -q --force origin main
+  )
+  abbreviated=$(git -C "$OSS_REMOTE" rev-parse main)
+  [ "$abbreviated" != "$exported" ]
+  (cd "$MONO" && git switch -qc v0.99)
+
+  BRANCH=v0.99 run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"creating it from ${abbreviated}"* ]]
+  [ "$(git -C "$OSS_REMOTE" rev-parse v0.99)" = "$abbreviated" ]
 }

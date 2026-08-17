@@ -188,6 +188,22 @@ fi
 #
 # So the trust follows the threat: unioned where our own records can be orphaned,
 # block-only where they cannot and the body is someone else's to write.
+#
+# READ THIS BEFORE TRUSTING THE ABOVE. This narrows the forgery, it does not end
+# it. The same line written as a REAL trailer -- last paragraph of the message,
+# where git's own parser reads it -- is still accepted, because at this layer
+# there is nothing to tell it apart from a record we wrote: both are a valid
+# monorepo sha under the right key in the right place. Verified on this branch:
+# with align-tree the forged anchor still deletes the contributor's file from the
+# mirror and the run reports diverged=false and exits 0.
+#
+# What is closed is the variant that survives a squash, which is the one a
+# contributor gets for free by writing the line anywhere in a PR description.
+# Closing the rest needs evidence this layer does not have -- who pushed the
+# commit -- so it belongs with the sync identity (export's committer is the bot;
+# a squash-merge on OSS is committed by GitHub, which a contributor cannot forge),
+# not with the parser. Until then the exposure is real and stated, not implied
+# away.
 trailer_reads_body() {
   # Case-folded, because trailer_scan matches keys case-insensitively "matching
   # git's own trailer semantics" and this decides a trust boundary: compared

@@ -271,8 +271,32 @@ else
   # squash, or a hand-made export -- hides all but the last under last-wins, so
   # the true branch point goes missing and the new release line is anchored behind
   # where OSS already is, re-replaying commits the mirror holds.
-  trailer_scan "$MONOREPO_TRAILER" 1 --first-parent "$DEFAULT_TIP" \
-    | awk '{print $2 "\t" $1}' > "$exported_map"
+  # Keys resolved, not raw: map_lookup compares exact strings while the walk below
+  # queries with a full sha from rev-list, so an abbreviated or hand-written
+  # record never matched and the walk fell past the very branch point this map
+  # exists to find -- anchoring the release line further back and re-replaying
+  # commits OSS already holds. Every other trailer read in this action resolves;
+  # this was the last one that did not. Both spellings are emitted so a record
+  # that resolves to nothing still matches literally, as before.
+  if ! map_rows="$(trailer_scan "$MONOREPO_TRAILER" 1 --first-parent "$DEFAULT_TIP")"; then
+    rm -f "$exported_map"
+    die "failed to read ${MONOREPO_TRAILER} records on OSS ${OSS_DEFAULT_BRANCH}; refusing to anchor a new OSS branch"
+  fi
+  map_out=""
+  while read -r oss_c val; do
+    [ -n "$val" ] || continue
+    map_out+="${val}"$'\t'"${oss_c}"$'\n'
+    [ "${#val}" -lt 40 ] || continue
+    map_rc=0
+    val_full="$(resolve_commit_prefix "$val")" || map_rc=$?
+    if [ "$map_rc" -eq 2 ]; then
+      rm -f "$exported_map"
+      die "git failed resolving the ${MONOREPO_TRAILER} value ${val} on ${oss_c}; refusing to anchor a new OSS branch"
+    elif [ "$map_rc" -eq 0 ]; then
+      map_out+="${val_full}"$'\t'"${oss_c}"$'\n'
+    fi
+  done <<< "$map_rows"
+  printf '%s' "$map_out" > "$exported_map"
 
   RESUME=""
   OSS_TIP=""
