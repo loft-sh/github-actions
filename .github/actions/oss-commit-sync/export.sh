@@ -275,34 +275,59 @@ else
       OSS_TIP="$oss_sha"
       break
     fi
-    imported_from="$(trailer_value "$m" "$OSS_TRAILER")"
-    [ -n "$imported_from" ] || continue
-    # Prefix-checked like every other trailer value this action reads, and here it
-    # decides the base commit of a branch that does not exist yet. Both the
-    # ancestry test below and `git worktree add --detach` PEEL an annotated tag, so
-    # an abbreviation that uniquely names a tag object would pass every check and
-    # create the release line from a commit sharing none of the value's digits.
-    imp_rc=0
-    imported_full="$(resolve_commit_prefix "$imported_from")" || imp_rc=$?
-    if [ "$imp_rc" -eq 2 ]; then
+    # Every recorded import on this commit, not the last line: a squash records
+    # several, and if they are not in ancestry order the last one is the nearer.
+    # The walk wants the FARTHEST reachable, same as resolve_import_anchor, so it
+    # compares them rather than trusting message order.
+    if ! imported_values="$(trailer_scan "$OSS_TRAILER" 1 -1 "$m" | awk '{print $2}')"; then
       rm -f "$exported_map"
-      die "git failed resolving the ${OSS_TRAILER} value ${imported_from} on ${m}; refusing to anchor a new OSS branch"
-    elif [ "$imp_rc" -ne 0 ]; then
-      continue
+      die "git failed reading the ${OSS_TRAILER} records on ${m}; refusing to anchor a new OSS branch"
     fi
-    imported_from="$imported_full"
-    # is_ancestor, not a bare merge-base: rc 128 collapsed into "not reachable"
-    # demotes the true branch point, and the walk settles on an older commit, so
-    # the new release line is created behind where OSS actually is and re-replays
-    # commits it already holds -- with nothing in the log saying git ever failed.
-    anc_rc=0
-    is_ancestor "$imported_from" "$DEFAULT_TIP" || anc_rc=$?
-    if [ "$anc_rc" -eq 2 ]; then
-      rm -f "$exported_map"
-      die "git failed testing whether ${imported_from} is on OSS ${OSS_DEFAULT_BRANCH}; refusing to anchor a new OSS branch"
-    elif [ "$anc_rc" -eq 0 ]; then
+    imported_best=""
+    while read -r imported_from; do
+      [ -n "$imported_from" ] || continue
+      # Prefix-checked like every other trailer value this action reads, and here
+      # it decides the base commit of a branch that does not exist yet. Both the
+      # ancestry test below and `git worktree add --detach` PEEL an annotated tag,
+      # so an abbreviation that uniquely names a tag object would otherwise pass
+      # every check and create the release line from a commit sharing none of the
+      # value's digits.
+      imp_rc=0
+      imported_full="$(resolve_commit_prefix "$imported_from")" || imp_rc=$?
+      if [ "$imp_rc" -eq 2 ]; then
+        rm -f "$exported_map"
+        die "git failed resolving the ${OSS_TRAILER} value ${imported_from} on ${m}; refusing to anchor a new OSS branch"
+      elif [ "$imp_rc" -ne 0 ]; then
+        continue
+      fi
+      # is_ancestor, not a bare merge-base: rc 128 collapsed into "not reachable"
+      # demotes the true branch point, and the walk settles on an older commit, so
+      # the new release line is created behind where OSS actually is and re-replays
+      # commits it already holds -- with nothing in the log saying git ever failed.
+      anc_rc=0
+      is_ancestor "$imported_full" "$DEFAULT_TIP" || anc_rc=$?
+      if [ "$anc_rc" -eq 2 ]; then
+        rm -f "$exported_map"
+        die "git failed testing whether ${imported_full} is on OSS ${OSS_DEFAULT_BRANCH}; refusing to anchor a new OSS branch"
+      elif [ "$anc_rc" -ne 0 ]; then
+        continue
+      fi
+      if [ -z "$imported_best" ]; then
+        imported_best="$imported_full"
+        continue
+      fi
+      anc_rc=0
+      is_ancestor "$imported_best" "$imported_full" || anc_rc=$?
+      if [ "$anc_rc" -eq 2 ]; then
+        rm -f "$exported_map"
+        die "git failed comparing ${OSS_TRAILER} records on ${m}; refusing to anchor a new OSS branch"
+      elif [ "$anc_rc" -eq 0 ]; then
+        imported_best="$imported_full"
+      fi
+    done <<< "$imported_values"
+    if [ -n "$imported_best" ]; then
       RESUME="$m"
-      OSS_TIP="$imported_from"
+      OSS_TIP="$imported_best"
       break
     fi
   done <<< "$branch_walk"

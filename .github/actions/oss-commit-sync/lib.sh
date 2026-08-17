@@ -607,10 +607,21 @@ resolve_import_anchor() {
   IMPORT_ANCHOR_SAW_TRAILER=false
   IMPORT_ANCHOR_SEED_BAD=false
 
+  # multi=1, not the last-wins lookup: the loop below already picks the record
+  # that reaches FARTHEST along OSS history, so it wants every candidate, and
+  # narrowing to one per commit first throws away the very values it exists to
+  # compare. A squash-merged import PR records every commit it replayed on one
+  # commit, and if those lines are not in ancestry order the farther one is the
+  # one discarded -- the anchor then lands behind a commit that is demonstrably
+  # absorbed, content healing cannot reach it because the subtree matches no
+  # single OSS commit, and the replay dies conflicting on work already imported.
+  # Same wrong contract, and same deadlock, that every_trailer_value fixed on the
+  # export side.
+  #
   # Captured first so a failing producer is observed: inside `done < <(...)` a
   # non-zero exit is invisible to `set -e`, and the loop would just run zero
   # times and report "no anchor" as if the branch had never synced.
-  entries="$(all_trailer_entries HEAD "$OSS_TRAILER")" || return 1
+  entries="$(trailer_scan "$OSS_TRAILER" 1 --first-parent HEAD)" || return 1
 
   while read -r _ candidate; do
     [ -n "$candidate" ] || continue

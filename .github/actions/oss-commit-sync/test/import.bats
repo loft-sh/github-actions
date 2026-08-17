@@ -295,7 +295,7 @@ Oss-Commit: $tag"
   [[ "$output" == *"nothing to import"* ]]
   # The shortcut is the only thing that skips the branch switch, so its absence
   # is observable: an unresolved tag sha leaves this branch behind.
-  ! git -C "$MONO" rev-parse --verify --quiet "$PR_BRANCH" >/dev/null
+  ! git -C "$MONO" rev-parse --verify --quiet automation/sync-from-oss-main >/dev/null
 }
 
 @test "replay: a failing rev-list refuses to import instead of reporting nothing pending" {
@@ -328,4 +328,38 @@ WRAP
   [ "$status" -ne 0 ]
   [[ "$output" == *"refusing to import"* ]]
   [ "$(output_value has-changes)" = "false" ]
+}
+
+@test "a squash recording its imports out of order still anchors at the farthest" {
+  # The anchor candidate set is a SET question: the loop picks the record that
+  # reaches farthest along OSS history, so narrowing to one value per commit
+  # first throws away the very values it exists to compare. A squash records
+  # every commit it replayed on one commit, and message order is not ancestry
+  # order, so last-wins can keep the NEARER one. The anchor then sits behind a
+  # commit that is demonstrably absorbed; content healing cannot reach it once
+  # the subtree matches no single OSS commit, and the replay dies conflicting on
+  # work already imported.
+  E1=$(external_commit pkg/app.go "first" "feat: alice first")
+  E2=$(external_commit pkg/app.go "second" "feat: alice second")
+  bash "$IMPORT" >/dev/null
+  # Collapse both imports onto one commit, recording the FARTHER one first so
+  # last-wins keeps E1.
+  (
+    cd "$MONO"
+    git switch -q main
+    git merge --squash -q automation/sync-from-oss-main
+    git commit -qm "chore: sync from oss (#1)
+
+Oss-Commit: $E2
+Oss-Commit: $E1"
+    git branch -q -D automation/sync-from-oss-main
+  )
+  # An unexported monorepo change to the same file, so the subtree matches no
+  # single OSS commit and content healing cannot rescue a stale anchor.
+  company_commit pkg/app.go "second-plus-local" "feat: local edit on top" >/dev/null
+
+  run bash "$IMPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value has-changes)" = "false" ]
+  [[ "$output" != *"conflict replaying"* ]]
 }
