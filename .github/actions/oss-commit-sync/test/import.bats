@@ -368,12 +368,18 @@ Oss-Commit: $E1"
   # replay_commit copies an OSS message into the monorepo VERBATIM, so a
   # column-zero "Oss-Commit: <sha>" line written by an outside contributor on the
   # public mirror lands in a monorepo commit body, where the anchor reads it as a
-  # candidate. It cannot outrank a genuine record: the anchor takes the value
-  # reaching FARTHEST, and a contributor can only name a commit that already
-  # exists when they write it, so a forged value is always an ancestor of their
-  # own commit -- which gets a real record the moment it is imported. This pins
-  # that reasoning, so a future change to how the anchor ranks candidates cannot
-  # quietly let contributor text move it.
+  # candidate. It can outrank the surviving records -- a squash that drops the
+  # generated ones leaves the body line as the newest thing left -- so the safety
+  # is not "a forged value never wins".
+  #
+  # It is that the value cannot name work nobody looked at. For the body line to
+  # be in our history at all, the import must have reached the commit carrying it,
+  # which means every first-parent commit before it in that range was already
+  # replayed, recognised as our own export, excluded, or proven benign. Advancing
+  # to a forged value therefore skips only commits the import already processed.
+  # That holds on linear history, which both repos enforce.
+  #
+  # This pins the ordinary case, where the genuine record survives and wins.
   E1=$(external_commit ext1.go "one" "feat: alice first")
   E2=$(external_commit ext2.go "two" "feat: alice second")
   # A third contributor commit whose BODY names E2, replayed verbatim on import.
@@ -447,5 +453,43 @@ WRAP
   [ "$status" -ne 0 ]
   [[ "$output" == *"refusing"* ]]
   [ "$(output_value replayed-count)" = "0" ]
+  [ "$(output_value has-changes)" = "false" ]
+}
+
+@test "a deletion already applied on both sides is benign, not a git failure" {
+  # The benign-deletion case, which had no test at all. external_is_benign asks
+  # "is this commit's post-image already in the subtree", and for a deletion the
+  # correct post-image is the path being ABSENT. The lookup that answers it must
+  # keep "absent" apart from "git failed": `cat-file -e` answers 128 for a path
+  # that is simply not there, so reading anything but 1 as a failure turns every
+  # already-applied deletion into a dead run in both directions.
+  E=$(external_commit pkg/gone.go "doomed" "feat: alice adds a file")
+  bash "$IMPORT" >/dev/null
+  git -C "$MONO" switch -q main
+  git -C "$MONO" merge -q --ff-only automation/sync-from-oss-main
+
+  # OSS deletes it; the monorepo deletes it independently, so the deletion is
+  # already applied here and there is nothing left to import.
+  clone="$ROOT/del"
+  git clone -q "$OSS_REMOTE" "$clone"
+  (
+    cd "$clone"
+    git checkout -q main
+    git rm -q pkg/gone.go
+    GIT_AUTHOR_NAME=alice GIT_AUTHOR_EMAIL=alice@contributor.example \
+      git commit -qm "feat: alice removes it"
+    git push -q origin main
+  )
+  (
+    cd "$MONO"
+    git rm -q "$PFX/pkg/gone.go"
+    git commit -qm "chore: drop it here too"
+  )
+  # A later local change, so whole-tree content healing cannot cover this.
+  company_commit pkg/other.go "local" "feat: unrelated local work" >/dev/null
+
+  run bash "$IMPORT"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"git failed checking whether"* ]]
   [ "$(output_value has-changes)" = "false" ]
 }

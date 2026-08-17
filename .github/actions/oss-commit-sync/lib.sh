@@ -75,11 +75,16 @@ TRAILER_SHA_MAX_LEN=64
 # Hex length of this repository's object names. Asked rather than assumed, so a
 # value that is already full length costs no lookup on either hash.
 object_hex_len() {
-  if [ "$(git rev-parse --show-object-format 2>/dev/null)" = "sha256" ]; then
-    echo 64
-  else
-    echo 40
-  fi
+  local fmt
+  fmt="$(git rev-parse --show-object-format 2>/dev/null)" || return 1
+  # Unknown output is not silently SHA-1. Guessing 40 in a SHA-256 repository
+  # makes resolve_sha_set treat a 48-char abbreviation as already full, so it
+  # never expands and the guard reports an absorbed commit as divergent.
+  case "$fmt" in
+    sha1) echo 40 ;;
+    sha256) echo 64 ;;
+    *) return 1 ;;
+  esac
 }
 
 # The frame delimiter trailer_scan builds its git-log format from. 32 hex, read
@@ -350,7 +355,10 @@ resolve_sha_set() {
   local v full rc hexlen
   # Asked once per call, not per value: the loop below runs over every absorbed
   # record, and this is the only thing that knows when a value is already full.
-  hexlen="$(object_hex_len)"
+  hexlen="$(object_hex_len)" || {
+    echo "::error::could not determine this repository's object format; refusing to judge divergence on an incomplete absorbed set" >&2
+    return 1
+  }
   # `|| [ -n "$v" ]` so a final line with no trailing newline is not dropped:
   # losing a sha here is the same deadlock class this function exists to close.
   while IFS= read -r v || [ -n "$v" ]; do
@@ -549,10 +557,16 @@ external_is_benign() {
   while IFS=$'\t' read -r status path; do
     [ -n "$path" ] || continue
     if [ "$status" = "D" ]; then
-      # Deletion is benign only if the path is gone from staging too. cat-file
-      # answers 1 for absent; anything else is git failing.
+      # Deletion is benign only if the path is gone from staging too.
+      #
+      # rev-parse, NOT `cat-file -e`: cat-file answers 128 for a path that is
+      # simply absent, which is the ordinary benign-deletion case and the whole
+      # question being asked. Reading that as a git failure deadlocks both
+      # directions on a deletion that was already applied. rev-parse --verify
+      # keeps 1 for absent and 128 for git actually failing, like the two lookups
+      # below it.
       rc=0
-      git cat-file -e "HEAD:${SUBTREE_PREFIX}/${path}" 2>/dev/null || rc=$?
+      git rev-parse --quiet --verify "HEAD:${SUBTREE_PREFIX}/${path}" >/dev/null 2>&1 || rc=$?
       if [ "$rc" -eq 0 ]; then
         return 1
       elif [ "$rc" -ne 1 ]; then

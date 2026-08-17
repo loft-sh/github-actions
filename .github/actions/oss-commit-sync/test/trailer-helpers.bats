@@ -827,3 +827,21 @@ Co-authored-by: Alice <alice@example.com>"
   [ "$status" -eq 0 ]
   [ -z "$output" ]
 }
+
+@test "an unreadable object format refuses rather than assuming SHA-1" {
+  # Guessing 40 in a SHA-256 repository makes resolve_sha_set treat a 48-char
+  # abbreviation as already full, so it never expands and the export guard reports
+  # an absorbed commit as divergent.
+  git commit -q --allow-empty -m "a commit"
+  full=$(git rev-parse HEAD)
+  real_git="$(command -v git)"
+  mkdir -p "$ROOT/bin"
+  cat > "$ROOT/bin/git" <<WRAP
+#!/usr/bin/env bash
+if [ "\$1" = "rev-parse" ] && [ "\$2" = "--show-object-format" ]; then exit 128; fi
+exec "$real_git" "\$@"
+WRAP
+  chmod +x "$ROOT/bin/git"
+  PATH="$ROOT/bin:$PATH" run resolve_sha_set <<< "${full:0:12}"
+  [ "$status" -ne 0 ]
+}
