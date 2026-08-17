@@ -230,6 +230,36 @@ WRAP
   [ "$status" -ne 0 ]
 }
 
+@test "new release branch: a failing ancestry test refuses to anchor" {
+  # The other half of the fresh-branch walk. When the branch point is identified
+  # by an Oss-Commit trailer rather than an exported one, a bare merge-base
+  # collapsed rc 128 into "not reachable": the walk shrugs, carries on to an older
+  # commit, and the new release line is created BEHIND where OSS actually is --
+  # re-replaying commits the mirror already holds, with nothing saying git failed.
+  E=$(external_commit ext.go "external" "feat: external contribution")
+  absorb_external
+  default_tip=$(git -C "$OSS_REMOTE" rev-parse main)
+  (cd "$MONO" && git switch -qc v0.99)
+
+  real_git="$(command -v git)"
+  mkdir -p "$ROOT/bin"
+  # Matched on the operand pair, so only this one ancestry question breaks.
+  cat > "$ROOT/bin/git" <<WRAP
+#!/usr/bin/env bash
+if [ "\$1" = "merge-base" ] && [ "\$3" = "$E" ] && [ "\$4" = "$default_tip" ]; then
+  exit 128
+fi
+exec "$real_git" "\$@"
+WRAP
+  chmod +x "$ROOT/bin/git"
+
+  BRANCH=v0.99 PATH="$ROOT/bin:$PATH" run bash "$EXPORT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"git failed testing whether"* ]]
+  run git -C "$OSS_REMOTE" rev-parse --verify --quiet v0.99
+  [ "$status" -ne 0 ]
+}
+
 @test "existing release branch: append is fast-forward" {
   bash "$EXPORT"
   (cd "$MONO" && git switch -qc v0.99)

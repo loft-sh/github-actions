@@ -698,7 +698,18 @@ WRAP
   [ "$IMPORT_ANCHOR_SEED_BAD" = "true" ]
 
   # And the corroboration still calls a genuinely broken repo broken, rather than
-  # blaming every seed once git stops answering.
-  GIT_OBJECT_DIRECTORY=/nonexistent SEED_OSS_COMMIT='@{9999}' run resolve_import_anchor "$E"
+  # blaming every seed once git stops answering. Shimmed rather than reached with
+  # GIT_OBJECT_DIRECTORY=/nonexistent: that breaks the trailer walk too, so under
+  # the scripts' `set -o pipefail` the function would return before the seed is
+  # ever peeled and the assertion would pass without exercising this branch.
+  real_git="$(command -v git)"
+  mkdir -p "$ROOT/bin"
+  cat > "$ROOT/bin/git" <<WRAP
+#!/usr/bin/env bash
+if [ "\$1" = "rev-parse" ]; then exit 128; fi
+exec "$real_git" "\$@"
+WRAP
+  chmod +x "$ROOT/bin/git"
+  SEED_OSS_COMMIT='@{9999}' PATH="$ROOT/bin:$PATH" run resolve_import_anchor "$E"
   [ "$status" -eq 1 ]
 }
