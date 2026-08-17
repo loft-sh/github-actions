@@ -65,6 +65,23 @@ die() {
 # run is too generic to be confidently a sha.
 TRAILER_SHA_MIN_LEN=7
 
+# Longest hex run still treated as a commit name: SHA-256 object names, so both
+# hashes are read. A repository only ever uses one of them, so this is an upper
+# bound rather than a promise that any 64-hex value resolves; resolve_sha_set
+# asks git which length is full HERE before deciding what needs expanding.
+TRAILER_SHA_MAX_LEN=64
+
+# object_hex_len
+# Hex length of this repository's object names. Asked rather than assumed, so a
+# value that is already full length costs no lookup on either hash.
+object_hex_len() {
+  if [ "$(git rev-parse --show-object-format 2>/dev/null)" = "sha256" ]; then
+    echo 64
+  else
+    echo 40
+  fi
+}
+
 # The frame delimiter trailer_scan builds its git-log format from. 32 hex, read
 # from the kernel pool two different ways before falling back to $RANDOM (see
 # the tiers below) for a runner that offers neither.
@@ -167,7 +184,11 @@ fi
 # So the trust follows the threat: unioned where our own records can be orphaned,
 # block-only where they cannot and the body is someone else's to write.
 trailer_reads_body() {
-  [ "$1" != "$MONOREPO_TRAILER" ]
+  # Case-folded, because trailer_scan matches keys case-insensitively "matching
+  # git's own trailer semantics" and this decides a trust boundary: compared
+  # exactly, a caller spelling the key "monorepo-commit" would silently re-enable
+  # the body scan for the one key that must not have it.
+  [ "${1,,}" != "${MONOREPO_TRAILER,,}" ]
 }
 
 trailer_scan() {
@@ -177,9 +198,9 @@ trailer_scan() {
   trailer_reads_body "$key" && bodyscan=1
   git log --format="${mark}H%H%n%(trailers:key=${key},valueonly,unfold)${mark}B%n%B" "$@" \
     | awk -v key="$key" -v minlen="$TRAILER_SHA_MIN_LEN" -v multi="$multi" -v mark="$mark" \
-          -v bodyscan="$bodyscan" '
+          -v bodyscan="$bodyscan" -v maxlen="$TRAILER_SHA_MAX_LEN" '
     function shaped(candidate) {
-      return (candidate ~ /^[0-9a-f]+$/ && length(candidate) >= minlen && length(candidate) <= 40)
+      return (candidate ~ /^[0-9a-f]+$/ && length(candidate) >= minlen && length(candidate) <= maxlen)
     }
     function take(candidate) {
       if (!shaped(candidate)) return
@@ -326,13 +347,16 @@ every_trailer_value() {
 # Unresolvable values are printed verbatim too, keeping a trailer that names a
 # commit this repo does not hold matching literally as before.
 resolve_sha_set() {
-  local v full rc
+  local v full rc hexlen
+  # Asked once per call, not per value: the loop below runs over every absorbed
+  # record, and this is the only thing that knows when a value is already full.
+  hexlen="$(object_hex_len)"
   # `|| [ -n "$v" ]` so a final line with no trailing newline is not dropped:
   # losing a sha here is the same deadlock class this function exists to close.
   while IFS= read -r v || [ -n "$v" ]; do
     [ -n "$v" ] || continue
     printf '%s\n' "$v"
-    [ "${#v}" -lt 40 ] || continue
+    [ "${#v}" -lt "$hexlen" ] || continue
     rc=0
     full="$(resolve_commit_prefix "$v")" || rc=$?
     if [ "$rc" -eq 0 ]; then
@@ -376,9 +400,9 @@ lines_contain() {
 # Length bounds and the hex test rather than a regex interval, matching
 # trailer_scan: awk interval support is not portable across implementations.
 filter_sha_values() {
-  awk -v minlen="$TRAILER_SHA_MIN_LEN" '
+  awk -v minlen="$TRAILER_SHA_MIN_LEN" -v maxlen="$TRAILER_SHA_MAX_LEN" '
     { v = tolower($0) }
-    v ~ /^[0-9a-f]+$/ && length(v) >= minlen && length(v) <= 40 { print v }'
+    v ~ /^[0-9a-f]+$/ && length(v) >= minlen && length(v) <= maxlen { print v }'
 }
 
 # resolve_commit_prefix <value>
@@ -459,7 +483,22 @@ trailer_value() {
   trailer_entries "$2" -1 "$1" | awk 'NR == 1 { print $2 }'
 }
 
-has_trailer() { [ -n "$(trailer_value "$1" "$2")" ]; }
+# has_trailer <sha> <key>
+# 0 when the commit carries the trailer, 1 when it does not, 2 when git failed.
+#
+# Tripled like resolve_commit_prefix and is_ancestor, and for the same reason: as
+# a bare `[ -n "$(trailer_value ...)" ]` a failing git log was indistinguishable
+# from "no trailer". That answer is wrong in the unsafe direction in both
+# directions of the sync -- the import stops recognising one of our own exports
+# and replays it back into the subtree, and classify_healed_range counts a
+# perfectly good export as an import whose provenance was lost, so a healthy sync
+# reports trailer damage.
+has_trailer() {
+  local v rc=0
+  v="$(trailer_value "$1" "$2")" || rc=$?
+  [ "$rc" -eq 0 ] || return 2
+  [ -n "$v" ]
+}
 
 # --- shared subtree / anchor helpers ------------------------------------------
 
@@ -492,24 +531,43 @@ build_excludes() {
 #
 # Reads SUBTREE_PREFIX and the `excludes` array; compares against HEAD.
 external_is_benign() {
-  local s="$1" status path blob_oss blob_staging changes
+  local s="$1" status path blob_oss blob_staging changes rc
   # Captured rather than piped from a process substitution: this function
   # answers "already present, safe to skip", so a producer failure invisible to
   # `set -e` would run the loop zero times and return "benign", silently
   # skipping a commit that actually needed importing. Fail closed instead.
+  #
+  # rc 2 for a git failure, like every other lookup here. Collapsing it into "not
+  # benign" is safe for the import (a redundant replay) but not for the export:
+  # that answer decides whether a commit joins loose_absorbed, so a transient git
+  # failure sets loose-absorption=true and, with align-tree, hard-fails the run
+  # telling the operator these commits are absorbed only by a line outside git's
+  # trailer block and to decide each one by hand -- a diagnosis that may be
+  # entirely wrong.
   changes="$(git diff-tree --no-commit-id --name-status -r "$s" -- . ${excludes[@]+"${excludes[@]}"})" \
-    || return 1
+    || return 2
   while IFS=$'\t' read -r status path; do
     [ -n "$path" ] || continue
     if [ "$status" = "D" ]; then
-      # Deletion is benign only if the path is gone from staging too.
-      if git cat-file -e "HEAD:${SUBTREE_PREFIX}/${path}" 2>/dev/null; then
+      # Deletion is benign only if the path is gone from staging too. cat-file
+      # answers 1 for absent; anything else is git failing.
+      rc=0
+      git cat-file -e "HEAD:${SUBTREE_PREFIX}/${path}" 2>/dev/null || rc=$?
+      if [ "$rc" -eq 0 ]; then
         return 1
+      elif [ "$rc" -ne 1 ]; then
+        return 2
       fi
       continue
     fi
-    blob_oss="$(git rev-parse --quiet --verify "${s}:${path}" 2>/dev/null)" || return 1
-    blob_staging="$(git rev-parse --quiet --verify "HEAD:${SUBTREE_PREFIX}/${path}" 2>/dev/null)" || return 1
+    rc=0
+    blob_oss="$(git rev-parse --quiet --verify "${s}:${path}" 2>/dev/null)" || rc=$?
+    [ "$rc" -le 1 ] || return 2
+    [ "$rc" -eq 0 ] || return 1
+    rc=0
+    blob_staging="$(git rev-parse --quiet --verify "HEAD:${SUBTREE_PREFIX}/${path}" 2>/dev/null)" || rc=$?
+    [ "$rc" -le 1 ] || return 2
+    [ "$rc" -eq 0 ] || return 1
     [ "$blob_oss" = "$blob_staging" ] || return 1
   done <<< "$changes"
   return 0
@@ -577,7 +635,7 @@ content_anchor() {
 # two sum to the first). Returns non-zero on a git failure so callers can fail
 # closed rather than under-report.
 classify_healed_range() {
-  local from="$1" to="$2" range c
+  local from="$1" to="$2" range c ht_rc
   HEALED_TOTAL=0
   HEALED_EXPORTS=0
   HEALED_UNRECORDED=0
@@ -588,7 +646,11 @@ classify_healed_range() {
   while read -r c; do
     [ -n "$c" ] || continue
     HEALED_TOTAL=$((HEALED_TOTAL + 1))
-    if has_trailer "$c" "$MONOREPO_TRAILER"; then
+    ht_rc=0
+    has_trailer "$c" "$MONOREPO_TRAILER" || ht_rc=$?
+    if [ "$ht_rc" -eq 2 ]; then
+      return 1
+    elif [ "$ht_rc" -eq 0 ]; then
       HEALED_EXPORTS=$((HEALED_EXPORTS + 1))
     else
       HEALED_UNRECORDED=$((HEALED_UNRECORDED + 1))

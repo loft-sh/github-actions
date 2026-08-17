@@ -363,3 +363,89 @@ Oss-Commit: $E1"
   [ "$(output_value has-changes)" = "false" ]
   [[ "$output" != *"conflict replaying"* ]]
 }
+
+@test "a contributor's Oss-Commit body line cannot jump the import anchor forward" {
+  # replay_commit copies an OSS message into the monorepo VERBATIM, so a
+  # column-zero "Oss-Commit: <sha>" line written by an outside contributor on the
+  # public mirror lands in a monorepo commit body, where the anchor reads it as a
+  # candidate. It cannot outrank a genuine record: the anchor takes the value
+  # reaching FARTHEST, and a contributor can only name a commit that already
+  # exists when they write it, so a forged value is always an ancestor of their
+  # own commit -- which gets a real record the moment it is imported. This pins
+  # that reasoning, so a future change to how the anchor ranks candidates cannot
+  # quietly let contributor text move it.
+  E1=$(external_commit ext1.go "one" "feat: alice first")
+  E2=$(external_commit ext2.go "two" "feat: alice second")
+  # A third contributor commit whose BODY names E2, replayed verbatim on import.
+  clone="$ROOT/forge-import"
+  git clone -q "$OSS_REMOTE" "$clone"
+  (
+    cd "$clone"
+    git checkout -q main
+    echo "three" > ext3.go
+    git add .
+    GIT_AUTHOR_NAME=alice GIT_AUTHOR_EMAIL=alice@contributor.example \
+      git commit -qm "feat: alice third
+
+Oss-Commit: $E2"
+    git push -q origin main
+  )
+  E3=$(git -C "$OSS_REMOTE" rev-parse main)
+
+  # First import brings all three in, forged line and all.
+  run bash "$IMPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value replayed-count)" = "3" ]
+  git -C "$MONO" switch -q main
+  git -C "$MONO" merge -q --ff-only automation/sync-from-oss-main
+
+  # The forged line is now in our own history, verbatim.
+  [ -n "$(git -C "$MONO" log --format=%B -20 | grep -c "^Oss-Commit: $E2")" ]
+
+  # A fourth external commit lands. It must still be imported: the anchor may
+  # only be moved by records WE wrote, which is E3, not the body line naming E2.
+  E4=$(external_commit ext4.go "four" "feat: alice fourth")
+  run bash "$IMPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value replayed-count)" = "1" ]
+  git -C "$MONO" switch -q automation/sync-from-oss-main
+  [ "$(git -C "$MONO" log -1 --format='%(trailers:key=Oss-Commit,valueonly)')" = "$E4" ]
+}
+
+@test "a failing trailer read stops the import instead of guessing" {
+  # has_trailer answered "no trailer" when git broke, and on this side that is
+  # wrong in the unsafe direction twice over: one of our own exports stops being
+  # recognised as ours and is replayed back into the subtree, and the healed-range
+  # classification counts it as an import whose provenance was lost, so a healthy
+  # sync reports trailer damage. Whichever reader gets there first, the run has to
+  # stop rather than answer from a failed lookup.
+  company_commit pkg/app.go "l1-company" "feat: company change" >/dev/null
+  bash "$EXPORT" >/dev/null
+
+  real_git="$(command -v git)"
+  mkdir -p "$ROOT/bin"
+  # Break only the single-commit trailer read has_trailer performs: a git log
+  # with -1 AND the trailers format. replay_commit also runs `git log -1`, for
+  # the message, so matching on -1 alone fails the run somewhere else entirely
+  # and the test passes for the wrong reason.
+  cat > "$ROOT/bin/git" <<WRAP
+#!/usr/bin/env bash
+log=false; one=false; tr=false
+for a in "\$@"; do
+  case "\$a" in
+    log) log=true ;;
+    -1) one=true ;;
+    *trailers:key=*) tr=true ;;
+  esac
+done
+if [ "\$log" = true ] && [ "\$one" = true ] && [ "\$tr" = true ]; then exit 128; fi
+exec "$real_git" "\$@"
+WRAP
+  chmod +x "$ROOT/bin/git"
+
+  PATH="$ROOT/bin:$PATH" run bash "$IMPORT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"refusing"* ]]
+  [ "$(output_value replayed-count)" = "0" ]
+  [ "$(output_value has-changes)" = "false" ]
+}

@@ -150,7 +150,15 @@ if [ -n "$ANCHOR" ]; then
   if pending_shas="$(git rev-list --reverse --first-parent "${ANCHOR}..${OSS_TIP}")"; then
     while read -r E; do
       [ -n "$E" ] || continue
-      has_trailer "$E" "$MONOREPO_TRAILER" && continue
+      # Degrades rather than dying: this direction must never red the caller.
+      ht_rc=0
+      has_trailer "$E" "$MONOREPO_TRAILER" || ht_rc=$?
+      if [ "$ht_rc" -eq 2 ]; then
+        degraded=true
+        echo "::warning::Could not read the ${MONOREPO_TRAILER} trailer of ${E}; pending-count may be overstated."
+      elif [ "$ht_rc" -eq 0 ]; then
+        continue
+      fi
       # Captured for the same reason as the outer rev-list: an unguarded failure
       # here yields empty output, which reads as "touches only excluded paths"
       # and drops the commit from the backlog with no degraded signal.
@@ -160,7 +168,14 @@ if [ -n "$ANCHOR" ]; then
         continue
       fi
       [ -z "$diff_files" ] && continue
-      external_is_benign "$E" && continue
+      eb_rc=0
+      external_is_benign "$E" || eb_rc=$?
+      if [ "$eb_rc" -eq 2 ]; then
+        degraded=true
+        echo "::warning::Could not check whether ${E} is already present in ${SUBTREE_PREFIX}; pending-count may be overstated."
+      elif [ "$eb_rc" -eq 0 ]; then
+        continue
+      fi
       pending=$((pending + 1))
       [ -z "$first_pending" ] && first_pending="$E"
     done <<< "$pending_shas"

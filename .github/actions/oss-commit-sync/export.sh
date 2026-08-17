@@ -203,14 +203,28 @@ if [ "$branch_absent" = "false" ]; then
     die "failed to list OSS commits in ${OSS_ANCHOR}..${OSS_TIP}; refusing to judge divergence"
   fi
   for s in $externals; do
-    has_trailer "$s" "$MONOREPO_TRAILER" && continue
+    ht_rc=0
+    has_trailer "$s" "$MONOREPO_TRAILER" || ht_rc=$?
+    if [ "$ht_rc" -eq 2 ]; then
+      rm -f "$absorbed_file" "$block_absorbed_file"
+      die "git failed reading the ${MONOREPO_TRAILER} trailer of ${s}; refusing to judge divergence"
+    elif [ "$ht_rc" -eq 0 ]; then
+      continue
+    fi
     if grep -qxF "$s" "$absorbed_file"; then
       grep -qxF "$s" "$block_absorbed_file" && continue
       # Absorbed on evidence git's parser cannot see. Harmless unless alignment
       # could delete the commit's content, so ask the content question first:
       # benign means the content is already in the subtree, or lives only in
       # excluded paths, and there is nothing for alignment to remove.
-      external_is_benign "$s" && continue
+      eb_rc=0
+      external_is_benign "$s" || eb_rc=$?
+      if [ "$eb_rc" -eq 2 ]; then
+        rm -f "$absorbed_file" "$block_absorbed_file"
+        die "git failed checking whether ${s} is already present in ${SUBTREE_PREFIX}; refusing to classify its absorption evidence"
+      elif [ "$eb_rc" -eq 0 ]; then
+        continue
+      fi
       # Only recorded here. The refusal lives at the alignment commit itself: this
       # evidence is weak enough to decline a destructive overwrite and nowhere near
       # weak enough to decline an ordinary export, so deciding it here would fail
@@ -218,7 +232,12 @@ if [ "$branch_absent" = "false" ]; then
       loose_absorbed+=("$s")
       continue
     fi
-    if external_is_benign "$s"; then
+    eb_rc=0
+    external_is_benign "$s" || eb_rc=$?
+    if [ "$eb_rc" -eq 2 ]; then
+      rm -f "$absorbed_file" "$block_absorbed_file"
+      die "git failed checking whether ${s} is already present in ${SUBTREE_PREFIX}; refusing to judge divergence"
+    elif [ "$eb_rc" -eq 0 ]; then
       echo "External ${s} is benign (excluded paths only, or content already in ${SUBTREE_PREFIX})"
       continue
     fi
@@ -356,7 +375,11 @@ fi
 while read -r M; do
   [ -n "$M" ] || continue
   ensure_not_merge "$M"
-  if has_trailer "$M" "$OSS_TRAILER"; then
+  ht_rc=0
+  has_trailer "$M" "$OSS_TRAILER" || ht_rc=$?
+  if [ "$ht_rc" -eq 2 ]; then
+    die "git failed reading the ${OSS_TRAILER} trailer of ${M}; refusing to decide whether it originated on OSS"
+  elif [ "$ht_rc" -eq 0 ]; then
     echo "Skipping ${M} (originated on OSS)"
     continue
   fi
