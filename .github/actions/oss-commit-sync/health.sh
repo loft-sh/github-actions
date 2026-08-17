@@ -91,8 +91,14 @@ emit converged "$converged"
 # the two directions cannot disagree about where the sync stands. That matters
 # most in the damaged-state cases this report exists to diagnose.
 degraded=false
+# Tracked separately from `degraded`, which accumulates every failure in the
+# report: the missing-anchor warning below is a statement about the anchor alone,
+# and gating it on the report-wide flag lets an unrelated later failure (a broken
+# squash scan) suppress a diagnosis that was established correctly.
+anchor_degraded=false
 if ! resolve_import_anchor "$OSS_TIP"; then
   degraded=true
+  anchor_degraded=true
   echo "::warning::Could not resolve the import anchor (git error); the anchor figures below are incomplete."
 fi
 ANCHOR="$IMPORT_ANCHOR"
@@ -284,11 +290,13 @@ emit degraded "$degraded"
   echo "| Squash-orphaned trailers | ${squashed} |"
 } >> "$GITHUB_STEP_SUMMARY"
 
-# Gated on degraded: resolve_import_anchor resets its globals at entry and returns
-# early on any git failure, so an empty anchor is also what a transient breakage
-# looks like. Ungated, this tells the operator to re-seed a perfectly healthy sync
-# because git blinked once during the candidate walk.
-if [ -z "$ANCHOR" ] && [ "$degraded" = "false" ]; then
+# Gated on anchor_degraded: resolve_import_anchor resets its globals at entry and
+# returns early on any git failure, so an empty anchor is also what a transient
+# breakage looks like. Ungated, this tells the operator to re-seed a perfectly
+# healthy sync because git blinked once during the candidate walk. Gated on the
+# report-wide `degraded` instead, an unrelated later failure would suppress this
+# warning when it is the one thing the operator actually needs.
+if [ -z "$ANCHOR" ] && [ "$anchor_degraded" = "false" ]; then
   echo "::warning::No readable ${OSS_TRAILER} trailer on this repo's ${BRANCH} points at a commit reachable from OSS ${BRANCH}, and no subtree content matches an OSS commit. This is the one state the import cannot heal by itself; it needs seed-oss-commit."
 fi
 

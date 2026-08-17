@@ -266,10 +266,12 @@ WRAP
   # Unchecked, an Oss-Commit abbreviation that uniquely names a tag object passes
   # every check and creates the release line from a commit sharing none of its
   # digits.
+  #
+  # No absorb_external here on purpose: a legitimate Oss-Commit record for the
+  # same commit would let a peeling implementation reach the right answer by the
+  # wrong road, and the test would pass either way. The tag record has to be the
+  # only thing pointing at E.
   E=$(external_commit ext.go "external" "feat: external contribution")
-  absorb_external
-  # A tag object whose sha does NOT begin with the commit's digits, recorded on
-  # the monorepo side as if it were the import record.
   git -C "$ROOT/oss.git" tag -a v0.5.0 -m "release" "$E"
   tag=$(git -C "$ROOT/oss.git" rev-parse v0.5.0)
   [ "$tag" != "$E" ]
@@ -280,13 +282,12 @@ Oss-Commit: ${tag:0:12}"
   (cd "$MONO" && git switch -qc v0.99)
 
   BRANCH=v0.99 run bash "$EXPORT"
-  # Either it refuses to anchor, or it anchors somewhere legitimate -- but never
-  # at the commit the tag peels to on the strength of digits that name the tag.
-  if [ "$status" -eq 0 ]; then
-    base=$(git -C "$OSS_REMOTE" rev-parse v0.99)
-    [ "$base" != "$E" ] || [[ "$output" != *"${tag:0:12}"* ]]
-  fi
-  [[ "$output" != *"creating it from ${tag:0:12}"* ]]
+  [ "$status" -eq 0 ]
+  # Anchored at the fixture's genuine record further back, NOT at the commit the
+  # tag peels to on the strength of digits that name the tag object.
+  [[ "$output" == *"creating it from ${O0}"* ]]
+  [[ "$output" != *"creating it from ${E}"* ]]
+  [ "$(git -C "$OSS_REMOTE" rev-parse v0.99)" = "$O0" ]
 }
 
 @test "new release branch: an out-of-order squashed export record still anchors at the tip" {

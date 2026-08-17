@@ -411,3 +411,45 @@ WRAP
   [ "$(output_value degraded)" = "true" ]
   [[ "$output" != *"it needs seed-oss-commit"* ]]
 }
+
+@test "an unrelated failure does not suppress the missing-anchor diagnosis" {
+  # The converse of the gate above. `degraded` accumulates every failure in the
+  # report, so gating on it lets a broken squash scan swallow a missing-anchor
+  # finding that was established correctly -- and that finding is the one state
+  # the import cannot heal by itself.
+  #
+  # The anchor is genuinely absent here: reset past the fixture's seeded
+  # Oss-Commit record, so nothing on this branch points at OSS at all. That is
+  # the one state the import cannot heal by itself, and the state this warning
+  # exists for.
+  external_commit ext.go "external" "feat: external contribution" >/dev/null
+  git -C "$MONO" reset -q --hard "$M0"
+
+  real_git="$(command -v git)"
+  mkdir -p "$ROOT/bin"
+  # Break only the per-commit trailer-block read the squash scan does, which runs
+  # long after the anchor was resolved.
+  # The anchor walk and the squash scan issue an IDENTICAL git log (multi is an
+  # awk variable, not a git argument), so they can only be told apart by order:
+  # the anchor resolves first. Fail the second one and nothing else.
+  cat > "$ROOT/bin/git" <<WRAP
+#!/usr/bin/env bash
+for a in "\$@"; do
+  case "\$a" in
+    *trailers:key=Oss-Commit*)
+      n=\$(cat "$ROOT/n" 2>/dev/null || echo 0)
+      n=\$((n + 1))
+      echo "\$n" > "$ROOT/n"
+      if [ "\$n" -ge 2 ]; then exit 128; fi
+      ;;
+  esac
+done
+exec "$real_git" "\$@"
+WRAP
+  chmod +x "$ROOT/bin/git"
+
+  PATH="$ROOT/bin:$PATH" run bash "$HEALTH"
+  [ "$status" -eq 0 ]
+  [ "$(output_value anchor)" = "" ]
+  [[ "$output" == *"it needs seed-oss-commit"* ]]
+}
