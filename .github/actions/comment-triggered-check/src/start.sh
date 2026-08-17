@@ -42,6 +42,7 @@ filter=""
 should_run=false
 reason=""
 head_sha=""
+head_ref=""
 base_ref=""
 concurrency_key=""
 name=""
@@ -55,6 +56,7 @@ finish_and_exit() {
   emit "should-run" "$should_run"
   emit "reason" "$reason"
   emit "head-sha" "$head_sha"
+  emit "head-ref" "$head_ref"
   emit "base-ref" "$base_ref"
   emit "concurrency-key" "$concurrency_key"
   emit "check-name" "$name"
@@ -118,13 +120,17 @@ if ! pr_json="$(gh_json "repos/${repo}/pulls/${pr_number}")"; then
 fi
 
 head_sha="$(printf '%s' "$pr_json" | jq -r '.head.sha // ""')"
+# The branch name, not just the commit. A caller that hands the work to a
+# non-privileged run needs it: `gh workflow run --ref` takes a branch or tag,
+# never a SHA.
+head_ref="$(printf '%s' "$pr_json" | jq -r '.head.ref // ""')"
 base_ref="$(printf '%s' "$pr_json" | jq -r '.base.ref // ""')"
 head_repo="$(printf '%s' "$pr_json" | jq -r '.head.repo.full_name // ""')"
 pr_state="$(printf '%s' "$pr_json" | jq -r '.state // ""')"
 
-if [[ -z "$head_sha" || -z "$base_ref" ]]; then
+if [[ -z "$head_sha" || -z "$head_ref" || -z "$base_ref" ]]; then
   reason="pull-request-unreadable"
-  echo "::warning::${repo}#${pr_number} returned no head SHA or base ref; not starting a run"
+  echo "::warning::${repo}#${pr_number} returned no head SHA, head ref or base ref; not starting a run"
   finish_and_exit
 fi
 

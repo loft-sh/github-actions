@@ -97,6 +97,9 @@ outputs:
   head-sha:
     description: 'Resolved head commit of the pull request. The event does not carry it.'
     value: ${{ steps.start.outputs.head-sha }}
+  head-ref:
+    description: 'Resolved head BRANCH of the pull request. Needed by a caller that dispatches the work to a non-privileged run, because `gh workflow run --ref` takes a branch or tag and never a SHA.'
+    value: ${{ steps.start.outputs.head-ref }}
   base-ref:
     description: 'Resolved base branch of the pull request. The event does not carry it either.'
     value: ${{ steps.start.outputs.base-ref }}

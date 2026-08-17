@@ -32,7 +32,7 @@ all="$*"
 # Defaults are assigned, never inlined into "${VAR:-...}": a JSON literal inside
 # a parameter-expansion default loses its double quotes and keeps any single
 # quotes, which produces a body jq cannot parse.
-default_pr='{"head":{"sha":"abc123","repo":{"full_name":"loft-sh/demo"}},"base":{"ref":"main"},"state":"open"}'
+default_pr='{"head":{"sha":"abc123","ref":"feature/x","repo":{"full_name":"loft-sh/demo"}},"base":{"ref":"main"},"state":"open"}'
 default_create='{"id":4242}'
 
 case "$all" in

@@ -18,9 +18,26 @@ branch and is invisible on the pull request. Creating one against the resolved
 head SHA is the only way to get a row the reviewer can see, and it is a
 consequence of the trigger rather than a stylistic choice.
 
-The same fact is why `head-sha` and `base-ref` are outputs. Nothing downstream
-can infer them: a plain `actions/checkout` in a job of this workflow takes the
-default branch, and `github.base_ref` is empty.
+The same fact is why `head-sha`, `head-ref` and `base-ref` are outputs. Nothing
+downstream can infer them: a plain `actions/checkout` in a job of this workflow
+takes the default branch, and `github.base_ref` is empty. `head-ref` is the
+branch rather than the commit, which a caller needs when it hands the real work
+to a separate, non-privileged run: `gh workflow run --ref` takes a branch or a
+tag and never a SHA.
+
+## Handing the work to a non-privileged run
+
+Worth doing, and the reason `head-ref` exists. A workflow triggered by
+`issue_comment` is privileged, so if it checks out the pull request and then
+calls a local action with `uses: ./...`, the *action definition* comes from the
+pull request and executes with repository secrets and a write token. CodeQL
+flags that as `actions/untrusted-checkout-toctou`, correctly.
+
+Keeping this action's jobs free of any checkout and dispatching the actual work
+to a `workflow_dispatch` run on the head branch avoids it: that run is not a
+privileged trigger, and its trust model is the one a normal pull request run
+already has. Pass the check-run id along and let the dispatched workflow finish
+it.
 
 ## Security boundary: same-repository only
 
@@ -150,6 +167,7 @@ commenter's access is read from the event payload, not from an API call.
 |   conclusion    | string |                                                                                                                                                                                                             finish mode. The conclusion that was <br>published.                                                                                                                                                                                                               |
 | concurrency-key | string |                                                                                  Filter reduced to a lowercase slug <br>plus an eight-character digest of the <br>normalized filter, safe to interpolate into <br>a concurrency group. The digest is <br>not decoration: the slug alone drops <br>punctuation, so "a && b" and <br>"a || b" would share a <br>group and cancel each other.                                                                                    |
 |     filter      | string |                                                                                                                                                                                         Argument string with whitespace normalized. This <br>is what to pass to the <br>test runner.                                                                                                                                                                                          |
+|    head-ref     | string |                                                                                                                                    Resolved head BRANCH of the pull <br>request. Needed by a caller that <br>dispatches the work to a non-privileged <br>run, because `gh workflow run --ref` takes a branch <br>or tag and never a SHA.                                                                                                                                      |
 |    head-sha     | string |                                                                                                                                                                                                Resolved head commit of the pull <br>request. The event does not carry <br>it.                                                                                                                                                                                                 |
 |     matched     | string |                                                                                                                                                                                                          "true" when the comment opened with <br>the command word.                                                                                                                                                                                                            |
 |     reason      | string |                                                                                                                                      Why the command will not run: <br>fork, insufficient-permission, empty-filter, not-a-pull-request, pull-request-closed, pull-request-unreadable, <br>or check-run-not-created. Empty when it will.                                                                                                                                       |

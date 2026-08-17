@@ -45,10 +45,25 @@ created() { calls_matching "POST"; }
 }
 
 @test "resolves a release-line base ref, not just the head sha" {
-  export GH_MOCK_PR_JSON='{"head":{"sha":"deadbee","repo":{"full_name":"loft-sh/demo"}},"base":{"ref":"v0.29"},"state":"open"}'
+  export GH_MOCK_PR_JSON='{"head":{"sha":"deadbee","ref":"fix/thing","repo":{"full_name":"loft-sh/demo"}},"base":{"ref":"v0.29"},"state":"open"}'
   run bash "$SCRIPT"
   [ "$(kv base-ref)" = "v0.29" ]
   [ "$(kv head-sha)" = "deadbee" ]
+}
+
+# A caller that hands the work to a non-privileged run dispatches by branch, and
+# `gh workflow run --ref` will not take a SHA.
+@test "resolves the head branch as well as the head sha" {
+  export GH_MOCK_PR_JSON='{"head":{"sha":"deadbee","ref":"fix/thing","repo":{"full_name":"loft-sh/demo"}},"base":{"ref":"v0.29"},"state":"open"}'
+  run bash "$SCRIPT"
+  [ "$(kv head-ref)" = "fix/thing" ]
+}
+
+@test "a payload with no head ref is treated as unreadable" {
+  export GH_MOCK_PR_JSON='{"head":{"sha":"abc123","repo":{"full_name":"loft-sh/demo"}},"base":{"ref":"main"},"state":"open"}'
+  run bash "$SCRIPT"
+  [ "$(kv reason)" = "pull-request-unreadable" ]
+  [ "$(created)" -eq 0 ]
 }
 
 @test "the whole happy path costs exactly two API calls" {
@@ -92,7 +107,7 @@ created() { calls_matching "POST"; }
 }
 
 @test "a fork pull request is refused and nothing is created" {
-  export GH_MOCK_PR_JSON='{"head":{"sha":"abc123","repo":{"full_name":"someone/demo"}},"base":{"ref":"main"},"state":"open"}'
+  export GH_MOCK_PR_JSON='{"head":{"sha":"abc123","ref":"feature/x","repo":{"full_name":"someone/demo"}},"base":{"ref":"main"},"state":"open"}'
   run bash "$SCRIPT"
   [ "$(kv reason)" = "fork" ]
   [ "$(kv should-run)" = "false" ]
@@ -100,7 +115,7 @@ created() { calls_matching "POST"; }
 }
 
 @test "a closed pull request is refused" {
-  export GH_MOCK_PR_JSON='{"head":{"sha":"abc123","repo":{"full_name":"loft-sh/demo"}},"base":{"ref":"main"},"state":"closed"}'
+  export GH_MOCK_PR_JSON='{"head":{"sha":"abc123","ref":"feature/x","repo":{"full_name":"loft-sh/demo"}},"base":{"ref":"main"},"state":"closed"}'
   run bash "$SCRIPT"
   [ "$(kv reason)" = "pull-request-closed" ]
   [ "$(created)" -eq 0 ]
@@ -116,7 +131,7 @@ created() { calls_matching "POST"; }
 }
 
 @test "a pull request payload missing the base ref is treated as unreadable" {
-  export GH_MOCK_PR_JSON='{"head":{"sha":"abc123","repo":{"full_name":"loft-sh/demo"}},"state":"open"}'
+  export GH_MOCK_PR_JSON='{"head":{"sha":"abc123","ref":"feature/x","repo":{"full_name":"loft-sh/demo"}},"state":"open"}'
   run bash "$SCRIPT"
   [ "$(kv reason)" = "pull-request-unreadable" ]
   [ "$(created)" -eq 0 ]
