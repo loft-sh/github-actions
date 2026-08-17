@@ -64,6 +64,34 @@ feat: second" ]
   [ "$(oss_file ext.go)" = "external" ]
 }
 
+@test "a '---' in the exported message does not orphan the Monorepo-Commit record" {
+  # git reads a bare "---" as end-of-message and, left to itself, writes the
+  # trailer above it -- outside the paragraph %(trailers) parses. Monorepo-Commit
+  # is read from that block only, so the record would be invisible and the next
+  # run would report our own export as an unabsorbed external commit. Dependabot
+  # writes this shape on every bump.
+  C1=$(company_commit pkg/app.go "l1-bumped" "chore(deps): bump foo from 1.0.0 to 1.1.0
+
+Bumps foo from 1.0.0 to 1.1.0.
+
+---
+updates:
+- dependency-name: foo
+  dependency-type: direct:production")
+
+  run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [ "$(git -C "$OSS_REMOTE" log -1 --format='%(trailers:key=Monorepo-Commit,valueonly)' main)" = "$C1" ]
+
+  # The record has to hold on the NEXT run too: that is where the guard reads it
+  # and decides whether the OSS tip is ours or an external nobody absorbed.
+  company_commit pkg/app.go "l1-bumped-again" "feat: follow-up"
+  run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value diverged)" != "true" ]
+  [ "$(output_value exported-count)" = "1" ]
+}
+
 @test "export after absorption: skips imported commit, keeps external content, trees converge" {
   E=$(external_commit ext.go "external" "feat: external contribution")
   absorb_external
@@ -184,6 +212,143 @@ Monorepo-Commit: $M0"
   [ "$(git -C "$OSS_REMOTE" log -1 --format=%s v0.99)" = "fix: release-line only" ]
   [ "$(git -C "$OSS_REMOTE" rev-parse v0.99~1)" = "$(git -C "$OSS_REMOTE" rev-parse main)" ]
   [ "$(git -C "$OSS_REMOTE" rev-parse 'v0.99^{tree}')" = "$(git -C "$MONO" rev-parse "v0.99:$PFX")" ]
+}
+
+@test "new release branch: a failing history walk refuses to anchor" {
+  # The last `done < <(...)` in this action. A failing rev-list runs the loop zero
+  # times, so RESUME stays empty and the run dies with "no commit on this branch
+  # is known to OSS" -- sending the operator after a branch-point problem that
+  # does not exist while the real fault was git.
+  C=$(company_commit pkg/app.go "l1-v2" "feat: pre-branch change")
+  bash "$EXPORT"
+  (
+    cd "$MONO"
+    git switch -qc v0.99
+    company_commit pkg/rel.go "rel" "fix: release-line only" >/dev/null
+  )
+
+  real_git="$(command -v git)"
+  mkdir -p "$ROOT/bin"
+  # Only the branch walk: rev-list --first-parent over a ref, with no range and
+  # no --reverse, which is the shape of this one call.
+  cat > "$ROOT/bin/git" <<WRAP
+#!/usr/bin/env bash
+rl=false; fp=false; rev=false; range=false
+for a in "\$@"; do
+  case "\$a" in
+    rev-list) rl=true ;;
+    --reverse) rev=true ;;
+    --first-parent) fp=true ;;
+    *..*) range=true ;;
+  esac
+done
+if [ "\$rl" = true ] && [ "\$fp" = true ] && [ "\$rev" = false ] && [ "\$range" = false ]; then
+  exit 128
+fi
+exec "$real_git" "\$@"
+WRAP
+  chmod +x "$ROOT/bin/git"
+
+  BRANCH=v0.99 PATH="$ROOT/bin:$PATH" run bash "$EXPORT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"refusing to anchor a new OSS branch"* ]]
+  [[ "$output" != *"no commit on this branch is known to OSS"* ]]
+  # No branch was created on the strength of a walk that never happened.
+  run git -C "$OSS_REMOTE" rev-parse --verify --quiet v0.99
+  [ "$status" -ne 0 ]
+}
+
+@test "new release branch: a failing ancestry test refuses to anchor" {
+  # The other half of the fresh-branch walk. When the branch point is identified
+  # by an Oss-Commit trailer rather than an exported one, a bare merge-base
+  # collapsed rc 128 into "not reachable": the walk shrugs, carries on to an older
+  # commit, and the new release line is created BEHIND where OSS actually is --
+  # re-replaying commits the mirror already holds, with nothing saying git failed.
+  E=$(external_commit ext.go "external" "feat: external contribution")
+  absorb_external
+  default_tip=$(git -C "$OSS_REMOTE" rev-parse main)
+  (cd "$MONO" && git switch -qc v0.99)
+
+  real_git="$(command -v git)"
+  mkdir -p "$ROOT/bin"
+  # Matched on the operand pair, so only this one ancestry question breaks.
+  cat > "$ROOT/bin/git" <<WRAP
+#!/usr/bin/env bash
+if [ "\$1" = "merge-base" ] && [ "\$3" = "$E" ] && [ "\$4" = "$default_tip" ]; then
+  exit 128
+fi
+exec "$real_git" "\$@"
+WRAP
+  chmod +x "$ROOT/bin/git"
+
+  BRANCH=v0.99 PATH="$ROOT/bin:$PATH" run bash "$EXPORT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"git failed testing whether"* ]]
+  run git -C "$OSS_REMOTE" rev-parse --verify --quiet v0.99
+  [ "$status" -ne 0 ]
+}
+
+@test "new release branch: an abbreviated trailer naming a tag cannot anchor it" {
+  # The value decides the base commit of a branch that does not exist yet, and
+  # both the ancestry test and `git worktree add --detach` PEEL an annotated tag.
+  # Unchecked, an Oss-Commit abbreviation that uniquely names a tag object passes
+  # every check and creates the release line from a commit sharing none of its
+  # digits.
+  #
+  # No absorb_external here on purpose: a legitimate Oss-Commit record for the
+  # same commit would let a peeling implementation reach the right answer by the
+  # wrong road, and the test would pass either way. The tag record has to be the
+  # only thing pointing at E.
+  E=$(external_commit ext.go "external" "feat: external contribution")
+  git -C "$ROOT/oss.git" tag -a v0.5.0 -m "release" "$E"
+  tag=$(git -C "$ROOT/oss.git" rev-parse v0.5.0)
+  [ "$tag" != "$E" ]
+  git -C "$MONO" fetch -q "$OSS_REMOTE" 'refs/tags/*:refs/tags/*'
+  git -C "$MONO" commit -q --allow-empty -m "chore: a hand-made import record
+
+Oss-Commit: ${tag:0:12}"
+  (cd "$MONO" && git switch -qc v0.99)
+
+  BRANCH=v0.99 run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  # Anchored at the fixture's genuine record further back, NOT at the commit the
+  # tag peels to on the strength of digits that name the tag object.
+  [[ "$output" == *"creating it from ${O0}"* ]]
+  [[ "$output" != *"creating it from ${E}"* ]]
+  [ "$(git -C "$OSS_REMOTE" rev-parse v0.99)" = "$O0" ]
+}
+
+@test "new release branch: an out-of-order squashed export record still anchors at the tip" {
+  # The map answers "was this monorepo commit ever exported", which is a set
+  # question, so it is built from every value rather than the last one. A squash
+  # concatenates messages in commit order, but a hand-made or reordered one need
+  # not: when the NEWEST export is not the last line, last-wins hides exactly the
+  # commit the branch is cut at, and the walk falls back to an older anchor and
+  # re-replays work the mirror already holds.
+  C1=$(company_commit pkg/app.go "v1" "feat: company v1")
+  C2=$(company_commit pkg/other.go "v2" "feat: company v2")
+  bash "$EXPORT"
+  (
+    cd "$ROOT"
+    rm -rf squashed
+    git clone -q "$OSS_REMOTE" squashed
+    cd squashed
+    git reset -q --soft HEAD~2
+    # C2 recorded FIRST, so last-wins keeps C1 and loses the branch point.
+    git commit -q -m "chore: both exports in one
+
+Monorepo-Commit: $C2
+Monorepo-Commit: $C1"
+    git push -q --force origin main
+  )
+  collapsed=$(git -C "$OSS_REMOTE" rev-parse main)
+  (cd "$MONO" && git switch -qc v0.99)
+
+  BRANCH=v0.99 run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"creating it from ${collapsed}"* ]]
+  # The tip, not the older commit last-wins would have left as the only match.
+  [[ "$output" == *"monorepo ${C2}"* ]]
 }
 
 @test "existing release branch: append is fast-forward" {
@@ -307,4 +472,559 @@ Monorepo-Commit: $M0"
   [ "$status" -eq 0 ]
   [ "$(output_value exported-count)" = "1" ]
   [ "$(oss_file pkg/app.go)" = "post-migration" ]
+}
+
+@test "align-tree refuses to overwrite an external absorbed only outside the trailer block" {
+  # The whole-message scan reads an Oss-Commit line anywhere, which is what
+  # rescues a squash-orphaned trailer. That evidence keeps the export moving; it
+  # must not authorise align-tree to delete the commit's content from OSS, since
+  # "never absorbed" and "absorbed then superseded" look identical in content.
+  E1=$(external_commit pkg/app.go "external-only-content" "feat: alice never imported")
+  E2=$(external_commit ext2.go "two" "feat: alice second")
+  bash "$IMPORT" >/dev/null
+  git -C "$MONO" switch -q main
+  # Records E2 in git's block, and E1 only on a line above it.
+  git -C "$MONO" commit -q --allow-empty -m "chore: absorb the second
+
+Note: still pending is
+Oss-Commit: $E1
+
+Oss-Commit: $E2"
+
+  ALIGN_TREE=true run bash "$EXPORT"
+  [ "$status" -eq 1 ]
+  [ "$(output_value pushed)" = "false" ]
+  [ "$(output_value loose-absorption)" = "true" ]
+  # Not diverged: these commits ARE absorbed, and a caller wired to the documented
+  # meaning of diverged would dispatch an import that has nothing to replay.
+  [ "$(output_value diverged)" = "false" ]
+  [[ "$output" == *"align-tree would overwrite"* ]]
+  [[ "$output" == *"$E1"* ]]
+  [[ "$output" == *"cannot clear this"* ]]
+  # The contributor's commit is still on the mirror.
+  [ "$(oss_file pkg/app.go)" = "external-only-content" ]
+}
+
+@test "a convergence failure with weak evidence does not point at align-tree" {
+  # Same state as the gate test above, reached WITHOUT align-tree. The convergence
+  # assertion used to end with "re-run with align-tree=true", which the gate then
+  # hard-refuses: the operator follows the advice, fails again, and learns the real
+  # answer one round trip later. Both exits have to say the same thing.
+  E1=$(external_commit pkg/app.go "external-only-content" "feat: alice never imported")
+  E2=$(external_commit ext2.go "two" "feat: alice second")
+  bash "$IMPORT" >/dev/null
+  git -C "$MONO" switch -q main
+  git -C "$MONO" commit -q --allow-empty -m "chore: absorb the second
+
+Note: still pending is
+Oss-Commit: $E1
+
+Oss-Commit: $E2"
+
+  run bash "$EXPORT"
+  [ "$status" -eq 1 ]
+  [ "$(output_value loose-absorption)" = "true" ]
+  [[ "$output" == *"does not match the monorepo staging tree"* ]]
+  [[ "$output" == *"Do not re-run with align-tree"* ]]
+  [[ "$output" == *"$E1"* ]]
+  # The per-commit recovery, the same text the gate itself prints.
+  [[ "$output" == *"absorbed, then superseded upstream"* ]]
+  [[ "$output" == *"not absorbed ->"* ]]
+  # And crucially not the advice that sends them round the loop.
+  [[ "$output" != *"Re-run with align-tree=true to append"* ]]
+}
+
+@test "align-tree still runs when the trees already agree despite weak evidence" {
+  # The gate belongs at the alignment commit, not at the guard: with nothing to
+  # align there is nothing to delete, and failing here would make align-tree
+  # unusable forever on any branch that ever took a squash-merged import.
+  E1=$(external_commit pkg/app.go "banner" "feat: add banner")
+  E2=$(external_commit pkg/app.go "banner-trimmed" "revert: most of the banner")
+  bash "$IMPORT" >/dev/null
+  squash_merge_pr_branch "chore: sync from oss (#2177)
+
+Oss-Commit: $E1
+
+Oss-Commit: $E2
+
+Co-authored-by: alice <alice@contributor.example>"
+
+  # Premise: E1 is loosely absorbed and its content is gone, but the trees match.
+  [ "$(git -C "$OSS_REMOTE" rev-parse 'main^{tree}')" = "$(git -C "$MONO" rev-parse "HEAD:$PFX")" ]
+
+  ALIGN_TREE=true run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value loose-absorption)" = "true" ]
+  [[ "$output" != *"::error::"* ]]
+}
+
+@test "a trailer only git's parser accepts still counts as absorbed" {
+  # git reads "Oss-Commit:<sha>" with no space, and uppercase hex, while the
+  # whole-message scan requires a lowercase hex value after "key: ". A record git
+  # sees perfectly must not read as unabsorbed, or the deadlock returns by a third
+  # road, with the content fallback unable to help once E1 is superseded.
+  E1=$(external_commit pkg/app.go "banner" "feat: add banner")
+  E2=$(external_commit pkg/app.go "banner-trimmed" "revert: most of the banner")
+  bash "$IMPORT" >/dev/null
+  # Squash-merged, so the branch's own well-formed trailers never reach main and
+  # these two lines are the ONLY record. Both are forms the scan cannot read.
+  squash_merge_pr_branch "chore: sync from oss (#42)
+
+Oss-Commit:$(echo "$E1" | tr 'a-f' 'A-F')
+Oss-Commit:$E2"
+
+  # Premise: E1's content is superseded, so only the record can prove absorption.
+  [ "$(cat "$MONO/$PFX/pkg/app.go")" = "banner-trimmed" ]
+
+  run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value diverged)" = "false" ]
+  [[ "$output" != *"not yet absorbed"* ]]
+}
+
+@test "align-tree proceeds when the loose external's content is present" {
+  # Weak evidence only matters if alignment could delete something. Here the
+  # import applied E1's content, so there is nothing to lose and the run must not
+  # be blocked: otherwise align-tree is unusable after any squashed import.
+  E1=$(external_commit pkg/app.go "alice-content" "feat: alice change")
+  bash "$IMPORT" >/dev/null
+  squash_merge_pr_branch "feat: alice change (#42)
+
+Oss-Commit: $E1
+
+Co-authored-by: alice <alice@contributor.example>"
+  [ "$(cat "$MONO/$PFX/pkg/app.go")" = "alice-content" ]
+
+  # Something for alignment to actually do, in an excluded path.
+  external_commit .github/workflows/release.yaml "oss-only" "chore: oss-only workflow" >/dev/null
+
+  EXCLUDE_PATHS=".github/workflows/release.yaml" ALIGN_TREE=true run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value loose-absorption)" = "false" ]
+  [[ "$output" != *"align-tree would overwrite"* ]]
+}
+
+@test "a trailer value that is not a sha cannot red the export" {
+  # Block values reach rev-parse unfiltered unless they are shape-checked, and
+  # reflog syntax exits 128, which the resolver escalates into a failed run: one
+  # such line anywhere in the range would break every export from then on.
+  company_commit pkg/app.go "company" "feat: company change" >/dev/null
+  git -C "$MONO" commit -q --allow-empty -m "chore: a human wrote nonsense
+
+Oss-Commit: @{9999}"
+
+  run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"git failed while resolving"* ]]
+  [ "$(output_value exported-count)" = "1" ]
+}
+
+@test "an external absorbed outside the trailer block still exports without align-tree" {
+  # The squash rescue itself must keep working: the guard passes, the run notes
+  # the weak evidence, and the convergence assertion stays the backstop.
+  E1=$(external_commit pkg/app.go "banner" "feat: add banner")
+  E2=$(external_commit pkg/app.go "banner-trimmed" "revert: most of the banner")
+  bash "$IMPORT" >/dev/null
+  squash_merge_pr_branch "chore: sync from oss (#2177)
+
+Oss-Commit: $E1
+
+Oss-Commit: $E2
+
+Co-authored-by: alice <alice@contributor.example>"
+
+  run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value diverged)" = "false" ]
+  [[ "$output" == *"absorbed only via an Oss-Commit line outside git trailer block"* ]]
+}
+
+@test "a folded trailer value is not strong absorption evidence" {
+  # git keeps a folded value as several physical lines unless unfold is asked for,
+  # so reading it line-wise would take the sha off the first line and treat a
+  # commit nobody recorded as block-recorded, which is what align-tree trusts.
+  E1=$(external_commit pkg/app.go "external-only-content" "feat: alice never imported")
+  company_commit pkg/other.go "company" "feat: company change" >/dev/null
+  git -C "$MONO" commit -q --allow-empty -m "chore: not a record at all
+
+Oss-Commit:$E1
+  this was not an absorption record"
+
+  ALIGN_TREE=true run bash "$EXPORT"
+  [ "$status" -eq 1 ]
+  # Not absorbed at all: the folded value is no record, by either reading.
+  [ "$(output_value diverged)" = "true" ]
+  [ "$(output_value pushed)" = "false" ]
+  [[ "$output" == *"not yet absorbed"* ]]
+  [ "$(oss_file pkg/app.go)" = "external-only-content" ]
+}
+
+@test "loose-absorption is reported even when the run also diverges" {
+  # Two findings in one run: the divergence exit must not swallow the other one.
+  E1=$(external_commit pkg/app.go "banner" "feat: add banner")
+  E2=$(external_commit pkg/app.go "banner-trimmed" "revert: most of the banner")
+  bash "$IMPORT" >/dev/null
+  squash_merge_pr_branch "chore: sync from oss (#42)
+
+Oss-Commit: $E1
+
+Oss-Commit: $E2
+
+Co-authored-by: alice <alice@contributor.example>"
+  # And now a genuinely unabsorbed external on top.
+  external_commit ext9.go "pending" "feat: alice pending" >/dev/null
+
+  run bash "$EXPORT"
+  [ "$status" -eq 1 ]
+  [ "$(output_value diverged)" = "true" ]
+  [ "$(output_value loose-absorption)" = "true" ]
+}
+
+@test "a commit recorded only in git's laxer form is not replayed back to OSS" {
+  # The guard and the loop guard must agree about the same trailer line. If the
+  # guard counts a commit as absorbed but the loop does not count it as
+  # OSS-originated, its diff is replayed and content the mirror already moved past
+  # comes back, authored by the contributor.
+  E1=$(external_commit pkg/app.go "banner" "feat: add banner")
+  bash "$IMPORT" >/dev/null
+  # Sole record, in a form only git's own parser reads (no space after the key).
+  squash_merge_pr_branch "chore: sync from oss (#1)
+
+Oss-Commit:$E1"
+
+  # Upstream reverts the banner; we absorb that properly.
+  external_commit pkg/app.go "l1-l2-l3" "revert: the banner" >/dev/null
+  absorb_external
+
+  run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value diverged)" = "false" ]
+  # Nothing replayed: both sync commits are recognised as OSS-originated.
+  [ "$(output_value exported-count)" = "0" ]
+  # The revert stands; the banner was not resurrected.
+  [ "$(oss_file pkg/app.go)" = "l1-l2-l3" ]
+  [ "$(git -C "$OSS_REMOTE" rev-parse 'main^{tree}')" = "$(git -C "$MONO" rev-parse "HEAD:$PFX")" ]
+}
+
+@test "our own export is recognised from a Monorepo-Commit only git parses" {
+  # The guard asks "did we create this OSS commit", and the resume point comes from
+  # the same reading. If a Monorepo-Commit written in git's laxer form is invisible
+  # to it, our own export looks like an unabsorbed external commit. The content it
+  # carried has to be superseded for this to bite, otherwise external_is_benign
+  # rescues it and the test proves nothing.
+  C1=$(company_commit pkg/app.go "v1" "feat: company v1")
+  bash "$EXPORT"
+  ours=$(oss_tip)
+  # Rewrite that OSS commit's trailer into a form only git's parser reads.
+  (
+    cd "$ROOT"
+    git clone -q "$OSS_REMOTE" relabel
+    cd relabel
+    git commit -q --amend -m "feat: company v1
+
+Monorepo-Commit:$(echo "$C1" | tr 'a-f' 'A-F')"
+    git push -q --force origin main
+  )
+  [ "$(oss_tip)" != "$ours" ]
+  # Supersede v1, so the exported content is no longer in the subtree.
+  company_commit pkg/app.go "v2" "feat: company v2" >/dev/null
+
+  run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value diverged)" = "false" ]
+  [[ "$output" != *"not yet absorbed"* ]]
+  [ "$(oss_file pkg/app.go)" = "v2" ]
+  [ "$(git -C "$OSS_REMOTE" rev-parse 'main^{tree}')" = "$(git -C "$MONO" rev-parse "HEAD:$PFX")" ]
+}
+
+@test "guard: a failing rev-list refuses to judge divergence instead of passing" {
+  # The guard's verdict is "no unabsorbed externals". Reached with a producer that
+  # failed rather than a range that was empty, that verdict is not an answer: the
+  # loop runs zero times, the arrays stay empty, and the export proceeds past a
+  # guard that never ran. With align-tree that flattens the OSS tree with nothing
+  # holding it back, so the range has to be listed successfully or not at all.
+  external_commit ext.go "external" "feat: external contribution"
+  before=$(oss_tip)
+  company_commit pkg/app.go "l1-company" "feat: company change"
+
+  real_git="$(command -v git)"
+  mkdir -p "$ROOT/bin"
+  # Only the guard's own walk: --first-parent over a range, and not the --reverse
+  # replay walk further down.
+  cat > "$ROOT/bin/git" <<WRAP
+#!/usr/bin/env bash
+rl=false; fp=false; rev=false; range=false
+for a in "\$@"; do
+  case "\$a" in
+    rev-list) rl=true ;;
+    --reverse) rev=true ;;
+    --first-parent) fp=true ;;
+    *..*) range=true ;;
+  esac
+done
+if [ "\$rl" = true ] && [ "\$fp" = true ] && [ "\$rev" = false ] && [ "\$range" = true ]; then
+  exit 128
+fi
+exec "$real_git" "\$@"
+WRAP
+  chmod +x "$ROOT/bin/git"
+
+  PATH="$ROOT/bin:$PATH" run bash "$EXPORT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"refusing to judge divergence"* ]]
+  # The external is still there: nothing was pushed over it.
+  [ "$(oss_tip)" = "$before" ]
+  [ "$(oss_file ext.go)" = "external" ]
+}
+
+@test "replay: a failing rev-list refuses to export instead of reporting nothing to do" {
+  # The other producer, and the one the guard test above deliberately leaves
+  # running. A failed --reverse walk yields an empty replay range, which is
+  # indistinguishable from "already up to date": the loop runs zero times, count
+  # stays 0, and the run reports a clean, successful export while the commits sit
+  # unexported. With align-tree it then pushes a snapshot built from a range
+  # nobody managed to list.
+  company_commit pkg/app.go "l1-company" "feat: company change" >/dev/null
+  before=$(oss_tip)
+
+  real_git="$(command -v git)"
+  mkdir -p "$ROOT/bin"
+  # Only the --reverse replay walk; the divergence guard's walk must still run,
+  # or this passes for the wrong reason.
+  cat > "$ROOT/bin/git" <<WRAP
+#!/usr/bin/env bash
+rl=false; rev=false
+for a in "\$@"; do
+  case "\$a" in
+    rev-list) rl=true ;;
+    --reverse) rev=true ;;
+  esac
+done
+if [ "\$rl" = true ] && [ "\$rev" = true ]; then
+  exit 128
+fi
+exec "$real_git" "\$@"
+WRAP
+  chmod +x "$ROOT/bin/git"
+
+  PATH="$ROOT/bin:$PATH" run bash "$EXPORT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"refusing to export"* ]]
+  # Nothing was pushed on the strength of a range that was never listed.
+  [ "$(oss_tip)" = "$before" ]
+}
+
+@test "seed: an uppercase sha and a ref name are both accepted" {
+  # The seed is typed by an operator on the one path with no trailer to fall back
+  # to. Holding it to the spelling a trailer value has -- lowercase hex, checked
+  # as a prefix of what it resolves to -- rejects both of these, which git
+  # resolves happily, and fails the run with "is not a commit in this repo".
+  M0=$(git -C "$MONO" rev-parse HEAD)
+  # Same rebuild the seeding test does: an OSS branch carrying no trailer at all.
+  rm -rf "$OSS_REMOTE" "$ROOT/ossseed2"
+  git init -q --bare "$OSS_REMOTE"
+  git init -q "$ROOT/ossseed2"
+  (
+    cd "$ROOT/ossseed2"
+    git checkout -q -b main
+    mkdir -p pkg && printf 'l1\nl2\nl3\n' > pkg/app.go
+    git add . && git commit -qm "pre-migration oss"
+    git push -q "$OSS_REMOTE" main
+  )
+  seed_oss=$(oss_tip)
+  company_commit pkg/app.go "l1-upper" "feat: uppercase seed change"
+
+  upper=$(echo "$M0" | tr 'a-f' 'A-F')
+  SEED_MONOREPO_COMMIT="$upper" SEED_OSS_COMMIT="$seed_oss" run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value exported-count)" = "1" ]
+}
+
+@test "guard: a failing ancestry test on the resume anchor is not a rewritten history" {
+  # Collapsing rc 128 into "not an ancestor" reports that OSS history was
+  # rewritten and sends the operator hunting a force-push that never happened,
+  # when the truth is a partial fetch or a broken object store.
+  company_commit pkg/app.go "l1-company" "feat: company change" >/dev/null
+  bash "$EXPORT"
+  anchor=$(git -C "$OSS_REMOTE" rev-parse main)
+  company_commit pkg/other.go "more" "feat: another company change" >/dev/null
+
+  real_git="$(command -v git)"
+  mkdir -p "$ROOT/bin"
+  cat > "$ROOT/bin/git" <<WRAP
+#!/usr/bin/env bash
+if [ "\$1" = "merge-base" ] && [ "\$3" = "$anchor" ]; then exit 128; fi
+exec "$real_git" "\$@"
+WRAP
+  chmod +x "$ROOT/bin/git"
+
+  PATH="$ROOT/bin:$PATH" run bash "$EXPORT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"git failed testing whether resume anchor"* ]]
+  [[ "$output" != *"is not an ancestor of OSS"* ]]
+}
+
+@test "guard: a squash-orphaned forged Monorepo-Commit cannot pass an external off as ours" {
+  # OSS is public and takes outside contributions, so a commit message there is
+  # contributor-controlled. A column-zero "Monorepo-Commit: <valid mono sha>"
+  # line in a body used to be read as ours: the commit became the export anchor,
+  # which puts it BEFORE the divergence range so it is never checked, while the
+  # import loop guard skipped it as something we created. Export could not
+  # converge because it was never absorbed and the import refused to absorb it --
+  # and with align-tree the false anchor authorises deleting its content.
+  M=$(git -C "$MONO" rev-parse HEAD)
+  clone="$ROOT/forge"
+  git clone -q "$OSS_REMOTE" "$clone"
+  (
+    cd "$clone"
+    git checkout -q main
+    echo "external" > ext.go
+    git add .
+    GIT_AUTHOR_NAME=alice GIT_AUTHOR_EMAIL=alice@contributor.example \
+      git commit -qm "feat: external contribution
+
+Monorepo-Commit: $M
+
+Co-authored-by: Bob <bob@example.com>"
+    git push -q origin main
+  )
+  forged=$(oss_tip)
+  company_commit pkg/app.go "l1-company" "feat: company change" >/dev/null
+
+  run bash "$EXPORT"
+  # Treated as the external it is: fails closed and asks for the import.
+  [ "$status" -ne 0 ]
+  [ "$(output_value diverged)" = "true" ]
+  [[ "$output" == *"$forged"* ]]
+  [ "$(oss_tip)" = "$forged" ]
+  [ "$(oss_file ext.go)" = "external" ]
+}
+
+@test "align-tree cannot be steered by a squash-orphaned forged Monorepo-Commit" {
+  # The destructive half of the same forgery: with align-tree the false anchor
+  # excluded the commit from the guard entirely, and the snapshot then deleted
+  # content OSS held and the subtree did not.
+  #
+  # Covers the ORPHANED spelling only. The same trailer written into the final
+  # paragraph, where git's own parser reads it, is still accepted as ours and
+  # still deletes this file -- see the known-exposure note in the README. Do not
+  # read this test as covering the whole threat.
+  M=$(git -C "$MONO" rev-parse HEAD)
+  clone="$ROOT/forge2"
+  git clone -q "$OSS_REMOTE" "$clone"
+  (
+    cd "$clone"
+    git checkout -q main
+    echo "external" > ext.go
+    git add .
+    GIT_AUTHOR_NAME=alice GIT_AUTHOR_EMAIL=alice@contributor.example \
+      git commit -qm "feat: external contribution
+
+Monorepo-Commit: $M
+
+Co-authored-by: Bob <bob@example.com>"
+    git push -q origin main
+  )
+
+  ALIGN_TREE=true run bash "$EXPORT"
+  [ "$status" -ne 0 ]
+  [ "$(output_value diverged)" = "true" ]
+  # The contributor's file is still on the mirror.
+  [ "$(oss_file ext.go)" = "external" ]
+}
+
+@test "new release branch: several import records on one commit anchor at the farthest" {
+  # The fresh-branch walk asks a set question too. A squash records every import
+  # it replayed on one commit, and message order is not ancestry order, so taking
+  # the last line can anchor the new release line at the NEARER commit -- behind
+  # the newest import the branch actually holds.
+  E1=$(external_commit pkg/app.go "first" "feat: alice first")
+  E2=$(external_commit pkg/app.go "second" "feat: alice second")
+  bash "$IMPORT" >/dev/null
+  (
+    cd "$MONO"
+    git switch -q main
+    git merge --squash -q automation/sync-from-oss-main
+    # E2 recorded FIRST, so last-wins keeps the nearer E1.
+    git commit -qm "chore: sync from oss (#1)
+
+Oss-Commit: $E2
+Oss-Commit: $E1"
+    git branch -q -D automation/sync-from-oss-main
+    git switch -qc v0.99
+  )
+
+  BRANCH=v0.99 run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"creating it from ${E2}"* ]]
+  [[ "$output" != *"creating it from ${E1}"* ]]
+  [ "$(git -C "$OSS_REMOTE" rev-parse v0.99)" = "$E2" ]
+}
+@test "new release branch: an abbreviated export record still finds the branch point" {
+  # map_lookup compares exact strings and the walk queries it with a full sha from
+  # rev-list, so an abbreviated or hand-written Monorepo-Commit record never
+  # matched: the walk fell past the very branch point the map exists to find and
+  # anchored the release line further back, re-replaying commits OSS already has.
+  C=$(company_commit pkg/app.go "l1-v2" "feat: pre-branch change")
+  bash "$EXPORT"
+  exported=$(oss_tip)
+  # Rewrite that OSS commit's record as a 12-char abbreviation.
+  (
+    cd "$ROOT"
+    rm -rf abbrev
+    git clone -q "$OSS_REMOTE" abbrev
+    cd abbrev
+    git commit -q --amend -m "feat: pre-branch change
+
+Monorepo-Commit: ${C:0:12}"
+    git push -q --force origin main
+  )
+  abbreviated=$(git -C "$OSS_REMOTE" rev-parse main)
+  [ "$abbreviated" != "$exported" ]
+  (cd "$MONO" && git switch -qc v0.99)
+
+  BRANCH=v0.99 run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"creating it from ${abbreviated}"* ]]
+  [ "$(git -C "$OSS_REMOTE" rev-parse v0.99)" = "$abbreviated" ]
+}
+
+@test "replay: a failing loop-guard read refuses to export instead of replaying back to OSS" {
+  # The loop guard's answer is "this commit did not come from OSS". Reached with a
+  # trailer read that failed rather than a commit that carries no record, that
+  # answer resurrects content: the absorption commit's diff is replayed onto OSS,
+  # reapplying a change the mirror has since reverted, authored by the
+  # contributor. Refusing to export is the only honest outcome.
+  external_commit pkg/app.go "banner" "feat: add banner" >/dev/null
+  absorb_external
+  external_commit pkg/app.go "l1-l2-l3" "revert: the banner" >/dev/null
+  absorb_external
+  before=$(oss_tip)
+
+  real_git="$(command -v git)"
+  mkdir -p "$ROOT/bin"
+  # Only the per-commit Oss-Commit read the loop guard makes: the divergence
+  # guard's own scan walks --first-parent over a range, so it still runs.
+  cat > "$ROOT/bin/git" <<WRAP
+#!/usr/bin/env bash
+one=false; oss=false
+for a in "\$@"; do
+  case "\$a" in
+    -1) one=true ;;
+    *trailers:key=Oss-Commit*) oss=true ;;
+  esac
+done
+if [ "\$one" = true ] && [ "\$oss" = true ]; then
+  exit 128
+fi
+exec "$real_git" "\$@"
+WRAP
+  chmod +x "$ROOT/bin/git"
+
+  PATH="$ROOT/bin:$PATH" run bash "$EXPORT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"refusing to export without the loop guard"* ]]
+  # The revert stands; the banner was not resurrected and nothing was pushed.
+  [ "$(oss_tip)" = "$before" ]
+  [ "$(oss_file pkg/app.go)" = "l1-l2-l3" ]
 }

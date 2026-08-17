@@ -135,10 +135,23 @@ replayed=0
 # Seeded with the healed range: those commits were considered and not replayed,
 # which is exactly what skipped-count reports.
 skipped="$healed"
+# Captured first: a producer that fails inside `done < <(...)` is invisible to
+# set -e, so a broken rev-list would replay nothing and the run would report
+# has-changes=false with commits still waiting to be imported.
+if ! replay_range="$(git rev-list --reverse --first-parent "${RESUME}..${OSS_TIP}")"; then
+  die "failed to list the replay range ${RESUME}..${OSS_TIP}; refusing to import"
+fi
 while read -r E; do
   [ -n "$E" ] || continue
   ensure_not_merge "$E"
-  if has_trailer "$E" "$MONOREPO_TRAILER"; then
+  # The mirror image of the export's loop guard, with the same stake: read as
+  # "no trailer" because git failed, a commit we exported is replayed back into
+  # the subtree it came from, on top of whatever the monorepo has changed since.
+  guard_rc=0
+  has_trailer "$E" "$MONOREPO_TRAILER" || guard_rc=$?
+  if [ "$guard_rc" -eq 2 ]; then
+    die "git failed reading the ${MONOREPO_TRAILER} trailer of ${E}; refusing to import without the loop guard"
+  elif [ "$guard_rc" -eq 0 ]; then
     echo "Skipping ${E} (originated in the monorepo: $(trailer_value "$E" "$MONOREPO_TRAILER"))"
     continue
   fi
@@ -177,7 +190,7 @@ while read -r E; do
   replay_commit "$E" "$OSS_TRAILER" "."
   replayed=$((replayed + 1))
   echo "Replayed ${E} -> $(git rev-parse HEAD) ($(git log -1 --format=%s "$E"))"
-done < <(git rev-list --reverse --first-parent "${RESUME}..${OSS_TIP}")
+done <<< "$replay_range"
 
 emit replayed-count "$replayed"
 emit skipped-count "$skipped"

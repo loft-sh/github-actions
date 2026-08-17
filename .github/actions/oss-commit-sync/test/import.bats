@@ -30,6 +30,34 @@ teardown() {
   [ "$(cat pro.txt)" = "pro-only" ]
 }
 
+@test "a replayed message keeps its '---' divider and its '#' lines, and the trailer stays readable" {
+  # Two ways git edits a message it is only supposed to annotate: it writes the
+  # trailer above a bare "---" instead of at the end, and it drops "#" lines from
+  # the paragraph it touches. The first orphans the Oss-Commit record from git's
+  # own parser, which is what health reads to decide a squash-merge happened.
+  # The "#" line sits in the final paragraph, the one interpret-trailers edits --
+  # anywhere else git leaves it alone, so anywhere else would not catch the loss.
+  E=$(external_commit ext.go "external" "chore(deps): bump foo from 1.0.0 to 1.1.0
+
+Bumps foo.
+
+---
+updates:
+- dependency-name: foo
+
+# hash line
+Signed-off-by: alice <alice@contributor.example>")
+
+  run bash "$IMPORT"
+  [ "$status" -eq 0 ]
+
+  cd "$MONO"
+  git switch -q automation/sync-from-oss-main
+  [ "$(git log -1 --format='%(trailers:key=Oss-Commit,valueonly)')" = "$E" ]
+  git log -1 --format=%B | grep -q '^# hash line$'
+  git log -1 --format=%B | grep -q '^---$'
+}
+
 @test "import skips commits we exported (loop guard)" {
   company_commit pkg/app.go "l1-company" "feat: company change" >/dev/null
   bash "$EXPORT"
@@ -231,6 +259,33 @@ teardown() {
   [[ "$output" == *"merge commit"* ]]
 }
 
+@test "an annotated tag sha cannot win the anchor and swallow pending imports" {
+  # cat-file -e and merge-base both peel a tag object, so an Oss-Commit value
+  # naming a tag would resolve to a commit no trailer records and could win the
+  # anchor. That failure is silent in the worst way: the pending externals are
+  # neither replayed nor skipped nor counted, they just never arrive.
+  E1=$(external_commit ext1.go "one" "feat: alice first")
+  E2=$(external_commit ext2.go "two" "feat: alice second")
+  git -C "$ROOT/oss.git" tag -a v0.2.0 -m "release" "$E2"
+  tag=$(git -C "$ROOT/oss.git" rev-parse v0.2.0)
+  [ "$tag" != "$E2" ]
+  # The action's own fetch does not pull tag objects; this is the case where the
+  # monorepo happens to hold them, without which the probe proves nothing.
+  git -C "$MONO" fetch -q "$OSS_REMOTE" 'refs/tags/*:refs/tags/*'
+  git -C "$MONO" cat-file -e "$tag"
+
+  git -C "$MONO" commit -q --allow-empty -m "chore: note the release
+
+Oss-Commit: $tag"
+
+  run bash "$IMPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value has-changes)" = "true" ]
+  [ "$(output_value replayed-count)" = "2" ]
+  [ "$(git -C "$MONO" show "automation/sync-from-oss-main:$PFX/ext1.go")" = "one" ]
+  [ "$(git -C "$MONO" show "automation/sync-from-oss-main:$PFX/ext2.go")" = "two" ]
+}
+
 @test "no-op external (same change already in staging) is skipped, not a crash" {
   company_commit pkg/dup.go "same-content" "feat: company version" >/dev/null
   external_commit pkg/dup.go "same-content" "feat: external identical version" >/dev/null
@@ -245,4 +300,181 @@ teardown() {
   run bash "$IMPORT"
   [ "$status" -eq 0 ]
   [ "$(output_value skipped-count)" = "1" ]
+}
+
+@test "a tag sha seeded as the anchor is stored peeled, so re-runs settle" {
+  # `git rev-parse v1.2.3` prints the tag object, which is the natural thing for
+  # an operator to paste into seed-oss-commit. Accepting it is right; keeping it
+  # is not. The anchor is compared against commit shas -- import's
+  # "$RESUME" = "$OSS_TIP" nothing-to-do shortcut, health's anchor output -- and a
+  # tag sha equals none of them, so the shortcut never fires and every run
+  # rebuilds the PR branch to replay an empty range.
+  E1=$(external_commit ext1.go "one" "feat: alice first")
+  git -C "$ROOT/oss.git" tag -a v0.3.0 -m "release" "$E1"
+  tag=$(git -C "$ROOT/oss.git" rev-parse v0.3.0)
+  [ "$tag" != "$E1" ]
+  git -C "$MONO" fetch -q "$OSS_REMOTE" 'refs/tags/*:refs/tags/*'
+
+  # Seeded at the tip: there is genuinely nothing left to import, and the
+  # shortcut must say so rather than rebuilding the PR branch for an empty range.
+  SEED_OSS_COMMIT="$tag" run bash "$IMPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value has-changes)" = "false" ]
+  [[ "$output" == *"nothing to import"* ]]
+  # The shortcut is the only thing that skips the branch switch, so its absence
+  # is observable: an unresolved tag sha leaves this branch behind.
+  ! git -C "$MONO" rev-parse --verify --quiet automation/sync-from-oss-main >/dev/null
+}
+
+@test "replay: a failing rev-list refuses to import instead of reporting nothing pending" {
+  # The mirror of the export-side guard. A failed --reverse walk yields an empty
+  # replay range, which reads exactly like "no external commits to import": the
+  # loop runs zero times, has-changes stays false, and the caller opens no PR
+  # while real external contributions sit unimported. The range has to be listed
+  # successfully or the run has to stop.
+  external_commit ext.go "external" "feat: external contribution" >/dev/null
+
+  real_git="$(command -v git)"
+  mkdir -p "$ROOT/bin"
+  cat > "$ROOT/bin/git" <<WRAP
+#!/usr/bin/env bash
+rl=false; rev=false
+for a in "\$@"; do
+  case "\$a" in
+    rev-list) rl=true ;;
+    --reverse) rev=true ;;
+  esac
+done
+if [ "\$rl" = true ] && [ "\$rev" = true ]; then
+  exit 128
+fi
+exec "$real_git" "\$@"
+WRAP
+  chmod +x "$ROOT/bin/git"
+
+  PATH="$ROOT/bin:$PATH" run bash "$IMPORT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"refusing to import"* ]]
+  [ "$(output_value has-changes)" = "false" ]
+}
+
+@test "a squash recording its imports out of order still anchors at the farthest" {
+  # The anchor candidate set is a SET question: the loop picks the record that
+  # reaches farthest along OSS history, so narrowing to one value per commit
+  # first throws away the very values it exists to compare. A squash records
+  # every commit it replayed on one commit, and message order is not ancestry
+  # order, so last-wins can keep the NEARER one. The anchor then sits behind a
+  # commit that is demonstrably absorbed; content healing cannot reach it once
+  # the subtree matches no single OSS commit, and the replay dies conflicting on
+  # work already imported.
+  E1=$(external_commit pkg/app.go "first" "feat: alice first")
+  E2=$(external_commit pkg/app.go "second" "feat: alice second")
+  bash "$IMPORT" >/dev/null
+  # Collapse both imports onto one commit, recording the FARTHER one first so
+  # last-wins keeps E1.
+  (
+    cd "$MONO"
+    git switch -q main
+    git merge --squash -q automation/sync-from-oss-main
+    git commit -qm "chore: sync from oss (#1)
+
+Oss-Commit: $E2
+Oss-Commit: $E1"
+    git branch -q -D automation/sync-from-oss-main
+  )
+  # An unexported monorepo change to the same file, so the subtree matches no
+  # single OSS commit and content healing cannot rescue a stale anchor.
+  company_commit pkg/app.go "second-plus-local" "feat: local edit on top" >/dev/null
+
+  run bash "$IMPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value has-changes)" = "false" ]
+  [[ "$output" != *"conflict replaying"* ]]
+}
+
+@test "a contributor's Oss-Commit body line cannot jump the import anchor forward" {
+  # replay_commit copies an OSS message into the monorepo VERBATIM, so a
+  # column-zero "Oss-Commit: <sha>" line written by an outside contributor on the
+  # public mirror lands in a monorepo commit body, where the anchor reads it as a
+  # candidate. It can outrank the surviving records -- a squash that drops the
+  # generated ones leaves the body line as the newest thing left -- so the safety
+  # is not "a forged value never wins".
+  #
+  # It is that the value cannot name work nobody looked at. For the body line to
+  # be in our history at all, the import must have reached the commit carrying it,
+  # which means every first-parent commit before it in that range was already
+  # replayed, recognised as our own export, excluded, or proven benign. Advancing
+  # to a forged value therefore skips only commits the import already processed.
+  # That holds on linear history, which both repos enforce.
+  #
+  # This pins the ordinary case, where the genuine record survives and wins.
+  E1=$(external_commit ext1.go "one" "feat: alice first")
+  E2=$(external_commit ext2.go "two" "feat: alice second")
+  # A third contributor commit whose BODY names E2, replayed verbatim on import.
+  clone="$ROOT/forge-import"
+  git clone -q "$OSS_REMOTE" "$clone"
+  (
+    cd "$clone"
+    git checkout -q main
+    echo "three" > ext3.go
+    git add .
+    GIT_AUTHOR_NAME=alice GIT_AUTHOR_EMAIL=alice@contributor.example \
+      git commit -qm "feat: alice third
+
+Oss-Commit: $E2"
+    git push -q origin main
+  )
+  E3=$(git -C "$OSS_REMOTE" rev-parse main)
+
+  # First import brings all three in, forged line and all.
+  run bash "$IMPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value replayed-count)" = "3" ]
+  git -C "$MONO" switch -q main
+  git -C "$MONO" merge -q --ff-only automation/sync-from-oss-main
+
+  # The forged line is now in our own history, verbatim.
+  [ -n "$(git -C "$MONO" log --format=%B -20 | grep -c "^Oss-Commit: $E2")" ]
+
+  # A fourth external commit lands. It must still be imported: the anchor may
+  # only be moved by records WE wrote, which is E3, not the body line naming E2.
+  E4=$(external_commit ext4.go "four" "feat: alice fourth")
+  run bash "$IMPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value replayed-count)" = "1" ]
+  git -C "$MONO" switch -q automation/sync-from-oss-main
+  [ "$(git -C "$MONO" log -1 --format='%(trailers:key=Oss-Commit,valueonly)')" = "$E4" ]
+}
+
+@test "a failing trailer read in the healed range refuses to import instead of blaming a merge" {
+  # classify_healed_range splits what the anchor healed over into "our own
+  # exports" and "imports whose record was lost". Reached with a trailer read
+  # that failed, every commit falls into the second bucket, so a perfectly
+  # healthy sync is annotated as having lost provenance and the operator is sent
+  # to audit merge methods that were never wrong.
+  company_commit pkg/app.go "l1-company" "feat: company change" >/dev/null
+  bash "$EXPORT"
+
+  real_git="$(command -v git)"
+  mkdir -p "$ROOT/bin"
+  cat > "$ROOT/bin/git" <<WRAP
+#!/usr/bin/env bash
+one=false; mono=false
+for a in "\$@"; do
+  case "\$a" in
+    -1) one=true ;;
+    *trailers:key=Monorepo-Commit*) mono=true ;;
+  esac
+done
+if [ "\$one" = true ] && [ "\$mono" = true ]; then
+  exit 128
+fi
+exec "$real_git" "\$@"
+WRAP
+  chmod +x "$ROOT/bin/git"
+
+  PATH="$ROOT/bin:$PATH" run bash "$IMPORT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"refusing to import from an unknown point"* ]]
+  [[ "$output" != *"lost their provenance record"* ]]
 }
