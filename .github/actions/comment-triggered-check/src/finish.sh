@@ -54,6 +54,13 @@ if [[ -z "$summary" ]]; then
   summary="Build: ${build_result:-unknown}. Suite: ${suite_result:-unknown}."
 fi
 
+# Same reason as start mode: GitHub overrides details_url for this app, so the
+# completed check would otherwise offer no way back to the logs. Appended rather
+# than replacing, because the caller's summary is the useful part.
+if [[ -n "$details_url" ]]; then
+  summary="${summary}"$'\n\n'"[View the run](${details_url})"
+fi
+
 args=(--method PATCH "repos/${repo}/check-runs/${check_run_id}"
   -f "status=completed"
   -f "conclusion=${conclusion}"

@@ -161,3 +161,25 @@ patches() { calls_matching "PATCH"; }
   run bash "$SCRIPT"
   [ "$(kv conclusion)" = "" ]
 }
+
+# --- the link back to the logs -----------------------------------------------
+# details_url is overridden by GitHub for this app, so the summary is the only
+# place a link survives. See the note in start.sh.
+
+@test "the completed check-run links to the run from its summary" {
+  export INPUT_DETAILS_URL="https://github.com/loft-sh/demo/actions/runs/999"
+  run bash "$SCRIPT"
+  [ "$(calls_matching 'View the run.*actions/runs/999')" -ge 1 ]
+}
+
+@test "the caller's summary is kept and the link appended, not replaced" {
+  export INPUT_DETAILS_URL="https://github.com/loft-sh/demo/actions/runs/999"
+  export INPUT_SUMMARY="Suite reported 12 failures."
+  run bash "$SCRIPT"
+  [ "$(calls_matching 'Suite reported 12 failures.*View the run')" -ge 1 ]
+}
+
+@test "no details url means no link rather than a broken one" {
+  run bash "$SCRIPT"
+  [ "$(calls_matching 'View the run')" -eq 0 ]
+}

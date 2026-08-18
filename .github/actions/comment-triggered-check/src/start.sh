@@ -157,13 +157,26 @@ concurrency_key="$(concurrency_key "$filter")"
 # --- 4. Open the check-run ---------------------------------------------------
 # On the resolved head SHA, never on github.sha: for issue_comment that is the
 # default branch, so a check created there is invisible on the pull request.
+#
+# The run link goes in the summary, not only in details_url. GitHub overrides
+# details_url for check-runs owned by the github-actions app, so "View details"
+# lands on the check-run's own page and never reaches the logs. Verified in the
+# integration repo: details_url came back equal to html_url on every check-run,
+# on create and on update alike. The summary is stored verbatim, so it is the
+# only link that survives. details_url stays because a real GitHub App would
+# have it honoured, and because it costs nothing.
+summary="Requested by @${comment_author} with \`${command_word} ${filter}\`."
+if [[ -n "$run_id" ]]; then
+  summary="${summary}"$'\n\n'"[View the run](${server_url}/${repo}/actions/runs/${run_id})"
+fi
+
 if ! created="$(gh_json --method POST "repos/${repo}/check-runs" \
   -f "name=${name}" \
   -f "head_sha=${head_sha}" \
   -f "status=in_progress" \
   -f "details_url=${server_url}/${repo}/actions/runs/${run_id}" \
   -f "output[title]=Running" \
-  -f "output[summary]=Requested by @${comment_author} with \`${command_word} ${filter}\`.")"; then
+  -f "output[summary]=${summary}")"; then
   reason="check-run-not-created"
   should_run=false
   echo "::warning::could not create the check-run; not starting a run"

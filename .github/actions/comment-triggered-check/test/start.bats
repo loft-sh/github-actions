@@ -51,6 +51,21 @@ created() { calls_matching "POST"; }
   [ "$(kv head-sha)" = "deadbee" ]
 }
 
+# GitHub overrides details_url for check-runs owned by the github-actions app,
+# so the summary carries the only link back to the logs that survives. Losing it
+# leaves a check whose "View details" goes nowhere useful while the suite runs.
+@test "the opened check-run links to the run from its summary" {
+  run bash "$SCRIPT"
+  [ "$(calls_matching 'View the run.*actions/runs/999')" -ge 1 ]
+}
+
+@test "no run id means no link rather than a broken one" {
+  export INPUT_RUN_ID=""
+  run bash "$SCRIPT"
+  [ "$(calls_matching 'View the run')" -eq 0 ]
+  [ "$(kv check-run-id)" = "4242" ]
+}
+
 # A caller that hands the work to a non-privileged run dispatches by branch, and
 # `gh workflow run --ref` will not take a SHA.
 @test "resolves the head branch as well as the head sha" {

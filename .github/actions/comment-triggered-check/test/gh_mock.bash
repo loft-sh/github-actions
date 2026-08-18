@@ -25,7 +25,10 @@ setup_gh_mock() {
 #!/usr/bin/env bash
 set -o pipefail
 
-[ -n "${GH_MOCK_CALLS:-}" ] && printf '%s\n' "$*" >> "$GH_MOCK_CALLS"
+# One line per invocation, so newlines inside an argument are escaped rather
+# than recorded. A check-run summary is markdown and contains them; without this
+# a single call is counted as three.
+[ -n "${GH_MOCK_CALLS:-}" ] && printf '%s\n' "${*//$'\n'/\\n}" >> "$GH_MOCK_CALLS"
 
 all="$*"
 
