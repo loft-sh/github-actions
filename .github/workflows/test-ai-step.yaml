@@ -121,8 +121,10 @@ jobs:
           vault-id: ${{ inputs.vault-id }}
           prompt: |
             This is a CI smoke test of the session trigger path. Do not
-            start any real work. Reply with a single JSON object matching
-            the schema: set ok to true and echo a short greeting in note.
+            start any real work and change nothing. Reply with a single
+            JSON object matching the schema: set ok to true, and in note
+            name one fact you can read from your memory store (or say
+            the store is empty). Keep note under 200 characters.
           output-schema: |
             {
               "type": "object",
