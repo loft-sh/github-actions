@@ -295,6 +295,21 @@ def run_session(agent_name: str, user_content: str, api_key: str,
                   f"{env.id}: {e} — delete it in the Console")
 
 
+def strip_fence(text: str) -> str:
+    """Sessions have no provider-side structured-output binding, and
+    agents habitually wrap their JSON in a markdown code fence (observed
+    live: sre-memory-curator on the DEVOPS-1352 wif smoke). Strip one
+    outer fence when present; anything else is returned as-is."""
+    t = text.strip()
+    if not t.startswith("```"):
+        return t
+    parts = t.split("\n", 1)
+    if len(parts) != 2 or not parts[1].rstrip().endswith("```"):
+        return t
+    inner = parts[1].rstrip()
+    return inner[: inner.rfind("```")].strip()
+
+
 def validate_output(parsed, schema, text: str) -> None:
     """Sessions have no provider-side structured-output binding, so the
     schema contract is enforced here instead."""
@@ -337,8 +352,8 @@ def main() -> None:
         except ValueError:
             fail_soft("session-timeout-seconds must be an integer")
         vault_id = os.environ.get("INPUT_VAULT_ID", "").strip()
-        text = run_session(agent_name, user_content, api_key, vault_id,
-                           timeout_s)
+        text = strip_fence(run_session(agent_name, user_content, api_key,
+                                       vault_id, timeout_s))
         try:
             parsed = json.loads(text)
         except json.JSONDecodeError:
