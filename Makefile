@@ -93,7 +93,7 @@ check-docs: generate-docs ## verify docs are up to date (fails if drift detected
 help: ## show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-30s %s\n", $$1, $$2}'
 
-test: test-semver-validation test-linear-pr-commenter test-link-backport-prs test-release-notification test-linear-release-sync test-aws-test-infra test-cleanup-head-charts test-auto-approve-bot-prs test-ai-pr-review test-ai-step test-ci-test-notify test-go-licenses test-publish-helm-chart test-govulncheck test-run-ginkgo test-sticky-pr-comment test-repository-dispatch test-parse-label-filter test-release-branch-freeze test-prerelease-setup test-vcluster-release test-subtree-mirror test-oss-commit-sync test-backport-legacy-allowlist test-backport-legacy-split test-promote-release test-wait-for-release test-cve-scan test-commitlitn ## run all action tests
+test: test-semver-validation test-linear-pr-commenter test-link-backport-prs test-release-notification test-linear-release-sync test-aws-test-infra test-cleanup-head-charts test-auto-approve-bot-prs test-ai-pr-review test-ai-step test-ci-test-notify test-go-licenses test-publish-helm-chart test-govulncheck test-run-ginkgo test-sticky-pr-comment test-repository-dispatch test-parse-label-filter test-release-branch-freeze test-prerelease-setup test-vcluster-release test-subtree-mirror test-oss-commit-sync test-backport-legacy-allowlist test-backport-legacy-split test-promote-release test-wait-for-release test-cve-scan test-commitlint ## run all action tests
 
 test-semver-validation: ## run semver-validation unit tests
 	cd $(ACTIONS_DIR)/semver-validation && npm ci --silent && NODE_OPTIONS=--experimental-vm-modules npx jest --ci --coverage --watchAll=false
