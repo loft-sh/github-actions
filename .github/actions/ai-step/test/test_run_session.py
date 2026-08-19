@@ -267,6 +267,17 @@ def test_happy_path_returns_text_and_deletes(run_mod):
     assert client.sent, "user.message was never sent"
 
 
+def test_strip_fence_unwraps_and_preserves(run_mod):
+    # observed live: agents fence their JSON since sessions have no
+    # provider-side structured-output binding
+    fenced = '```json\n{"ok": true}\n```'
+    assert run_mod.strip_fence(fenced) == '{"ok": true}'
+    assert run_mod.strip_fence('{"ok": true}') == '{"ok": true}'
+    assert run_mod.strip_fence("just prose") == "just prose"
+    unclosed = '```json\n{"ok": true}'
+    assert run_mod.strip_fence(unclosed) == unclosed
+
+
 def test_validate_output_rejects_schema_violation(run_mod):
     pytest.importorskip("jsonschema")
     with pytest.raises(SystemExit) as e:
