@@ -25,6 +25,19 @@ run_script() {
     GITHUB_OUTPUT="$GITHUB_OUTPUT" "$SCRIPT"
 }
 
+# Session-mode rows: agent set, optional session key and timeout.
+run_script_session() {
+  local provider="$1" agent="$2" key="$3" timeout="${4-1200}" effort="${5-medium}"
+  run env \
+    INPUT_PROVIDER="$provider" \
+    INPUT_EFFORT="$effort" \
+    INPUT_OUTPUT_SCHEMA="$SCHEMA" \
+    INPUT_AGENT="$agent" \
+    INPUT_SESSION_KEY="$key" \
+    INPUT_SESSION_TIMEOUT="$timeout" \
+    GITHUB_OUTPUT="$GITHUB_OUTPUT" "$SCRIPT"
+}
+
 assert_kv() {
   local want="$1=$2" actual
   actual=$(grep "^$1=" "$GITHUB_OUTPUT" | tail -n1)
@@ -124,6 +137,87 @@ assert_kv() {
 
 @test "whitespace-only output-schema → proceed=false" {
   run_script anthropic medium "   "
+  [ "$status" -eq 0 ]
+  assert_kv proceed false
+  grep -q 'reason=.*output-schema is required' "$GITHUB_OUTPUT" || {
+    cat "$GITHUB_OUTPUT"; return 1;
+  }
+}
+
+# --- session mode (agent set) -------------------------------------------------
+
+@test "agent + anthropic + session key → proceed=true, mode=session, model empty" {
+  run_script_session anthropic pr-review-lead sk-test-key
+  [ "$status" -eq 0 ]
+  assert_kv proceed true
+  assert_kv mode session
+  assert_kv model ""
+}
+
+@test "agent + openai → proceed=false, reason says anthropic-only" {
+  run_script_session openai pr-review-lead sk-test-key
+  [ "$status" -eq 0 ]
+  assert_kv proceed false
+  grep -q 'reason=.*anthropic-only' "$GITHUB_OUTPUT" || {
+    cat "$GITHUB_OUTPUT"; return 1;
+  }
+}
+
+@test "agent + invalid provider → proceed=false, reason says anthropic-only" {
+  run_script_session bedrock pr-review-lead sk-test-key
+  [ "$status" -eq 0 ]
+  assert_kv proceed false
+  grep -q 'reason=.*anthropic-only' "$GITHUB_OUTPUT" || {
+    cat "$GITHUB_OUTPUT"; return 1;
+  }
+}
+
+@test "agent + anthropic without session key → proceed=false, reason names the key" {
+  run_script_session anthropic pr-review-lead ""
+  [ "$status" -eq 0 ]
+  assert_kv proceed false
+  grep -q 'reason=.*anthropic-session-key' "$GITHUB_OUTPUT" || {
+    cat "$GITHUB_OUTPUT"; return 1;
+  }
+}
+
+@test "agent + non-numeric timeout → proceed=false, reason mentions timeout" {
+  run_script_session anthropic pr-review-lead sk-test-key never
+  [ "$status" -eq 0 ]
+  assert_kv proceed false
+  grep -q 'reason=.*session-timeout-seconds' "$GITHUB_OUTPUT" || {
+    cat "$GITHUB_OUTPUT"; return 1;
+  }
+}
+
+@test "agent + zero timeout → proceed=false" {
+  run_script_session anthropic pr-review-lead sk-test-key 0
+  [ "$status" -eq 0 ]
+  assert_kv proceed false
+}
+
+@test "agent ignores effort — invalid effort still proceeds in session mode" {
+  run_script_session anthropic pr-review-lead sk-test-key 1200 extreme
+  [ "$status" -eq 0 ]
+  assert_kv proceed true
+  assert_kv mode session
+}
+
+@test "agent unset → mode=single" {
+  run_script anthropic medium
+  [ "$status" -eq 0 ]
+  assert_kv proceed true
+  assert_kv mode single
+}
+
+@test "empty schema wins over agent — schema skip fires first" {
+  run env \
+    INPUT_PROVIDER=anthropic \
+    INPUT_EFFORT=medium \
+    INPUT_OUTPUT_SCHEMA="" \
+    INPUT_AGENT=pr-review-lead \
+    INPUT_SESSION_KEY=sk-test-key \
+    GITHUB_OUTPUT="$GITHUB_OUTPUT" "$SCRIPT"
   [ "$status" -eq 0 ]
   assert_kv proceed false
   grep -q 'reason=.*output-schema is required' "$GITHUB_OUTPUT" || {

@@ -17,6 +17,16 @@ on:
         type: choice
         options: [low, medium, high]
         default: low
+      agent:
+        description: >-
+          Deployed managed-agent name for the session smoke test.
+          Leave empty to run the single-call smoke instead.
+        type: string
+        default: ''
+      vault-id:
+        description: 'Optional vault id to attach to the session smoke'
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -39,7 +49,7 @@ jobs:
   # action re-exposes it on `result`, and `fromJSON(...)` parses cleanly
   # downstream.
   smoke:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && inputs.agent == ''
     name: Live smoke (${{ inputs.provider }}, ${{ inputs.effort }})
     runs-on: ubuntu-latest
     steps:
@@ -87,3 +97,55 @@ jobs:
           echo "$RESULT" | jq -e '.confidence | type == "number"' >/dev/null \
             || { echo "::error::confidence field missing or not a number"; exit 1; }
           echo "ai-step returned schema-conforming JSON"
+
+  # Live session smoke. Spends session-scale tokens (minutes, not
+  # seconds), so gated behind workflow_dispatch with an explicit agent
+  # name — never runs on PR events. Proves the session mode end to end:
+  # agent resolved by name, session created and driven through one turn,
+  # final message validated against the schema and re-exposed on
+  # `result`, session and environment deleted afterwards.
+  session-smoke:
+    if: github.event_name == 'workflow_dispatch' && inputs.agent != ''
+    name: Live session smoke (${{ inputs.agent }})
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - id: agent
+        uses: ./.github/actions/ai-step
+        with:
+          provider: anthropic
+          agent: ${{ inputs.agent }}
+          vault-id: ${{ inputs.vault-id }}
+          prompt: |
+            This is a CI smoke test of the session trigger path. Do not
+            start any real work. Reply with a single JSON object matching
+            the schema: set ok to true and echo a short greeting in note.
+          output-schema: |
+            {
+              "type": "object",
+              "required": ["ok", "note"],
+              "properties": {
+                "ok":   { "type": "boolean" },
+                "note": { "type": "string" }
+              }
+            }
+          anthropic-session-key: ${{ secrets.ANTHROPIC_SESSION_KEY }}
+
+      - name: Assert structured output
+        env:
+          RESULT: ${{ steps.agent.outputs.result }}
+          CONCLUSION: ${{ steps.agent.outputs.conclusion }}
+          REASON: ${{ steps.agent.outputs.reason }}
+        run: |
+          echo "conclusion=$CONCLUSION"
+          echo "result=$RESULT"
+          [ "$CONCLUSION" = "success" ] || { echo "::error::expected conclusion=success, got '$CONCLUSION' (reason: $REASON)"; exit 1; }
+          [ -n "$RESULT" ] || { echo "::error::empty result"; exit 1; }
+          echo "$RESULT" | jq -e '.ok == true' >/dev/null \
+            || { echo "::error::ok field missing or not true"; exit 1; }
+          echo "$RESULT" | jq -e '.note | type == "string"' >/dev/null \
+            || { echo "::error::note field missing or not a string"; exit 1; }
+          echo "ai-step session mode returned schema-conforming JSON"
