@@ -5,6 +5,7 @@ on:
     paths:
       - '.github/scripts/cleanup-head-charts/**'
       - '.github/workflows/cleanup-head-charts.yaml'
+      - '.github/workflows/test-cleanup-head-charts.yaml'
 
 permissions: {}
 
@@ -18,4 +19,9 @@ jobs:
           persist-credentials: false
       - uses: bats-core/bats-action@77d6fb60505b4d0d1d73e48bd035b55074bbfb43 # 4.0.0
         with:
-          tests: .github/scripts/cleanup-head-charts/test
+          support-install: false
+          assert-install: false
+          detik-install: false
+          file-install: false
+      - name: Run cleanup-head-charts tests
+        run: bats .github/scripts/cleanup-head-charts/test/*.bats

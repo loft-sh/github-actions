@@ -25,6 +25,21 @@ run_script() {
     GITHUB_OUTPUT="$GITHUB_OUTPUT" "$SCRIPT"
 }
 
+# Session-mode rows: agent set, optional session key and timeout.
+# ANTHROPIC_FEDERATION_RULE_ID is unset explicitly so the credential
+# rows stay deterministic regardless of the invoking environment.
+run_script_session() {
+  local provider="$1" agent="$2" key="$3" timeout="${4-1200}" effort="${5-medium}"
+  run env -u ANTHROPIC_FEDERATION_RULE_ID \
+    INPUT_PROVIDER="$provider" \
+    INPUT_EFFORT="$effort" \
+    INPUT_OUTPUT_SCHEMA="$SCHEMA" \
+    INPUT_AGENT="$agent" \
+    INPUT_ANTHROPIC_SESSION_KEY="$key" \
+    INPUT_SESSION_TIMEOUT="$timeout" \
+    GITHUB_OUTPUT="$GITHUB_OUTPUT" "$SCRIPT"
+}
+
 assert_kv() {
   local want="$1=$2" actual
   actual=$(grep "^$1=" "$GITHUB_OUTPUT" | tail -n1)
@@ -124,6 +139,126 @@ assert_kv() {
 
 @test "whitespace-only output-schema → proceed=false" {
   run_script anthropic medium "   "
+  [ "$status" -eq 0 ]
+  assert_kv proceed false
+  grep -q 'reason=.*output-schema is required' "$GITHUB_OUTPUT" || {
+    cat "$GITHUB_OUTPUT"; return 1;
+  }
+}
+
+# --- session mode (agent set) -------------------------------------------------
+
+@test "agent + anthropic + session key → proceed=true, mode=session, model empty" {
+  run_script_session anthropic pr-review-lead sk-test-key
+  [ "$status" -eq 0 ]
+  assert_kv proceed true
+  assert_kv mode session
+  assert_kv model ""
+  assert_kv packages "anthropic jsonschema"
+}
+
+@test "session key without agent → single mode with a warning naming the wiring" {
+  run env \
+    INPUT_PROVIDER=anthropic \
+    INPUT_EFFORT=medium \
+    INPUT_OUTPUT_SCHEMA="$SCHEMA" \
+    INPUT_ANTHROPIC_SESSION_KEY=sk-test-key \
+    GITHUB_OUTPUT="$GITHUB_OUTPUT" "$SCRIPT"
+  [ "$status" -eq 0 ]
+  assert_kv proceed true
+  assert_kv mode single
+  echo "$output" | grep -q '::warning::.*anthropic-session-key is set but agent is empty' || {
+    echo "$output"; return 1;
+  }
+}
+
+@test "agent + openai → proceed=false, reason says anthropic-only" {
+  run_script_session openai pr-review-lead sk-test-key
+  [ "$status" -eq 0 ]
+  assert_kv proceed false
+  grep -q 'reason=.*anthropic-only' "$GITHUB_OUTPUT" || {
+    cat "$GITHUB_OUTPUT"; return 1;
+  }
+}
+
+@test "agent + invalid provider → proceed=false, reason says anthropic-only" {
+  run_script_session bedrock pr-review-lead sk-test-key
+  [ "$status" -eq 0 ]
+  assert_kv proceed false
+  grep -q 'reason=.*anthropic-only' "$GITHUB_OUTPUT" || {
+    cat "$GITHUB_OUTPUT"; return 1;
+  }
+}
+
+@test "agent + anthropic without any credential → proceed=false, reason names both options" {
+  run_script_session anthropic pr-review-lead ""
+  [ "$status" -eq 0 ]
+  assert_kv proceed false
+  grep -q 'reason=.*anthropic-session-key' "$GITHUB_OUTPUT" || {
+    cat "$GITHUB_OUTPUT"; return 1;
+  }
+  grep -q 'reason=.*federation' "$GITHUB_OUTPUT" || {
+    cat "$GITHUB_OUTPUT"; return 1;
+  }
+}
+
+@test "agent + no key + federation env → proceed=true, mode=session" {
+  run env \
+    ANTHROPIC_FEDERATION_RULE_ID=fdrl_dummy_test_value \
+    INPUT_PROVIDER=anthropic \
+    INPUT_EFFORT=medium \
+    INPUT_OUTPUT_SCHEMA="$SCHEMA" \
+    INPUT_AGENT=pr-review-lead \
+    INPUT_ANTHROPIC_SESSION_KEY="" \
+    INPUT_SESSION_TIMEOUT=1200 \
+    GITHUB_OUTPUT="$GITHUB_OUTPUT" "$SCRIPT"
+  [ "$status" -eq 0 ]
+  assert_kv proceed true
+  assert_kv mode session
+  assert_kv packages "anthropic jsonschema"
+}
+
+@test "agent + non-numeric timeout → proceed=false, reason mentions timeout" {
+  run_script_session anthropic pr-review-lead sk-test-key never
+  [ "$status" -eq 0 ]
+  assert_kv proceed false
+  grep -q 'reason=.*session-timeout-seconds' "$GITHUB_OUTPUT" || {
+    cat "$GITHUB_OUTPUT"; return 1;
+  }
+}
+
+@test "agent + zero timeout → proceed=false" {
+  run_script_session anthropic pr-review-lead sk-test-key 0
+  [ "$status" -eq 0 ]
+  assert_kv proceed false
+}
+
+@test "agent ignores effort — invalid effort still proceeds in session mode" {
+  run_script_session anthropic pr-review-lead sk-test-key 1200 extreme
+  [ "$status" -eq 0 ]
+  assert_kv proceed true
+  assert_kv mode session
+}
+
+@test "agent unset → mode=single, packages track the provider" {
+  run_script anthropic medium
+  [ "$status" -eq 0 ]
+  assert_kv proceed true
+  assert_kv mode single
+  assert_kv packages anthropic
+  run_script openai medium
+  [ "$status" -eq 0 ]
+  assert_kv packages openai
+}
+
+@test "empty schema wins over agent — schema skip fires first" {
+  run env \
+    INPUT_PROVIDER=anthropic \
+    INPUT_EFFORT=medium \
+    INPUT_OUTPUT_SCHEMA="" \
+    INPUT_AGENT=pr-review-lead \
+    INPUT_ANTHROPIC_SESSION_KEY=sk-test-key \
+    GITHUB_OUTPUT="$GITHUB_OUTPUT" "$SCRIPT"
   [ "$status" -eq 0 ]
   assert_kv proceed false
   grep -q 'reason=.*output-schema is required' "$GITHUB_OUTPUT" || {

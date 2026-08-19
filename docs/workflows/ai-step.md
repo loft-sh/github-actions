@@ -5,6 +5,19 @@
 > [action README](../../.github/actions/ai-step/README.md) for inputs,
 > outputs, and usage examples.
 
+> **Addendum (DEVOPS-1352, 2026-08).** Two ways this record has drifted
+> from what shipped. First, the implemented v1 calls the provider APIs
+> directly with native structured-output binding; the `tools`,
+> `mcp-config`, and `fail-on-invalid` inputs sketched below never
+> shipped, and the action is dual-provider (`provider: anthropic |
+> openai`), always fail-soft. Second, DEVOPS-1352 added a session mode:
+> an optional `agent` input targets a deployed managed agent from
+> `loft-sh/ai-agents`, turning the ~15s single call into a minutes-long,
+> session-scale run whose final message is validated against
+> `output-schema` on the runner (sessions have no provider-side
+> binding). Anthropic-only, opt-in per caller, needs a workspace-scoped
+> session key. The README is the authoritative contract for both modes.
+
 ## Problem
 
 We have `ai-pr-review`: a composite action + reusable workflow that
