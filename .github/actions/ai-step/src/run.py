@@ -37,6 +37,11 @@ import time
 # loft-sh/ai-agents.
 BETA_HEADER = "managed-agents-2026-04-01"
 POLL_INTERVAL_S = 10
+# sessions.retrieve flips to idle slightly before the session.status_idle
+# event is visible in the event log (observed live on the DEVOPS-1352 wif
+# smoke, ai-agents run 32252874325), so the stop_reason lookup retries for
+# a bounded grace window instead of failing on the first empty read.
+STOP_REASON_GRACE_S = 60
 
 
 def enforce_strict(node):
@@ -241,11 +246,22 @@ def run_session(agent_name: str, user_content: str, api_key: str,
         if status == "terminated":
             fail_soft("session terminated before producing output")
 
-        idle = latest_event(client, session.id, "session.status_idle")
-        stop = getattr(getattr(idle, "stop_reason", None), "type", None)
+        stop = None
+        grace_deadline = time.time() + STOP_REASON_GRACE_S
+        while True:
+            idle = latest_event(client, session.id, "session.status_idle")
+            sr = getattr(idle, "stop_reason", None)
+            stop = sr if isinstance(sr, str) else getattr(sr, "type", None)
+            if stop is not None or time.time() >= grace_deadline:
+                break
+            time.sleep(POLL_INTERVAL_S)
         if stop != "end_turn":
+            recent = [getattr(e, "type", "?") for e in
+                      client.beta.sessions.events.list(session.id,
+                                                       order="desc", limit=10)]
             fail_soft(f"session stopped with stop_reason '{stop}' instead of "
-                      "end_turn — the agent did not complete its turn")
+                      f"end_turn — the agent did not complete its turn "
+                      f"(recent events: {recent})")
 
         msg = latest_event(client, session.id, "agent.message")
         if msg is None:
