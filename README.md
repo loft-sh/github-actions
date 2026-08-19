@@ -674,9 +674,13 @@ and input, bind the output to a JSON Schema, expose the schema-conforming
 JSON as a step output. Downstream steps parse with `fromJSON(...)` and
 branch on typed fields.
 
-Structured output is the contract. Whatever the model returns is exposed
-on `result` and `conclusion=success`. The action never emits `failed` — the
-caller knows what empty output means for their pipeline.
+Structured output is the contract. Schema-conforming output is exposed on
+`result` with `conclusion=success`; any failure degrades to
+`conclusion=failed` with an empty `result` and exit code 0 — the caller
+knows what a failed result means for their pipeline. Setting the `agent`
+input switches the action to a session against a deployed managed agent
+from `loft-sh/ai-agents` (Anthropic-only, minutes not seconds, needs a
+workspace session key).
 
 **Location:** `.github/actions/ai-step`
 

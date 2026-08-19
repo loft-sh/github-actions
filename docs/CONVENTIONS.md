@@ -56,8 +56,26 @@ requirements. The table below captures current status and guidance:
 - Testing frameworks: **vitest** for TypeScript, **uv + pytest** for Python,
   standard `go test` for Go, **[bats](https://github.com/bats-core/bats-core)**
   for Bash scripts. CI uses
-  [`bats-core/bats-action`](https://github.com/bats-core/bats-action); locally
-  install bats with your package manager:
+  [`bats-core/bats-action`](https://github.com/bats-core/bats-action) to install
+  bats, then runs the suite in an explicit step:
+  ```yaml
+  - uses: bats-core/bats-action@<sha> # 4.0.0
+    with:
+      support-install: false
+      assert-install: false
+      detik-install: false
+      file-install: false
+  - name: Run <action-name> tests
+    run: bats .github/actions/<action-name>/test/*.bats
+  ```
+  `bats-action` only installs bats. It does not run anything, and it has no
+  `tests` input. Handing it a path is an unknown input, which is a warning
+  rather than an error, so a job that stops there passes without executing a
+  single test. `make check-bats-jobs` (run by `make lint` and by CI) fails the
+  build on that shape.
+- Every test workflow's `paths` filter MUST include the workflow file itself, so
+  a change to the test harness is exercised by the PR that makes it.
+- Locally, install bats with your package manager:
   ```bash
   # macOS
   brew install bats-core
