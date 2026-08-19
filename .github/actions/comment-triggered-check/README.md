@@ -36,8 +36,27 @@ flags that as `actions/untrusted-checkout-toctou`, correctly.
 Keeping this action's jobs free of any checkout and dispatching the actual work
 to a `workflow_dispatch` run on the head branch avoids it: that run is not a
 privileged trigger, and its trust model is the one a normal pull request run
-already has. Pass the check-run id along and let the dispatched workflow finish
-it.
+already has.
+
+Pass three things along, not one. The check-run id, so the dispatched workflow
+can finish what this one opened, and **both** refs, because they answer
+different questions:
+
+| output | what it is for |
+| --- | --- |
+| `head-ref` | the `--ref` of the dispatch. It selects which copy of the workflow runs, and it must be a branch or tag, never a SHA |
+| `head-sha` | the commit the check-run was opened on, and the commit the run must actually test |
+
+They can disagree. `head-sha` is resolved from the API when the comment arrives;
+`--ref` names a branch, and `github.sha` in the dispatched run is whatever that
+branch pointed at when the run started. A push in between means the run tests a
+different commit and publishes its verdict against the one in the check-run,
+which reads as a result for code that was never tested.
+
+So the dispatched workflow should take `head-sha` as an input and compare it
+against `github.sha` before doing any work, stopping if they differ. Pinning
+every checkout to `head-sha` is the thorough version; refusing to run is the
+cheap one, and either beats reporting the wrong commit.
 
 ## Security boundary: same-repository only
 
