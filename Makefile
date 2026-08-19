@@ -95,8 +95,8 @@ help: ## show this help
 
 test: test-semver-validation test-linear-pr-commenter test-link-backport-prs test-release-notification test-linear-release-sync test-aws-test-infra test-cleanup-head-charts test-auto-approve-bot-prs test-ai-pr-review test-ai-step test-ci-test-notify test-go-licenses test-publish-helm-chart test-govulncheck test-run-ginkgo test-sticky-pr-comment test-repository-dispatch test-parse-label-filter test-release-branch-freeze test-prerelease-setup test-vcluster-release test-subtree-mirror test-oss-commit-sync test-backport-legacy-allowlist test-backport-legacy-split test-promote-release test-wait-for-release test-cve-scan test-commitlint test-resolve-github-release ## run all action tests
 
-test-semver-validation: ## run semver-validation unit tests
-	cd $(ACTIONS_DIR)/semver-validation && npm ci --silent && NODE_OPTIONS=--experimental-vm-modules npx jest --ci --coverage --watchAll=false
+test-semver-validation: ## run semver-validation bats tests
+	bats $(ACTIONS_DIR)/semver-validation/test/*.bats
 
 test-linear-pr-commenter: ## run linear-pr-commenter unit tests
 	cd $(ACTIONS_DIR)/linear-pr-commenter/src && go test -v ./...

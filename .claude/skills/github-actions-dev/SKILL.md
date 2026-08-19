@@ -12,7 +12,7 @@ Repo: `loft-sh/github-actions` — reusable GitHub Actions for loft-sh org.
 ```
 .github/
   actions/           # reusable actions (each in its own directory)
-    semver-validation/     # node24, jest tests
+    semver-validation/     # composite over the semstat binary, bats tests
     linear-pr-commenter/   # composite, go tests
     release-notification/  # composite, yaml-only (no testable logic)
     ci-notify-nightly-tests/  # composite, yaml-only
@@ -24,7 +24,7 @@ Makefile             # local test harness
 
 ```bash
 make test                       # all action tests
-make test-semver-validation     # jest tests only
+make test-semver-validation     # semver-validation bats only
 make test-linear-pr-commenter   # go tests only
 make lint                       # actionlint + zizmor
 ```
@@ -33,7 +33,7 @@ make lint                       # actionlint + zizmor
 
 1. Create `.github/actions/<action-name>/action.yml`
 2. Add tests based on action type:
-   - Node.js: `test/index.test.js` with Jest (see semver-validation pattern)
+   - Composite with shell logic: `src/*.sh` plus `test/*.bats` (see semver-validation pattern)
    - Go: `*_test.go` files (see linear-pr-commenter pattern)
    - Composite YAML-only: no unit tests, rely on actionlint
 3. Add Makefile target: `test-<action-name>`
