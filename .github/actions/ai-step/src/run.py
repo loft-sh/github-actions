@@ -170,6 +170,11 @@ def run_session(agent_name: str, user_content: str, api_key: str,
     from anthropic import Anthropic, APIError  # type: ignore
 
     if api_key:
+        # GitHub only auto-masks values sourced from secrets.*; masking
+        # here scrubs the key from every log line no matter where the
+        # caller sourced it (workflow commands are intercepted by the
+        # runner, the value never lands in the log).
+        print(f"::add-mask::{api_key}")
         client = Anthropic(api_key=api_key,
                            default_headers={"anthropic-beta": BETA_HEADER})
     else:

@@ -189,6 +189,21 @@ def test_unexpected_exception_fails_soft_and_deletes_env(run_mod):
     assert client.deleted["environments"] == ["env_test"]
 
 
+def test_session_key_is_masked_in_logs(run_mod, capsys):
+    # public-repo posture: the runner must scrub the key from every log
+    # line even when the caller did not source it from secrets.*
+    client = FakeClient()
+    _run(run_mod, client)
+    assert "::add-mask::sk-key" in capsys.readouterr().out
+
+
+def test_no_key_emits_no_mask_line(run_mod, capsys):
+    client = FakeClient()
+    _wire(run_mod, client)
+    run_mod.run_session("sre-memory-curator", "hi", "", "", 60)
+    assert "::add-mask::" not in capsys.readouterr().out
+
+
 def test_no_key_builds_client_for_sdk_credential_chain(run_mod):
     # federation fallback: with no session key the client must be built
     # WITHOUT api_key so the SDK's credential chain (workload identity
