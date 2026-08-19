@@ -188,12 +188,18 @@ def run_session(agent_name: str, user_content: str, api_key: str,
 
     run_id = os.environ.get("GITHUB_RUN_ID", "local")
     try:
+        # Networking is unrestricted like every deployed product's
+        # environment (ai-agents ensure_env): the API's narrower
+        # `limited` mode needs a per-agent host allowlist this generic
+        # trigger cannot know. Narrowing per caller is follow-up work.
         env = client.beta.environments.create(
             name=f"ai-step-{run_id}-{os.urandom(3).hex()}",
             config={"type": "cloud", "networking": {"type": "unrestricted"}},
         )
     except APIError as e:
         fail_soft(f"could not create environment: {e}", getattr(e, "body", ""))
+    except Exception as e:
+        fail_soft(f"environment creation failed: {e}")
 
     session = None
     try:
@@ -237,6 +243,12 @@ def run_session(agent_name: str, user_content: str, api_key: str,
     except APIError as e:
         fail_soft(f"anthropic API error during session: {e}",
                   getattr(e, "body", ""))
+    except Exception as e:
+        # Mirror the APIError handler so an unexpected response shape
+        # (a retrieve without .status, an event without .stop_reason)
+        # still fails soft instead of exiting non-zero; SystemExit from
+        # fail_soft passes through untouched.
+        fail_soft(f"session mode failed unexpectedly: {e}")
     finally:
         # Delete unconditionally, even on the timeout path where the
         # session may still be running: leaving it up spends tokens with

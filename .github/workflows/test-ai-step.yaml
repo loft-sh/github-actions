@@ -43,6 +43,18 @@ jobs:
         with:
           tests: .github/actions/ai-step/test
 
+  pytest:
+    name: Run session-lifecycle tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Install test dependencies
+        run: python3 -m pip install --quiet --disable-pip-version-check pytest jsonschema
+      - name: Run pytest
+        run: python3 -m pytest .github/actions/ai-step/test/ -q
+
   # Live smoke test. Spends real tokens, so gated behind workflow_dispatch
   # only — never runs on PR events. Proves the whole pipeline: schema is
   # forwarded to the provider, model returns JSON conforming to it, the
@@ -151,3 +163,19 @@ jobs:
           echo "$RESULT" | jq -e '.note | type == "string"' >/dev/null \
             || { echo "::error::note field missing or not a string"; exit 1; }
           echo "ai-step session mode returned schema-conforming JSON"
+
+      # Acceptance criterion 4: every session the action creates is
+      # deleted before the step ends, confirmed against a live listing.
+      - name: Assert session was deleted
+        env:
+          ANTHROPIC_SESSION_KEY: ${{ secrets.ANTHROPIC_SESSION_KEY }}
+          TITLE: ai-step ${{ github.repository }}#${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          leftover=$(curl -sS https://api.anthropic.com/v1/sessions?limit=100 \
+            -H "x-api-key: $ANTHROPIC_SESSION_KEY" \
+            -H "anthropic-beta: managed-agents-2026-04-01" \
+            | jq '[.data[]? | select(.title == env.TITLE)] | length')
+          [ "$leftover" = "0" ] \
+            || { echo "::error::$leftover session(s) titled '$TITLE' still listed — cleanup regressed"; exit 1; }
+          echo "no leftover session titled '$TITLE'"

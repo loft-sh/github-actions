@@ -5,7 +5,7 @@
 # action lives here — YAML only dispatches on outputs.
 #
 # Required env: INPUT_PROVIDER, INPUT_EFFORT, INPUT_OUTPUT_SCHEMA
-# Optional env: INPUT_AGENT, INPUT_SESSION_KEY, INPUT_SESSION_TIMEOUT
+# Optional env: INPUT_AGENT, INPUT_ANTHROPIC_SESSION_KEY, INPUT_SESSION_TIMEOUT
 # Writes to $GITHUB_OUTPUT:
 #   proceed=true|false  — whether the AI step should run
 #   reason=<string>     — one-line explanation (populated on skip)
@@ -13,6 +13,9 @@
 #   model=<string>      — provider-specific model identifier (single mode
 #                         only; in session mode the deployed agent owns
 #                         its model, so this stays empty)
+#   packages=<string>   — space-separated pip packages the run step needs;
+#                         the install step consumes this verbatim so every
+#                         branch decision stays in this script
 # Always exits 0 — invalid input degrades to a skip, never hard-fails.
 set -euo pipefail
 
@@ -20,7 +23,7 @@ set -euo pipefail
 : "${INPUT_EFFORT:?INPUT_EFFORT required}"
 : "${INPUT_OUTPUT_SCHEMA?INPUT_OUTPUT_SCHEMA required}"
 INPUT_AGENT="${INPUT_AGENT:-}"
-INPUT_SESSION_KEY="${INPUT_SESSION_KEY:-}"
+INPUT_ANTHROPIC_SESSION_KEY="${INPUT_ANTHROPIC_SESSION_KEY:-}"
 INPUT_SESSION_TIMEOUT="${INPUT_SESSION_TIMEOUT:-1200}"
 
 emit() {
@@ -36,6 +39,7 @@ skip() {
   emit reason  "$reason"
   emit mode    ""
   emit model   ""
+  emit packages ""
   exit 0
 }
 
@@ -51,7 +55,7 @@ if [ -n "${INPUT_AGENT// }" ]; then
   if [ "$INPUT_PROVIDER" != "anthropic" ]; then
     skip "agent mode is anthropic-only — provider '$INPUT_PROVIDER' has no managed-agent counterpart"
   fi
-  if [ -z "${INPUT_SESSION_KEY// }" ]; then
+  if [ -z "${INPUT_ANTHROPIC_SESSION_KEY// }" ]; then
     skip "anthropic-session-key is required when agent is set — the Messages-API key cannot call /v1/sessions"
   fi
   case "$INPUT_SESSION_TIMEOUT" in
@@ -61,7 +65,16 @@ if [ -n "${INPUT_AGENT// }" ]; then
   emit reason  ""
   emit mode    session
   emit model   ""
+  # jsonschema validates the agent's output against output-schema —
+  # sessions have no provider-side structured-output binding.
+  emit packages "anthropic jsonschema"
   exit 0
+fi
+
+# a session key with no agent is almost certainly a half-wired session
+# mode; say so instead of letting the run step fail on the Messages key
+if [ -n "${INPUT_ANTHROPIC_SESSION_KEY// }" ]; then
+  echo "::warning::ai-step: anthropic-session-key is set but agent is empty — running single-call mode; set agent to target a deployed managed agent"
 fi
 
 # single-call mode: provider + effort → model
@@ -81,3 +94,4 @@ emit proceed true
 emit reason  ""
 emit mode    single
 emit model   "$model"
+emit packages "$INPUT_PROVIDER"

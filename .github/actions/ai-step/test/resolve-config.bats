@@ -33,7 +33,7 @@ run_script_session() {
     INPUT_EFFORT="$effort" \
     INPUT_OUTPUT_SCHEMA="$SCHEMA" \
     INPUT_AGENT="$agent" \
-    INPUT_SESSION_KEY="$key" \
+    INPUT_ANTHROPIC_SESSION_KEY="$key" \
     INPUT_SESSION_TIMEOUT="$timeout" \
     GITHUB_OUTPUT="$GITHUB_OUTPUT" "$SCRIPT"
 }
@@ -152,6 +152,22 @@ assert_kv() {
   assert_kv proceed true
   assert_kv mode session
   assert_kv model ""
+  assert_kv packages "anthropic jsonschema"
+}
+
+@test "session key without agent → single mode with a warning naming the wiring" {
+  run env \
+    INPUT_PROVIDER=anthropic \
+    INPUT_EFFORT=medium \
+    INPUT_OUTPUT_SCHEMA="$SCHEMA" \
+    INPUT_ANTHROPIC_SESSION_KEY=sk-test-key \
+    GITHUB_OUTPUT="$GITHUB_OUTPUT" "$SCRIPT"
+  [ "$status" -eq 0 ]
+  assert_kv proceed true
+  assert_kv mode single
+  echo "$output" | grep -q '::warning::.*anthropic-session-key is set but agent is empty' || {
+    echo "$output"; return 1;
+  }
 }
 
 @test "agent + openai → proceed=false, reason says anthropic-only" {
@@ -203,11 +219,15 @@ assert_kv() {
   assert_kv mode session
 }
 
-@test "agent unset → mode=single" {
+@test "agent unset → mode=single, packages track the provider" {
   run_script anthropic medium
   [ "$status" -eq 0 ]
   assert_kv proceed true
   assert_kv mode single
+  assert_kv packages anthropic
+  run_script openai medium
+  [ "$status" -eq 0 ]
+  assert_kv packages openai
 }
 
 @test "empty schema wins over agent — schema skip fires first" {
@@ -216,7 +236,7 @@ assert_kv() {
     INPUT_EFFORT=medium \
     INPUT_OUTPUT_SCHEMA="" \
     INPUT_AGENT=pr-review-lead \
-    INPUT_SESSION_KEY=sk-test-key \
+    INPUT_ANTHROPIC_SESSION_KEY=sk-test-key \
     GITHUB_OUTPUT="$GITHUB_OUTPUT" "$SCRIPT"
   [ "$status" -eq 0 ]
   assert_kv proceed false

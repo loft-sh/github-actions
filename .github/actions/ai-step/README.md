@@ -162,6 +162,17 @@ Read this before wiring it into a pipeline:
 - **Vaults.** Agents whose MCP servers authenticate through
   session-scoped vault credentials need `vault-id` or their MCP servers
   fail to initialize. A vault id names a resource, not a credential.
+- **The agent's final message lands in public CI logs.** `result` and
+  the raw output on validation failure are printed unmasked. A
+  vault-backed agent can read credential-authorized material, and a
+  prompt-injected turn can try to make it echo what it read, so never
+  point an agent whose output may contain secret material at this
+  action, and treat the agent's output as untrusted input downstream.
+- **Outbound network is unrestricted.** The per-run environment is
+  created with unrestricted egress, matching how the deployed products
+  run. The API's `limited` mode needs a per-agent host allowlist this
+  generic trigger cannot know; a caller-facing knob is deliberate
+  follow-up work if a caller needs narrower egress.
 - **Completion is polled, not streamed.** The action polls session
   status until it leaves `running` and gates on `stop_reason=end_turn`
   (a visible answer is not a finished session — ai-agents PR #81). A

@@ -98,7 +98,7 @@ runs:
         INPUT_EFFORT: ${{ inputs.effort }}
         INPUT_OUTPUT_SCHEMA: ${{ inputs.output-schema }}
         INPUT_AGENT: ${{ inputs.agent }}
-        INPUT_SESSION_KEY: ${{ inputs.anthropic-session-key }}
+        INPUT_ANTHROPIC_SESSION_KEY: ${{ inputs.anthropic-session-key }}
         INPUT_SESSION_TIMEOUT: ${{ inputs.session-timeout-seconds }}
       run: ${{ github.action_path }}/src/resolve-config.sh
 
@@ -106,21 +106,13 @@ runs:
       if: steps.cfg.outputs.proceed == 'true'
       shell: bash
       env:
-        PROVIDER: ${{ inputs.provider }}
-        MODE: ${{ steps.cfg.outputs.mode }}
+        PACKAGES: ${{ steps.cfg.outputs.packages }}
       run: |
         set -euo pipefail
-        if [ "$MODE" = "session" ]; then
-          # jsonschema validates the agent's output against output-schema —
-          # sessions have no provider-side structured-output binding.
-          python3 -m pip install --quiet --disable-pip-version-check anthropic jsonschema
-          exit 0
-        fi
-        case "$PROVIDER" in
-          anthropic) python3 -m pip install --quiet --disable-pip-version-check anthropic ;;
-          openai)    python3 -m pip install --quiet --disable-pip-version-check openai ;;
-          *) echo "::error::unknown provider '$PROVIDER'"; exit 1 ;;
-        esac
+        # the resolver owns which packages each mode needs; this step
+        # only installs what it emitted
+        [ -n "$PACKAGES" ] || { echo "::error::resolver emitted no packages"; exit 1; }
+        echo "$PACKAGES" | xargs python3 -m pip install --quiet --disable-pip-version-check
 
     - name: Call provider
       id: run
