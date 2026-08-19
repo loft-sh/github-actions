@@ -189,6 +189,24 @@ def test_unexpected_exception_fails_soft_and_deletes_env(run_mod):
     assert client.deleted["environments"] == ["env_test"]
 
 
+def test_no_key_builds_client_for_sdk_credential_chain(run_mod):
+    # federation fallback: with no session key the client must be built
+    # WITHOUT api_key so the SDK's credential chain (workload identity
+    # federation env vars) can resolve the credential
+    captured = {}
+    client = FakeClient(statuses=("running", "idle"))
+
+    def factory(**kw):
+        captured.update(kw)
+        return client
+
+    run_mod._fake.Anthropic = factory
+    text = run_mod.run_session("sre-memory-curator", "hi", "", "", 60)
+    assert text == '{"ok": true}'
+    assert "api_key" not in captured
+    assert client.deleted["sessions"] == ["sess_test"]
+
+
 def test_happy_path_returns_text_and_deletes(run_mod):
     client = FakeClient(statuses=("running", "idle"), final_text='{"ok": true}')
     text = _run(run_mod, client)

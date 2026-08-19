@@ -54,9 +54,13 @@ inputs:
   anthropic-session-key:
     description: |
       Anthropic Console API key for the workspace the agent is deployed
-      in. Required when agent is set. This is a different credential
-      class from anthropic-api-key: Messages-API and admin keys cannot
-      call the sessions API, and workspace keys do not cross workspaces.
+      in. This is a different credential class from anthropic-api-key:
+      Messages-API and admin keys cannot call the sessions API, and
+      workspace keys do not cross workspaces. Required when agent is
+      set, unless the job provides workload identity federation env
+      vars (ANTHROPIC_FEDERATION_RULE_ID and friends), in which case
+      the SDK exchanges the job's OIDC token itself and no static key
+      is needed.
     required: false
   vault-id:
     description: |

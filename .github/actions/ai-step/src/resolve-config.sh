@@ -55,8 +55,12 @@ if [ -n "${INPUT_AGENT// }" ]; then
   if [ "$INPUT_PROVIDER" != "anthropic" ]; then
     skip "agent mode is anthropic-only — provider '$INPUT_PROVIDER' has no managed-agent counterpart"
   fi
-  if [ -z "${INPUT_ANTHROPIC_SESSION_KEY// }" ]; then
-    skip "anthropic-session-key is required when agent is set — the Messages-API key cannot call /v1/sessions"
+  # credential: an explicit workspace session key, or workload identity
+  # federation (DEVOPS-1019) — the SDK exchanges the caller-provided
+  # OIDC token itself when the ANTHROPIC_FEDERATION_* env vars are set,
+  # so no static key exists in that job at all.
+  if [ -z "${INPUT_ANTHROPIC_SESSION_KEY// }" ] && [ -z "${ANTHROPIC_FEDERATION_RULE_ID:-}" ]; then
+    skip "agent is set but no credential is available — pass anthropic-session-key, or set up workload identity federation (ANTHROPIC_FEDERATION_RULE_ID etc.) in the job env"
   fi
   case "$INPUT_SESSION_TIMEOUT" in
     ''|*[!0-9]*|0) skip "invalid session-timeout-seconds '$INPUT_SESSION_TIMEOUT' — must be a positive integer" ;;

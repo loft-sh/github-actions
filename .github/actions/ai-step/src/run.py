@@ -169,8 +169,15 @@ def run_session(agent_name: str, user_content: str, api_key: str,
     keeps billing."""
     from anthropic import Anthropic, APIError  # type: ignore
 
-    client = Anthropic(api_key=api_key,
-                       default_headers={"anthropic-beta": BETA_HEADER})
+    if api_key:
+        client = Anthropic(api_key=api_key,
+                           default_headers={"anthropic-beta": BETA_HEADER})
+    else:
+        # No explicit key: let the SDK's credential chain resolve, which
+        # includes workload identity federation via the ANTHROPIC_*
+        # env vars (DEVOPS-1019). ANTHROPIC_API_KEY must be unset in the
+        # job or it outranks federation in that chain.
+        client = Anthropic(default_headers={"anthropic-beta": BETA_HEADER})
 
     agent_id = None
     try:
@@ -184,7 +191,7 @@ def run_session(agent_name: str, user_content: str, api_key: str,
         fail_soft(f"agent lookup failed: {e}")
     if agent_id is None:
         fail_soft(f"agent '{agent_name}' not found — check the name and that "
-                  "anthropic-session-key belongs to the agent's workspace")
+                  "the session credential belongs to the agent's workspace")
 
     run_id = os.environ.get("GITHUB_RUN_ID", "local")
     try:
@@ -300,8 +307,10 @@ def main() -> None:
     if mode == "session":
         agent_name = require("INPUT_AGENT")
         api_key = os.environ.get("INPUT_ANTHROPIC_SESSION_KEY", "")
-        if not api_key:
-            fail_soft("anthropic-session-key required when agent is set")
+        if not api_key and not os.environ.get("ANTHROPIC_FEDERATION_RULE_ID"):
+            fail_soft("agent is set but no credential is available — pass "
+                      "anthropic-session-key or set up workload identity "
+                      "federation in the job env")
         try:
             timeout_s = int(os.environ.get("INPUT_SESSION_TIMEOUT", "1200"))
         except ValueError:

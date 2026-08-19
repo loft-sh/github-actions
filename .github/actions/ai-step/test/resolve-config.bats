@@ -26,9 +26,11 @@ run_script() {
 }
 
 # Session-mode rows: agent set, optional session key and timeout.
+# ANTHROPIC_FEDERATION_RULE_ID is unset explicitly so the credential
+# rows stay deterministic regardless of the invoking environment.
 run_script_session() {
   local provider="$1" agent="$2" key="$3" timeout="${4-1200}" effort="${5-medium}"
-  run env \
+  run env -u ANTHROPIC_FEDERATION_RULE_ID \
     INPUT_PROVIDER="$provider" \
     INPUT_EFFORT="$effort" \
     INPUT_OUTPUT_SCHEMA="$SCHEMA" \
@@ -188,13 +190,32 @@ assert_kv() {
   }
 }
 
-@test "agent + anthropic without session key → proceed=false, reason names the key" {
+@test "agent + anthropic without any credential → proceed=false, reason names both options" {
   run_script_session anthropic pr-review-lead ""
   [ "$status" -eq 0 ]
   assert_kv proceed false
   grep -q 'reason=.*anthropic-session-key' "$GITHUB_OUTPUT" || {
     cat "$GITHUB_OUTPUT"; return 1;
   }
+  grep -q 'reason=.*federation' "$GITHUB_OUTPUT" || {
+    cat "$GITHUB_OUTPUT"; return 1;
+  }
+}
+
+@test "agent + no key + federation env → proceed=true, mode=session" {
+  run env \
+    ANTHROPIC_FEDERATION_RULE_ID=fdrl_dummy_test_value \
+    INPUT_PROVIDER=anthropic \
+    INPUT_EFFORT=medium \
+    INPUT_OUTPUT_SCHEMA="$SCHEMA" \
+    INPUT_AGENT=pr-review-lead \
+    INPUT_ANTHROPIC_SESSION_KEY="" \
+    INPUT_SESSION_TIMEOUT=1200 \
+    GITHUB_OUTPUT="$GITHUB_OUTPUT" "$SCRIPT"
+  [ "$status" -eq 0 ]
+  assert_kv proceed true
+  assert_kv mode session
+  assert_kv packages "anthropic jsonschema"
 }
 
 @test "agent + non-numeric timeout → proceed=false, reason mentions timeout" {
