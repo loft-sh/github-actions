@@ -1,21 +1,37 @@
 # Semantic Version Validation Action
 
-This GitHub Action validates whether a given version string follows the [Semantic Versioning (semver)](https://semver.org/) specification.
+Reports on a version string: whether it is valid [semver](https://semver.org/),
+what its parts are, which release channel it belongs to, and how it orders
+against another version.
 
-## Features
+The work is done by [`semstat`](https://github.com/loft-sh/semstat), which the
+action downloads and checksum-verifies at the pinned release. One implementation
+answers for the action and for the shell scripts in this repository, so there is
+no second semver engine to disagree with the first.
 
-- ✅ Validates version strings against semver format
-- 📊 Returns detailed parsing information for valid versions
-- 🔍 Provides clear error messages for invalid versions
-- 🚀 Fast execution using the trusted `semver` npm package
+## Runner requirements
+
+The action needs a Linux or macOS runner with `curl`, `tar`, `jq` and either
+`sha256sum` or `shasum` on it, and egress to
+`github.com/loft-sh/semstat/releases/download` **and**
+`objects.githubusercontent.com`, which release-asset downloads redirect to. A
+proxy allowlist that names only `github.com` fails the install step.
+
+That is new in `semver-validation/v4`. The tags before it (`v1`, `v2` and `v3`) all
+point at the self-contained Node action, which needed neither the network nor those
+tools. A caller on a runner without egress keeps working on those tags and fails the
+install step on `v4`. `v1` through `v3` stay where they are for that reason; none of
+them were advanced onto this rewrite.
 
 ## Inputs
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-|  INPUT  |  TYPE  | REQUIRED | DEFAULT |                      DESCRIPTION                      |
-|---------|--------|----------|---------|-------------------------------------------------------|
-| version | string |   true   |         | Version string to validate against semver <br>format  |
+|      INPUT      |  TYPE  | REQUIRED |  DEFAULT   |                                        DESCRIPTION                                         |
+|-----------------|--------|----------|------------|--------------------------------------------------------------------------------------------|
+|   compare_to    | string |  false   |            |    Second version to order `version` against. <br>Leave empty to skip the comparison.      |
+| semstat_version | string |  false   | `"v0.0.2"` | Release of [loft-sh/semstat](https://github.com/loft-sh/semstat) to download and <br>run.  |
+|     version     | string |   true   |            |                   Version string to validate against semver <br>format                     |
 
 <!-- AUTO-DOC-INPUT:END -->
 
@@ -23,202 +39,159 @@ This GitHub Action validates whether a given version string follows the [Semanti
 
 <!-- AUTO-DOC-OUTPUT:START - Do not remove or modify this section -->
 
-|     OUTPUT     |  TYPE  |                                     DESCRIPTION                                     |
-|----------------|--------|-------------------------------------------------------------------------------------|
-| error_message  | string |                          Error message if validation fails                          |
-|    is_valid    | string |               Whether the version is a valid <br>semver (true/false)                |
-| parsed_version | string | Parsed version object with major, minor, <br>patch, prerelease, and build metadata  |
+|     OUTPUT     |  TYPE  |                                                                               DESCRIPTION                                                                               |
+|----------------|--------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|     build      | string |                                  Build metadata without the leading plus. <br>Empty when absent and when the <br>version is invalid.                                    |
+|   comparison   | string |                                 -1, 0 or 1 as version <br>sorts below, equal to, or above <br>compare_to. Empty unless both are valid.                                  |
+| error_message  | string |                                                                    Error message if validation fails                                                                    |
+|   is_greater   | string |                                     Whether version sorts strictly above compare_to <br>(true/false). Empty unless both are valid.                                      |
+|   is_stable    | string |                               Whether the version carries no prerelease <br>suffix (true/false). Empty when the version <br>is invalid.                                 |
+|    is_valid    | string |                                                         Whether the version is a valid <br>semver (true/false)                                                          |
+|     major      | string |                                                      Major version number. Empty when the <br>version is invalid.                                                       |
+|     minor      | string |                                                      Minor version number. Empty when the <br>version is invalid.                                                       |
+| parsed_version | string |                                           Parsed version object with major, minor, <br>patch, prerelease, and build metadata                                            |
+|     patch      | string |                                                      Patch version number. Empty when the <br>version is invalid.                                                       |
+|   prerelease   | string |                             Prerelease identifiers without the leading hyphen. <br>Empty for a stable version and <br>for an invalid one.                               |
+|  release_type  | string | Release channel: stable, alpha, beta, rc, <br>next or next-internal. Empty when the <br>version is invalid, or valid semver <br>with a suffix outside that vocabulary.  |
 
 <!-- AUTO-DOC-OUTPUT:END -->
 
 ## Usage
 
-### Basic Example
+### Validate a version
 
 ```yaml
-name: Validate Version
-on: [push, pull_request]
-
-jobs:
-  validate:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Validate semver
-        id: semver
-        uses: loft-sh/github-actions/.github/actions/semver-validation@semver-validation/v1
-        with:
-          version: '1.2.3'
-
-      - name: Check result
-        run: |
-          echo "Is valid: ${{ steps.semver.outputs.is_valid }}"
-          echo "Parsed: ${{ steps.semver.outputs.parsed_version }}"
-```
-
-### Conditional Logic Example
-
-```yaml
-name: Release Workflow
-on:
-  push:
-    tags:
-      - 'v*'
-
-jobs:
-  validate-and-release:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Extract version from tag
-        id: version
-        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
-
-      - name: Validate version
-        id: semver
-        uses: loft-sh/github-actions/.github/actions/semver-validation@semver-validation/v1
-        with:
-          version: ${{ steps.version.outputs.version }}
-
-      - name: Proceed with release
-        if: steps.semver.outputs.is_valid == 'true'
-        run: echo "Releasing version ${{ steps.version.outputs.version }}"
-
-      - name: Fail on invalid version
-        if: steps.semver.outputs.is_valid == 'false'
-        run: |
-          echo "Error: ${{ steps.semver.outputs.error_message }}"
-          exit 1
-```
-
-### Working with Parsed Version
-
-```yaml
-- name: Validate and parse version
+- name: Validate semver
   id: semver
-  uses: loft-sh/github-actions/.github/actions/semver-validation@semver-validation/v1
+  uses: loft-sh/github-actions/.github/actions/semver-validation@semver-validation/v4
   with:
-    version: '2.1.0-alpha.1+build.123'
+    version: '1.2.3'
 
-- name: Use parsed components
+- name: Proceed
+  if: steps.semver.outputs.is_valid == 'true'
+  run: echo "Releasing ${{ steps.semver.outputs.major }}.${{ steps.semver.outputs.minor }}"
+
+- name: Stop
+  if: steps.semver.outputs.is_valid == 'false'
   run: |
-    echo "Major: $(echo '${{ steps.semver.outputs.parsed_version }}' | jq -r '.major')"
-    echo "Minor: $(echo '${{ steps.semver.outputs.parsed_version }}' | jq -r '.minor')"
-    echo "Patch: $(echo '${{ steps.semver.outputs.parsed_version }}' | jq -r '.patch')"
-    echo "Prerelease: $(echo '${{ steps.semver.outputs.parsed_version }}' | jq -r '.prerelease')"
+    echo "::error::${{ steps.semver.outputs.error_message }}"
+    exit 1
 ```
 
-## Valid Semver Examples
+An invalid version is an answer, not a failure: the step stays green and sets
+`is_valid` to `false`, so the caller decides what that means. The step fails only
+when it cannot answer at all: an empty `version`, a `semstat_version` with no
+release, or a semstat that did not run. `version` and `compare_to` are trimmed
+before they are read, so surrounding whitespace does not change the answer, and a
+`version` that is only whitespace is an invalid version rather than a missing one.
+A binary that crashed must not report `is_valid=false` for a perfectly good tag,
+so each call names the exit codes that are answers for it and treats anything else
+as a broken environment.
 
-- `1.0.0`
-- `1.2.3`
-- `10.20.30`
-- `1.1.2-prerelease+meta`
-- `1.1.2+meta`
-- `1.1.2+meta-valid`
-- `1.0.0-alpha`
-- `1.0.0-beta`
-- `1.0.0-alpha.beta`
-- `1.0.0-alpha.1`
-- `1.0.0-alpha0.valid`
-- `1.0.0-alpha.0valid`
-- `1.0.0-alpha-a.b-c-somethinglong+metadata+meta.meta.meta`
+### Route a tag to a channel
 
-## Invalid Examples
+```yaml
+- name: Classify the tag
+  id: semver
+  uses: loft-sh/github-actions/.github/actions/semver-validation@semver-validation/v4
+  with:
+    version: ${{ github.ref_name }}
 
-- `1`
-- `1.2`
-- `1.2.3-0123`
-- `1.2.3-0123.0123`
-- `1.1.2+.123`
-- `+invalid`
-- `-invalid`
-- `-invalid+invalid`
-- `alpha`
-- `1.2.3.DEV`
-- `1.2-SNAPSHOT`
+- name: Publish the stable artifacts
+  if: steps.semver.outputs.release_type == 'stable'
+  run: ./hack/publish-stable.sh
 
-## Parsed Version Object
-
-For valid semver versions, the `parsed_version` output contains:
-
-```json
-{
-  "major": 1,
-  "minor": 2,
-  "patch": 3,
-  "prerelease": "alpha.1",
-  "build": "build.123",
-  "raw": "1.2.3-alpha.1+build.123"
-}
+- name: Publish to the prerelease channel
+  if: contains(fromJSON('["alpha","beta","rc"]'), steps.semver.outputs.release_type)
+  run: ./hack/publish-prerelease.sh
 ```
 
-- `major`, `minor`, `patch`: Integer version numbers
-- `prerelease`: String of prerelease identifiers (null if none)
-- `build`: String of build metadata (null if none)
-- `raw`: Original input version string
+`release_type` is one of `stable`, `alpha`, `beta`, `rc`, `next` or
+`next-internal`, and the counter is part of the shape: `-rc.2` is an `rc` where a
+bare `-rc` is not. A version that is valid semver but carries a suffix outside
+that vocabulary gets an empty `release_type`, because a release nobody knows how
+to route must not be sorted into the closest-looking branch. That is said in the
+log rather than as a warning annotation: the version is valid, so a caller reading
+only `is_valid` has nothing to act on. Gate on `release_type == 'stable'` rather
+than on `!= 'rc'` and an unroutable tag falls out rather than through.
 
-## Error Handling
+`is_stable` answers the narrower question of whether there is a prerelease suffix
+at all, and is set for every valid version including the unroutable ones.
 
-The action will:
+### Order two versions
 
-- Set `is_valid` to `false` for invalid versions
-- Provide descriptive error messages in `error_message`
-- Log warnings for invalid versions
-- Fail the action only on unexpected errors (not validation failures)
+```yaml
+- name: Is this tag newer than what is released?
+  id: semver
+  uses: loft-sh/github-actions/.github/actions/semver-validation@semver-validation/v4
+  with:
+    version: ${{ github.ref_name }}
+    compare_to: ${{ steps.latest.outputs.tag }}
 
-## Dependencies
+- name: Move the floating tag
+  if: steps.semver.outputs.is_greater == 'true'
+  run: ./hack/move-latest.sh
+```
 
-This action uses:
+Ordering follows semver precedence, which `sort -V` does not: build metadata
+never affects it, and a prerelease always sorts below its final release, so
+`v4.9.0-rc.2` does not outrank `v4.9.0`. `comparison` is `-1`, `0` or `1`;
+`is_greater` is strict, so equal versions are not greater. Both are empty when
+`compare_to` is omitted or is not a version, which is not the same as `false`, so
+gate on `is_greater == 'true'`.
 
-- `@actions/core` for GitHub Actions integration
-- `semver` for robust semver validation and parsing
+## From a shell script
+
+The action is a workflow step, so it cannot be called from inside a loop or a
+shell function. Install
+[`semstat`](https://github.com/loft-sh/semstat#install) and call it directly
+instead:
+
+```bash
+newest=""
+while read -r tag; do
+  semstat validate "$tag" 2>/dev/null || continue
+  if [ -z "$newest" ] || semstat gt "$tag" "$newest"; then
+    newest="$tag"
+  fi
+done < <(git tag -l 'v*')
+echo "$newest"
+```
+
+`gt` exits 0 for yes, 1 for no and 2 when a version could not be read, so a typo
+is distinguishable from a legitimate "not newer". Read the codes rather than the
+condition alone when that matters:
+
+```bash
+if semstat gt "$candidate" "$current"; then
+  echo newer
+elif [ $? -eq 1 ]; then
+  echo "not newer"
+else
+  exit 1
+fi
+```
+
+## Upgrading the semstat release
+
+`semstat_version` pins which release is downloaded, and Renovate opens the bump.
+The action verifies the archive against the release checksums and refuses a
+binary that reports a different version than the one asked for, so a mismatched
+or truncated download fails the step rather than answering wrongly. That is a
+transfer check, not a signature check, and deliberately so: semstat is ours, so
+the release is trusted and the sigstore bundle it also publishes is left alone.
 
 ## Development
 
-### Building the Action
-
-This action uses `@vercel/ncc` to bundle all dependencies into a single file for GitHub Actions:
-
 ```bash
-npm install
-npm run build
+make test-semver-validation   # bats suites for both scripts
+make lint                     # actionlint + zizmor
+make generate-docs            # refresh the tables above from action.yml
 ```
 
-The bundled output is generated in `dist/index.js` and must be committed to the repository.
-
-### Making Changes
-
-1. Edit the source code in `index.js`
-2. Run `npm run build` to create the bundled version
-3. Commit both the source and bundled files
-4. Create/update the action tag
-
-### Testing Locally
-
-You can test the action locally using environment variables:
-
-```bash
-# Test with valid semver
-INPUT_VERSION="1.2.3" node dist/index.js
-
-# Test with invalid semver
-INPUT_VERSION="invalid" node dist/index.js
-```
-
-### Running Tests
-
-The action includes comprehensive tests using Jest:
-
-```bash
-# Run all tests
-npm test
-
-# Run tests with coverage
-npm test -- --coverage
-```
-
-Tests cover:
-
-- Valid semver versions (basic, with prefixes, prerelease, build metadata)
-- Invalid semver versions (incomplete, non-numeric, malformed)
-- Edge cases (large numbers, the original failing case)
-- Error handling
+`src/install-semstat.sh` downloads and verifies the binary; `src/report.sh` runs
+it and writes the outputs. semstat is stubbed in the tests, because what its
+answers should be is settled by [its own
+suite](https://github.com/loft-sh/semstat); what is tested here is the
+translation into action outputs. `test-semver-validation.yaml` also runs the
+action end to end against the real release.
