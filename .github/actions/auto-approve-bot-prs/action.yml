@@ -92,9 +92,8 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.github-token }}
         PR_NUMBER: ${{ github.event.pull_request.number }}
-        PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-      run: ${{ github.action_path }}/src/check-pr-ready.sh
+      run: ${{ github.action_path }}/src/check-pr-after-ci.sh
 
     - name: Approve PR
       if: steps.recheck.outputs.proceed == 'true'

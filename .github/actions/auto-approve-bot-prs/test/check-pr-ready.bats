@@ -80,6 +80,24 @@ kv() { grep "^$1=" "$GITHUB_OUTPUT" | tail -n1; }
   [[ "$output" == *"new-head-sha"* ]]
 }
 
+@test "a moved head blocks even when the PR is definitively mergeable" {
+  GH_MOCK_MERGEABLE=true GH_MOCK_APPROVER="loft-bot" \
+    GH_MOCK_HEAD_SHA="new-head-sha" run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv proceed)" = "proceed=false" ]
+  [[ "$output" == *"head changed"* ]]
+  [[ "$output" == *"new-head-sha"* ]]
+}
+
+@test "a moved head takes precedence over a definitive conflict" {
+  GH_MOCK_MERGEABLE=false GH_MOCK_APPROVER="loft-bot" \
+    GH_MOCK_HEAD_SHA="new-head-sha" run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv proceed)" = "proceed=false" ]
+  [[ "$output" == *"head changed"* ]]
+  [[ "$output" != *"merge conflicts"* ]]
+}
+
 @test "regression: a CR in the authenticated login cannot forge a workflow command" {
   # "GitHub logins cannot contain control characters" does not close this
   # channel: the API answers in JSON, and a \r escape inside a JSON string

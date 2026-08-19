@@ -28,6 +28,8 @@ WORKFLOW="$BATS_TEST_DIRNAME/../../../workflows/auto-approve-bot-prs.yaml"
   [ "$(grep -Fc 'EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}' "$ACTION")" -eq 2 ]
   run grep -F "id: recheck" "$ACTION"
   [ "$status" -eq 0 ]
+  run grep -F 'run: ${{ github.action_path }}/src/check-pr-after-ci.sh' "$ACTION"
+  [ "$status" -eq 0 ]
   [ "$(grep -Fc "steps.recheck.outputs.proceed == 'true'" "$ACTION")" -eq 2 ]
   run grep -F 'PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}' "$ACTION"
   [ "$status" -eq 0 ]

@@ -85,6 +85,12 @@ the run. It checks that SHA once before polling CI and again after CI passes. If
 Renovate or another actor updates the branch while an older run is still
 polling, that run skips approval.
 
+The post-CI check is deliberately narrower than the preflight. It rejects a
+moved head or a definitive merge conflict, but does not repeat the approver
+identity lookup and does not wait for transient `mergeable: null` metadata.
+Those checks already passed before the CI wait, and repeating them here can
+strand a release on an unrelated API blip after all CI has completed.
+
 Both merge calls pass `--match-head-commit`. For a direct merge, GitHub checks
 the SHA atomically when it merges, so that path can only land the commit this
 run tested. For the `--auto` fallback, GitHub CLI forwards the SHA as
@@ -165,7 +171,7 @@ split:
 
 | Step | Token |
 |------|-------|
-| `check-pr-ready`, *Approve PR* | `github-token` (PAT) |
+| `check-pr-ready`, `check-pr-after-ci`, *Approve PR* | `github-token` (PAT) |
 | *Wait for other CI to pass* | `ci-read-token`, defaulting to `GITHUB_TOKEN` |
 | *Merge PR* | `merge-token`, defaulting to `github-token` |
 
