@@ -18,4 +18,9 @@ jobs:
           persist-credentials: false
       - uses: bats-core/bats-action@77d6fb60505b4d0d1d73e48bd035b55074bbfb43 # 4.0.0
         with:
-          tests: .github/actions/backport-legacy-split/test
+          support-install: false
+          assert-install: false
+          detik-install: false
+          file-install: false
+      - name: Run backport-legacy-split tests
+        run: bats .github/actions/backport-legacy-split/test/*.bats

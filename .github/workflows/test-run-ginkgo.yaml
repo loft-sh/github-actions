@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - '.github/actions/run-ginkgo/**'
+      - '.github/workflows/test-run-ginkgo.yaml'
 
 permissions: {}
 
@@ -17,7 +18,12 @@ jobs:
           persist-credentials: false
       - uses: bats-core/bats-action@77d6fb60505b4d0d1d73e48bd035b55074bbfb43 # 4.0.0
         with:
-          tests: .github/actions/run-ginkgo/test
+          support-install: false
+          assert-install: false
+          detik-install: false
+          file-install: false
+      - name: Run run-ginkgo tests
+        run: bats .github/actions/run-ginkgo/test/*.bats
 
   focus-selection:
     name: Run focus selection tests
