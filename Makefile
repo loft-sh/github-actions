@@ -1,4 +1,4 @@
-.PHONY: test test-semver-validation test-linear-pr-commenter test-link-backport-prs test-release-notification test-linear-release-sync test-aws-test-infra test-cleanup-head-charts test-ci-test-notify test-auto-approve-bot-prs test-ai-pr-review test-ai-step test-publish-helm-chart test-govulncheck test-go-licenses test-run-ginkgo test-sticky-pr-comment test-repository-dispatch test-parse-label-filter test-release-branch-freeze test-prerelease-setup test-vcluster-release test-subtree-mirror test-oss-commit-sync test-backport-legacy-allowlist test-backport-legacy-split test-promote-release test-wait-for-release test-cve-scan test-commitlint build-linear-release-sync lint install-auto-doc generate-docs check-docs help
+.PHONY: test test-semver-validation test-linear-pr-commenter test-link-backport-prs test-release-notification test-linear-release-sync test-aws-test-infra test-cleanup-head-charts test-ci-test-notify test-auto-approve-bot-prs test-ai-pr-review test-ai-step test-publish-helm-chart test-govulncheck test-go-licenses test-run-ginkgo test-sticky-pr-comment test-repository-dispatch test-parse-label-filter test-release-branch-freeze test-prerelease-setup test-vcluster-release test-subtree-mirror test-oss-commit-sync test-backport-legacy-allowlist test-backport-legacy-split test-promote-release test-wait-for-release test-cve-scan test-commitlint build-linear-release-sync lint check-bats-jobs install-auto-doc generate-docs check-docs help
 
 ACTIONS_DIR := .github/actions
 WORKFLOWS_DIR := .github/workflows
@@ -93,7 +93,7 @@ check-docs: generate-docs ## verify docs are up to date (fails if drift detected
 help: ## show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-30s %s\n", $$1, $$2}'
 
-test: test-semver-validation test-linear-pr-commenter test-link-backport-prs test-release-notification test-linear-release-sync test-aws-test-infra test-cleanup-head-charts test-auto-approve-bot-prs test-ai-pr-review test-ai-step test-ci-test-notify test-go-licenses test-publish-helm-chart test-govulncheck test-run-ginkgo test-sticky-pr-comment test-repository-dispatch test-parse-label-filter test-release-branch-freeze test-prerelease-setup test-vcluster-release test-subtree-mirror test-oss-commit-sync test-backport-legacy-allowlist test-backport-legacy-split test-promote-release test-wait-for-release test-cve-scan test-commitlitn ## run all action tests
+test: test-semver-validation test-linear-pr-commenter test-link-backport-prs test-release-notification test-linear-release-sync test-aws-test-infra test-cleanup-head-charts test-auto-approve-bot-prs test-ai-pr-review test-ai-step test-ci-test-notify test-go-licenses test-publish-helm-chart test-govulncheck test-run-ginkgo test-sticky-pr-comment test-repository-dispatch test-parse-label-filter test-release-branch-freeze test-prerelease-setup test-vcluster-release test-subtree-mirror test-oss-commit-sync test-backport-legacy-allowlist test-backport-legacy-split test-promote-release test-wait-for-release test-cve-scan test-commitlint ## run all action tests
 
 test-semver-validation: ## run semver-validation unit tests
 	cd $(ACTIONS_DIR)/semver-validation && npm ci --silent && NODE_OPTIONS=--experimental-vm-modules npx jest --ci --coverage --watchAll=false
@@ -187,9 +187,31 @@ test-commitlint: ## run commitlint bats tests
 build-linear-release-sync: ## build linear-release-sync binary (linux/amd64)
 	cd $(ACTIONS_DIR)/linear-release-sync/src && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o ../linear-release-sync-linux-amd64 .
 
-lint: ## run actionlint and zizmor on workflows
+lint: check-bats-jobs ## run actionlint and zizmor on workflows
 	actionlint .github/workflows/*.yaml
 	zizmor .github/
+
+# bats-action only installs bats; it has no `tests` input. Unknown inputs are a
+# warning, so a job that hands it a path and stops there goes green having run
+# nothing, which is how 23 suites stayed dead without anyone noticing.
+check-bats-jobs: ## fail if a workflow installs bats but never runs a suite
+	@fail=0; \
+	for wf in $(WORKFLOWS_DIR)/*.yaml; do \
+	  grep -q 'bats-core/bats-action' "$$wf" || continue; \
+	  if awk '/bats-core\/bats-action/{w=1;next} \
+	          w && /^[[:space:]]*tests:/{found=1;exit} \
+	          w && /^[[:space:]]*- /{w=0} \
+	          END{exit !found}' "$$wf"; then \
+	    echo "ERROR: $$wf passes a 'tests' input to bats-action, which has no such input; the suite never runs."; \
+	    fail=1; \
+	  fi; \
+	  if ! grep -qE '^[[:space:]]*(run: )?bats[[:space:]]' "$$wf"; then \
+	    echo "ERROR: $$wf installs bats but never runs it; add a 'run: bats <path>/*.bats' step."; \
+	    fail=1; \
+	  fi; \
+	done; \
+	if [ "$$fail" -eq 1 ]; then exit 1; fi; \
+	echo "Every workflow that installs bats runs a suite."
 
 # Reusable workflow tests (test-*.yaml for workflow_call workflows) run in CI only.
 # They require GitHub event context and cannot be executed locally.
