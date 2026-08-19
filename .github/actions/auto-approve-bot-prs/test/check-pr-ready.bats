@@ -10,6 +10,8 @@ setup() {
   export GITHUB_REPOSITORY="owner/repo"
   export PR_NUMBER=42
   export PR_AUTHOR="dependabot[bot]"
+  export EXPECTED_HEAD_SHA="tested-head-sha"
+  export GH_MOCK_HEAD_SHA="tested-head-sha"
   # Keep retry budget bounded so tests don't stall the suite.
   export MERGEABLE_MAX_ATTEMPTS=2
   export MERGEABLE_SLEEP_SECONDS=0
@@ -67,6 +69,16 @@ kv() { grep "^$1=" "$GITHUB_OUTPUT" | tail -n1; }
   [[ "$output" != *"self-approval"* ]]
 }
 
+@test "head changed after the run started → proceed=false" {
+  GH_MOCK_MERGEABLE=true GH_MOCK_APPROVER="loft-bot" \
+    GH_MOCK_HEAD_SHA="new-head-sha" run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv proceed)" = "proceed=false" ]
+  [[ "$output" == *"head changed"* ]]
+  [[ "$output" == *"tested-head-sha"* ]]
+  [[ "$output" == *"new-head-sha"* ]]
+}
+
 @test "regression: a CR in the authenticated login cannot forge a workflow command" {
   # "GitHub logins cannot contain control characters" does not close this
   # channel: the API answers in JSON, and a \r escape inside a JSON string
@@ -92,6 +104,12 @@ kv() { grep "^$1=" "$GITHUB_OUTPUT" | tail -n1; }
 
 @test "missing PR_NUMBER fails" {
   run env -u PR_NUMBER GITHUB_OUTPUT="$GITHUB_OUTPUT" GITHUB_REPOSITORY=o/r PR_AUTHOR=x "$SCRIPT"
+  [ "$status" -ne 0 ]
+}
+
+@test "missing EXPECTED_HEAD_SHA fails" {
+  run env -u EXPECTED_HEAD_SHA GITHUB_OUTPUT="$GITHUB_OUTPUT" \
+    GITHUB_REPOSITORY=o/r PR_NUMBER=1 PR_AUTHOR=x "$SCRIPT"
   [ "$status" -ne 0 ]
 }
 

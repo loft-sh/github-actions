@@ -2,7 +2,8 @@
 # Combines two gates: merge-conflict check and approver-identity check.
 # Only writes proceed=true if BOTH pass.
 #
-# Required env: GH_TOKEN, GITHUB_REPOSITORY, PR_NUMBER, PR_AUTHOR
+# Required env: GH_TOKEN, GITHUB_REPOSITORY, PR_NUMBER, PR_AUTHOR,
+#               EXPECTED_HEAD_SHA
 # Writes: proceed=true|false to $GITHUB_OUTPUT (and stdout).
 # Always exits 0.
 set -euo pipefail
@@ -10,6 +11,7 @@ set -euo pipefail
 : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY required}"
 : "${PR_NUMBER:?PR_NUMBER required}"
 : "${PR_AUTHOR:?PR_AUTHOR required}"
+: "${EXPECTED_HEAD_SHA:?EXPECTED_HEAD_SHA required}"
 
 # The authenticated login below is API-derived and reaches a log line. The API
 # answers in JSON, and a `\r` escape inside a JSON string decodes to a real CR
@@ -54,6 +56,22 @@ if [ "$mergeable" = "false" ]; then
 fi
 if [ "$mergeable" != "true" ]; then
   echo "::warning::GitHub did not report mergeability for PR #${PR_NUMBER} within ${mergeable_attempts} attempts (last value '$(safe "$mergeable")'); not approving. This is usually transient - a re-run should resolve it"
+  emit proceed false
+  exit 0
+fi
+
+# The workflow can spend many minutes polling CI. A synchronize event may move
+# the PR to a new commit while an older run is still alive, so confirm that the
+# SHA this run is about to approve is still the SHA whose CI it observed.
+current_head=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" \
+  --jq '.head.sha // ""' 2>/dev/null || echo "")
+if [ -z "$current_head" ]; then
+  echo "::error::could not resolve the current head SHA for PR #${PR_NUMBER}; not approving because the tested commit cannot be verified"
+  emit proceed false
+  exit 0
+fi
+if [ "$current_head" != "$EXPECTED_HEAD_SHA" ]; then
+  echo "::error::PR #${PR_NUMBER} head changed from tested SHA '$(safe "$EXPECTED_HEAD_SHA")' to '$(safe "$current_head")'; not approving. The synchronize run for the new head must verify CI instead"
   emit proceed false
   exit 0
 fi

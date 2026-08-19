@@ -19,11 +19,13 @@
 # ::error:: level so the cause is visible in the run summary instead of being
 # buried in a notice.
 #
-# Required env: GH_TOKEN, GITHUB_REPOSITORY, PR_NUMBER, MERGE_METHOD
+# Required env: GH_TOKEN, GITHUB_REPOSITORY, PR_NUMBER, PR_HEAD_SHA,
+#               MERGE_METHOD
 set -euo pipefail
 
 : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY required}"
 : "${PR_NUMBER:?PR_NUMBER required}"
+: "${PR_HEAD_SHA:?PR_HEAD_SHA required}"
 : "${MERGE_METHOD:?MERGE_METHOD required}"
 
 # Every interpolated value below is externally controlled — gh's output is
@@ -63,7 +65,8 @@ try_merge() {
   return "$rc"
 }
 
-if direct_err=$(try_merge gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --"$MERGE_METHOD"); then
+if direct_err=$(try_merge gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+  --"$MERGE_METHOD" --match-head-commit "$PR_HEAD_SHA"); then
   echo "Merged PR #${PR_NUMBER} (${MERGE_METHOD})"
   exit 0
 fi
@@ -85,7 +88,8 @@ esac
 
 echo "::notice::plain merge of PR #${PR_NUMBER} was refused, falling back to auto-merge. Reason: $(safe "$direct_err")"
 
-if auto_err=$(try_merge gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --auto --"$MERGE_METHOD"); then
+if auto_err=$(try_merge gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+  --auto --"$MERGE_METHOD" --match-head-commit "$PR_HEAD_SHA"); then
   # Deliberately does NOT promise this lands on its own. Queueing succeeded, but
   # that only means GitHub accepted the request — several refusals reach here
   # with equal confidence and need a human, not patience: a strict

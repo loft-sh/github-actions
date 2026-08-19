@@ -14,6 +14,7 @@ setup_gh_mock() {
 set -o pipefail
 #
 # GH_MOCK_MERGEABLE          → response for `gh api ...pulls/N`
+# GH_MOCK_HEAD_SHA           → PR head SHA returned by `gh api ...pulls/N`
 # GH_MOCK_APPROVER           → response for `gh api user`
 # GH_MOCK_CHECK_RUNS_JSON    → response for `gh api .../check-runs` (full object)
 # GH_MOCK_STATUSES_JSON      → response for `gh api .../status` (combined status)
@@ -72,7 +73,8 @@ emit_api_response() {
     *"/pulls/"*)
       local m="${GH_MOCK_MERGEABLE:-null}"
       case "$m" in true|false) ;; *) m=null ;; esac
-      printf '{"mergeable":%s}\n' "$m"
+      printf '{"mergeable":%s,"head":{"sha":"%s"}}\n' \
+        "$m" "${GH_MOCK_HEAD_SHA:-tested-head-sha}"
       ;;
     *"/check-runs"*)
       if [ "${GH_MOCK_CHECK_RUNS_FAIL:-}" = "always" ]; then

@@ -80,6 +80,13 @@ rerun that was still coming. That stalled the `v0.34.7` cut
 With `auto-merge: true` the action tries a **plain merge first**, and uses
 GitHub's auto-merge queue (`--auto`) only as a fallback.
 
+The action binds approval and merging to the pull request head SHA from the
+triggering event. It checks that SHA once before polling CI and again after CI
+passes. If Renovate or another actor updates the branch while an older run is
+still polling, that run skips approval. Both the direct and queued merge calls
+also pass `--match-head-commit`, so GitHub refuses the merge if the head changes
+after the final check. The new head must be handled by its own workflow run.
+
 The merge step uses `merge-token` when supplied, otherwise it keeps the existing
 behavior and uses `github-token`. This lets a caller approve with an identity
 that differs from the PR author, then merge with an identity that has a path
