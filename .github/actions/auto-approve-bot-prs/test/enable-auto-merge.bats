@@ -155,7 +155,9 @@ auto_merge_count() { grep -c '^pr merge .*--auto' "$GH_MOCK_CALLS" || true; }
   GH_MOCK_PR_MERGE_EXIT=1 GH_MOCK_PR_MERGE_AUTO_EXIT=0 GH_MOCK_PR_STATE=OPEN run "$SCRIPT"
   [ "$status" -eq 0 ]
   merge_calls="$(grep '^pr merge ' "$GH_MOCK_CALLS")"
-  [ "$(printf '%s\n' "$merge_calls" | grep -c -- '--match-head-commit tested-head-sha')" -eq 3 ]
+  merge_call_count="$(printf '%s\n' "$merge_calls" | grep -c '^pr merge ')"
+  guarded_call_count="$(printf '%s\n' "$merge_calls" | grep -c -- '--match-head-commit tested-head-sha')"
+  [ "$guarded_call_count" -eq "$merge_call_count" ]
 }
 
 @test "missing PR_NUMBER fails" {

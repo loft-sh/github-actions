@@ -24,7 +24,7 @@ WORKFLOW="$BATS_TEST_DIRNAME/../../../workflows/auto-approve-bot-prs.yaml"
   [ "$status" -eq 0 ]
 }
 
-@test "the tested head is rechecked after CI and pinned during merge" {
+@test "the tested head is rechecked after CI and passed to every merge request" {
   [ "$(grep -Fc 'EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}' "$ACTION")" -eq 2 ]
   run grep -F "id: recheck" "$ACTION"
   [ "$status" -eq 0 ]

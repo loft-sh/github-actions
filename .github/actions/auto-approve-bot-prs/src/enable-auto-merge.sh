@@ -88,6 +88,10 @@ esac
 
 echo "::notice::plain merge of PR #${PR_NUMBER} was refused, falling back to auto-merge. Reason: $(safe "$direct_err")"
 
+# This SHA protects the enable-auto-merge mutation, not the eventual queued
+# merge. GitHub may keep auto-merge enabled after a later push by an actor with
+# write permission; the new head is then governed by repository protections.
+# See README "Merging" for the direct-versus-queued guarantee.
 if auto_err=$(try_merge gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
   --auto --"$MERGE_METHOD" --match-head-commit "$PR_HEAD_SHA"); then
   # Deliberately does NOT promise this lands on its own. Queueing succeeded, but

@@ -70,10 +70,11 @@ kv() { grep "^$1=" "$GITHUB_OUTPUT" | tail -n1; }
 }
 
 @test "head changed after the run started → proceed=false" {
-  GH_MOCK_MERGEABLE=true GH_MOCK_APPROVER="loft-bot" \
+  GH_MOCK_MERGEABLE=null GH_MOCK_APPROVER="loft-bot" \
     GH_MOCK_HEAD_SHA="new-head-sha" run "$SCRIPT"
   [ "$status" -eq 0 ]
   [ "$(kv proceed)" = "proceed=false" ]
+  [ "$(grep -c 'pulls/42' "$GH_MOCK_CALLS")" -eq 1 ]
   [[ "$output" == *"head changed"* ]]
   [[ "$output" == *"tested-head-sha"* ]]
   [[ "$output" == *"new-head-sha"* ]]

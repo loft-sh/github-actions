@@ -80,12 +80,23 @@ rerun that was still coming. That stalled the `v0.34.7` cut
 With `auto-merge: true` the action tries a **plain merge first**, and uses
 GitHub's auto-merge queue (`--auto`) only as a fallback.
 
-The action binds approval and merging to the pull request head SHA from the
-triggering event. It checks that SHA once before polling CI and again after CI
-passes. If Renovate or another actor updates the branch while an older run is
-still polling, that run skips approval. Both the direct and queued merge calls
-also pass `--match-head-commit`, so GitHub refuses the merge if the head changes
-after the final check. The new head must be handled by its own workflow run.
+The action carries the pull request head SHA from the triggering event through
+the run. It checks that SHA once before polling CI and again after CI passes. If
+Renovate or another actor updates the branch while an older run is still
+polling, that run skips approval.
+
+Both merge calls pass `--match-head-commit`. For a direct merge, GitHub checks
+the SHA atomically when it merges, so that path can only land the commit this
+run tested. For the `--auto` fallback, GitHub CLI forwards the SHA as
+`expectedHeadOid` when it enables auto-merge, which guards enqueueing only.
+GitHub can leave auto-merge enabled after a later push by an actor with write
+permission; any eventual merge then relies on the repository's required checks
+and stale-approval settings for the new head, not on this run's original SHA.
+
+The approval is submitted immediately after the second head check, but the
+approval action does not bind its review to that SHA. Repositories that require
+approvals to be invalidated after a push must enforce that through their branch
+protection or ruleset settings.
 
 The merge step uses `merge-token` when supplied, otherwise it keeps the existing
 behavior and uses `github-token`. This lets a caller approve with an identity

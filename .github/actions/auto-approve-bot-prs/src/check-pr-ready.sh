@@ -39,8 +39,31 @@ mergeable="null"
 mergeable_attempts="${MERGEABLE_MAX_ATTEMPTS:-10}"
 mergeable_sleep="${MERGEABLE_SLEEP_SECONDS:-3}"
 for _ in $(seq 1 "$mergeable_attempts"); do
-  mergeable=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" \
-    --jq '.mergeable | if . == null then "null" else tostring end' 2>/dev/null || echo "null")
+  if ! pr_state=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" \
+    --jq '[
+      (.mergeable | if . == null then "null" else tostring end),
+      (.head.sha // "")
+    ] | @tsv' 2>/dev/null); then
+    mergeable="null"
+    sleep "$mergeable_sleep"
+    continue
+  fi
+  IFS=$'\t' read -r mergeable current_head <<< "$pr_state"
+
+  # A synchronize event can move the PR while this workflow is polling. Check
+  # the event SHA before waiting for GitHub to recompute mergeability so a
+  # force-push reports the real reason immediately instead of timing out.
+  if [ -z "$current_head" ]; then
+    echo "::error::could not resolve the current head SHA for PR #${PR_NUMBER}; not approving because the tested commit cannot be verified"
+    emit proceed false
+    exit 0
+  fi
+  if [ "$current_head" != "$EXPECTED_HEAD_SHA" ]; then
+    echo "::error::PR #${PR_NUMBER} head changed from tested SHA '$(safe "$EXPECTED_HEAD_SHA")' to '$(safe "$current_head")'; not approving. The synchronize run for the new head must verify CI instead"
+    emit proceed false
+    exit 0
+  fi
+
   [ "$mergeable" != "null" ] && break
   sleep "$mergeable_sleep"
 done
@@ -56,22 +79,6 @@ if [ "$mergeable" = "false" ]; then
 fi
 if [ "$mergeable" != "true" ]; then
   echo "::warning::GitHub did not report mergeability for PR #${PR_NUMBER} within ${mergeable_attempts} attempts (last value '$(safe "$mergeable")'); not approving. This is usually transient - a re-run should resolve it"
-  emit proceed false
-  exit 0
-fi
-
-# The workflow can spend many minutes polling CI. A synchronize event may move
-# the PR to a new commit while an older run is still alive, so confirm that the
-# SHA this run is about to approve is still the SHA whose CI it observed.
-current_head=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" \
-  --jq '.head.sha // ""' 2>/dev/null || echo "")
-if [ -z "$current_head" ]; then
-  echo "::error::could not resolve the current head SHA for PR #${PR_NUMBER}; not approving because the tested commit cannot be verified"
-  emit proceed false
-  exit 0
-fi
-if [ "$current_head" != "$EXPECTED_HEAD_SHA" ]; then
-  echo "::error::PR #${PR_NUMBER} head changed from tested SHA '$(safe "$EXPECTED_HEAD_SHA")' to '$(safe "$current_head")'; not approving. The synchronize run for the new head must verify CI instead"
   emit proceed false
   exit 0
 fi
