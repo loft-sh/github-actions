@@ -40,6 +40,43 @@ inputs:
   openai-api-key:
     description: 'OpenAI API key. Required when provider=openai.'
     required: false
+  agent:
+    description: |
+      Optional name of a deployed managed agent (loft-sh/ai-agents).
+      When set, the action creates a managed-agent session against that
+      agent instead of a one-shot Messages call: prompt and input become
+      the session's opening user message, and the agent's final output
+      lands on the result output. Anthropic-only — combined with
+      provider openai the step skips with a reason. Expect minutes of
+      latency and session-scale cost instead of a 15s single call.
+    required: false
+    default: ''
+  anthropic-session-key:
+    description: |
+      Anthropic Console API key for the workspace the agent is deployed
+      in. This is a different credential class from anthropic-api-key:
+      Messages-API and admin keys cannot call the sessions API, and
+      workspace keys do not cross workspaces. Required when agent is
+      set, unless the job provides workload identity federation env
+      vars (ANTHROPIC_FEDERATION_RULE_ID and friends), in which case
+      the SDK exchanges the job's OIDC token itself and no static key
+      is needed.
+    required: false
+  vault-id:
+    description: |
+      Optional vault id to attach to the session. Agents whose MCP
+      servers authenticate through session-scoped vault credentials
+      need it or their MCP servers fail to initialize. A vault id names
+      a resource, not a credential, so it is safe to pass as a plain
+      input.
+    required: false
+    default: ''
+  session-timeout-seconds:
+    description: |
+      How long to wait for the session to finish before giving up
+      with conclusion=failed. Only used when agent is set.
+    required: false
+    default: '1200'
 
 outputs:
   result:
@@ -64,20 +101,22 @@ runs:
         INPUT_PROVIDER: ${{ inputs.provider }}
         INPUT_EFFORT: ${{ inputs.effort }}
         INPUT_OUTPUT_SCHEMA: ${{ inputs.output-schema }}
+        INPUT_AGENT: ${{ inputs.agent }}
+        INPUT_ANTHROPIC_SESSION_KEY: ${{ inputs.anthropic-session-key }}
+        INPUT_SESSION_TIMEOUT: ${{ inputs.session-timeout-seconds }}
       run: ${{ github.action_path }}/src/resolve-config.sh
 
     - name: Install provider SDK
       if: steps.cfg.outputs.proceed == 'true'
       shell: bash
       env:
-        PROVIDER: ${{ inputs.provider }}
+        PACKAGES: ${{ steps.cfg.outputs.packages }}
       run: |
         set -euo pipefail
-        case "$PROVIDER" in
-          anthropic) python3 -m pip install --quiet --disable-pip-version-check anthropic ;;
-          openai)    python3 -m pip install --quiet --disable-pip-version-check openai ;;
-          *) echo "::error::unknown provider '$PROVIDER'"; exit 1 ;;
-        esac
+        # the resolver owns which packages each mode needs; this step
+        # only installs what it emitted
+        [ -n "$PACKAGES" ] || { echo "::error::resolver emitted no packages"; exit 1; }
+        echo "$PACKAGES" | xargs python3 -m pip install --quiet --disable-pip-version-check
 
     - name: Call provider
       id: run
@@ -85,12 +124,17 @@ runs:
       shell: bash
       env:
         INPUT_PROVIDER: ${{ inputs.provider }}
+        INPUT_MODE: ${{ steps.cfg.outputs.mode }}
         INPUT_MODEL: ${{ steps.cfg.outputs.model }}
         INPUT_PROMPT: ${{ inputs.prompt }}
         INPUT_INPUT: ${{ inputs.input }}
         INPUT_OUTPUT_SCHEMA: ${{ inputs.output-schema }}
         INPUT_ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
         INPUT_OPENAI_API_KEY: ${{ inputs.openai-api-key }}
+        INPUT_AGENT: ${{ inputs.agent }}
+        INPUT_ANTHROPIC_SESSION_KEY: ${{ inputs.anthropic-session-key }}
+        INPUT_VAULT_ID: ${{ inputs.vault-id }}
+        INPUT_SESSION_TIMEOUT: ${{ inputs.session-timeout-seconds }}
       run: python3 ${{ github.action_path }}/src/run.py
 
     - name: Emit conclusion

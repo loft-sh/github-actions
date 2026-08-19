@@ -123,8 +123,9 @@ test-auto-approve-bot-prs: ## run auto-approve-bot-prs bats tests
 test-ai-pr-review: ## run ai-pr-review bats tests
 	bats $(ACTIONS_DIR)/ai-pr-review/test/*.bats
 
-test-ai-step: ## run ai-step bats tests
+test-ai-step: ## run ai-step bats + python tests (python needs: pip install pytest jsonschema)
 	bats $(ACTIONS_DIR)/ai-step/test/*.bats
+	python3 -m pytest $(ACTIONS_DIR)/ai-step/test/ -q
 
 test-ci-test-notify: ## run ci-test-notify bats tests
 	bats $(ACTIONS_DIR)/ci-test-notify/test
