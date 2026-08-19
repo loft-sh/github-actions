@@ -5,23 +5,179 @@ on:
     branches: [main]
     paths:
       - '.github/actions/semver-validation/**'
+      - '.github/workflows/test-semver-validation.yaml'
   pull_request:
     paths:
       - '.github/actions/semver-validation/**'
+      - '.github/workflows/test-semver-validation.yaml'
+
+permissions: {}
 
 jobs:
-  test:
+  bats:
+    name: Run bats tests
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+      - uses: bats-core/bats-action@77d6fb60505b4d0d1d73e48bd035b55074bbfb43 # 4.0.0
         with:
-          node-version: '24'
-      - run: npm ci
-        working-directory: .github/actions/semver-validation
-      - run: npm test
-        working-directory: .github/actions/semver-validation
+          support-install: false
+          assert-install: false
+          detik-install: false
+          file-install: false
+      - name: Run semver-validation tests
+        run: bats .github/actions/semver-validation/test/*.bats
+
+  action:
+    name: Run the action end to end
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: A stable version
+        id: stable
+        uses: ./.github/actions/semver-validation
+        with:
+          version: v2.1.0
+
+      - name: A prerelease, ordered against its final release
+        id: rc
+        uses: ./.github/actions/semver-validation
+        with:
+          version: v4.9.0-rc.2
+          compare_to: v4.9.0
+
+      - name: A version that is not semver
+        id: invalid
+        uses: ./.github/actions/semver-validation
+        with:
+          version: '1.2'
+
+      - name: Valid semver carrying a suffix nothing routes
+        id: unroutable
+        uses: ./.github/actions/semver-validation
+        with:
+          version: v1.11.1-kubernetes.115
+
+      # A dash-leading argument is an option to semstat, which exits 64 for it.
+      # Only the real binary shows that this action answers instead of failing.
+      - name: A version that starts with a dash
+        id: dashed
+        uses: ./.github/actions/semver-validation
+        with:
+          version: '-1.2.3'
+
+      - name: A compare_to that starts with a dash
+        id: dashed_compare
+        uses: ./.github/actions/semver-validation
+        with:
+          version: v2.1.0
+          compare_to: '-2.0.0'
+
+      # semstat parses a padded version and echoes the padding back in raw, so
+      # the trim has to happen before the call.
+      - name: A version padded with whitespace
+        id: padded
+        uses: ./.github/actions/semver-validation
+        with:
+          version: '  v2.1.0  '
+          compare_to: '  v2.0.9  '
+
+      - name: Assert the outputs
+        env:
+          STABLE_IS_VALID: ${{ steps.stable.outputs.is_valid }}
+          STABLE_PARSED: ${{ steps.stable.outputs.parsed_version }}
+          STABLE_ERROR: ${{ steps.stable.outputs.error_message }}
+          STABLE_IS_STABLE: ${{ steps.stable.outputs.is_stable }}
+          STABLE_TYPE: ${{ steps.stable.outputs.release_type }}
+          STABLE_MAJOR: ${{ steps.stable.outputs.major }}
+          STABLE_MINOR: ${{ steps.stable.outputs.minor }}
+          STABLE_PATCH: ${{ steps.stable.outputs.patch }}
+          STABLE_COMPARISON: ${{ steps.stable.outputs.comparison }}
+          RC_TYPE: ${{ steps.rc.outputs.release_type }}
+          RC_IS_STABLE: ${{ steps.rc.outputs.is_stable }}
+          RC_PRERELEASE: ${{ steps.rc.outputs.prerelease }}
+          RC_COMPARISON: ${{ steps.rc.outputs.comparison }}
+          RC_IS_GREATER: ${{ steps.rc.outputs.is_greater }}
+          INVALID_IS_VALID: ${{ steps.invalid.outputs.is_valid }}
+          INVALID_PARSED: ${{ steps.invalid.outputs.parsed_version }}
+          INVALID_ERROR: ${{ steps.invalid.outputs.error_message }}
+          INVALID_TYPE: ${{ steps.invalid.outputs.release_type }}
+          UNROUTABLE_IS_VALID: ${{ steps.unroutable.outputs.is_valid }}
+          UNROUTABLE_TYPE: ${{ steps.unroutable.outputs.release_type }}
+          UNROUTABLE_IS_STABLE: ${{ steps.unroutable.outputs.is_stable }}
+          DASHED_IS_VALID: ${{ steps.dashed.outputs.is_valid }}
+          DASHED_PARSED: ${{ steps.dashed.outputs.parsed_version }}
+          DASHED_ERROR: ${{ steps.dashed.outputs.error_message }}
+          DASHED_MAJOR: ${{ steps.dashed.outputs.major }}
+          DASHED_COMPARE_IS_VALID: ${{ steps.dashed_compare.outputs.is_valid }}
+          DASHED_COMPARE_COMPARISON: ${{ steps.dashed_compare.outputs.comparison }}
+          DASHED_COMPARE_IS_GREATER: ${{ steps.dashed_compare.outputs.is_greater }}
+          PADDED_IS_VALID: ${{ steps.padded.outputs.is_valid }}
+          PADDED_PARSED: ${{ steps.padded.outputs.parsed_version }}
+          PADDED_COMPARISON: ${{ steps.padded.outputs.comparison }}
+        run: |
+          set -euo pipefail
+
+          fail=0
+          assert() {
+            if [ "$2" != "$3" ]; then
+              echo "::error::$1: expected '$3', got '$2'"
+              fail=1
+            fi
+          }
+
+          # The three outputs the node action had, unchanged.
+          assert "stable is_valid" "$STABLE_IS_VALID" true
+          assert "stable parsed_version" "$STABLE_PARSED" \
+            '{"major":2,"minor":1,"patch":0,"prerelease":null,"build":null,"raw":"v2.1.0"}'
+          assert "stable error_message" "$STABLE_ERROR" ""
+          assert "invalid is_valid" "$INVALID_IS_VALID" false
+          assert "invalid parsed_version" "$INVALID_PARSED" ""
+          assert "invalid error_message" "$INVALID_ERROR" "Invalid semver format: '1.2'"
+
+          assert "stable is_stable" "$STABLE_IS_STABLE" true
+          assert "stable release_type" "$STABLE_TYPE" stable
+          assert "stable major" "$STABLE_MAJOR" 2
+          assert "stable minor" "$STABLE_MINOR" 1
+          assert "stable patch" "$STABLE_PATCH" 0
+          # No compare_to given, so nothing was compared.
+          assert "stable comparison" "$STABLE_COMPARISON" ""
+
+          assert "rc release_type" "$RC_TYPE" rc
+          assert "rc is_stable" "$RC_IS_STABLE" false
+          assert "rc prerelease" "$RC_PRERELEASE" rc.2
+          # A release candidate sorts below the release it was a candidate for.
+          assert "rc comparison" "$RC_COMPARISON" -1
+          assert "rc is_greater" "$RC_IS_GREATER" false
+
+          assert "invalid release_type" "$INVALID_TYPE" ""
+
+          # Valid semver stays valid even when no channel claims the suffix.
+          assert "unroutable is_valid" "$UNROUTABLE_IS_VALID" true
+          assert "unroutable release_type" "$UNROUTABLE_TYPE" ""
+          # No channel to read is_stable off, so it falls back to the suffix.
+          assert "unroutable is_stable" "$UNROUTABLE_IS_STABLE" false
+
+          # A dash-leading version is an answer, not a misused semstat.
+          assert "dashed is_valid" "$DASHED_IS_VALID" false
+          assert "dashed parsed_version" "$DASHED_PARSED" ""
+          assert "dashed error_message" "$DASHED_ERROR" "Invalid semver format: '-1.2.3'"
+          assert "dashed major" "$DASHED_MAJOR" ""
+          assert "dashed_compare is_valid" "$DASHED_COMPARE_IS_VALID" true
+          assert "dashed_compare comparison" "$DASHED_COMPARE_COMPARISON" ""
+          assert "dashed_compare is_greater" "$DASHED_COMPARE_IS_GREATER" ""
+
+          # Padding does not reach raw, which callers put in tag names.
+          assert "padded is_valid" "$PADDED_IS_VALID" true
+          assert "padded parsed_version" "$PADDED_PARSED" \
+            '{"major":2,"minor":1,"patch":0,"prerelease":null,"build":null,"raw":"v2.1.0"}'
+          assert "padded comparison" "$PADDED_COMPARISON" 1
+
+          exit "$fail"

@@ -10,11 +10,18 @@ Three tiers based on complexity:
 | Pattern | When to use | Example |
 |---|---|---|
 | **YAML-only composite** | Thin glue wiring inputs to third-party actions, no custom logic | `release-notification` |
-| **Compiled action (Go/Node.js)** | Business logic, API calls, data transformation | `linear-pr-commenter` (Go), `semver-validation` (Node.js) |
+| **Compiled action (Go/Node.js)** | Business logic, API calls, data transformation | `linear-pr-commenter` (Go), `linear-release-sync` (Go) |
+| **Composite over a released binary** | The logic already ships as a versioned CLI; the action installs it, verifies it, and maps its answers to outputs | `semver-validation` (over `semstat`) |
 | **Reusable workflow** | Cross-repo orchestration of multiple jobs | `backport.yaml`, `actionlint.yaml` |
 
 **Key rule:** Business logic (branching, loops, parsing, API calls) MUST live in
 source files, not inline YAML `run:` blocks. YAML is glue only.
+
+A composite over a released binary satisfies that rule: the logic under review
+lives in the binary's own repository and suite, and the scripts here only install
+it and translate. They may exceed the Bash line budget below, and in exchange they
+must pin the release, verify the download, and fail the step rather than report a
+broken binary's exit code as an answer.
 
 ## Supported Languages
 
@@ -24,9 +31,9 @@ requirements. The table below captures current status and guidance:
 | Language | Status | Notes |
 |---|---|---|
 | **Go** | Supported | Org primary language. Used by `linear-pr-commenter`. |
-| **TypeScript** | Preferred for actions | For `runs.using: node*` actions. Preferred over plain JS. Used by `semver-validation`. |
+| **TypeScript** | Preferred for actions | For `runs.using: node*` actions. Preferred over plain JS. |
 | **Python** | Supported | Well-represented in AI training data, good for AI-assisted development. Adds runtime dependency overhead — use when it fits the problem best. |
-| **Bash** | Glue only | Scripts under ~50 lines. Must pass shellcheck. |
+| **Bash** | Glue, and wrappers over a released binary | Scripts under ~50 lines, or any length when they install and drive a versioned CLI (see the tier table above). Must pass shellcheck. |
 
 > **Note:** Evaluate [Dagger](https://dagger.io/) as a potential standardization
 > layer — tracked in the DEVOPS-595 Linear issue.

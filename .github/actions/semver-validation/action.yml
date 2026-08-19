@@ -1,6 +1,6 @@
 name: "Semantic Version Validation"
-description: "Validates if a given version string follows semantic versioning (semver) format"
-author: "Loft Labs"
+description: "Validates a version string against semver, reports its parts and release type, and optionally orders it against a second version."
+author: "vCluster Labs"
 branding:
   icon: "check-circle"
   color: "green"
@@ -9,15 +9,76 @@ inputs:
   version:
     description: "Version string to validate against semver format"
     required: true
+  compare_to:
+    description: "Second version to order `version` against. Leave empty to skip the comparison."
+    required: false
+    default: ""
+  semstat_version:
+    description: "Release of [loft-sh/semstat](https://github.com/loft-sh/semstat) to download and run."
+    required: false
+    # renovate: datasource=github-releases depName=loft-sh/semstat
+    default: v0.0.2
 
 outputs:
   is_valid:
     description: "Whether the version is a valid semver (true/false)"
+    value: ${{ steps.report.outputs.is_valid }}
   parsed_version:
     description: "Parsed version object with major, minor, patch, prerelease, and build metadata"
+    value: ${{ steps.report.outputs.parsed_version }}
   error_message:
     description: "Error message if validation fails"
+    value: ${{ steps.report.outputs.error_message }}
+  is_stable:
+    description: "Whether the version carries no prerelease suffix (true/false). Empty when the version is invalid."
+    value: ${{ steps.report.outputs.is_stable }}
+  release_type:
+    description: "Release channel: stable, alpha, beta, rc, next or next-internal. Empty when the version is invalid, or valid semver with a suffix outside that vocabulary."
+    value: ${{ steps.report.outputs.release_type }}
+  major:
+    description: "Major version number. Empty when the version is invalid."
+    value: ${{ steps.report.outputs.major }}
+  minor:
+    description: "Minor version number. Empty when the version is invalid."
+    value: ${{ steps.report.outputs.minor }}
+  patch:
+    description: "Patch version number. Empty when the version is invalid."
+    value: ${{ steps.report.outputs.patch }}
+  prerelease:
+    description: "Prerelease identifiers without the leading hyphen. Empty for a stable version and for an invalid one."
+    value: ${{ steps.report.outputs.prerelease }}
+  build:
+    description: "Build metadata without the leading plus. Empty when absent and when the version is invalid."
+    value: ${{ steps.report.outputs.build }}
+  comparison:
+    description: "-1, 0 or 1 as version sorts below, equal to, or above compare_to. Empty unless both are valid."
+    value: ${{ steps.report.outputs.comparison }}
+  is_greater:
+    description: "Whether version sorts strictly above compare_to (true/false). Empty unless both are valid."
+    value: ${{ steps.report.outputs.is_greater }}
 
 runs:
-  using: "node24"
-  main: "dist/index.js"
+  using: "composite"
+  steps:
+    - name: Install semstat
+      id: install
+      shell: bash
+      env:
+        SEMSTAT_VERSION: ${{ inputs.semstat_version }}
+        # Composite steps inherit the job's environment, and the installer takes
+        # a file:// download root for its own tests. Cleared here, where step env
+        # wins, so a workflow-level env: or an earlier step writing GITHUB_ENV
+        # cannot repoint which executable this action runs: the archive and the
+        # checksums.txt it is verified against come from the same root, so a
+        # planted release verifies against its own planted manifest.
+        SEMSTAT_BASE_URL: ""
+      run: ${{ github.action_path }}/src/install-semstat.sh
+
+    - name: Report on the version
+      id: report
+      shell: bash
+      env:
+        SEMSTAT_BIN: ${{ steps.install.outputs.semstat }}
+        INPUT_VERSION: ${{ inputs.version }}
+        INPUT_COMPARE_TO: ${{ inputs.compare_to }}
+      run: ${{ github.action_path }}/src/report.sh
