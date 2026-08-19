@@ -36,11 +36,16 @@ class FakeClient:
 
     def __init__(self, *, agents=("sre-memory-curator",),
                  statuses=("idle",), stop_reason="end_turn",
-                 final_text='{"ok": true}', create_raises=None):
+                 final_text='{"ok": true}', create_raises=None,
+                 idle_event_delay=0, stop_is_str=False):
         self._statuses = list(statuses)
         self._stop = stop_reason
         self._final = final_text
         self._create_raises = create_raises
+        # status_idle event lags the status flip in the live API; this
+        # many lookups return empty before the event becomes visible
+        self._idle_delay = idle_event_delay
+        self._stop_is_str = stop_is_str
         self.deleted = {"sessions": [], "environments": []}
         self.sent = []
 
@@ -52,8 +57,13 @@ class FakeClient:
 
             def list(self, sid, types=None, order=None, limit=None):
                 if types == ["session.status_idle"]:
-                    stop = None if client._stop is None else _obj(type=client._stop)
-                    return iter([] if stop is None else [_obj(stop_reason=stop)])
+                    if client._idle_delay > 0:
+                        client._idle_delay -= 1
+                        return iter([])
+                    if client._stop is None:
+                        return iter([])
+                    stop = client._stop if client._stop_is_str else _obj(type=client._stop)
+                    return iter([_obj(stop_reason=stop)])
                 if types == ["agent.message"]:
                     if client._final is None:
                         return iter([])
@@ -107,6 +117,7 @@ def run_mod(monkeypatch, tmp_path):
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     monkeypatch.setattr(mod, "POLL_INTERVAL_S", 0)
+    monkeypatch.setattr(mod, "STOP_REASON_GRACE_S", 0.3)
     mod._out_path = out
     mod._fake = fake
     return mod
@@ -168,6 +179,31 @@ def test_non_end_turn_stop_fails_soft(run_mod):
     assert e.value.code == 0
     _assert_failed(run_mod)
     assert client.deleted["sessions"] == ["sess_test"]
+
+
+def test_late_status_idle_event_is_awaited(run_mod):
+    # the live race (ai-agents run 32252874325): status flips to idle
+    # before the status_idle event is listable; the grace loop must
+    # absorb the lag instead of failing on the first empty read
+    client = FakeClient(idle_event_delay=2)
+    text = _run(run_mod, client)
+    assert text == '{"ok": true}'
+    assert client.deleted["sessions"] == ["sess_test"]
+
+
+def test_status_idle_event_never_appears_fails_soft(run_mod):
+    client = FakeClient(stop_reason=None)
+    with pytest.raises(SystemExit) as e:
+        _run(run_mod, client)
+    assert e.value.code == 0
+    _assert_failed(run_mod)
+    assert client.deleted["sessions"] == ["sess_test"]
+
+
+def test_string_stop_reason_is_accepted(run_mod):
+    client = FakeClient(stop_is_str=True)
+    text = _run(run_mod, client)
+    assert text == '{"ok": true}'
 
 
 def test_idle_without_message_fails_soft(run_mod):
