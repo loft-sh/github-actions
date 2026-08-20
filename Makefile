@@ -1,4 +1,4 @@
-.PHONY: test test-semver-validation test-linear-pr-commenter test-link-backport-prs test-release-notification test-linear-release-sync test-aws-test-infra test-cleanup-head-charts test-ci-test-notify test-auto-approve-bot-prs test-ai-pr-review test-ai-step test-publish-helm-chart test-govulncheck test-go-licenses test-run-ginkgo test-sticky-pr-comment test-repository-dispatch test-parse-label-filter test-release-branch-freeze test-prerelease-setup test-vcluster-release test-subtree-mirror test-oss-commit-sync test-backport-legacy-allowlist test-backport-legacy-split test-promote-release test-wait-for-release test-cve-scan test-commitlint test-resolve-github-release build-linear-release-sync lint check-bats-jobs install-auto-doc generate-docs check-docs help
+.PHONY: test test-semver-validation test-setup-semstat test-linear-pr-commenter test-link-backport-prs test-release-notification test-linear-release-sync test-aws-test-infra test-cleanup-head-charts test-ci-test-notify test-auto-approve-bot-prs test-ai-pr-review test-ai-step test-publish-helm-chart test-govulncheck test-go-licenses test-run-ginkgo test-sticky-pr-comment test-repository-dispatch test-parse-label-filter test-release-branch-freeze test-prerelease-setup test-vcluster-release test-subtree-mirror test-oss-commit-sync test-backport-legacy-allowlist test-backport-legacy-split test-promote-release test-wait-for-release test-cve-scan test-commitlint test-resolve-github-release build-linear-release-sync lint check-bats-jobs install-auto-doc generate-docs check-docs help
 
 ACTIONS_DIR := .github/actions
 WORKFLOWS_DIR := .github/workflows
@@ -93,10 +93,13 @@ check-docs: generate-docs ## verify docs are up to date (fails if drift detected
 help: ## show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-30s %s\n", $$1, $$2}'
 
-test: test-semver-validation test-linear-pr-commenter test-link-backport-prs test-release-notification test-linear-release-sync test-aws-test-infra test-cleanup-head-charts test-auto-approve-bot-prs test-ai-pr-review test-ai-step test-ci-test-notify test-go-licenses test-publish-helm-chart test-govulncheck test-run-ginkgo test-sticky-pr-comment test-repository-dispatch test-parse-label-filter test-release-branch-freeze test-prerelease-setup test-vcluster-release test-subtree-mirror test-oss-commit-sync test-backport-legacy-allowlist test-backport-legacy-split test-promote-release test-wait-for-release test-cve-scan test-commitlint test-resolve-github-release ## run all action tests
+test: test-semver-validation test-setup-semstat test-linear-pr-commenter test-link-backport-prs test-release-notification test-linear-release-sync test-aws-test-infra test-cleanup-head-charts test-auto-approve-bot-prs test-ai-pr-review test-ai-step test-ci-test-notify test-go-licenses test-publish-helm-chart test-govulncheck test-run-ginkgo test-sticky-pr-comment test-repository-dispatch test-parse-label-filter test-release-branch-freeze test-prerelease-setup test-vcluster-release test-subtree-mirror test-oss-commit-sync test-backport-legacy-allowlist test-backport-legacy-split test-promote-release test-wait-for-release test-cve-scan test-commitlint test-resolve-github-release ## run all action tests
 
 test-semver-validation: ## run semver-validation bats tests
 	bats $(ACTIONS_DIR)/semver-validation/test/*.bats
+
+test-setup-semstat: ## run setup-semstat bats tests
+	bats $(ACTIONS_DIR)/setup-semstat/test/*.bats
 
 test-linear-pr-commenter: ## run linear-pr-commenter unit tests
 	cd $(ACTIONS_DIR)/linear-pr-commenter/src && go test -v ./...

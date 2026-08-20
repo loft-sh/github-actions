@@ -11,7 +11,7 @@ Three tiers based on complexity:
 |---|---|---|
 | **YAML-only composite** | Thin glue wiring inputs to third-party actions, no custom logic | `release-notification` |
 | **Compiled action (Go/Node.js)** | Business logic, API calls, data transformation | `linear-pr-commenter` (Go), `linear-release-sync` (Go) |
-| **Composite over a released binary** | The logic already ships as a versioned CLI; the action installs it, verifies it, and maps its answers to outputs | `semver-validation` (over `semstat`) |
+| **Composite over a released binary** | The logic already ships as a versioned CLI; one action installs and verifies it, the others map its answers to outputs | `setup-semstat` (installs `semstat`), `semver-validation` (maps it) |
 | **Reusable workflow** | Cross-repo orchestration of multiple jobs | `backport.yaml`, `actionlint.yaml` |
 
 **Key rule:** Business logic (branching, loops, parsing, API calls) MUST live in

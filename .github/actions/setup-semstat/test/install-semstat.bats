@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# Tests for semver-validation/src/install-semstat.sh
+# Tests for setup-semstat/src/install-semstat.sh
 #
 # Stubs curl with a local release directory, so the download, the checksum
 # verification and the version cross-check all run for real against artifacts
@@ -13,6 +13,9 @@ setup() {
 
   export GITHUB_OUTPUT="$TEST_DIR/github_output"
   : >"$GITHUB_OUTPUT"
+
+  export GITHUB_PATH="$TEST_DIR/github_path"
+  : >"$GITHUB_PATH"
 
   export RUNNER_TEMP="$TEST_DIR/runner-temp"
   mkdir -p "$RUNNER_TEMP"
@@ -49,6 +52,22 @@ cp "$src" "$dest"
 MOCK
   chmod +x "$MOCK_DIR/curl"
 
+  export COSIGN_ARGS="$TEST_DIR/cosign_args"
+  : >"$COSIGN_ARGS"
+
+  # cosign: records the whole invocation and reports OK. COSIGN_EXIT stands in
+  # for a bundle that does not verify.
+  cat >"$MOCK_DIR/cosign" <<'MOCK'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$COSIGN_ARGS"
+if [ "${COSIGN_EXIT:-0}" -ne 0 ]; then
+  echo "Error: no matching signatures" >&2
+  exit "$COSIGN_EXIT"
+fi
+echo "Verified OK" >&2
+MOCK
+  chmod +x "$MOCK_DIR/cosign"
+
   publish_release v1.2.3 1.2.3
 }
 
@@ -82,11 +101,26 @@ MOCK
   done
 
   (cd "$dir" && sha256sum ./*.tar.gz | sed 's| \./| |' >checksums.txt)
+
+  # The signature bundle is opaque to the script, which only hands it to cosign,
+  # so its contents matter no more than that the asset is there to be fetched.
+  printf '{"mediaType":"application/vnd.dev.sigstore.bundle+json;version=0.3"}\n' \
+    >"$dir/checksums.txt.sigstore.json"
 }
 
 # Reads an output back out of GITHUB_OUTPUT.
 output_value() {
   sed -n "s/^$1=//p" "$GITHUB_OUTPUT" | tail -n1
+}
+
+# The directories the run put on PATH for the steps that follow it.
+path_entries() {
+  cat "$GITHUB_PATH"
+}
+
+# The assets fetched from the release so far, by name.
+requested_assets() {
+  sed 's|.*/||' "$CURL_URLS"
 }
 
 # The archive name the run asked the release for.
@@ -264,13 +298,58 @@ MOCK
   [[ "$output" == *"::error::semstat has no build for ppc64le"* ]]
 }
 
-@test "fails when no version is given" {
+@test "installs the pinned release when SEMSTAT_VERSION is unset" {
+  pinned="$(sed -n 's/^DEFAULT_VERSION=//p' "$SCRIPT")"
+  [ -n "$pinned" ]
+
   unset SEMSTAT_VERSION
 
   run "$SCRIPT"
 
+  # The test serves one release from disk and it is not that one, so the download
+  # fails; which release was asked for is what this is about.
+  [ "$status" -eq 1 ]
+  [[ "$(cat "$CURL_URLS")" == *"/${pinned}/"* ]]
+}
+
+@test "fails when GITHUB_PATH is not set" {
+  unset GITHUB_PATH
+
+  run "$SCRIPT"
+
   [ "$status" -ne 0 ]
-  [[ "$output" == *"semstat-version is required"* ]]
+  [[ "$output" == *"GITHUB_PATH is required"* ]]
+}
+
+# Refused rather than falling back to /tmp: the install directory carries the
+# signature-verified marker, and on a shared /tmp anyone could forge it.
+@test "fails when RUNNER_TEMP is not set" {
+  unset RUNNER_TEMP
+
+  run "$SCRIPT"
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"RUNNER_TEMP is required"* ]]
+  [ ! -s "$CURL_URLS" ]
+}
+
+@test "leaves no work directory behind once installed" {
+  run "$SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [ -z "$(find "$RUNNER_TEMP" -maxdepth 1 -name 'semstat.*' -print -quit)" ]
+}
+
+# The archive and any half-unpacked binary go with it, on every exit path rather
+# than only the one that succeeded.
+@test "leaves no work directory behind when the install fails" {
+  publish_release v1.2.4 1.2.3
+  export SEMSTAT_VERSION=v1.2.4
+
+  run "$SCRIPT"
+
+  [ "$status" -eq 1 ]
+  [ -z "$(find "$RUNNER_TEMP" -maxdepth 1 -name 'semstat.*' -print -quit)" ]
 }
 
 @test "refuses a version that is not a semantic version" {
@@ -304,17 +383,6 @@ MOCK
 
   [ "$status" -eq 0 ]
   [ "$("$(output_value semstat)" version)" = "1.4.0-rc.1" ]
-}
-
-@test "fails when RUNNER_TEMP is not set" {
-  # The fallback this replaces put the install directory at a predictable path
-  # under a /tmp anyone on the runner can write to.
-  unset RUNNER_TEMP
-
-  run "$SCRIPT"
-
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"RUNNER_TEMP is required"* ]]
 }
 
 @test "refuses an archive whose semstat member is a symlink" {
@@ -513,14 +581,166 @@ gate_path() {
   [ ! -s "$CURL_URLS" ]
 }
 
-@test "a runner without jq says so before the release is downloaded" {
-  # jq is not used here but in the reporting step of the same composite, so a
-  # runner missing it is told before the install it cannot use is paid for.
-  run /usr/bin/env "PATH=$(gate_path curl tar sha256sum)" "$SCRIPT"
+# PATH, not just the output: every consumer calls semstat from inside a bash
+# function or a `while read` loop, where a step output is not in scope.
+@test "puts the directory holding the binary on PATH" {
+  run "$SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [ "$(path_entries)" = "$(dirname "$(output_value semstat)")" ]
+}
+
+@test "puts the binary on PATH again when the install is reused" {
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  installed="$(path_entries)"
+  : >"$GITHUB_PATH"
+
+  run "$SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"already installed"* ]]
+  [ "$(path_entries)" = "$installed" ]
+}
+
+@test "leaves the signature alone unless asked" {
+  run "$SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [[ "$(requested_assets)" != *sigstore* ]]
+  [ ! -s "$COSIGN_ARGS" ]
+}
+
+@test "verifies checksums.txt against the release workflow at the exact tag" {
+  export SEMSTAT_VERIFY_SIGNATURE=true
+
+  run "$SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [[ "$(requested_assets)" == *checksums.txt.sigstore.json* ]]
+  [[ "$(cat "$COSIGN_ARGS")" == *"verify-blob"* ]]
+  [[ "$(cat "$COSIGN_ARGS")" == *"--bundle "*"checksums.txt.sigstore.json"* ]]
+  [[ "$(cat "$COSIGN_ARGS")" == *"--certificate-identity=https://github.com/loft-sh/semstat/.github/workflows/release.yaml@refs/tags/v1.2.3"* ]]
+  [[ "$(cat "$COSIGN_ARGS")" == *"--certificate-oidc-issuer=https://token.actions.githubusercontent.com"* ]]
+}
+
+# A release can carry its archives and checksums.txt and no bundle, so this must
+# not be reported as the release being absent.
+@test "names the missing signature when the release publishes no bundle" {
+  export SEMSTAT_VERIFY_SIGNATURE=true
+  rm "$RELEASE_DIR/v1.2.3/checksums.txt.sigstore.json"
+
+  run "$SCRIPT"
 
   [ "$status" -eq 1 ]
-  [[ "$output" == *"::error::jq is required"* ]]
+  [[ "$output" == *"publishes no checksums.txt.sigstore.json"* ]]
+  [[ "$output" != *"check that the release exists"* ]]
+  [ -z "$(output_value semstat)" ]
+}
+
+@test "fails when cosign does not verify the bundle" {
+  export SEMSTAT_VERIFY_SIGNATURE=true
+  export COSIGN_EXIT=1
+
+  run "$SCRIPT"
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"::error::cosign could not verify checksums.txt"* ]]
+  [[ "$output" == *"no matching signatures"* ]]
+  [ -z "$(output_value semstat)" ]
+}
+
+# The error names the action, because a workflow that ran the script itself is
+# the only way to reach a verify-signature request with no cosign on PATH.
+#
+# PATH is narrowed to a farm holding only what the script needs rather than
+# trimmed of the mock, so the result does not depend on whether the machine
+# running the tests happens to have a real cosign installed.
+@test "fails when verification is asked for and cosign is not installed" {
+  export SEMSTAT_VERIFY_SIGNATURE=true
+
+  farm="$TEST_DIR/no-cosign"
+  mkdir -p "$farm"
+  # `|| continue` rather than `&&`: as the last statement of the loop body, a
+  # miss would otherwise carry its status out of the loop and trip bats' set -e
+  # on a machine without one of these, failing the test at an unrelated line.
+  # sha256sum and shasum are both listed because the script takes either.
+  for tool in bash env uname mktemp awk tar chmod mv rm cat cut tr sha256sum shasum; do
+    real="$(command -v "$tool")" || continue
+    ln -sf "$real" "$farm/$tool"
+  done
+  ln -sf "$MOCK_DIR/curl" "$farm/curl"
+
+  # Narrowed for the script only. Narrowing the test's own PATH would leave bats
+  # unable to find the tools it cleans up with once teardown removes the farm.
+  run env PATH="$farm" "$SCRIPT"
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"::error::verify-signature needs cosign on PATH"* ]]
+  [ -z "$(output_value semstat)" ]
+}
+
+@test "refuses a verify-signature value that is neither true nor false" {
+  export SEMSTAT_VERIFY_SIGNATURE=yes
+
+  run "$SCRIPT"
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"verify-signature takes true or false; got yes"* ]]
   [ ! -s "$CURL_URLS" ]
+}
+
+# A step asking for verification cannot be served by whatever an earlier
+# unverified step left in the shared install directory.
+@test "re-installs over an install that was not signature-verified" {
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  downloaded="$(download_count)"
+
+  export SEMSTAT_VERIFY_SIGNATURE=true
+
+  run "$SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [ "$(download_count)" -gt "$downloaded" ]
+  [ -s "$COSIGN_ARGS" ]
+}
+
+@test "reuses an install that was signature-verified" {
+  export SEMSTAT_VERIFY_SIGNATURE=true
+
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  downloaded="$(download_count)"
+
+  run "$SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"already installed"* ]]
+  [ "$(download_count)" -eq "$downloaded" ]
+}
+
+# An unverified re-install must not inherit the earlier run's claim: the next
+# verifying step would otherwise reuse a binary nothing verified.
+@test "drops the verified marker when a later run does not verify" {
+  export SEMSTAT_VERIFY_SIGNATURE=true
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+
+  unset SEMSTAT_VERIFY_SIGNATURE
+  # Only running it says the install is unusable, so this forces a re-install
+  # while leaving the marker from the verified run in place.
+  printf 'truncated' >"$(output_value semstat)"
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+
+  export SEMSTAT_VERIFY_SIGNATURE=true
+  downloaded="$(download_count)"
+
+  run "$SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [ "$(download_count)" -gt "$downloaded" ]
 }
 
 @test "a checksums.txt with CRLF line endings still verifies the archive" {
@@ -538,9 +758,52 @@ gate_path() {
 
 @test "a RUNNER_TEMP that cannot be worked in says so rather than dying on mktemp" {
   export RUNNER_TEMP="$TEST_DIR/never-created"
-
   run "$SCRIPT"
 
   [ "$status" -eq 1 ]
   [[ "$output" == *"::error::could not create a working directory under RUNNER_TEMP"* ]]
+}
+
+# An untouched `version:` input arrives as an empty string rather than unset, and
+# the pin lives in the script so the action and a sibling action running that
+# script off github.action_path cannot install different releases.
+@test "installs the pinned release when the version input is empty" {
+  pinned="$(sed -n 's/^DEFAULT_VERSION=//p' "$SCRIPT")"
+  [ -n "$pinned" ]
+
+  export SEMSTAT_VERSION=""
+  run "$SCRIPT"
+
+  [ "$status" -eq 1 ]
+  [[ "$(cat "$CURL_URLS")" == *"/${pinned}/"* ]]
+}
+
+# The marker is cleared before the binary is moved into place, so a run that dies
+# in between cannot leave this run's unverified download under an earlier run's
+# claim. Failing the move is how that window is reached from a test.
+@test "clears an earlier verified claim even when the install does not complete" {
+  export SEMSTAT_VERIFY_SIGNATURE=true
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+
+  marker="$(dirname "$(output_value semstat)")/.signature-verified"
+  [ -f "$marker" ]
+
+  unset SEMSTAT_VERIFY_SIGNATURE
+  # Only running it says the install is unusable, so this forces a re-install.
+  printf 'truncated' >"$(output_value semstat)"
+
+  break_dir="$TEST_DIR/break"
+  mkdir -p "$break_dir"
+  cat >"$break_dir/mv" <<'MOCK'
+#!/usr/bin/env bash
+echo "mv: interrupted" >&2
+exit 1
+MOCK
+  chmod +x "$break_dir/mv"
+
+  run env PATH="$break_dir:$PATH" "$SCRIPT"
+
+  [ "$status" -ne 0 ]
+  [ ! -f "$marker" ]
 }
