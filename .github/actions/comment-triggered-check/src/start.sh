@@ -184,5 +184,15 @@ if ! created="$(gh_json --method POST "repos/${repo}/check-runs" \
 fi
 
 check_run_id="$(printf '%s' "$created" | jq -r '.id // ""')"
+
+# A create that returned no id leaves a check-run nothing can ever close, so
+# treat it as a failed create rather than starting a run that cannot report.
+if [[ -z "$check_run_id" ]]; then
+  reason="check-run-not-created"
+  should_run=false
+  echo "::warning::the check-run create returned no id; not starting a run"
+  finish_and_exit
+fi
+
 echo "::notice::started ${name} on ${head_sha}"
 finish_and_exit

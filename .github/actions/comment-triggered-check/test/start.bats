@@ -160,6 +160,15 @@ created() { calls_matching "POST"; }
   [ "$(kv should-run)" = "false" ]
 }
 
+# A 200 with no id leaves a check-run on the commit that nothing can ever close.
+@test "a create returning no id is reported, not returned as success" {
+  export GH_MOCK_CREATE_JSON='{}'
+  run bash "$SCRIPT"
+  [ "$(kv reason)" = "check-run-not-created" ]
+  [ "$(kv check-run-id)" = "" ]
+  [ "$(kv should-run)" = "false" ]
+}
+
 # --- quiet paths -------------------------------------------------------------
 
 @test "an ordinary comment touches no API at all" {

@@ -216,6 +216,18 @@ setup() {
   [ "$result" = "failure" ]
 }
 
+# The list is checked word by word. Substring membership passed any adjacent
+# slice of it, and the value went to the Checks API verbatim.
+@test "resolve_conclusion: a multi-token value is not a member of the list" {
+  result="$(resolve_conclusion "success failure" "success" "success" 2>/dev/null)"
+  [ "$result" = "failure" ]
+}
+
+@test "resolve_conclusion: a trailing slice of the list is rejected too" {
+  result="$(resolve_conclusion "neutral cancelled" "success" "success" 2>/dev/null)"
+  [ "$result" = "failure" ]
+}
+
 @test "resolve_conclusion: rejecting a bad value warns rather than passing it through" {
   warning="$(resolve_conclusion "action_required" "success" "success" 2>&1 >/dev/null)"
   [[ "$warning" == *"::warning::"* ]]

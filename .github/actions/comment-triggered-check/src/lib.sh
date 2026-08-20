@@ -124,7 +124,9 @@ resolve_conclusion() {
   local report="${1-}" build_result="${2-}" suite_result="${3-}"
 
   if [[ -n "$report" ]]; then
-    if [[ " $CONCLUSIONS_FROM_REPORT " == *" $report "* ]]; then
+    # Exact match, word by word. Substring membership passes any adjacent slice
+    # of the list, so "success failure" reaches the Checks API and 400s.
+    if printf '%s' "$CONCLUSIONS_FROM_REPORT" | tr ' ' '\n' | grep -qxF -- "$report"; then
       printf '%s' "$report"
       return 0
     fi
