@@ -13,11 +13,15 @@ inputs:
     description: "Second version to order `version` against. Leave empty to skip the comparison."
     required: false
     default: ""
-  semstat_version:
-    description: "Release of [loft-sh/semstat](https://github.com/loft-sh/semstat) to download and run."
+  verify-signature:
+    description: |
+      Verify the semstat release's `checksums.txt` against its cosign bundle before
+      trusting it, proving the release came from semstat's own release workflow at
+      that exact tag rather than only that the download arrived intact. Costs a
+      cosign install on the job, so it is off by default; turn it on where this
+      action's answer gates a publish.
     required: false
-    # renovate: datasource=github-releases depName=loft-sh/semstat
-    default: v0.0.2
+    default: "false"
 
 outputs:
   is_valid:
@@ -60,11 +64,24 @@ outputs:
 runs:
   using: "composite"
   steps:
+    - name: Install cosign
+      if: inputs.verify-signature == 'true'
+      uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+    # setup-semstat's installer, run out of the checkout this action came in
+    # rather than through `uses:`. Neither form of `uses:` works for a sibling in
+    # the same repository: a relative `uses: ./...` resolves against the caller's
+    # workspace and finds nothing once this action is consumed from another repo,
+    # and a SHA pin can only name a commit from before the change that needs it,
+    # which then keeps running while fixes to the installer land elsewhere. Both
+    # actions ship from one commit, so running the script off github.action_path
+    # is what makes them impossible to drift apart. Which release is installed,
+    # and the Renovate comment tracking it, live with the script.
     - name: Install semstat
       id: install
       shell: bash
       env:
-        SEMSTAT_VERSION: ${{ inputs.semstat_version }}
+        SEMSTAT_VERIFY_SIGNATURE: ${{ inputs.verify-signature }}
         # Composite steps inherit the job's environment, and the installer takes
         # a file:// download root for its own tests. Cleared here, where step env
         # wins, so a workflow-level env: or an earlier step writing GITHUB_ENV
@@ -72,7 +89,7 @@ runs:
         # checksums.txt it is verified against come from the same root, so a
         # planted release verifies against its own planted manifest.
         SEMSTAT_BASE_URL: ""
-      run: ${{ github.action_path }}/src/install-semstat.sh
+      run: ${{ github.action_path }}/../setup-semstat/src/install-semstat.sh
 
     - name: Report on the version
       id: report
