@@ -1,0 +1,164 @@
+name: Test comment-triggered-check
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/test-comment-triggered-check.yaml'
+      - '.github/actions/comment-triggered-check/**'
+
+permissions:
+  contents: read
+
+jobs:
+  bats:
+    name: Run bats tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: bats-core/bats-action@77d6fb60505b4d0d1d73e48bd035b55074bbfb43 # 4.0.0
+        with:
+          support-install: false
+          assert-install: false
+          detik-install: false
+          file-install: false
+      - name: Run comment-triggered-check tests
+        run: bats .github/actions/comment-triggered-check/test/*.bats
+
+  composite-smoke:
+    name: Composite smoke (paths that need no API)
+    runs-on: ubuntu-latest
+    # Every case below returns before the action touches the API, so this job
+    # needs no elevated permissions and no pull request fixture. The API paths
+    # are exercised by the caller in vcluster-pro; what is pinned here is that
+    # the action stays quiet and well-formed on the paths it takes for the vast
+    # majority of comments in a repository.
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: An ordinary comment is not a command
+        id: not-a-command
+        uses: ./.github/actions/comment-triggered-check
+        with:
+          mode: start
+          comment-body: 'LGTM, nice work'
+          comment-author: someone
+          pr-number: '1'
+
+      - name: Verify it did not match and emitted the full output set
+        env:
+          MATCHED: ${{ steps.not-a-command.outputs.matched }}
+          SHOULD_RUN: ${{ steps.not-a-command.outputs.should-run }}
+          CHECK_RUN_ID: ${{ steps.not-a-command.outputs.check-run-id }}
+        run: |
+          echo "matched=$MATCHED should-run=$SHOULD_RUN"
+          [[ "$MATCHED" == "false" ]]
+          [[ "$SHOULD_RUN" == "false" ]]
+          [[ -z "$CHECK_RUN_ID" ]]
+
+      - name: A command quoted mid-thread does not fire
+        id: quoted
+        uses: ./.github/actions/comment-triggered-check
+        with:
+          mode: start
+          comment-body: |
+            we should run
+            /test snapshots
+            once this lands
+          comment-author: someone
+          pr-number: '1'
+
+      - name: Verify the quoted command did not match
+        env:
+          MATCHED: ${{ steps.quoted.outputs.matched }}
+        run: |
+          echo "matched=$MATCHED"
+          [[ "$MATCHED" == "false" ]]
+
+      - name: A command with no filter is reported, not run
+        id: empty-filter
+        uses: ./.github/actions/comment-triggered-check
+        with:
+          mode: start
+          comment-body: '/test'
+          comment-author: someone
+          pr-number: '1'
+
+      - name: Verify the empty-filter reason
+        env:
+          MATCHED: ${{ steps.empty-filter.outputs.matched }}
+          REASON: ${{ steps.empty-filter.outputs.reason }}
+          SHOULD_RUN: ${{ steps.empty-filter.outputs.should-run }}
+        run: |
+          echo "matched=$MATCHED reason=$REASON should-run=$SHOULD_RUN"
+          [[ "$MATCHED" == "true" ]]
+          [[ "$REASON" == "empty-filter" ]]
+          [[ "$SHOULD_RUN" == "false" ]]
+
+      - name: An outsider cannot run the command
+        id: outsider
+        uses: ./.github/actions/comment-triggered-check
+        with:
+          mode: start
+          comment-body: '/test snapshots'
+          comment-author: someone
+          author-association: CONTRIBUTOR
+          pr-number: '1'
+
+      - name: Verify the outsider was refused
+        env:
+          REASON: ${{ steps.outsider.outputs.reason }}
+          SHOULD_RUN: ${{ steps.outsider.outputs.should-run }}
+        run: |
+          echo "reason=$REASON should-run=$SHOULD_RUN"
+          [[ "$REASON" == "insufficient-permission" ]]
+          [[ "$SHOULD_RUN" == "false" ]]
+
+      - name: A comment outside a pull request is reported, not run
+        id: not-a-pr
+        uses: ./.github/actions/comment-triggered-check
+        with:
+          mode: start
+          comment-body: '/test snapshots'
+          comment-author: someone
+          pr-number: ''
+
+      - name: Verify the not-a-pull-request reason
+        env:
+          REASON: ${{ steps.not-a-pr.outputs.reason }}
+        run: |
+          echo "reason=$REASON"
+          [[ "$REASON" == "not-a-pull-request" ]]
+
+      - name: finish with no check-run is a no-op, not an error
+        id: finish-noop
+        uses: ./.github/actions/comment-triggered-check
+        with:
+          mode: finish
+          check-run-id: ''
+          build-result: success
+          suite-result: success
+
+      - name: Verify the no-op published nothing
+        env:
+          CONCLUSION: ${{ steps.finish-noop.outputs.conclusion }}
+        run: |
+          echo "conclusion=$CONCLUSION"
+          [[ -z "$CONCLUSION" ]]
+
+      - name: An unknown mode fails loudly
+        id: bad-mode
+        continue-on-error: true
+        uses: ./.github/actions/comment-triggered-check
+        with:
+          mode: sideways
+
+      - name: Verify the unknown mode failed
+        env:
+          OUTCOME: ${{ steps.bad-mode.outcome }}
+        run: |
+          echo "outcome=$OUTCOME"
+          [[ "$OUTCOME" == "failure" ]]

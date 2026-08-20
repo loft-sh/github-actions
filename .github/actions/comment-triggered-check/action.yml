@@ -1,0 +1,163 @@
+name: Comment-triggered check
+description: |
+  Turns a pull request comment such as `/test snapshots` into a check-run on the
+  pull request's head commit, and completes that check-run when the caller's
+  work finishes. Domain-agnostic: it never runs tests, it decides whether a
+  command should run, resolves the pull request identity the event does not
+  carry, and owns the check-run lifecycle.
+
+  Two modes. `start` parses the comment, authorizes the commenter, resolves the
+  head SHA and base ref, and opens the check-run. `finish` resolves the terminal
+  outcome with a fail-closed matrix and completes it. Repeated commands are
+  deduplicated by the caller's concurrency group, not here.
+inputs:
+  mode:
+    description: 'Either "start" or "finish".'
+    required: true
+  command:
+    description: 'Command word that must open the comment, on its own first line.'
+    required: false
+    default: '/test'
+  comment-body:
+    description: 'start mode. The comment text. Pass the github.event.comment.body context.'
+    required: false
+    default: ''
+  comment-author:
+    description: 'start mode. Login of the commenter. Pass the github.event.comment.user.login context.'
+    required: false
+    default: ''
+  author-association:
+    description: 'start mode. How the commenter relates to the repository. Pass the github.event.comment.author_association context. OWNER, MEMBER and COLLABORATOR may run the command; anything else, including empty, may not.'
+    required: false
+    default: ''
+  pr-number:
+    description: 'start mode. Pull request number. Pass the github.event.issue.number context.'
+    required: false
+    default: ''
+  repo:
+    description: 'Repository in owner/name form.'
+    required: false
+    default: ${{ github.repository }}
+  check-name-prefix:
+    description: 'start mode. Prefix for the check-run name; the filter is appended.'
+    required: false
+    default: 'e2e'
+  run-id:
+    description: 'start mode. Used to build the check-run details link. Pass the github.run_id context.'
+    required: false
+    default: ''
+  server-url:
+    description: 'start mode. Base URL used to build the check-run details link. Pass the github.server_url context.'
+    required: false
+    default: 'https://github.com'
+  check-run-id:
+    description: 'finish mode. The id returned by start mode. Empty is not an error; it means no check was opened.'
+    required: false
+    default: ''
+  report-conclusion:
+    description: 'finish mode. What the test run declared about itself, parsed from its report. The only input that can produce a neutral conclusion.'
+    required: false
+    default: ''
+  build-result:
+    description: 'finish mode. Result of the build job. Pass the matching needs result.'
+    required: false
+    default: ''
+  suite-result:
+    description: 'finish mode. Result of the suite job. Pass the matching needs result.'
+    required: false
+    default: ''
+  summary:
+    description: 'finish mode. Markdown body for the completed check-run. Defaults to the two job results.'
+    required: false
+    default: ''
+  details-url:
+    description: 'finish mode. Link target for the completed check-run.'
+    required: false
+    default: ''
+  github-token:
+    description: 'Token for gh. The calling job must grant checks: write and pull-requests: read.'
+    required: false
+    default: ${{ github.token }}
+outputs:
+  matched:
+    description: '"true" when the comment opened with the command word.'
+    value: ${{ steps.start.outputs.matched }}
+  args:
+    description: 'Raw argument string that followed the command word.'
+    value: ${{ steps.start.outputs.args }}
+  filter:
+    description: 'Argument string with whitespace normalized. This is what to pass to the test runner.'
+    value: ${{ steps.start.outputs.filter }}
+  should-run:
+    description: 'The caller''s execution gate. "true" only when a check-run was actually opened, so it is false for a comment that was not a command, an empty filter, a fork, a closed or unreadable pull request, a rejected author_association, and a failed check-run creation. Read reason for which. Note the association test is not a permission check: MEMBER means organization membership, and COLLABORATOR does not say at what level.'
+    value: ${{ steps.start.outputs.should-run }}
+  reason:
+    description: 'Why the command will not run: fork, insufficient-permission, empty-filter, not-a-pull-request, pull-request-closed, pull-request-unreadable, or check-run-not-created. Empty when it will.'
+    value: ${{ steps.start.outputs.reason }}
+  head-sha:
+    description: 'Resolved head commit of the pull request. The event does not carry it.'
+    value: ${{ steps.start.outputs.head-sha }}
+  head-ref:
+    description: 'Resolved head BRANCH of the pull request. Needed by a caller that dispatches the work to a non-privileged run, because `gh workflow run --ref` takes a branch or tag and never a SHA.'
+    value: ${{ steps.start.outputs.head-ref }}
+  base-ref:
+    description: 'Resolved base branch of the pull request. The event does not carry it either.'
+    value: ${{ steps.start.outputs.base-ref }}
+  concurrency-key:
+    description: 'Filter reduced to a lowercase slug plus an eight-character digest of the normalized filter, safe to interpolate into a concurrency group. The digest is not decoration: the slug alone drops punctuation, so "a && b" and "a || b" would share a group and cancel each other.'
+    value: ${{ steps.start.outputs.concurrency-key }}
+  check-name:
+    description: 'Display name of the check-run, sanitized and length-bounded.'
+    value: ${{ steps.start.outputs.check-name }}
+  check-run-id:
+    description: 'Id of the opened check-run. Empty when nothing was opened; gate the finish job on it.'
+    value: ${{ steps.start.outputs.check-run-id }}
+  conclusion:
+    description: 'finish mode. The conclusion that was published.'
+    value: ${{ steps.finish.outputs.conclusion }}
+runs:
+  using: composite
+  steps:
+    - name: Reject an unknown mode
+      if: inputs.mode != 'start' && inputs.mode != 'finish'
+      shell: bash
+      env:
+        INPUT_MODE: ${{ inputs.mode }}
+      run: |
+        echo "::error::mode must be 'start' or 'finish', got '${INPUT_MODE}'"
+        exit 1
+
+    - name: Start
+      id: start
+      if: inputs.mode == 'start'
+      shell: bash
+      env:
+        INPUT_COMMAND: ${{ inputs.command }}
+        INPUT_COMMENT_BODY: ${{ inputs.comment-body }}
+        INPUT_COMMENT_AUTHOR: ${{ inputs.comment-author }}
+        INPUT_AUTHOR_ASSOCIATION: ${{ inputs.author-association }}
+        INPUT_PR_NUMBER: ${{ inputs.pr-number }}
+        INPUT_REPO: ${{ inputs.repo }}
+        INPUT_CHECK_NAME_PREFIX: ${{ inputs.check-name-prefix }}
+        INPUT_RUN_ID: ${{ inputs.run-id }}
+        INPUT_SERVER_URL: ${{ inputs.server-url }}
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: ${{ github.action_path }}/src/start.sh
+
+    - name: Finish
+      id: finish
+      if: inputs.mode == 'finish'
+      shell: bash
+      env:
+        INPUT_CHECK_RUN_ID: ${{ inputs.check-run-id }}
+        INPUT_REPO: ${{ inputs.repo }}
+        INPUT_REPORT_CONCLUSION: ${{ inputs.report-conclusion }}
+        INPUT_BUILD_RESULT: ${{ inputs.build-result }}
+        INPUT_SUITE_RESULT: ${{ inputs.suite-result }}
+        INPUT_SUMMARY: ${{ inputs.summary }}
+        INPUT_DETAILS_URL: ${{ inputs.details-url }}
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: ${{ github.action_path }}/src/finish.sh
+branding:
+  icon: 'play-circle'
+  color: 'orange'
