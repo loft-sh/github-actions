@@ -5,10 +5,16 @@ on:
     branches: [main]
     paths:
       - '.github/actions/semver-validation/**'
+      # The action runs setup-semstat's installer out of the same checkout, so a
+      # change there is a change to this one, and the end-to-end job runs it.
+      - '.github/actions/setup-semstat/**'
       - '.github/workflows/test-semver-validation.yaml'
   pull_request:
     paths:
       - '.github/actions/semver-validation/**'
+      # The action runs setup-semstat's installer out of the same checkout, so a
+      # change there is a change to this one, and the end-to-end job runs it.
+      - '.github/actions/setup-semstat/**'
       - '.github/workflows/test-semver-validation.yaml'
 
 permissions: {}
@@ -89,6 +95,16 @@ jobs:
           version: '  v2.1.0  '
           compare_to: '  v2.0.9  '
 
+      # Runs the real cosign against the real bundle, and re-installs over the
+      # unverified semstat the steps above left in the job, which is the whole
+      # path a publish job asking to verify takes.
+      - name: A version answered from a signature-verified semstat
+        id: signed
+        uses: ./.github/actions/semver-validation
+        with:
+          version: v4.9.0
+          verify-signature: true
+
       - name: Assert the outputs
         env:
           STABLE_IS_VALID: ${{ steps.stable.outputs.is_valid }}
@@ -122,6 +138,8 @@ jobs:
           PADDED_IS_VALID: ${{ steps.padded.outputs.is_valid }}
           PADDED_PARSED: ${{ steps.padded.outputs.parsed_version }}
           PADDED_COMPARISON: ${{ steps.padded.outputs.comparison }}
+          SIGNED_IS_VALID: ${{ steps.signed.outputs.is_valid }}
+          SIGNED_TYPE: ${{ steps.signed.outputs.release_type }}
         run: |
           set -euo pipefail
 
@@ -179,5 +197,10 @@ jobs:
           assert "padded parsed_version" "$PADDED_PARSED" \
             '{"major":2,"minor":1,"patch":0,"prerelease":null,"build":null,"raw":"v2.1.0"}'
           assert "padded comparison" "$PADDED_COMPARISON" 1
+
+          # Verifying the release changes how semstat was installed, not what it
+          # answers.
+          assert "signed is_valid" "$SIGNED_IS_VALID" true
+          assert "signed release_type" "$SIGNED_TYPE" stable
 
           exit "$fail"
