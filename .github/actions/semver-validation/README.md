@@ -21,17 +21,17 @@ proxy allowlist that names only `github.com` fails the install step.
 `github.com/sigstore/cosign` releases and egress to `tuf-repo-cdn.sigstore.dev`,
 where cosign fetches the trusted root it checks the transparency log against.
 
-Calling it also puts semstat on `PATH` for the steps that follow, because that is
-how the installer it shares with [`setup-semstat`](../setup-semstat/README.md)
-installs it. That is a side effect on the caller's job, so a job with its own
-semstat on `PATH` should name it by absolute path rather than let step order decide
-which one a later bare `semstat` resolves to.
+Calling it leaves the caller's `PATH` alone. The installer it shares with
+[`setup-semstat`](../setup-semstat/README.md) can put semstat there, and does for
+callers that run it as a bare command, but this action names the binary by absolute
+path and asks the installer to skip the append, so a job with its own semstat on
+`PATH` keeps resolving to that one.
 
 All of that is new, so the rewrite ships as `semver-validation/v4`. The tags before
 it (`v1`, `v2` and `v3`) all point at the self-contained Node action, which needed
-neither the network, nor those tools, nor anything of the caller's `PATH`. A caller
-on a runner without egress keeps working on those tags and fails the install step on
-`v4`, so all three stay where they are and none is advanced onto this rewrite. Live
+neither the network nor those tools. A caller on a runner without egress keeps
+working on those tags and fails the install step on `v4`, so all three stay where
+they are and none is advanced onto this rewrite. Live
 callers pin `v1` and `v3` as floating tags, so advancing either would hand them the
 network and tool requirements with no version change to notice.
 

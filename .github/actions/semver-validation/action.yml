@@ -64,8 +64,50 @@ outputs:
 runs:
   using: "composite"
   steps:
-    - name: Install cosign
+    # jq belongs to the reporting step below, but a caller cannot run one step of
+    # this composite without the other, and saying so before the downloads is
+    # what keeps a runner missing jq from paying for tools it cannot use.
+    # report.sh checks again, for the runs that reach it directly.
+    - name: Check the runner can read semstat's output
+      shell: bash
+      run: |
+        if ! command -v jq >/dev/null 2>&1; then
+          echo "::error::jq is required to read semstat's output and is not on PATH"
+          exit 1
+        fi
+
+    # cosign-installer re-downloads its bootstrap binary and re-appends to
+    # GITHUB_PATH on every call, so a job that reports on several versions pays
+    # for it once per call while every semstat install after the first is a cache
+    # hit that never reaches cosign. The marker lives under RUNNER_TEMP and so is
+    # private to this job, which is what makes this skip an install this job
+    # already did rather than adopt whatever cosign a runner image shipped.
+    #
+    # Recorded before the install rather than after: a cosign-installer that
+    # fails takes the job with it, so nothing reads the marker afterwards, and a
+    # caller that swallows that failure meets the installer's own "needs cosign
+    # on PATH" check on the next call rather than a silent unverified install.
+    - name: Check whether this job still needs cosign
+      id: cosign
       if: inputs.verify-signature == 'true'
+      shell: bash
+      env:
+        COSIGN_MARKER: ${{ runner.temp }}/.setup-semstat-cosign-installed
+      run: |
+        install=true
+        if [ -f "$COSIGN_MARKER" ]; then
+          install=false
+        elif ! : >"$COSIGN_MARKER"; then
+          echo "::error::could not record that this job installs cosign at ${COSIGN_MARKER}"
+          exit 1
+        fi
+        if ! echo "install=${install}" >>"$GITHUB_OUTPUT"; then
+          echo "::error::could not write whether this job needs cosign to GITHUB_OUTPUT"
+          exit 1
+        fi
+
+    - name: Install cosign
+      if: inputs.verify-signature == 'true' && steps.cosign.outputs.install == 'true'
       uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
     # setup-semstat's installer, run out of the checkout this action came in
@@ -92,7 +134,20 @@ runs:
         # than whichever one the job asks for.
         SEMSTAT_VERSION: ""
         SEMSTAT_BASE_URL: ""
-      run: ${{ github.action_path }}/../setup-semstat/src/install-semstat.sh
+        # The reporting step names the binary through SEMSTAT_BIN and never runs
+        # a bare `semstat`, so the installer's PATH append would be a change to
+        # the caller's job with nothing here reading it.
+        SEMSTAT_SKIP_PATH: "true"
+        INSTALLER: ${{ github.action_path }}/../setup-semstat/src/install-semstat.sh
+      run: |
+        # A checkout that sparsely took only this action's directory leaves the
+        # sibling installer absent, and bash's own "No such file or directory"
+        # names neither what is missing nor what the checkout has to include.
+        if [ ! -x "$INSTALLER" ]; then
+          echo "::error::${INSTALLER} is missing or not executable; this action runs the installer that ships with the sibling setup-semstat action, so a sparse checkout has to take .github/actions/setup-semstat alongside .github/actions/semver-validation"
+          exit 1
+        fi
+        "$INSTALLER"
 
     - name: Report on the version
       id: report
