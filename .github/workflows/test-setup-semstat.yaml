@@ -33,6 +33,13 @@ jobs:
   action:
     name: Run the action end to end
     runs-on: ubuntu-latest
+    # A job environment that would repoint the installer if the action left
+    # either name unbound: an older release, and a download root serving nothing.
+    # Composite steps inherit it, so the steps below answering at all is the
+    # assertion. bats covers the script; only a real job covers the binding.
+    env:
+      SEMSTAT_VERSION: v0.0.1
+      SEMSTAT_BASE_URL: file:///nonexistent
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -60,6 +67,19 @@ jobs:
           # gt is an answer, not a failure, so a no has to stay green.
           if newer_than v4.9.0-rc.2 v4.9.0; then
             echo "::error::a candidate should not outrank its release"
+            exit 1
+          fi
+
+      - name: Assert the job environment did not repoint the install
+        run: |
+          set -euo pipefail
+
+          pinned="$(sed -n 's/^DEFAULT_VERSION=//p' \
+            .github/actions/setup-semstat/src/install-semstat.sh)"
+          installed="$(semstat version)"
+
+          if [ "${installed#v}" != "${pinned#v}" ]; then
+            echo "::error::expected the pinned ${pinned}, got ${installed}"
             exit 1
           fi
 
