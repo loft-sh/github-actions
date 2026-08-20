@@ -1,0 +1,50 @@
+name: "Setup semstat"
+description: "Installs a pinned release of the semstat semver CLI, verifies it, and puts it on PATH."
+author: "vCluster Labs"
+branding:
+  icon: "download"
+  color: "green"
+
+inputs:
+  version:
+    description: |
+      Release of [loft-sh/semstat](https://github.com/loft-sh/semstat) to install.
+      Empty installs the release pinned in `src/install-semstat.sh`, which is
+      where Renovate bumps it and where every entry point reads it from.
+    required: false
+    default: ""
+  verify-signature:
+    description: |
+      Verify `checksums.txt` against its cosign bundle before trusting it, proving the
+      release came from semstat's own release workflow at this exact tag rather than
+      only that the download arrived intact. Costs a cosign install on the job, so it
+      is off by default; turn it on for jobs that publish.
+    required: false
+    default: "false"
+
+outputs:
+  path:
+    description: "Absolute path to the verified semstat binary. The directory holding it is also on PATH for later steps, so a caller can just run `semstat`."
+    value: ${{ steps.install.outputs.semstat }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install cosign
+      if: inputs.verify-signature == 'true'
+      uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+    - name: Install semstat
+      id: install
+      shell: bash
+      env:
+        SEMSTAT_VERSION: ${{ inputs.version }}
+        SEMSTAT_VERIFY_SIGNATURE: ${{ inputs.verify-signature }}
+        # Composite steps inherit the job's environment, and the installer takes
+        # a file:// download root for its own tests. Cleared here, where step env
+        # wins, so a workflow-level env: or an earlier step writing GITHUB_ENV
+        # cannot repoint which executable this action runs: the archive and the
+        # checksums.txt it is verified against come from the same root, so a
+        # planted release verifies against its own planted manifest.
+        SEMSTAT_BASE_URL: ""
+      run: ${{ github.action_path }}/src/install-semstat.sh
