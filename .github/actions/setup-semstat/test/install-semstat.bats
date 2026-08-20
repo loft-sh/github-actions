@@ -342,7 +342,7 @@ MOCK
 
 # The archive and any half-unpacked binary go with it, on every exit path rather
 # than only the one that succeeded.
-@test "leaves no work directory behind when the install fails" {
+@test "leaves no work directory behind when the download unpacks the wrong version" {
   publish_release v1.2.4 1.2.3
   export SEMSTAT_VERSION=v1.2.4
 
@@ -520,19 +520,12 @@ PLANTED
   [ -z "$(output_value semstat)" ]
 }
 
-@test "a failed install leaves no work directory behind under RUNNER_TEMP" {
+@test "leaves no work directory behind when the release does not exist" {
   export SEMSTAT_VERSION=v9.9.9
 
   run "$SCRIPT"
 
   [ "$status" -eq 1 ]
-  [ -z "$(find "$RUNNER_TEMP" -maxdepth 1 -name 'semstat.*' -print -quit)" ]
-}
-
-@test "a successful install leaves no work directory behind either" {
-  run "$SCRIPT"
-
-  [ "$status" -eq 0 ]
   [ -z "$(find "$RUNNER_TEMP" -maxdepth 1 -name 'semstat.*' -print -quit)" ]
 }
 
@@ -638,6 +631,33 @@ gate_path() {
   [ -z "$(output_value semstat)" ]
 }
 
+@test "a bundle that could not be fetched is not read as a release without one" {
+  export SEMSTAT_VERIFY_SIGNATURE=true
+
+  # Fails the bundle alone and hands every other asset to the real mock, so the
+  # release is there and reachable and only this download is not.
+  farm="$TEST_DIR/no-bundle-egress"
+  mkdir -p "$farm"
+  cat >"$farm/curl" <<MOCK
+#!/usr/bin/env bash
+for arg in "\$@"; do
+  case "\$arg" in
+    *.sigstore.json) exit 7 ;;
+  esac
+done
+exec "$MOCK_DIR/curl" "\$@"
+MOCK
+  chmod +x "$farm/curl"
+
+  run env PATH="$farm:$PATH" "$SCRIPT"
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"::error::could not download checksums.txt.sigstore.json"* ]]
+  [[ "$output" == *"curl exited 7"* ]]
+  [[ "$output" != *"publishes no"* ]]
+  [ -z "$(output_value semstat)" ]
+}
+
 @test "fails when cosign does not verify the bundle" {
   export SEMSTAT_VERIFY_SIGNATURE=true
   export COSIGN_EXIT=1
@@ -704,6 +724,24 @@ gate_path() {
   [ "$status" -eq 0 ]
   [ "$(download_count)" -gt "$downloaded" ]
   [ -s "$COSIGN_ARGS" ]
+}
+
+@test "a signature claim that cannot be written fails the step" {
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+
+  # A directory where the marker file goes: the write fails, the install does not.
+  dir="$(dirname "$(output_value semstat)")"
+  mkdir "$dir/.signature-verified"
+
+  export SEMSTAT_VERIFY_SIGNATURE=true
+  # Only running it says the install is unusable, so this forces a re-install.
+  printf 'truncated' >"$(output_value semstat)"
+
+  run "$SCRIPT"
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"::error::could not record that semstat v1.2.3 was signature-verified"* ]]
 }
 
 @test "reuses an install that was signature-verified" {

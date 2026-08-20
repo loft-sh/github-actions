@@ -82,12 +82,15 @@ runs:
       shell: bash
       env:
         SEMSTAT_VERIFY_SIGNATURE: ${{ inputs.verify-signature }}
-        # Composite steps inherit the job's environment, and the installer takes
-        # a file:// download root for its own tests. Cleared here, where step env
-        # wins, so a workflow-level env: or an earlier step writing GITHUB_ENV
-        # cannot repoint which executable this action runs: the archive and the
-        # checksums.txt it is verified against come from the same root, so a
-        # planted release verifies against its own planted manifest.
+        # Composite steps inherit the job's environment, and the installer reads
+        # both of these from it. Cleared here, where step env wins, so a
+        # workflow-level env: or an earlier step writing GITHUB_ENV cannot
+        # repoint which executable this action runs: the base URL because the
+        # archive and the checksums.txt it is verified against come from the same
+        # root, so a planted release verifies against its own planted manifest,
+        # and the version because this action ships one pinned release rather
+        # than whichever one the job asks for.
+        SEMSTAT_VERSION: ""
         SEMSTAT_BASE_URL: ""
       run: ${{ github.action_path }}/../setup-semstat/src/install-semstat.sh
 

@@ -102,11 +102,12 @@ two ship from one commit and cannot drift apart. `semver-validation` is the
 worked example.
 
 The script takes `SEMSTAT_VERSION` and `SEMSTAT_VERIFY_SIGNATURE` from the
-environment, both optional. Clear `SEMSTAT_BASE_URL` in the same `env:` — a
-composite step inherits the job's environment, so a workflow-level `env:` would
-otherwise repoint the download root, and step env is what wins. Verifying also
-needs `cosign` on `PATH`, which is a `uses:` step and so cannot be lent out by a
-script:
+environment, both optional. Bind every variable the script reads in the same
+`env:`, including the ones the action does not expose: a composite step inherits
+the job's environment and step env is what wins, so a name left unbound lets a
+workflow-level `env:` or an earlier `GITHUB_ENV` write repoint the download root
+or the release that gets installed. Verifying also needs `cosign` on `PATH`,
+which is a `uses:` step and so cannot be lent out by a script:
 
 ```yaml
 - name: Install cosign
@@ -118,6 +119,7 @@ script:
   shell: bash
   env:
     SEMSTAT_VERIFY_SIGNATURE: ${{ inputs.verify-signature }}
+    SEMSTAT_VERSION: ""
     SEMSTAT_BASE_URL: ""
   run: ${{ github.action_path }}/../setup-semstat/src/install-semstat.sh
 ```
