@@ -81,33 +81,9 @@ a consumer only when its SHA is bumped, so releasing this action means advancing
 
 ### From another action in this repository
 
-Run the script instead of pinning the action:
-
-```yaml
-- name: Install semstat
-  id: install
-  shell: bash
-  run: ${{ github.action_path }}/../setup-semstat/src/install-semstat.sh
-```
-
-Neither form of `uses:` works for a sibling in the same repository. A relative
-`uses: ./...` resolves against the caller's workspace rather than against this
-repository, so it finds nothing once the action is consumed from `vcluster-pro` or
-`loft-enterprise`. A full `loft-sh/github-actions/...@<sha>` pin does resolve, but
-a sibling can only be pinned at a commit that predates the change needing it, and
-it then keeps running that commit while fixes to the installer land beside it —
-the pin drift from DEVOPS-1126 and DEVOPS-923, silent because the action still
-works. `github.action_path` is inside a full checkout of this repository, so the
-two ship from one commit and cannot drift apart. `semver-validation` is the
-worked example.
-
-The script takes `SEMSTAT_VERSION` and `SEMSTAT_VERIFY_SIGNATURE` from the
-environment, both optional. Bind every variable the script reads in the same
-`env:`, including the ones the action does not expose: a composite step inherits
-the job's environment and step env is what wins, so a name left unbound lets a
-workflow-level `env:` or an earlier `GITHUB_ENV` write repoint the download root
-or the release that gets installed. Verifying also needs `cosign` on `PATH`,
-which is a `uses:` step and so cannot be lent out by a script:
+Run the script instead of pinning the action. Copy this whole shape rather than
+the one-line `run:` it reduces to: the `env:` block and the existence check are
+both load-bearing, for the reasons below.
 
 ```yaml
 - name: Install cosign
@@ -121,8 +97,50 @@ which is a `uses:` step and so cannot be lent out by a script:
     SEMSTAT_VERIFY_SIGNATURE: ${{ inputs.verify-signature }}
     SEMSTAT_VERSION: ""
     SEMSTAT_BASE_URL: ""
-  run: ${{ github.action_path }}/../setup-semstat/src/install-semstat.sh
+    SEMSTAT_SKIP_PATH: ""
+    INSTALLER: ${{ github.action_path }}/../setup-semstat/src/install-semstat.sh
+  run: |
+    if [ ! -x "$INSTALLER" ]; then
+      echo "::error::${INSTALLER} is missing or not executable; this action runs the installer that ships with the sibling setup-semstat action, so a sparse checkout has to take .github/actions/setup-semstat as well"
+      exit 1
+    fi
+    "$INSTALLER"
 ```
+
+Neither form of `uses:` works for a sibling in the same repository. A relative
+`uses: ./...` resolves against the caller's workspace rather than against this
+repository, so it finds nothing once the action is consumed from `vcluster-pro` or
+`loft-enterprise`. A full `loft-sh/github-actions/...@<sha>` pin does resolve, but
+a sibling can only be pinned at a commit that predates the change needing it, and
+it then keeps running that commit while fixes to the installer land beside it —
+the pin drift from DEVOPS-1126 and DEVOPS-923, silent because the action still
+works. `github.action_path` is inside a full checkout of this repository, so the
+two ship from one commit and cannot drift apart. `semver-validation` is the
+worked example.
+
+Bind every variable the script reads in that same `env:`, including the ones the
+calling action does not expose: a composite step inherits the job's environment
+and step env is what wins, so a name left unbound lets a workflow-level `env:` or
+an earlier `GITHUB_ENV` write repoint the download root, the release that gets
+installed, or whether semstat lands on `PATH` at all. All four are optional to the
+script and every one of them is worth binding.
+
+Check the script is there before running it. `github.action_path` reaches outside
+the calling action's own directory, and this repository's workflows do sparse
+single-action checkouts, so a caller that took only its own action directory
+otherwise dies on bash's bare `No such file or directory` with no `::error::` line
+naming what the checkout has to include.
+
+Verifying also needs `cosign` on `PATH`, which is a `uses:` step and so cannot be
+lent out by a script. If the calling action can be invoked several times in one
+job, guard that step the way `semver-validation` does: cosign-installer
+re-downloads its bootstrap binary on every call, while every semstat install after
+the first is a cache hit that never reaches cosign.
+
+Set `SEMSTAT_SKIP_PATH: "true"` where the calling action names the binary through
+the step output and never runs a bare `semstat`, because the append is then a
+change to the caller's job with nothing reading it. `semver-validation` does
+exactly this.
 
 The step output is `semstat` rather than this action's `path` output, because the
 script writes it directly: `${{ steps.install.outputs.semstat }}`.
@@ -179,7 +197,9 @@ left behind rather than trusting it.
 The runner *prepends* `GITHUB_PATH` entries, so where two steps install different
 semstat releases into the same job, a later bare `semstat` resolves to whichever
 installed last. Anything that cares which release it is talking to should name the
-`path` output instead of relying on that order.
+`path` output instead of relying on that order; an in-repository caller that only
+ever names the output can set `SEMSTAT_SKIP_PATH` and leave the job's `PATH` out
+of it altogether.
 
 ## Upgrading the pinned release
 

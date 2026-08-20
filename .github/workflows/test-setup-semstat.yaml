@@ -33,13 +33,15 @@ jobs:
   action:
     name: Run the action end to end
     runs-on: ubuntu-latest
-    # A job environment that would repoint the installer if the action left
-    # either name unbound: an older release, and a download root serving nothing.
-    # Composite steps inherit it, so the steps below answering at all is the
-    # assertion. bats covers the script; only a real job covers the binding.
+    # A job environment that would repoint the installer if the action left any
+    # of these unbound: an older release, a download root serving nothing, and a
+    # demand that semstat stay off the job's PATH. Composite steps inherit it, so
+    # the steps below answering at all is the assertion. bats covers the script;
+    # only a real job covers the binding.
     env:
       SEMSTAT_VERSION: v0.0.1
       SEMSTAT_BASE_URL: file:///nonexistent
+      SEMSTAT_SKIP_PATH: "true"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -158,6 +160,29 @@ jobs:
           fi
 
           "$SEMSTAT_BIN" validate v4.9.0
+
+      # The second call is where the cosign install is skipped: the first one
+      # recorded that this job already ran cosign-installer. Verification still
+      # has to answer, which is what says the skip left cosign reachable for it.
+      - name: Install again with signature verification
+        id: reverify
+        uses: ./.github/actions/setup-semstat
+        with:
+          verify-signature: true
+
+      - name: Assert the second verified install answered too
+        env:
+          FIRST: ${{ steps.install.outputs.path }}
+          SECOND: ${{ steps.reverify.outputs.path }}
+        run: |
+          set -euo pipefail
+
+          if [ "$SECOND" != "$FIRST" ]; then
+            echo "::error::the second install reported '$SECOND', expected '$FIRST'"
+            exit 1
+          fi
+
+          "$SECOND" validate v4.9.0
 
       - name: Reject a verify-signature value that is not a boolean
         id: bad_input

@@ -596,6 +596,41 @@ gate_path() {
   [ "$(path_entries)" = "$installed" ]
 }
 
+# semver-validation runs semstat through SEMSTAT_BIN and never as a bare
+# `semstat`, so for it the append is a change to the caller's job with nothing
+# reading it.
+@test "leaves PATH alone when asked to" {
+  export SEMSTAT_SKIP_PATH=true
+
+  run "$SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [ -x "$(output_value semstat)" ]
+  [ ! -s "$GITHUB_PATH" ]
+}
+
+@test "leaves PATH alone when a reused install is reported" {
+  export SEMSTAT_SKIP_PATH=true
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+
+  run "$SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"already installed"* ]]
+  [ ! -s "$GITHUB_PATH" ]
+}
+
+@test "refuses a skip-path value that is neither true nor false" {
+  export SEMSTAT_SKIP_PATH=yes
+
+  run "$SCRIPT"
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"SEMSTAT_SKIP_PATH takes true or false; got yes"* ]]
+  [ ! -s "$CURL_URLS" ]
+}
+
 @test "leaves the signature alone unless asked" {
   run "$SCRIPT"
 
@@ -627,7 +662,7 @@ gate_path() {
 
   [ "$status" -eq 1 ]
   [[ "$output" == *"publishes no checksums.txt.sigstore.json"* ]]
-  [[ "$output" != *"check that the release exists"* ]]
+  [[ "$output" != *"could not download checksums.txt.sigstore.json"* ]]
   [ -z "$(output_value semstat)" ]
 }
 
@@ -742,6 +777,26 @@ MOCK
 
   [ "$status" -eq 1 ]
   [[ "$output" == *"::error::could not record that semstat v1.2.3 was signature-verified"* ]]
+}
+
+# The reverse of the test above: an unverified run that cannot clear the earlier
+# claim has to fail rather than install under it, because the reuse check reads
+# the claim and would hand this download to a step that asked to verify.
+@test "a stale signature claim that cannot be dropped fails the step" {
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+
+  # A directory where the marker file goes: rm cannot remove it.
+  dir="$(dirname "$(output_value semstat)")"
+  mkdir "$dir/.signature-verified"
+
+  # Only running it says the install is unusable, so this forces a re-install.
+  printf 'truncated' >"$(output_value semstat)"
+
+  run "$SCRIPT"
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"::error::could not drop the earlier signature claim"* ]]
 }
 
 @test "reuses an install that was signature-verified" {

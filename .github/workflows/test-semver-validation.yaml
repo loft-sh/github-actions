@@ -41,13 +41,15 @@ jobs:
     name: Run the action end to end
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # A job environment that would repoint the installer if the action left
-    # either name unbound: an older release, and a download root serving nothing.
-    # Composite steps inherit it, so the steps below answering at all is the
-    # assertion. bats covers the script; only a real job covers the binding.
+    # A job environment that would repoint the installer if the action left any
+    # of these unbound: an older release, a download root serving nothing, and a
+    # demand that semstat land on the job's PATH after all. Composite steps
+    # inherit it, so the steps below answering at all is the assertion. bats
+    # covers the script; only a real job covers the binding.
     env:
       SEMSTAT_VERSION: v0.0.1
       SEMSTAT_BASE_URL: file:///nonexistent
+      SEMSTAT_SKIP_PATH: "false"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -112,16 +114,59 @@ jobs:
           version: v4.9.0
           verify-signature: true
 
+      # The second verified call is where the cosign install is skipped, the
+      # first having recorded that this job already ran cosign-installer.
+      # Verification still has to answer, which is what says the skip left
+      # cosign reachable for it.
+      - name: A second version answered from the verified semstat
+        id: signed_again
+        uses: ./.github/actions/semver-validation
+        with:
+          version: v4.9.1
+          verify-signature: true
+
+      - name: Assert the second verified call answered
+        env:
+          IS_VALID: ${{ steps.signed_again.outputs.is_valid }}
+        run: |
+          set -euo pipefail
+
+          if [ "$IS_VALID" != "true" ]; then
+            echo "::error::the second verify-signature call reported is_valid='${IS_VALID}'"
+            exit 1
+          fi
+
+      # Read off the install directory rather than off PATH, because this action
+      # asks the installer to leave PATH alone. Exactly one install also says the
+      # job environment's v0.0.1 never got downloaded, which a PATH lookup could
+      # not have shown: it only ever names whichever landed last.
       - name: Assert the job environment did not repoint the install
         run: |
           set -euo pipefail
 
           pinned="$(sed -n 's/^DEFAULT_VERSION=//p' \
             .github/actions/setup-semstat/src/install-semstat.sh)"
-          installed="$(semstat version)"
 
+          shopt -s nullglob
+          installs=("$RUNNER_TEMP"/semstat-*/semstat)
+
+          if [ "${#installs[@]}" -ne 1 ]; then
+            echo "::error::expected one semstat install under RUNNER_TEMP, found ${#installs[@]}: ${installs[*]}"
+            exit 1
+          fi
+
+          installed="$("${installs[0]}" version)"
           if [ "${installed#v}" != "${pinned#v}" ]; then
             echo "::error::expected the pinned ${pinned}, got ${installed}"
+            exit 1
+          fi
+
+      - name: Assert the action left the job's PATH alone
+        run: |
+          set -euo pipefail
+
+          if command -v semstat >/dev/null 2>&1; then
+            echo "::error::semstat is on this job's PATH; this action names the binary and asks the installer to skip the append"
             exit 1
           fi
 
