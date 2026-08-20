@@ -74,6 +74,18 @@ git push origin <action-name>/v2 --force
 
 For `release-notification`, the `notify-release.yaml` wrapper and its inner composite both resolve at `@release-notification/v2` (see PR #147), so advancing that one tag moves the wrapper and composite together.
 
+### The other half: do NOT advance a tag when the new code asks more of the caller
+
+Advancing is right for a fix and wrong for a change that adds a requirement, because it reaches every floating-tag caller with no change on their side and no version for them to notice. Cut the next major instead and leave the existing tags alone. Treat as a new major: a new runner requirement or tool, network egress, a token or permission, or anything that changes the caller's job environment (writing `GITHUB_PATH` or `GITHUB_ENV`).
+
+Check who pins the tag before touching it — the answer is often more repos than expected, and some pin the tag while others pin its SHA:
+
+```bash
+gh search code 'loft-sh/github-actions/.github/actions/<action-name>@ org:loft-sh'
+```
+
+`semver-validation` is the worked example (DEVOPS-1369). `v1`, `v2` and `v3` are the self-contained Node action; the rewrite as a composite over `semstat` needs egress, needs `curl`/`tar`/`sha256sum`/`jq`, and puts `semstat` on the caller's `PATH`, so it shipped as `v4`. Advancing `v1` or `v3` would have changed five live release workflows across five repos.
+
 ### YAML-only / composite / Node.js actions (semver-validation, release-notification, etc.)
 - Update code and commit changes
 - Tag the release: `git tag -f <action-name>/v1`
