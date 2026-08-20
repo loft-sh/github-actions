@@ -6,10 +6,10 @@
 #
 #   semstat   absolute path to the verified, executable binary
 #
-# and appends the directory holding it to GITHUB_PATH, because every consumer so
-# far calls semstat from inside a bash function or a `while read` loop, where a
-# step output is not in scope. The output is kept as well, for a caller that
-# would rather name the binary than depend on PATH ordering.
+# and, unless asked not to, appends the directory holding it to GITHUB_PATH,
+# because most consumers call semstat from inside a bash function or a `while
+# read` loop, where a step output is not in scope. The output is kept as well,
+# for a caller that would rather name the binary than depend on PATH ordering.
 #
 # Required environment:
 #   GITHUB_OUTPUT     standard GitHub Actions step output file.
@@ -23,6 +23,9 @@
 #                             release workflow before trusting it. Needs cosign
 #                             on PATH; the action installs it when asked.
 #   SEMSTAT_BASE_URL  file:// release download root. For the tests; see below.
+#   SEMSTAT_SKIP_PATH "true" to report the binary through the step output only
+#                     and leave GITHUB_PATH alone. For a caller that names the
+#                     binary and has no use for a change to the job's PATH.
 set -euo pipefail
 
 : "${GITHUB_OUTPUT:?GITHUB_OUTPUT is required}"
@@ -107,6 +110,18 @@ case "${SEMSTAT_VERIFY_SIGNATURE:-false}" in
     ;;
 esac
 
+# Read the same way as verify-signature, and for the same reason: a typo taken
+# for a no would leave the job's PATH changed under a caller that asked for it
+# not to be.
+case "${SEMSTAT_SKIP_PATH:-false}" in
+  true) skip_path=true ;;
+  false) skip_path=false ;;
+  *)
+    echo "::error::SEMSTAT_SKIP_PATH takes true or false; got $(fold_lines "$SEMSTAT_SKIP_PATH")"
+    exit 1
+    ;;
+esac
+
 requested="${SEMSTAT_VERSION:-$DEFAULT_VERSION}"
 case "$requested" in
   v*) tag="$requested" ;;
@@ -170,6 +185,9 @@ report_install() {
   if ! echo "semstat=${binary}" >>"$GITHUB_OUTPUT"; then
     echo "::error::could not write the semstat path to GITHUB_OUTPUT"
     exit 1
+  fi
+  if [ "$skip_path" = true ]; then
+    return
   fi
   if ! printf '%s\n' "$install_dir" >>"$GITHUB_PATH"; then
     echo "::error::could not add ${install_dir} to GITHUB_PATH"
@@ -325,8 +343,9 @@ fi
 # replaced the binary but not the marker, so an unverified download sits under an
 # earlier run's claim and the reuse check above hands it to a step that asked to
 # verify.
-if [ "$verify_signature" = false ]; then
-  rm -f "$verified_marker"
+if [ "$verify_signature" = false ] && ! rm -f "$verified_marker"; then
+  echo "::error::could not drop the earlier signature claim at ${verified_marker}, which would leave this unverified install standing under it for a later step asking to verify"
+  exit 1
 fi
 
 if ! mv "${work}/semstat" "$binary" || ! sha256_of "$binary" >"$marker"; then
