@@ -225,8 +225,17 @@ done
 # outage there leaves the release published with the archives but no provenance.
 if [ "$verify_signature" = true ]; then
   bundle=checksums.txt.sigstore.json
-  if ! curl -fsSL --retry 3 --retry-connrefused -o "${work}/${bundle}" "${BASE_URL}/${tag}/${bundle}"; then
+  status=0
+  curl -fsSL --retry 3 --retry-connrefused --connect-timeout 10 --max-time 120 -o "${work}/${bundle}" "${BASE_URL}/${tag}/${bundle}" || status=$?
+  # 22 is curl's HTTP-error status, so the release answered and does not carry
+  # the asset. Any other status is this runner not reaching it, and telling that
+  # runner to re-dispatch semstat's release workflow sends it after the wrong
+  # repair.
+  if [ "$status" -eq 22 ]; then
     echo "::error::semstat ${tag} publishes no ${bundle}, so its signature cannot be verified; the release may have been published through a signing outage, which a re-dispatch of its release workflow repairs"
+    exit 1
+  elif [ "$status" -ne 0 ]; then
+    echo "::error::could not download ${bundle} for semstat ${tag}: curl exited ${status}"
     exit 1
   fi
 fi
@@ -328,9 +337,11 @@ if ! mv "${work}/semstat" "$binary" || ! sha256_of "$binary" >"$marker"; then
 fi
 
 # Written after the binary, so the marker never claims more than what is
-# installed.
-if [ "$verify_signature" = true ]; then
-  : >"$verified_marker"
+# installed. A claim that could not be written has to fail the step: every later
+# step asking to verify would otherwise re-download for the whole job.
+if [ "$verify_signature" = true ] && ! : >"$verified_marker"; then
+  echo "::error::could not record that semstat ${tag} was signature-verified at ${verified_marker}"
+  exit 1
 fi
 
 report_install
