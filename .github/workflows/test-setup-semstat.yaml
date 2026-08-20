@@ -1,0 +1,153 @@
+name: Test setup-semstat
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/actions/setup-semstat/**'
+      - '.github/workflows/test-setup-semstat.yaml'
+  pull_request:
+    paths:
+      - '.github/actions/setup-semstat/**'
+      - '.github/workflows/test-setup-semstat.yaml'
+
+permissions: {}
+
+jobs:
+  bats:
+    name: Run bats tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: bats-core/bats-action@77d6fb60505b4d0d1d73e48bd035b55074bbfb43 # 4.0.0
+        with:
+          support-install: false
+          assert-install: false
+          detik-install: false
+          file-install: false
+      - name: Run setup-semstat tests
+        run: bats .github/actions/setup-semstat/test/*.bats
+
+  action:
+    name: Run the action end to end
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install semstat
+        id: install
+        uses: ./.github/actions/setup-semstat
+
+      # The reason the action appends to GITHUB_PATH at all: this is the shape
+      # every consumer uses, semstat called by name from inside a function.
+      - name: Call semstat by name from a shell function
+        run: |
+          set -euo pipefail
+
+          newer_than() {
+            semstat gt "$1" "$2"
+          }
+
+          if ! newer_than v4.9.0 v4.9.0-rc.2; then
+            echo "::error::a release should outrank its own candidate"
+            exit 1
+          fi
+
+          # gt is an answer, not a failure, so a no has to stay green.
+          if newer_than v4.9.0-rc.2 v4.9.0; then
+            echo "::error::a candidate should not outrank its release"
+            exit 1
+          fi
+
+      - name: Call semstat through the path output
+        env:
+          SEMSTAT_BIN: ${{ steps.install.outputs.path }}
+        run: |
+          set -euo pipefail
+
+          if [ ! -x "$SEMSTAT_BIN" ]; then
+            echo "::error::the path output is not an executable: '$SEMSTAT_BIN'"
+            exit 1
+          fi
+
+          "$SEMSTAT_BIN" validate v4.9.0-rc.2
+
+      # The inode, not just the path: path is built from the version and platform
+      # alone, so it is identical whether the second call reused the install or
+      # re-downloaded over it. A re-download moves a new file into place, which
+      # changes the inode.
+      - name: Note which file the first install left behind
+        id: before
+        env:
+          SEMSTAT_BIN: ${{ steps.install.outputs.path }}
+        run: echo "inode=$(stat -c %i "$SEMSTAT_BIN")" >>"$GITHUB_OUTPUT"
+
+      - name: Install semstat again
+        id: reinstall
+        uses: ./.github/actions/setup-semstat
+
+      - name: Assert the second install reused the first
+        env:
+          FIRST: ${{ steps.install.outputs.path }}
+          SECOND: ${{ steps.reinstall.outputs.path }}
+          BEFORE_INODE: ${{ steps.before.outputs.inode }}
+        run: |
+          set -euo pipefail
+
+          if [ "$FIRST" != "$SECOND" ]; then
+            echo "::error::expected the same path; got '$FIRST' then '$SECOND'"
+            exit 1
+          fi
+
+          after="$(stat -c %i "$SECOND")"
+          if [ "$after" != "$BEFORE_INODE" ]; then
+            echo "::error::the release was downloaded again; inode went from $BEFORE_INODE to $after"
+            exit 1
+          fi
+
+  signature:
+    name: Verify the release signature
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      # Runs the real cosign against the real bundle, which is the half the bats
+      # suite stubs out. A change to how semstat's release workflow signs, or to
+      # the identity it signs as, fails here.
+      - name: Install semstat with signature verification
+        id: install
+        uses: ./.github/actions/setup-semstat
+        with:
+          verify-signature: true
+
+      - name: Assert it installed
+        env:
+          SEMSTAT_BIN: ${{ steps.install.outputs.path }}
+        run: |
+          set -euo pipefail
+
+          if [ ! -x "$SEMSTAT_BIN" ]; then
+            echo "::error::the path output is not an executable: '$SEMSTAT_BIN'"
+            exit 1
+          fi
+
+          "$SEMSTAT_BIN" validate v4.9.0
+
+      - name: Reject a verify-signature value that is not a boolean
+        id: bad_input
+        continue-on-error: true
+        uses: ./.github/actions/setup-semstat
+        with:
+          verify-signature: sometimes
+
+      - name: Assert the bad value failed the step
+        if: steps.bad_input.outcome != 'failure'
+        run: |
+          echo "::error::verify-signature: sometimes should have failed the install step"
+          exit 1
