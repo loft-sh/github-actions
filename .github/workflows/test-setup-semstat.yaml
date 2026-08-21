@@ -47,9 +47,26 @@ jobs:
         with:
           persist-credentials: false
 
+      # Pinned off rather than left to the default, which is now on. This job is
+      # about the env binding and the PATH append, so paying for cosign here would
+      # hang a Sigstore outage on a test that has nothing to do with signatures.
+      # It doubles as the coverage that the opt-out is still honoured.
       - name: Install semstat
         id: install
         uses: ./.github/actions/setup-semstat
+        with:
+          verify-signature: false
+
+      - name: Assert opting out installed no cosign
+        env:
+          COSIGN_MARKER: ${{ runner.temp }}/.setup-semstat-cosign-installed
+        run: |
+          set -euo pipefail
+
+          if [ -f "$COSIGN_MARKER" ]; then
+            echo "::error::verify-signature: false still recorded a cosign install at ${COSIGN_MARKER}"
+            exit 1
+          fi
 
       # The reason the action appends to GITHUB_PATH at all: this is the shape
       # every consumer uses, semstat called by name from inside a function.
@@ -130,6 +147,39 @@ jobs:
             echo "::error::the release was downloaded again; inode went from $BEFORE_INODE to $after"
             exit 1
           fi
+
+  default_verifies:
+    name: Verify by default
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      # No verify-signature input at all, which is the whole point: a caller that
+      # says nothing gets the verified path. Left untested, the default could be
+      # flipped back to false by an edit to action.yml with every other job here
+      # still green, since they all name the value they want.
+      - name: Install semstat without saying anything about signatures
+        id: install
+        uses: ./.github/actions/setup-semstat
+
+      # The marker is the observable. Nothing writes it unless the action decided
+      # this run had to verify, so its presence is the default resolving to true
+      # rather than an assertion about cosign being installed generally.
+      - name: Assert the default took the verifying path
+        env:
+          COSIGN_MARKER: ${{ runner.temp }}/.setup-semstat-cosign-installed
+          SEMSTAT_BIN: ${{ steps.install.outputs.path }}
+        run: |
+          set -euo pipefail
+
+          if [ ! -f "$COSIGN_MARKER" ]; then
+            echo "::error::no cosign install recorded at ${COSIGN_MARKER}; verify-signature defaulted to false"
+            exit 1
+          fi
+
+          "$SEMSTAT_BIN" validate v4.9.0
 
   signature:
     name: Verify the release signature

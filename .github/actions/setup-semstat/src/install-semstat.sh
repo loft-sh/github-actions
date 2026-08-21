@@ -101,6 +101,12 @@ fi
 
 # Anything but the two booleans is a typo rather than a no, and reading a typo as
 # "do not verify" would answer a request for the stricter check with the weaker one.
+#
+# Unset means false here while both actions default their input to true, because
+# the actions are what installs cosign: defaulting this to true as well would make
+# a direct run of the script demand a tool nothing in that path provides. Every
+# caller that can verify binds this explicitly, so the divergence is only ever
+# reached by running the script on its own.
 case "${SEMSTAT_VERIFY_SIGNATURE:-false}" in
   true) verify_signature=true ;;
   false) verify_signature=false ;;

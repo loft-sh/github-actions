@@ -17,9 +17,12 @@ The action needs a Linux or macOS runner with `curl`, `tar`, `jq` and either
 `github.com/loft-sh/semstat/releases/download` **and**
 `objects.githubusercontent.com`, which release-asset downloads redirect to. A
 proxy allowlist that names only `github.com` fails the install step.
-`verify-signature: true` adds a `cosign` download from the
-`github.com/sigstore/cosign` releases and egress to `tuf-repo-cdn.sigstore.dev`,
-where cosign fetches the trusted root it checks the transparency log against.
+
+Because `verify-signature` defaults to true, two further hosts are needed by
+default: a `cosign` download from the `github.com/sigstore/cosign` releases, and
+egress to `tuf-repo-cdn.sigstore.dev`, where cosign fetches the trusted root it
+checks the transparency log against. `verify-signature: false` drops both, and is
+the setting for a runner whose allowlist cannot be changed.
 
 Calling it leaves the caller's `PATH` alone. The installer it shares with
 [`setup-semstat`](../setup-semstat/README.md) can put semstat there, and does for
@@ -39,11 +42,11 @@ network and tool requirements with no version change to notice.
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-|      INPUT       |  TYPE  | REQUIRED |  DEFAULT  |                                                                                                                                                                                     DESCRIPTION                                                                                                                                                                                      |
-|------------------|--------|----------|-----------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-|    compare_to    | string |  false   |           |                                                                                                                                                 Second version to order `version` against. <br>Leave empty to skip the comparison.                                                                                                                                                   |
-| verify-signature | string |  false   | `"false"` | Verify the semstat release's `checksums.txt` against <br>its cosign bundle before trusting it, <br>proving the release came from semstat's <br>own release workflow at that exact <br>tag rather than only that the <br>download arrived intact. Costs a cosign <br>install on the job, so it <br>is off by default; turn it <br>on where this action's answer gates <br>a publish.  |
-|     version      | string |   true   |           |                                                                                                                                                                Version string to validate against semver <br>format                                                                                                                                                                  |
+|      INPUT       |  TYPE  | REQUIRED | DEFAULT  |                                                                                                                                                                                                                                                                                                                                                                    DESCRIPTION                                                                                                                                                                                                                                                                                                                                                                     |
+|------------------|--------|----------|----------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|    compare_to    | string |  false   |          |                                                                                                                                                                                                                                                                                                                                Second version to order `version` against. <br>Leave empty to skip the comparison.                                                                                                                                                                                                                                                                                                                                  |
+| verify-signature | string |  false   | `"true"` | Verify the semstat release's `checksums.txt` against <br>its cosign bundle before trusting it, <br>proving the release came from semstat's <br>own release workflow at that exact <br>tag rather than only that the <br>download arrived intact. `checksums.txt` is fetched <br>from the same release as the <br>archive, so on its own it <br>proves the download arrived whole and <br>nothing about who published it. On <br>by default, because this action's `release_type` <br>and `is_stable` route publishes: a semstat <br>that misreports a prerelease as stable <br>sends an rc out as the <br>newest release. Set it to false <br>to trade that for a cosign <br>install on the job and a <br>dependency on Sigstore being reachable.  |
+|     version      | string |   true   |          |                                                                                                                                                                                                                                                                                                                                               Version string to validate against semver <br>format                                                                                                                                                                                                                                                                                                                                                 |
 
 <!-- AUTO-DOC-INPUT:END -->
 
@@ -166,11 +169,16 @@ gate on `is_greater == 'true'`.
 
 The release `checksums.txt` proves the download arrived intact and resolved inside
 the release asked for, but it comes from the same place as the archive, so it says
-nothing about who published either. `verify-signature: true` installs `cosign` and
-checks `checksums.txt` against its Sigstore bundle at the exact signing identity
-before reading it; [`setup-semstat`](../setup-semstat/README.md) documents the
-identity and the cost. It is off by default because it adds a cosign install to
-every job. Turn it on where this action's answer gates a publish.
+nothing about who published either. `verify-signature` installs `cosign` and checks
+`checksums.txt` against its Sigstore bundle at the exact signing identity before
+reading it; [`setup-semstat`](../setup-semstat/README.md) documents the identity
+and the cost.
+
+It is on by default here, and the example above names it only to be explicit.
+`release_type` and `is_stable` are what route a publish, so a semstat that
+misreports a prerelease as stable is enough to send an rc out as the newest
+release. Set it to false for a job that only reports a version to a human, which
+buys back the cosign install and the dependency on Sigstore being reachable.
 
 ## From a shell script
 
