@@ -560,6 +560,87 @@ is_valid=true'" ]
   [ "$(output_value comparison)" = "1" ]
 }
 
+@test "a BOM-padded version reaches semstat without the BOMs" {
+  # getInput trimmed with String.prototype.trim, whose whitespace set includes
+  # U+FEFF and U+00A0. [[:space:]] excludes both, so this arrived at semstat with
+  # the padding on, came back is_valid=true, and put invisible bytes into
+  # parsed_version.raw for any caller reusing raw as a tag name.
+  export INPUT_VERSION="$(printf '\xef\xbb\xbfv2.1.0\xef\xbb\xbf')"
+  stub parse 0 '{"major":2,"minor":1,"patch":0,"prerelease":null,"build":null,"raw":"v2.1.0"}
+'
+  stub type 0 'stable
+'
+
+  run "$SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [ "$(output_value is_valid)" = "true" ]
+  [ "$(head -n1 "$STUB_DIR/parse.args")" = "v2.1.0" ]
+}
+
+@test "a non-breaking-space-padded version reaches semstat without the padding" {
+  export INPUT_VERSION="$(printf '\xc2\xa0v2.1.0\xc2\xa0')"
+  stub parse 0 '{"major":2,"minor":1,"patch":0,"prerelease":null,"build":null,"raw":"v2.1.0"}
+'
+  stub type 0 'stable
+'
+
+  run "$SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [ "$(head -n1 "$STUB_DIR/parse.args")" = "v2.1.0" ]
+}
+
+@test "compare_to is trimmed of the same non-ASCII whitespace as version" {
+  # The version path and the compare_to path trim separately; a fix applied to
+  # one and not the other leaves compare_to feeding padded input to compare.
+  export INPUT_VERSION="$(printf '\xef\xbb\xbfv2.1.0')"
+  export INPUT_COMPARE_TO="$(printf '\xc2\xa0v2.0.9\xe3\x80\x80')"
+  stub parse 0 '{"major":2,"minor":1,"patch":0,"prerelease":null,"build":null,"raw":"v2.1.0"}
+'
+  stub type 0 'stable
+'
+  stub validate 0
+  stub compare 0 '1
+'
+
+  run "$SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [ "$(head -n1 "$STUB_DIR/validate.args")" = "v2.0.9" ]
+  [ "$(head -n1 "$STUB_DIR/compare.args")" = "v2.1.0 v2.0.9" ]
+}
+
+@test "mixed ASCII and Unicode padding is trimmed in one go" {
+  # One pass strips at most one of each character from each end, so a version
+  # padded with several different ones only comes clean if trim loops.
+  export INPUT_VERSION="$(printf '\xef\xbb\xbf \xc2\xa0\tv2.1.0\xe2\x80\xaf \xef\xbb\xbf')"
+  stub parse 0 '{"major":2,"minor":1,"patch":0,"prerelease":null,"build":null,"raw":"v2.1.0"}
+'
+  stub type 0 'stable
+'
+
+  run "$SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [ "$(head -n1 "$STUB_DIR/parse.args")" = "v2.1.0" ]
+}
+
+@test "a zero-width space is not whitespace and is left on the version" {
+  # U+200B is not in Zs and String.prototype.trim does not remove it, so the node
+  # action passed it through and reported the version invalid. Trimming it here
+  # would be a different answer than the action being replaced gave.
+  export INPUT_VERSION="$(printf '\xe2\x80\x8bv2.1.0')"
+  stub parse 2 '' 'semstat: not a semantic version
+'
+
+  run "$SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [ "$(output_value is_valid)" = "false" ]
+  [ "$(head -n1 "$STUB_DIR/parse.args")" = "$(printf '\xe2\x80\x8bv2.1.0')" ]
+}
+
 @test "a whitespace-only version is an invalid version, not a missing one" {
   # getInput checked required against the untrimmed value and only then trimmed,
   # so the node action reported this on a green step rather than failing.

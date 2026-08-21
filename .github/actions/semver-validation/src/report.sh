@@ -23,10 +23,54 @@ set -uo pipefail
 # on the trimmed value, so callers reading parsed_version.raw back out and putting
 # it in a tag name never saw padding. semstat parses a padded version happily and
 # echoes the padding back in raw, so the trim has to happen here.
+#
+# Spelled as literal UTF-8 bytes rather than [[:space:]], which was wrong twice.
+# glibc's [:space:] excludes U+00A0 and U+FEFF while JS trims both, so a
+# BOM-padded version came back is_valid=true with the BOMs still in raw, and a
+# caller reusing raw put invisible bytes in a tag name. And which characters
+# [:space:] does match is locale-dependent: under LC_ALL=C it matches none of the
+# non-ASCII ones, so the same input trimmed differently depending on the runner.
+# Literal bytes are exact and answer the same way in every locale.
+#
+# The set is ECMAScript WhiteSpace plus LineTerminator, which is what
+# String.prototype.trim removes. U+200B is deliberately absent: it is not in Zs
+# and JS does not trim it.
+ECMA_WHITESPACE=(
+  ' ' $'\t' $'\n' $'\r' $'\v' $'\f'
+  $'\xc2\xa0'     # U+00A0 no-break space
+  $'\xe1\x9a\x80' # U+1680 ogham space mark
+  $'\xe2\x80\x80' # U+2000 en quad
+  $'\xe2\x80\x81' # U+2001 em quad
+  $'\xe2\x80\x82' # U+2002 en space
+  $'\xe2\x80\x83' # U+2003 em space
+  $'\xe2\x80\x84' # U+2004 three-per-em space
+  $'\xe2\x80\x85' # U+2005 four-per-em space
+  $'\xe2\x80\x86' # U+2006 six-per-em space
+  $'\xe2\x80\x87' # U+2007 figure space
+  $'\xe2\x80\x88' # U+2008 punctuation space
+  $'\xe2\x80\x89' # U+2009 thin space
+  $'\xe2\x80\x8a' # U+200A hair space
+  $'\xe2\x80\xa8' # U+2028 line separator
+  $'\xe2\x80\xa9' # U+2029 paragraph separator
+  $'\xe2\x80\xaf' # U+202F narrow no-break space
+  $'\xe2\x81\x9f' # U+205F medium mathematical space
+  $'\xe3\x80\x80' # U+3000 ideographic space
+  $'\xef\xbb\xbf' # U+FEFF zero-width no-break space, the BOM
+)
+readonly ECMA_WHITESPACE
+
 trim() {
-  local value="$1"
-  value="${value#"${value%%[![:space:]]*}"}"
-  printf '%s' "${value%"${value##*[![:space:]]}"}"
+  local value="$1" previous='' char
+  # Loops because one pass strips at most one of each character from each end,
+  # and padding can mix them. Stops when a whole pass changes nothing.
+  while [ "$value" != "$previous" ]; do
+    previous="$value"
+    for char in "${ECMA_WHITESPACE[@]}"; do
+      value="${value#"$char"}"
+      value="${value%"$char"}"
+    done
+  done
+  printf '%s' "$value"
 }
 
 # getInput checked `required` against the untrimmed value and only then trimmed,
