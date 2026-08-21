@@ -239,13 +239,17 @@ done
 
 # Fetched on its own rather than in the loop above, because an absent bundle is a
 # different failure than an absent release and must not be reported as one.
-# semstat signs at the end of goreleaser's publish phase, so a Fulcio or Rekor
-# outage there leaves the release published with the archives but no provenance.
+# semstat publishes a release only once signing has succeeded: goreleaser cuts it
+# as a draft and the release workflow flips that off as its last step, so a Fulcio
+# or Rekor outage leaves a deletable draft rather than a published release with no
+# provenance. Every published release carries its bundle, the four cut before that
+# flow included.
 #
-# The message below names a different release rather than a re-dispatch of
-# semstat's release workflow. Re-releasing a tag is semstat's repair and not
-# something the reader of this error can reach, and it stops working outright on
-# a release cut under immutability, so it is the wrong thing to send anyone after.
+# So this branch no longer means an incomplete publish. It means the asset went
+# missing from a release still mutable enough to lose it, which is nearer the
+# tampering the signature check exists to catch. Either way the only repair the
+# reader of this error can make is to name a release that has one: re-releasing a
+# tag is semstat's to do, and cannot touch a release cut under immutability.
 if [ "$verify_signature" = true ]; then
   bundle=checksums.txt.sigstore.json
   status=0
