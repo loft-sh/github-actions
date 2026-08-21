@@ -7,7 +7,9 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -417,9 +419,25 @@ func Provision(
 			}
 		}
 		ids.PrimaryPublicIP = publicByID[ids.InstanceIDs[0]]
-		ids.PrimaryPrivateIP = privateByID[ids.InstanceIDByRole["primary"]]
 		for role, id := range ids.InstanceIDByRole {
-			ids.PrivateIPByRole[role] = privateByID[id]
+			// Every instance here reached instance-running, and an ENI in a VPC
+			// always has a private address, so a missing one means describe came
+			// back short. Recording the empty string instead would surface far
+			// downstream as something like `--advertise-address=`.
+			ip, ok := privateByID[id]
+			if !ok || ip == "" {
+				return ids, fmt.Errorf("describe instances returned no private IP for role %s (instance %s)", role, id)
+			}
+			ids.PrivateIPByRole[role] = ip
+		}
+		if primaryID, ok := ids.InstanceIDByRole["primary"]; ok {
+			ids.PrimaryPrivateIP = privateByID[primaryID]
+		} else {
+			// primary-public-ip is positional and primary-private-ip is not, so
+			// with arbitrary role names the two disagree. Say so rather than
+			// handing the caller one populated output and one empty one.
+			logger.Info("no instance has the role \"primary\"; primary-private-ip stays empty (use private-ip-by-role)",
+				"roles", slices.Sorted(maps.Keys(ids.InstanceIDByRole)))
 		}
 	}
 

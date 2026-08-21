@@ -26,6 +26,11 @@ type fakeEC2 struct {
 	// return resources tagged with the matching RunID. Used by cleanup
 	// tests to feed orphaned resources into the sweep path.
 	sweepResources sweepFixture
+
+	// omitPrivateIPFor drops the private address from that instance's
+	// DescribeInstances entry, standing in for a describe that comes back
+	// short. Provisioning must fail there rather than record an empty IP.
+	omitPrivateIPFor string
 }
 
 type apiCall struct {
@@ -299,12 +304,15 @@ func (f *fakeEC2) DescribeInstances(_ context.Context, in *ec2.DescribeInstances
 	// its own RunInstances call, so DescribeInstances groups them separately.
 	for i, id := range in.InstanceIds {
 		id := id
+		inst := types.Instance{
+			InstanceId:      aws.String(id),
+			PublicIpAddress: aws.String("203.0.113.1"),
+		}
+		if id != f.omitPrivateIPFor {
+			inst.PrivateIpAddress = aws.String(fmt.Sprintf("10.0.1.%d", 10+i))
+		}
 		out.Reservations = append(out.Reservations, types.Reservation{
-			Instances: []types.Instance{{
-				InstanceId:       aws.String(id),
-				PublicIpAddress:  aws.String("203.0.113.1"),
-				PrivateIpAddress: aws.String(fmt.Sprintf("10.0.1.%d", 10+i)),
-			}},
+			Instances: []types.Instance{inst},
 		})
 	}
 	return out, nil

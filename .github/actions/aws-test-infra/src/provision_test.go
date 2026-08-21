@@ -126,6 +126,51 @@ func TestProvision_HappyPath_Ordering(t *testing.T) {
 	}
 }
 
+func TestProvision_MissingPrivateIPFails(t *testing.T) {
+	c := &fakeEC2{omitPrivateIPFor: "i-worker1"}
+	s := &fakeSSM{online: 3}
+	w := &fakeWaiter{}
+
+	_, err := Provision(context.Background(), newTestLogger(), c, s, w, baseProvisionConfig())
+	if err == nil {
+		t.Fatal("Provision succeeded with a private IP missing from describe; want an error")
+	}
+	// Naming the role and the instance is the point: an empty private IP only
+	// shows itself downstream, as a flag like --advertise-address= .
+	if !strings.Contains(err.Error(), "worker1") || !strings.Contains(err.Error(), "i-worker1") {
+		t.Errorf("error = %q, want it to name the role and instance", err)
+	}
+}
+
+func TestProvision_NoPrimaryRoleLeavesPrimaryPrivateIPEmpty(t *testing.T) {
+	cfg := baseProvisionConfig()
+	cfg.InstanceRoles = []string{"controlplane", "agent"}
+
+	c := &fakeEC2{}
+	s := &fakeSSM{online: 2}
+	w := &fakeWaiter{}
+
+	ids, err := Provision(context.Background(), newTestLogger(), c, s, w, cfg)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	// primary-public-ip is positional and primary-private-ip is role-keyed, so
+	// with arbitrary role names the two disagree by design. private-ip-by-role
+	// is the output that stays complete, and must be.
+	if ids.PrimaryPrivateIP != "" {
+		t.Errorf("PrimaryPrivateIP = %q, want empty with no \"primary\" role", ids.PrimaryPrivateIP)
+	}
+	wantPrivate := map[string]string{
+		"controlplane": "10.0.1.10",
+		"agent":        "10.0.1.11",
+	}
+	for role, want := range wantPrivate {
+		if got := ids.PrivateIPByRole[role]; got != want {
+			t.Errorf("PrivateIPByRole[%s] = %q, want %q", role, got, want)
+		}
+	}
+}
+
 func TestProvision_TagsAppliedToEveryResource(t *testing.T) {
 	c := &fakeEC2{}
 	s := &fakeSSM{online: 3}
