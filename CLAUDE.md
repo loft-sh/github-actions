@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Build/Lint/Test Commands
 - Run all tests: `make test`
-- Test semver-validation: `make test-semver-validation`
+- Test semver-validation: `make test-semver-validation` (bats)
 - Test linear-pr-commenter: `make test-linear-pr-commenter`
 - Test linear-release-sync: `make test-linear-release-sync`
 - Test publish-helm-chart: `make test-publish-helm-chart` (requires mikefarah/yq on PATH)
@@ -59,7 +59,7 @@ Never-hard-fail enforcement for advisory workflows (approval, notifications):
 
 ## Release Process
 
-Actions use per-action tags (e.g. `semver-validation/v1`, `linear-release-sync/v1`).
+Actions use per-action tags (e.g. `semver-validation/v4`, `linear-release-sync/v1`).
 
 ### Shipping a fix to a shared action: advance the tag, or it strands on main
 
@@ -74,7 +74,7 @@ git push origin <action-name>/v2 --force
 
 For `release-notification`, the `notify-release.yaml` wrapper and its inner composite both resolve at `@release-notification/v2` (see PR #147), so advancing that one tag moves the wrapper and composite together.
 
-### YAML-only / Node.js actions (semver-validation, release-notification, etc.)
+### YAML-only / composite / Node.js actions (semver-validation, release-notification, etc.)
 - Update code and commit changes
 - Tag the release: `git tag -f <action-name>/v1`
 - Push tag: `git push origin <action-name>/v1 --force`

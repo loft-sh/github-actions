@@ -9,7 +9,12 @@ are written, tested, and structured.
 
 ### Semver Validation Action
 
-Validates whether a given version string follows semantic versioning (semver) format.
+Reports on a version string: validity, its parts, its release channel, and how it
+orders against another version. Runs [`semstat`](https://github.com/loft-sh/semstat),
+which it downloads and checksum-verifies at a pinned release, so the runner needs
+egress to the semstat releases and `curl`, `tar`, `sha256sum` and `jq` on it. That
+is new in `semver-validation/v4`; the tags before it (`v1`, `v2` and `v3`) point at
+the self-contained Node action, which needed neither, and stay available.
 
 **Location:** `.github/actions/semver-validation`
 
@@ -18,9 +23,10 @@ Validates whether a given version string follows semantic versioning (semver) fo
 ```yaml
 - name: Validate version
   id: semver
-  uses: loft-sh/github-actions/.github/actions/semver-validation@semver-validation/v1
+  uses: loft-sh/github-actions/.github/actions/semver-validation@semver-validation/v4
   with:
     version: '1.2.3'
+    compare_to: '1.2.2'   # optional
 
 - name: Check if valid
   run: echo "Valid: ${{ steps.semver.outputs.is_valid }}"
@@ -29,12 +35,19 @@ Validates whether a given version string follows semantic versioning (semver) fo
 **Inputs:**
 
 - `version` (required): Version string to validate
+- `compare_to` (optional): Second version to order `version` against
+- `semstat_version` (optional): Release of `loft-sh/semstat` to download
 
 **Outputs:**
 
 - `is_valid`: Whether the version is valid semver (`true`/`false`)
 - `parsed_version`: JSON object with parsed version components
 - `error_message`: Error message if validation fails
+- `is_stable`, `release_type`: Whether there is a prerelease suffix, and which
+  channel it names (`stable`, `alpha`, `beta`, `rc`, `next`, `next-internal`)
+- `major`, `minor`, `patch`, `prerelease`, `build`: the parts, flat
+- `comparison`, `is_greater`: ordering against `compare_to`, by semver
+  precedence rather than `sort -V`
 
 See [semver-validation README](./.github/actions/semver-validation/README.md) for detailed documentation.
 
@@ -1023,10 +1036,10 @@ Post-merge, `dispatch-integration-tests.yaml` triggers full E2E tests in
 
 ### Writing tests for new actions
 
-1. Node.js actions - add a `test/` directory with Jest tests. See
-   `semver-validation/test/index.test.js` for the pattern: spawn the action's
-   `index.js` with `INPUT_*` env vars and a temp `GITHUB_OUTPUT` file, then
-   assert on the parsed outputs.
+1. Composite actions with shell logic - put the logic in `src/*.sh` and add a
+   `test/` directory with bats suites. See `semver-validation/test/report.bats`
+   for the pattern: stub the binaries the script calls, run it with `INPUT_*`
+   env vars and a temp `GITHUB_OUTPUT` file, then assert on the outputs.
 
 2. Go actions - add `*_test.go` files next to the source. See
    `linear-pr-commenter/src/main_test.go`. Use standard `go test`.
@@ -1123,8 +1136,8 @@ git tag -f ci-notify-nightly-tests/v1
 git push origin ci-notify-nightly-tests/v1 --force
 
 # For the semver-validation action
-git tag -f semver-validation/v1
-git push origin semver-validation/v1 --force
+git tag -f semver-validation/v4
+git push origin semver-validation/v4 --force
 
 # For other actions, follow the same pattern
 git tag -f action-name/v1
@@ -1136,5 +1149,5 @@ git push origin action-name/v1 --force
 ```yaml
 # Reference actions using their specific tag
 uses: loft-sh/github-actions/.github/actions/ci-notify-nightly-tests@ci-notify-nightly-tests/v1
-uses: loft-sh/github-actions/.github/actions/semver-validation@semver-validation/v1
+uses: loft-sh/github-actions/.github/actions/semver-validation@semver-validation/v4
 ```
