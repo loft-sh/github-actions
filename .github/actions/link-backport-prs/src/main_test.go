@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/google/go-github/v88/github"
 )
 
 func TestVersionFromBranch(t *testing.T) {
@@ -31,6 +33,98 @@ func TestBackportHeadBranch(t *testing.T) {
 	}
 	if got := backportHeadBranch("release-4.2", 12); got != "backport/release-4.2/pr-12" {
 		t.Errorf("got %q", got)
+	}
+}
+
+func TestMatchingBackportPRs(t *testing.T) {
+	modern := testPullRequest(41, "backport/v0.35/pr-2285", "v0.35", "")
+	legacyPro := testPullRequest(42, "backport/v0.35/4e5f9884e", "v0.35", "Backport of loft-sh/vcluster-pro#2285 to `v0.35` (pro half).")
+	legacyOSS := testPullRequest(43, "backport/v0.35/4e5f9884e", "v0.35", "Backport of loft-sh/vcluster-pro#2285 to `v0.35` (oss half).")
+	wrongSource := testPullRequest(44, "backport/v0.35/4e5f9884e", "v0.35", "Backport of loft-sh/vcluster-pro#9999 to `v0.35`.")
+	wrongCommit := testPullRequest(45, "backport/v0.35/deadbeef", "v0.35", "Backport of loft-sh/vcluster-pro#2285 to `v0.35`.")
+	wrongBase := testPullRequest(46, "backport/v0.35/4e5f9884e", "v0.36", "Backport of loft-sh/vcluster-pro#2285 to `v0.36`.")
+	prefixSource := testPullRequest(47, "backport/v0.35/4e5f9884e", "v0.35", "Backport of loft-sh/vcluster-pro#22850 to `v0.35`.")
+
+	cases := []struct {
+		name        string
+		prs         []*github.PullRequest
+		allowModern bool
+		want        []int
+	}{
+		{name: "modern branch in source repo", prs: []*github.PullRequest{modern}, allowModern: true, want: []int{41}},
+		{name: "legacy pro and oss", prs: []*github.PullRequest{legacyPro, legacyOSS}, allowModern: true, want: []int{42, 43}},
+		{name: "modern branch rejected in additional repo", prs: []*github.PullRequest{modern}, allowModern: false, want: nil},
+		{name: "reject unrelated legacy PRs", prs: []*github.PullRequest{wrongSource, wrongCommit, wrongBase, prefixSource}, allowModern: true, want: nil},
+	}
+
+	for _, c := range cases {
+		got := matchingBackportPRs(c.prs, "v0.35", 2285, "4e5f9884e43439736405e2d7ab6de0b8d03e6460", "loft-sh/vcluster-pro", c.allowModern)
+		if len(got) != len(c.want) {
+			t.Fatalf("%s: got %d PRs, want %d", c.name, len(got), len(c.want))
+		}
+		for i, want := range c.want {
+			if got[i].GetNumber() != want {
+				t.Errorf("%s: PR %d = #%d, want #%d", c.name, i, got[i].GetNumber(), want)
+			}
+		}
+	}
+}
+
+func TestParseRepositories(t *testing.T) {
+	got, err := parseRepositories("loft-sh/vcluster, loft-sh/vcluster-pro,loft-sh/vcluster", repository{Owner: "loft-sh", Name: "vcluster-pro"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []repository{{Owner: "loft-sh", Name: "vcluster-pro"}, {Owner: "loft-sh", Name: "vcluster"}}
+	if len(got) != len(want) {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("repository %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+
+	if _, err := parseRepositories("vcluster", repository{Owner: "loft-sh", Name: "vcluster-pro"}); err == nil {
+		t.Fatal("invalid owner/repo should fail")
+	}
+}
+
+func TestWorkflowRunsLinkerAfterAllProducers(t *testing.T) {
+	b, err := os.ReadFile("../../../workflows/backport.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow := string(b)
+
+	backportStart := strings.Index(workflow, "\n  backport:\n")
+	legacyStart := strings.Index(workflow, "\n  legacy-classify:\n")
+	if backportStart < 0 || legacyStart < 0 || legacyStart <= backportStart {
+		t.Fatal("could not isolate backport job")
+	}
+	if strings.Contains(workflow[backportStart:legacyStart], "/link-backport-prs@") {
+		t.Fatal("backport job still runs the linker before the legacy matrix settles")
+	}
+
+	linkStart := strings.Index(workflow, "\n  link-backports:\n")
+	if linkStart < 0 {
+		t.Fatal("link-backports job is missing")
+	}
+	linkJob := workflow[linkStart:]
+	if !strings.Contains(linkJob, "needs: [backport, legacy-backport]") {
+		t.Fatal("link-backports must wait for modern and legacy producers")
+	}
+	if !strings.Contains(linkJob, "/link-backport-prs@") {
+		t.Fatal("link-backports job does not invoke link-backport-prs")
+	}
+}
+
+func testPullRequest(number int, head, base, body string) *github.PullRequest {
+	return &github.PullRequest{
+		Number: github.Ptr(number),
+		Body:   github.Ptr(body),
+		Head:   &github.PullRequestBranch{Ref: github.Ptr(head)},
+		Base:   &github.PullRequestBranch{Ref: github.Ptr(base)},
 	}
 }
 

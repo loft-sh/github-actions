@@ -140,11 +140,11 @@ emit backport-branch "$BACKPORT_BRANCH"
 #              it links correctly even on the OSS half, whose target repo differs
 #              from the monorepo. Empty (e.g. tests, no origin) -> bare "#N".
 #
-# Linear linking is deliberately NOT done here: link-backport-prs owns it (resolve
-# the source PR's parent issue -> match the per-release-line "[X.Y] Copy of ..."
-# sub-issue -> append "Fixes <sub-issue>"). A "resolves <PARENT-KEY>" here would
-# both duplicate that and close the WRONG issue (the parent, not the line's
-# sub-issue). See the README note on the legacy-linking gap.
+# Linear linking is deliberately NOT done here: the reusable workflow runs
+# link-backport-prs after this matrix settles, resolves the source PR's parent
+# issue, matches the per-release-line "[X.Y] Copy of ..." sub-issue, and appends
+# "Fixes <sub-issue>" to every matching pro and OSS PR. A
+# "resolves <PARENT-KEY>" here would close the wrong issue.
 SUBJECT="$(git log -1 --format=%s "$SHA")"
 SOURCE_REPO="$( { git config --get remote.origin.url 2>/dev/null || true; } \
   | sed -E 's#^git@[^:]+:##; s#^https?://[^/]+/##; s#\.git$##' )"

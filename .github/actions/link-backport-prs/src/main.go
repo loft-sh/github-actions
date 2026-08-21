@@ -1,4 +1,4 @@
-// Command link-backport-prs links sorenlouv-created backport pull requests to
+// Command link-backport-prs links modern and legacy backport pull requests to
 // the matching Linear sub-issue.
 //
 // On the shared backport workflow, after sorenlouv opens the backport PRs for a
@@ -80,11 +80,16 @@ func run() error {
 	repoOwner := flag.String("repo-owner", "", "repository owner")
 	repoName := flag.String("repo-name", "", "repository name")
 	labelPrefix := flag.String("label-prefix", "backport-to-", "prefix of backport labels")
+	additionalRepos := flag.String("additional-repos", "", "comma-separated owner/repo list for cross-repo legacy backports")
 	dryRun := flag.Bool("dry-run", false, "log intended edits without applying them")
 	flag.Parse()
 
 	if *sourcePR == 0 || *repoOwner == "" || *repoName == "" {
 		return fmt.Errorf("source-pr, repo-owner and repo-name are required")
+	}
+	repos, err := parseRepositories(*additionalRepos, repository{Owner: *repoOwner, Name: *repoName})
+	if err != nil {
+		return err
 	}
 
 	githubToken := os.Getenv("GITHUB_TOKEN")
@@ -160,41 +165,42 @@ func run() error {
 		// Fixes-line linking below proceeds unchanged.
 		verifyRelease(linearToken, sub, version, target)
 
-		headBranch := backportHeadBranch(target, *sourcePR)
-		bp, err := findBackportPR(ctx, gh, *repoOwner, *repoName, headBranch, target)
+		bps, err := findBackportPRs(ctx, gh, repos, target, *sourcePR, src.GetMergeCommitSHA(), *repoOwner+"/"+*repoName)
 		if err != nil {
-			warnf("looking up backport PR %s: %v", headBranch, err)
+			warnf("looking up backport PRs for %s: %v", target, err)
 			continue
 		}
-		if bp == nil {
+		if len(bps) == 0 {
 			remedyWarning{
-				problem: fmt.Sprintf("no backport PR found for %s (base %s); sorenlouv likely skipped it after a merge conflict or empty diff", headBranch, target),
+				problem: fmt.Sprintf("no backport PR found for target %s in %s; the producer likely hit a merge conflict, empty diff, or failed before opening the PR", target, repositoryNames(repos)),
 				remedy:  fmt.Sprintf("backport to %s manually and add 'Fixes %s' to that PR's body", target, sub.Identifier),
 			}.emit()
 			continue
 		}
 
-		if bodyReferencesIssue(bp.GetBody(), sub.Identifier) {
-			noticef("backport PR #%d already references %s, skipping", bp.GetNumber(), sub.Identifier)
-			continue
-		}
+		for _, bp := range bps {
+			if bodyReferencesIssue(bp.PullRequest.GetBody(), sub.Identifier) {
+				noticef("backport PR %s#%d already references %s, skipping", bp.Repository, bp.PullRequest.GetNumber(), sub.Identifier)
+				continue
+			}
 
-		newBody := appendFixes(bp.GetBody(), sub.Identifier)
-		if *dryRun {
-			noticef("[dry-run] would add 'Fixes %s' to backport PR #%d (%s)", sub.Identifier, bp.GetNumber(), target)
+			newBody := appendFixes(bp.PullRequest.GetBody(), sub.Identifier)
+			if *dryRun {
+				noticef("[dry-run] would add 'Fixes %s' to backport PR %s#%d (%s)", sub.Identifier, bp.Repository, bp.PullRequest.GetNumber(), target)
+				linked++
+				continue
+			}
+
+			if _, _, err := gh.PullRequests.Edit(ctx, bp.Repository.Owner, bp.Repository.Name, bp.PullRequest.GetNumber(), &github.PullRequest{Body: &newBody}); err != nil {
+				warnf("updating backport PR %s#%d body: %v", bp.Repository, bp.PullRequest.GetNumber(), err)
+				continue
+			}
+			noticef("linked backport PR %s#%d (%s) to %s via 'Fixes %s'", bp.Repository, bp.PullRequest.GetNumber(), target, sub.Identifier, sub.Identifier)
 			linked++
-			continue
 		}
-
-		if _, _, err := gh.PullRequests.Edit(ctx, *repoOwner, *repoName, bp.GetNumber(), &github.PullRequest{Body: &newBody}); err != nil {
-			warnf("updating backport PR #%d body: %v", bp.GetNumber(), err)
-			continue
-		}
-		noticef("linked backport PR #%d (%s) to %s via 'Fixes %s'", bp.GetNumber(), target, sub.Identifier, sub.Identifier)
-		linked++
 	}
 
-	noticef("link-backport-prs: linked %d of %d backport target(s)", linked, len(targets))
+	noticef("link-backport-prs: linked %d PR(s) across %d backport target(s)", linked, len(targets))
 	writeLinkedCount(linked)
 	return nil
 }
@@ -356,25 +362,102 @@ func appendFixes(body, identifier string) string {
 	return trimmed + "\n\nFixes " + identifier
 }
 
-// findBackportPR returns the backport PR with the expected head branch, or nil
-// if none exists yet.
-func findBackportPR(ctx context.Context, gh *github.Client, owner, repo, headBranch, baseBranch string) (*github.PullRequest, error) {
-	opts := &github.PullRequestListOptions{
-		State:       "all",
-		Head:        owner + ":" + headBranch,
-		Base:        baseBranch,
-		ListOptions: github.ListOptions{PerPage: 20},
-	}
-	prs, _, err := gh.PullRequests.List(ctx, owner, repo, opts)
-	if err != nil {
-		return nil, err
-	}
-	for _, pr := range prs {
-		if pr.GetHead().GetRef() == headBranch {
-			return pr, nil
+type repository struct {
+	Owner string
+	Name  string
+}
+
+func (r repository) String() string { return r.Owner + "/" + r.Name }
+
+type locatedPullRequest struct {
+	Repository  repository
+	PullRequest *github.PullRequest
+}
+
+func parseRepositories(additional string, primary repository) ([]repository, error) {
+	repos := []repository{primary}
+	seen := map[string]bool{primary.String(): true}
+	for _, raw := range strings.Split(additional, ",") {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		owner, name, ok := strings.Cut(raw, "/")
+		if !ok || owner == "" || name == "" || strings.Contains(name, "/") {
+			return nil, fmt.Errorf("additional-repos entry %q must be owner/repo", raw)
+		}
+		r := repository{Owner: owner, Name: name}
+		if !seen[r.String()] {
+			repos = append(repos, r)
+			seen[r.String()] = true
 		}
 	}
-	return nil, nil
+	return repos, nil
+}
+
+func repositoryNames(repos []repository) string {
+	names := make([]string, 0, len(repos))
+	for _, repo := range repos {
+		names = append(names, repo.String())
+	}
+	return strings.Join(names, ", ")
+}
+
+// findBackportPRs returns every modern or legacy PR produced for a target.
+// Legacy split backports may produce one PR in the pro repo and one in the OSS
+// repo, so callers pass every configured repository and all matches are kept.
+func findBackportPRs(ctx context.Context, gh *github.Client, repos []repository, target string, sourcePR int, mergeSHA, sourceRepo string) ([]locatedPullRequest, error) {
+	var found []locatedPullRequest
+	for _, repo := range repos {
+		opts := &github.PullRequestListOptions{
+			State:       "all",
+			Base:        target,
+			ListOptions: github.ListOptions{PerPage: 100},
+		}
+		for {
+			prs, resp, err := gh.PullRequests.List(ctx, repo.Owner, repo.Name, opts)
+			if err != nil {
+				return nil, fmt.Errorf("list %s pull requests: %w", repo, err)
+			}
+			for _, pr := range matchingBackportPRs(prs, target, sourcePR, mergeSHA, sourceRepo, repo.String() == sourceRepo) {
+				found = append(found, locatedPullRequest{Repository: repo, PullRequest: pr})
+			}
+			if resp == nil || resp.NextPage == 0 {
+				break
+			}
+			opts.Page = resp.NextPage
+		}
+	}
+	return found, nil
+}
+
+// matchingBackportPRs accepts sorenlouv's deterministic branch or the legacy
+// split branch. The legacy match checks both the merge SHA prefix and the
+// fully-qualified source PR reference from the producer's body so another PR
+// on the same release branch cannot be linked by accident.
+func matchingBackportPRs(prs []*github.PullRequest, target string, sourcePR int, mergeSHA, sourceRepo string, allowModern bool) []*github.PullRequest {
+	modernHead := backportHeadBranch(target, sourcePR)
+	legacyPrefix := "backport/" + target + "/"
+	sourceRef := regexp.MustCompile(regexp.QuoteMeta(fmt.Sprintf("%s#%d", sourceRepo, sourcePR)) + `\b`)
+	var matches []*github.PullRequest
+	for _, pr := range prs {
+		if pr.GetBase().GetRef() != target {
+			continue
+		}
+		head := pr.GetHead().GetRef()
+		if allowModern && head == modernHead {
+			matches = append(matches, pr)
+			continue
+		}
+		shortSHA := strings.TrimPrefix(head, legacyPrefix)
+		if shortSHA == head || shortSHA == "" || mergeSHA == "" || !strings.HasPrefix(mergeSHA, shortSHA) {
+			continue
+		}
+		if sourceRef.MatchString(pr.GetBody()) {
+			matches = append(matches, pr)
+		}
+	}
+	return matches
 }
 
 var identifierRe = regexp.MustCompile(`(?i)\b([A-Z][A-Z0-9]+)-(\d+)\b`)
