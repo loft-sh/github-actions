@@ -17,10 +17,15 @@ inputs:
     description: |
       Verify `checksums.txt` against its cosign bundle before trusting it, proving the
       release came from semstat's own release workflow at this exact tag rather than
-      only that the download arrived intact. Costs a cosign install on the job, so it
-      is off by default; turn it on for jobs that publish.
+      only that the download arrived intact. `checksums.txt` is fetched from the same
+      release as the archive, so on its own it proves the download arrived whole and
+      nothing about who published it; this is the check that answers that.
+
+      On by default. Set it to false to trade the guarantee for a cosign install on
+      the job and a dependency on Sigstore being reachable, which is worth doing for a
+      job that neither publishes nor gates a publish.
     required: false
-    default: "false"
+    default: "true"
 
 outputs:
   path:
