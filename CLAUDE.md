@@ -84,7 +84,7 @@ Check who pins the tag before touching it — the answer is often more repos tha
 gh search code 'loft-sh/github-actions/.github/actions/<action-name>@ org:loft-sh'
 ```
 
-`semver-validation` is the worked example (DEVOPS-1369). `v1`, `v2` and `v3` are the self-contained Node action; the rewrite as a composite over `semstat` needs egress, needs `curl`/`tar`/`sha256sum`/`jq`, and puts `semstat` on the caller's `PATH`, so it shipped as `v4`. Advancing `v1` or `v3` would have changed five live release workflows across five repos.
+`semver-validation` is the worked example (DEVOPS-1369). `v1`, `v2` and `v3` are the self-contained Node action; the rewrite as a composite over `semstat` needs egress, needs `curl`/`tar`/`sha256sum`/`jq`, and drops the `semstat_version` input, so it shipped as `v4`. Advancing `v1` or `v3` would have changed five live release workflows across five repos. It does not touch the caller's `PATH`, which would have been a fourth reason on its own: it binds `SEMSTAT_SKIP_PATH` precisely so the rewrite stays invisible to the job around it.
 
 ### YAML-only / composite / Node.js actions (semver-validation, release-notification, etc.)
 - Update code and commit changes
