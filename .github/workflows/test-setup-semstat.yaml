@@ -1,0 +1,288 @@
+name: Test setup-semstat
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/actions/setup-semstat/**'
+      - '.github/workflows/test-setup-semstat.yaml'
+  pull_request:
+    paths:
+      - '.github/actions/setup-semstat/**'
+      - '.github/workflows/test-setup-semstat.yaml'
+
+permissions: {}
+
+jobs:
+  bats:
+    name: Run bats tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: bats-core/bats-action@77d6fb60505b4d0d1d73e48bd035b55074bbfb43 # 4.0.0
+        with:
+          support-install: false
+          assert-install: false
+          detik-install: false
+          file-install: false
+      - name: Run setup-semstat tests
+        run: bats .github/actions/setup-semstat/test/*.bats
+
+  action:
+    name: Run the action end to end
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # A job environment that would repoint the installer if the action left any
+    # of these unbound: an older release, a download root serving nothing, and a
+    # demand that semstat stay off the job's PATH. Composite steps inherit it, so
+    # the steps below answering at all is the assertion. bats covers the script;
+    # only a real job covers the binding.
+    env:
+      SEMSTAT_VERSION: v0.0.1
+      SEMSTAT_BASE_URL: file:///nonexistent
+      SEMSTAT_SKIP_PATH: "true"
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      # Pinned off rather than left to the default, which is now on. This job is
+      # about the env binding and the PATH append, so paying for cosign here would
+      # hang a Sigstore outage on a test that has nothing to do with signatures.
+      # It doubles as the coverage that the opt-out is still honoured.
+      - name: Install semstat
+        id: install
+        uses: ./.github/actions/setup-semstat
+        with:
+          verify-signature: false
+
+      - name: Assert opting out installed no cosign
+        env:
+          COSIGN_MARKER: ${{ runner.temp }}/.setup-semstat-cosign-installed
+        run: |
+          set -euo pipefail
+
+          if [ -f "$COSIGN_MARKER" ]; then
+            echo "::error::verify-signature: false still recorded a cosign install at ${COSIGN_MARKER}"
+            exit 1
+          fi
+
+      # The reason the action appends to GITHUB_PATH at all: this is the shape
+      # every consumer uses, semstat called by name from inside a function.
+      - name: Call semstat by name from a shell function
+        run: |
+          set -euo pipefail
+
+          newer_than() {
+            semstat gt "$1" "$2"
+          }
+
+          if ! newer_than v4.9.0 v4.9.0-rc.2; then
+            echo "::error::a release should outrank its own candidate"
+            exit 1
+          fi
+
+          # gt is an answer, not a failure, so a no has to stay green.
+          if newer_than v4.9.0-rc.2 v4.9.0; then
+            echo "::error::a candidate should not outrank its release"
+            exit 1
+          fi
+
+      - name: Assert the job environment did not repoint the install
+        run: |
+          set -euo pipefail
+
+          pinned="$(sed -n 's/^DEFAULT_VERSION=//p' \
+            .github/actions/setup-semstat/src/install-semstat.sh)"
+          installed="$(semstat version)"
+
+          if [ "${installed#v}" != "${pinned#v}" ]; then
+            echo "::error::expected the pinned ${pinned}, got ${installed}"
+            exit 1
+          fi
+
+      - name: Call semstat through the path output
+        env:
+          SEMSTAT_BIN: ${{ steps.install.outputs.path }}
+        run: |
+          set -euo pipefail
+
+          if [ ! -x "$SEMSTAT_BIN" ]; then
+            echo "::error::the path output is not an executable: '$SEMSTAT_BIN'"
+            exit 1
+          fi
+
+          "$SEMSTAT_BIN" validate v4.9.0-rc.2
+
+      # The inode, not just the path: path is built from the version and platform
+      # alone, so it is identical whether the second call reused the install or
+      # re-downloaded over it. A re-download moves a new file into place, which
+      # changes the inode.
+      - name: Note which file the first install left behind
+        id: before
+        env:
+          SEMSTAT_BIN: ${{ steps.install.outputs.path }}
+        run: echo "inode=$(stat -c %i "$SEMSTAT_BIN")" >>"$GITHUB_OUTPUT"
+
+      # Has to ask for the same verification as the install above, or it is not
+      # the same install being asked for: the reuse path requires a signature
+      # claim at least as strong as the one requested, so leaving this to the
+      # default would re-download to verify, move a new binary into place, and
+      # fail the inode check below for a reason that is not a reuse bug.
+      - name: Install semstat again
+        id: reinstall
+        uses: ./.github/actions/setup-semstat
+        with:
+          verify-signature: false
+
+      - name: Assert the second install reused the first
+        env:
+          FIRST: ${{ steps.install.outputs.path }}
+          SECOND: ${{ steps.reinstall.outputs.path }}
+          BEFORE_INODE: ${{ steps.before.outputs.inode }}
+        run: |
+          set -euo pipefail
+
+          if [ "$FIRST" != "$SECOND" ]; then
+            echo "::error::expected the same path; got '$FIRST' then '$SECOND'"
+            exit 1
+          fi
+
+          after="$(stat -c %i "$SECOND")"
+          if [ "$after" != "$BEFORE_INODE" ]; then
+            echo "::error::the release was downloaded again; inode went from $BEFORE_INODE to $after"
+            exit 1
+          fi
+
+  default_verifies:
+    name: Verify by default
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      # No verify-signature input at all, which is the whole point: a caller that
+      # says nothing gets the verified path. Left untested, the default could be
+      # flipped back to false by an edit to action.yml with every other job here
+      # still green, since they all name the value they want.
+      - name: Install semstat without saying anything about signatures
+        id: install
+        uses: ./.github/actions/setup-semstat
+
+      # The marker is the observable. Nothing writes it unless the action decided
+      # this run had to verify, so its presence is the default resolving to true
+      # rather than an assertion about cosign being installed generally.
+      - name: Assert the default took the verifying path
+        env:
+          COSIGN_MARKER: ${{ runner.temp }}/.setup-semstat-cosign-installed
+          SEMSTAT_BIN: ${{ steps.install.outputs.path }}
+        run: |
+          set -euo pipefail
+
+          if [ ! -f "$COSIGN_MARKER" ]; then
+            echo "::error::no cosign install recorded at ${COSIGN_MARKER}; verify-signature defaulted to false"
+            exit 1
+          fi
+
+          "$SEMSTAT_BIN" validate v4.9.0
+
+  signature:
+    name: Verify the release signature
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      # Runs the real cosign against the real bundle, which is the half the bats
+      # suite stubs out. A change to how semstat's release workflow signs, or to
+      # the identity it signs as, fails here.
+      - name: Install semstat with signature verification
+        id: install
+        uses: ./.github/actions/setup-semstat
+        with:
+          verify-signature: true
+
+      - name: Assert it installed
+        env:
+          SEMSTAT_BIN: ${{ steps.install.outputs.path }}
+        run: |
+          set -euo pipefail
+
+          if [ ! -x "$SEMSTAT_BIN" ]; then
+            echo "::error::the path output is not an executable: '$SEMSTAT_BIN'"
+            exit 1
+          fi
+
+          "$SEMSTAT_BIN" validate v4.9.0
+
+      # Reaching the cosign gate a second time takes deleting the install: the
+      # reuse fast path exits before both the `command -v cosign` check and
+      # verify-blob, so a second call left to hit the cache proves only that the
+      # cache holds, and would stay green even if the skipped install had left no
+      # cosign at all. The cosign marker is deliberately kept, because that is
+      # what makes the call below skip cosign-installer and still have to verify.
+      - name: Drop the semstat install, keep the cosign marker
+        env:
+          COSIGN_MARKER: ${{ runner.temp }}/.setup-semstat-cosign-installed
+        run: |
+          set -euo pipefail
+
+          if [ ! -f "$COSIGN_MARKER" ]; then
+            echo "::error::the first verified install left no cosign marker at ${COSIGN_MARKER}, so the call below would install cosign again rather than exercise the skip"
+            exit 1
+          fi
+
+          rm -rf "${RUNNER_TEMP:?}"/semstat-*
+
+          # One surviving directory would put the next call back on the fast path
+          # and quietly restore the hole this step exists to close.
+          shopt -s nullglob
+          remaining=("$RUNNER_TEMP"/semstat-*)
+
+          if [ "${#remaining[@]}" -ne 0 ]; then
+            echo "::error::a semstat install survived under ${RUNNER_TEMP}, so the next call would take the reuse path instead of verifying: ${remaining[*]}"
+            exit 1
+          fi
+
+      # A real install with cosign-installer skipped: it re-downloads, and the
+      # installer's own "verify-signature needs cosign on PATH" gate fails the
+      # step if the skip left cosign unreachable. That is the assertion.
+      - name: Install again with signature verification
+        id: reverify
+        uses: ./.github/actions/setup-semstat
+        with:
+          verify-signature: true
+
+      - name: Assert the second verified install answered too
+        env:
+          FIRST: ${{ steps.install.outputs.path }}
+          SECOND: ${{ steps.reverify.outputs.path }}
+        run: |
+          set -euo pipefail
+
+          if [ "$SECOND" != "$FIRST" ]; then
+            echo "::error::the second install reported '$SECOND', expected '$FIRST'"
+            exit 1
+          fi
+
+          "$SECOND" validate v4.9.0
+
+      - name: Reject a verify-signature value that is not a boolean
+        id: bad_input
+        continue-on-error: true
+        uses: ./.github/actions/setup-semstat
+        with:
+          verify-signature: sometimes
+
+      - name: Assert the bad value failed the step
+        if: steps.bad_input.outcome != 'failure'
+        run: |
+          echo "::error::verify-signature: sometimes should have failed the install step"
+          exit 1

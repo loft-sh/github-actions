@@ -5,10 +5,16 @@ on:
     branches: [main]
     paths:
       - '.github/actions/semver-validation/**'
+      # The action runs setup-semstat's installer out of the same checkout, so a
+      # change there is a change to this one, and the end-to-end job runs it.
+      - '.github/actions/setup-semstat/**'
       - '.github/workflows/test-semver-validation.yaml'
   pull_request:
     paths:
       - '.github/actions/semver-validation/**'
+      # The action runs setup-semstat's installer out of the same checkout, so a
+      # change there is a change to this one, and the end-to-end job runs it.
+      - '.github/actions/setup-semstat/**'
       - '.github/workflows/test-semver-validation.yaml'
 
 permissions: {}
@@ -35,16 +41,32 @@ jobs:
     name: Run the action end to end
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # A job environment that would repoint the installer if the action left any
+    # of these unbound: an older release, a download root serving nothing, and a
+    # demand that semstat land on the job's PATH after all. Composite steps
+    # inherit it, so the steps below answering at all is the assertion. bats
+    # covers the script; only a real job covers the binding.
+    env:
+      SEMSTAT_VERSION: v0.0.1
+      SEMSTAT_BASE_URL: file:///nonexistent
+      SEMSTAT_SKIP_PATH: "false"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
 
+      # The parsing cases below all opt out, against a default that is now on.
+      # Two reasons: what they assert is the reported version, not the download,
+      # so paying for cosign on each would hang a Sigstore outage on tests about
+      # semver; and opting out is what leaves an unverified semstat in the job for
+      # the verified call further down to have to re-install over. setup-semstat's
+      # own suite is where the default itself is pinned.
       - name: A stable version
         id: stable
         uses: ./.github/actions/semver-validation
         with:
           version: v2.1.0
+          verify-signature: false
 
       - name: A prerelease, ordered against its final release
         id: rc
@@ -52,18 +74,21 @@ jobs:
         with:
           version: v4.9.0-rc.2
           compare_to: v4.9.0
+          verify-signature: false
 
       - name: A version that is not semver
         id: invalid
         uses: ./.github/actions/semver-validation
         with:
           version: '1.2'
+          verify-signature: false
 
       - name: Valid semver carrying a suffix nothing routes
         id: unroutable
         uses: ./.github/actions/semver-validation
         with:
           version: v1.11.1-kubernetes.115
+          verify-signature: false
 
       # A dash-leading argument is an option to semstat, which exits 64 for it.
       # Only the real binary shows that this action answers instead of failing.
@@ -72,6 +97,7 @@ jobs:
         uses: ./.github/actions/semver-validation
         with:
           version: '-1.2.3'
+          verify-signature: false
 
       - name: A compare_to that starts with a dash
         id: dashed_compare
@@ -79,6 +105,7 @@ jobs:
         with:
           version: v2.1.0
           compare_to: '-2.0.0'
+          verify-signature: false
 
       # semstat parses a padded version and echoes the padding back in raw, so
       # the trim has to happen before the call.
@@ -88,6 +115,97 @@ jobs:
         with:
           version: '  v2.1.0  '
           compare_to: '  v2.0.9  '
+          verify-signature: false
+
+      # Runs the real cosign against the real bundle, and re-installs over the
+      # unverified semstat the steps above left in the job, which is the whole
+      # path a publish job asking to verify takes.
+      - name: A version answered from a signature-verified semstat
+        id: signed
+        uses: ./.github/actions/semver-validation
+        with:
+          version: v4.9.0
+          verify-signature: true
+
+      # Two versions are two inputs to this action, not two semstat releases, so
+      # the call below would otherwise reuse the install the step above verified
+      # and exit before the cosign gate. Dropping the install is what forces it
+      # to verify again; keeping the cosign marker is what makes it do so with
+      # cosign-installer skipped, which is the pairing under test.
+      - name: Drop the semstat install, keep the cosign marker
+        env:
+          COSIGN_MARKER: ${{ runner.temp }}/.setup-semstat-cosign-installed
+        run: |
+          set -euo pipefail
+
+          if [ ! -f "$COSIGN_MARKER" ]; then
+            echo "::error::the verified call left no cosign marker at ${COSIGN_MARKER}, so the call below would install cosign again rather than exercise the skip"
+            exit 1
+          fi
+
+          rm -rf "${RUNNER_TEMP:?}"/semstat-*
+
+          shopt -s nullglob
+          remaining=("$RUNNER_TEMP"/semstat-*)
+
+          if [ "${#remaining[@]}" -ne 0 ]; then
+            echo "::error::a semstat install survived under ${RUNNER_TEMP}, so the next call would take the reuse path instead of verifying: ${remaining[*]}"
+            exit 1
+          fi
+
+      # Re-installs with cosign-installer skipped. If the skip left cosign
+      # unreachable the installer's own gate fails this step.
+      - name: A second version answered from the verified semstat
+        id: signed_again
+        uses: ./.github/actions/semver-validation
+        with:
+          version: v4.9.1
+          verify-signature: true
+
+      - name: Assert the second verified call answered
+        env:
+          IS_VALID: ${{ steps.signed_again.outputs.is_valid }}
+        run: |
+          set -euo pipefail
+
+          if [ "$IS_VALID" != "true" ]; then
+            echo "::error::the second verify-signature call reported is_valid='${IS_VALID}'"
+            exit 1
+          fi
+
+      # Read off the install directory rather than off PATH, because this action
+      # asks the installer to leave PATH alone. Exactly one install also says the
+      # job environment's v0.0.1 never got downloaded, which a PATH lookup could
+      # not have shown: it only ever names whichever landed last.
+      - name: Assert the job environment did not repoint the install
+        run: |
+          set -euo pipefail
+
+          pinned="$(sed -n 's/^DEFAULT_VERSION=//p' \
+            .github/actions/setup-semstat/src/install-semstat.sh)"
+
+          shopt -s nullglob
+          installs=("$RUNNER_TEMP"/semstat-*/semstat)
+
+          if [ "${#installs[@]}" -ne 1 ]; then
+            echo "::error::expected one semstat install under RUNNER_TEMP, found ${#installs[@]}: ${installs[*]}"
+            exit 1
+          fi
+
+          installed="$("${installs[0]}" version)"
+          if [ "${installed#v}" != "${pinned#v}" ]; then
+            echo "::error::expected the pinned ${pinned}, got ${installed}"
+            exit 1
+          fi
+
+      - name: Assert the action left the job's PATH alone
+        run: |
+          set -euo pipefail
+
+          if command -v semstat >/dev/null 2>&1; then
+            echo "::error::semstat is on this job's PATH; this action names the binary and asks the installer to skip the append"
+            exit 1
+          fi
 
       - name: Assert the outputs
         env:
@@ -122,6 +240,8 @@ jobs:
           PADDED_IS_VALID: ${{ steps.padded.outputs.is_valid }}
           PADDED_PARSED: ${{ steps.padded.outputs.parsed_version }}
           PADDED_COMPARISON: ${{ steps.padded.outputs.comparison }}
+          SIGNED_IS_VALID: ${{ steps.signed.outputs.is_valid }}
+          SIGNED_TYPE: ${{ steps.signed.outputs.release_type }}
         run: |
           set -euo pipefail
 
@@ -179,5 +299,10 @@ jobs:
           assert "padded parsed_version" "$PADDED_PARSED" \
             '{"major":2,"minor":1,"patch":0,"prerelease":null,"build":null,"raw":"v2.1.0"}'
           assert "padded comparison" "$PADDED_COMPARISON" 1
+
+          # Verifying the release changes how semstat was installed, not what it
+          # answers.
+          assert "signed is_valid" "$SIGNED_IS_VALID" true
+          assert "signed release_type" "$SIGNED_TYPE" stable
 
           exit "$fail"

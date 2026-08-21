@@ -4,10 +4,11 @@ Reports on a version string: whether it is valid [semver](https://semver.org/),
 what its parts are, which release channel it belongs to, and how it orders
 against another version.
 
-The work is done by [`semstat`](https://github.com/loft-sh/semstat), which the
-action downloads and checksum-verifies at the pinned release. One implementation
-answers for the action and for the shell scripts in this repository, so there is
-no second semver engine to disagree with the first.
+The work is done by [`semstat`](https://github.com/loft-sh/semstat), installed and
+checksum-verified by
+[`setup-semstat`](../setup-semstat/README.md), which is where the release pin
+lives. One implementation answers for the action and for the shell scripts in this
+repository, so there is no second semver engine to disagree with the first.
 
 ## Runner requirements
 
@@ -17,21 +18,35 @@ The action needs a Linux or macOS runner with `curl`, `tar`, `jq` and either
 `objects.githubusercontent.com`, which release-asset downloads redirect to. A
 proxy allowlist that names only `github.com` fails the install step.
 
-That is new in `semver-validation/v4`. The tags before it (`v1`, `v2` and `v3`) all
-point at the self-contained Node action, which needed neither the network nor those
-tools. A caller on a runner without egress keeps working on those tags and fails the
-install step on `v4`. `v1` through `v3` stay where they are for that reason; none of
-them were advanced onto this rewrite.
+Because `verify-signature` defaults to true, two further hosts are needed by
+default: a `cosign` download from the `github.com/sigstore/cosign` releases, and
+egress to `tuf-repo-cdn.sigstore.dev`, where cosign fetches the trusted root it
+checks the transparency log against. `verify-signature: false` drops both, and is
+the setting for a runner whose allowlist cannot be changed.
+
+Calling it leaves the caller's `PATH` alone. The installer it shares with
+[`setup-semstat`](../setup-semstat/README.md) can put semstat there, and does for
+callers that run it as a bare command, but this action names the binary by absolute
+path and asks the installer to skip the append, so a job with its own semstat on
+`PATH` keeps resolving to that one.
+
+All of that is new, so the rewrite ships as `semver-validation/v4`. The tags before
+it (`v1`, `v2` and `v3`) all point at the self-contained Node action, which needed
+neither the network nor those tools. A caller on a runner without egress keeps
+working on those tags and fails the install step on `v4`, so all three stay where
+they are and none is advanced onto this rewrite. Live
+callers pin `v1` and `v3` as floating tags, so advancing either would hand them the
+network and tool requirements with no version change to notice.
 
 ## Inputs
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-|      INPUT      |  TYPE  | REQUIRED |  DEFAULT   |                                        DESCRIPTION                                         |
-|-----------------|--------|----------|------------|--------------------------------------------------------------------------------------------|
-|   compare_to    | string |  false   |            |    Second version to order `version` against. <br>Leave empty to skip the comparison.      |
-| semstat_version | string |  false   | `"v0.0.2"` | Release of [loft-sh/semstat](https://github.com/loft-sh/semstat) to download and <br>run.  |
-|     version     | string |   true   |            |                   Version string to validate against semver <br>format                     |
+|      INPUT       |  TYPE  | REQUIRED | DEFAULT  |                                                                                                                                                                                                                                                                                                                                                                    DESCRIPTION                                                                                                                                                                                                                                                                                                                                                                     |
+|------------------|--------|----------|----------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|    compare_to    | string |  false   |          |                                                                                                                                                                                                                                                                                                                                Second version to order `version` against. <br>Leave empty to skip the comparison.                                                                                                                                                                                                                                                                                                                                  |
+| verify-signature | string |  false   | `"true"` | Verify the semstat release's `checksums.txt` against <br>its cosign bundle before trusting it, <br>proving the release came from semstat's <br>own release workflow at that exact <br>tag rather than only that the <br>download arrived intact. `checksums.txt` is fetched <br>from the same release as the <br>archive, so on its own it <br>proves the download arrived whole and <br>nothing about who published it. On <br>by default, because this action's `release_type` <br>and `is_stable` route publishes: a semstat <br>that misreports a prerelease as stable <br>sends an rc out as the <br>newest release. Set it to false <br>to trade that for a cosign <br>install on the job and a <br>dependency on Sigstore being reachable.  |
+|     version      | string |   true   |          |                                                                                                                                                                                                                                                                                                                                               Version string to validate against semver <br>format                                                                                                                                                                                                                                                                                                                                                 |
 
 <!-- AUTO-DOC-INPUT:END -->
 
@@ -80,8 +95,8 @@ them were advanced onto this rewrite.
 
 An invalid version is an answer, not a failure: the step stays green and sets
 `is_valid` to `false`, so the caller decides what that means. The step fails only
-when it cannot answer at all: an empty `version`, a `semstat_version` with no
-release, or a semstat that did not run. `version` and `compare_to` are trimmed
+when it cannot answer at all: an empty `version`, a semstat release that could not
+be installed, or a semstat that did not run. `version` and `compare_to` are trimmed
 before they are read, so surrounding whitespace does not change the answer, and a
 `version` that is only whitespace is an invalid version rather than a missing one.
 A binary that crashed must not report `is_valid=false` for a perfectly good tag,
@@ -140,12 +155,37 @@ never affects it, and a prerelease always sorts below its final release, so
 `compare_to` is omitted or is not a version, which is not the same as `false`, so
 gate on `is_greater == 'true'`.
 
+### Verify who produced the semstat release
+
+```yaml
+- name: Is this tag newer than what is released?
+  id: semver
+  uses: loft-sh/github-actions/.github/actions/semver-validation@semver-validation/v4
+  with:
+    version: ${{ github.ref_name }}
+    compare_to: ${{ steps.latest.outputs.tag }}
+    verify-signature: true
+```
+
+The release `checksums.txt` proves the download arrived intact and resolved inside
+the release asked for, but it comes from the same place as the archive, so it says
+nothing about who published either. `verify-signature` installs `cosign` and checks
+`checksums.txt` against its Sigstore bundle at the exact signing identity before
+reading it; [`setup-semstat`](../setup-semstat/README.md) documents the identity
+and the cost.
+
+It is on by default here, and the example above names it only to be explicit.
+`release_type` and `is_stable` are what route a publish, so a semstat that
+misreports a prerelease as stable is enough to send an rc out as the newest
+release. Set it to false for a job that only reports a version to a human, which
+buys back the cosign install and the dependency on Sigstore being reachable.
+
 ## From a shell script
 
 The action is a workflow step, so it cannot be called from inside a loop or a
-shell function. Install
-[`semstat`](https://github.com/loft-sh/semstat#install) and call it directly
-instead:
+shell function. Put semstat on `PATH` with
+[`setup-semstat`](../setup-semstat/README.md) — or, outside a workflow, [install
+it](https://github.com/loft-sh/semstat#install) — and call it directly instead:
 
 ```bash
 newest=""
@@ -174,24 +214,30 @@ fi
 
 ## Upgrading the semstat release
 
-`semstat_version` pins which release is downloaded, and Renovate opens the bump.
-The action verifies the archive against the release checksums and refuses a
-binary that reports a different version than the one asked for, so a mismatched
-or truncated download fails the step rather than answering wrongly. That is a
-transfer check, not a signature check, and deliberately so: semstat is ours, so
-the release is trusted and the sigstore bundle it also publishes is left alone.
+There is no `semstat_version` input: the pin lives in
+[`setup-semstat`](../setup-semstat/README.md), so Renovate opens one bump there
+rather than one per action that runs semstat. `setup-semstat` verifies the archive
+against the release checksums and refuses a binary that reports a different version
+than the one asked for, so a mismatched or truncated download fails the step rather
+than answering wrongly.
+
+The installer runs out of the same checkout as this action rather than through a
+`uses:` pin, so a Renovate bump of the release and a fix to the installer both
+reach this action in the commit that makes them. See
+[`setup-semstat`](../setup-semstat/README.md) for why a sibling in the same
+repository cannot be pinned by SHA without stranding it.
 
 ## Development
 
 ```bash
-make test-semver-validation   # bats suites for both scripts
+make test-semver-validation   # bats suite for report.sh
 make lint                     # actionlint + zizmor
 make generate-docs            # refresh the tables above from action.yml
 ```
 
-`src/install-semstat.sh` downloads and verifies the binary; `src/report.sh` runs
-it and writes the outputs. semstat is stubbed in the tests, because what its
-answers should be is settled by [its own
+`src/report.sh` runs semstat and writes the outputs; installing it is
+`setup-semstat`'s job and is tested there. semstat itself is stubbed in these
+tests, because what its answers should be is settled by [its own
 suite](https://github.com/loft-sh/semstat); what is tested here is the
 translation into action outputs. `test-semver-validation.yaml` also runs the
 action end to end against the real release.

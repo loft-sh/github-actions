@@ -11,10 +11,10 @@ are written, tested, and structured.
 
 Reports on a version string: validity, its parts, its release channel, and how it
 orders against another version. Runs [`semstat`](https://github.com/loft-sh/semstat),
-which it downloads and checksum-verifies at a pinned release, so the runner needs
-egress to the semstat releases and `curl`, `tar`, `sha256sum` and `jq` on it. That
-is new in `semver-validation/v4`; the tags before it (`v1`, `v2` and `v3`) point at
-the self-contained Node action, which needed neither, and stay available.
+installed by the same script as `setup-semstat` below, so the runner needs egress to
+the semstat releases and `curl`, `tar`, `sha256sum` and `jq` on it. That is new in
+`semver-validation/v4`; the tags before it (`v1`, `v2` and `v3`) point at the
+self-contained Node action, which needed neither, and stay available.
 
 **Location:** `.github/actions/semver-validation`
 
@@ -36,7 +36,8 @@ the self-contained Node action, which needed neither, and stay available.
 
 - `version` (required): Version string to validate
 - `compare_to` (optional): Second version to order `version` against
-- `semstat_version` (optional): Release of `loft-sh/semstat` to download
+- `verify-signature` (optional): cosign-verify the semstat release before
+  trusting it. Costs a cosign install, so off by default
 
 **Outputs:**
 
@@ -50,6 +51,46 @@ the self-contained Node action, which needed neither, and stay available.
   precedence rather than `sort -V`
 
 See [semver-validation README](./.github/actions/semver-validation/README.md) for detailed documentation.
+
+### Setup semstat Action
+
+Installs [`semstat`](https://github.com/loft-sh/semstat) from a pinned release,
+checksum-verifies it, and puts it on `PATH`. This is where the installer and the
+release pin live: the actions that answer semver questions run it rather than
+carrying a copy of either. Actions in this repository run its script out of the
+same checkout; workflows and other repositories use the action below.
+
+**Location:** `.github/actions/setup-semstat`
+
+**Usage:**
+
+```yaml
+- name: Install semstat
+  id: semstat
+  uses: loft-sh/github-actions/.github/actions/setup-semstat@<sha> # setup-semstat/v1
+  with:
+    verify-signature: true   # optional, off by default
+
+- name: Order two versions from a shell function
+  run: |
+    newer_than() { semstat gt "$1" "$2"; }
+    newer_than v4.9.0 v4.9.0-rc.2
+```
+
+**Inputs:**
+
+- `version` (optional): Release of `loft-sh/semstat` to install. Empty takes the
+  Renovate-tracked pin in `src/install-semstat.sh`
+- `verify-signature` (optional): cosign-verify `checksums.txt` against semstat's
+  release workflow at that exact tag. Costs a cosign install, so off by default
+
+**Outputs:**
+
+- `path`: Absolute path to the verified binary. The directory holding it is on
+  `PATH` for later steps as well, since consumers call semstat from inside shell
+  functions and loops where a step output is not in scope
+
+See [setup-semstat README](./.github/actions/setup-semstat/README.md) for detailed documentation.
 
 ### Linear Release Sync Action
 
@@ -1006,6 +1047,7 @@ Each testable action has a dedicated workflow that runs its tests on PRs when
 the action's files change:
 
 - `test-semver-validation.yaml` - triggers on `.github/actions/semver-validation/**`
+- `test-setup-semstat.yaml` - triggers on `.github/actions/setup-semstat/**`
 - `test-linear-pr-commenter.yaml` - triggers on `.github/actions/linear-pr-commenter/**`
 - `test-link-backport-prs.yaml` - triggers on `.github/actions/link-backport-prs/**`
 - `test-linear-release-sync.yaml` - triggers on `.github/actions/linear-release-sync/**`
@@ -1142,6 +1184,26 @@ git push origin semver-validation/v4 --force
 # For other actions, follow the same pattern
 git tag -f action-name/v1
 git push origin action-name/v1 --force
+```
+
+These tags float, and callers pin them by name, so a force-push reaches every one
+of those callers on their next run with no change on their side. That is the point
+when shipping a fix, and the wrong tool when the new code asks something of the
+caller that the old code did not: a runner requirement, network egress, a token, a
+permission, a change to the job's environment. Cut the next major instead and leave
+the existing tags where they are, so callers meet the new requirement when they
+choose to move.
+
+`semver-validation` is the worked example. `v1`, `v2` and `v3` are the self-contained
+Node implementation; the composite over `semstat` needs egress to the semstat
+releases, needs `curl`/`tar`/`sha256sum`/`jq` on the runner, verifies its download
+by default and so needs Sigstore egress too, and drops the `semstat_version` input,
+so it went out as `v4` rather than over any of them. It leaves the job's `PATH`
+alone, which would otherwise have been a reason on its own. Before force-pushing a
+tag, check who pins it:
+
+```bash
+gh search code 'loft-sh/github-actions/.github/actions/<action-name>@ org:loft-sh'
 ```
 
 ### Referencing Actions in Workflows

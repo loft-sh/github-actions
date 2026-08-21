@@ -1,0 +1,94 @@
+name: "Setup semstat"
+description: "Installs a pinned release of the semstat semver CLI, verifies it, and puts it on PATH."
+author: "vCluster Labs"
+branding:
+  icon: "download"
+  color: "green"
+
+inputs:
+  version:
+    description: |
+      Release of [loft-sh/semstat](https://github.com/loft-sh/semstat) to install.
+      Empty installs the release pinned in `src/install-semstat.sh`, which is
+      where Renovate bumps it and where every entry point reads it from.
+    required: false
+    default: ""
+  verify-signature:
+    description: |
+      Verify `checksums.txt` against its cosign bundle before trusting it, proving the
+      release came from semstat's own release workflow at this exact tag rather than
+      only that the download arrived intact. `checksums.txt` is fetched from the same
+      release as the archive, so on its own it proves the download arrived whole and
+      nothing about who published it; this is the check that answers that.
+
+      On by default. Set it to false to trade the guarantee for a cosign install on
+      the job and a dependency on Sigstore being reachable, which is worth doing for a
+      job that neither publishes nor gates a publish.
+    required: false
+    default: "true"
+
+outputs:
+  path:
+    description: "Absolute path to the verified semstat binary. The directory holding it is also on PATH for later steps, so a caller can just run `semstat`."
+    value: ${{ steps.install.outputs.semstat }}
+
+runs:
+  using: "composite"
+  steps:
+    # cosign-installer re-downloads its bootstrap binary and re-appends to
+    # GITHUB_PATH on every call, so a job that installs semstat in several steps
+    # pays for it once per step while every install after the first is a cache
+    # hit that never reaches cosign. The marker lives under RUNNER_TEMP and so is
+    # private to this job, which is what makes this skip an install this job
+    # already did rather than adopt whatever cosign a runner image shipped.
+    #
+    # Recorded before the install rather than after: a cosign-installer that
+    # fails takes the job with it, so nothing reads the marker afterwards, and a
+    # caller that swallows that failure meets the installer's own "needs cosign
+    # on PATH" check on the next call rather than a silent unverified install.
+    #
+    # This gate is duplicated in semver-validation/action.yml, because a
+    # composite cannot share steps with a sibling. The two copies coordinate
+    # through the marker path below, so a job mixing both actions only installs
+    # cosign once: change the path or the cosign-installer pin in one and the
+    # pair silently stops agreeing. Edit them together.
+    - name: Check whether this job still needs cosign
+      id: cosign
+      if: inputs.verify-signature == 'true'
+      shell: bash
+      env:
+        COSIGN_MARKER: ${{ runner.temp }}/.setup-semstat-cosign-installed
+      run: |
+        install=true
+        if [ -f "$COSIGN_MARKER" ]; then
+          install=false
+        elif ! : >"$COSIGN_MARKER"; then
+          echo "::error::could not record that this job installs cosign at ${COSIGN_MARKER}"
+          exit 1
+        fi
+        if ! echo "install=${install}" >>"$GITHUB_OUTPUT"; then
+          echo "::error::could not write whether this job needs cosign to GITHUB_OUTPUT"
+          exit 1
+        fi
+
+    - name: Install cosign
+      if: inputs.verify-signature == 'true' && steps.cosign.outputs.install == 'true'
+      uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+    - name: Install semstat
+      id: install
+      shell: bash
+      env:
+        SEMSTAT_VERSION: ${{ inputs.version }}
+        SEMSTAT_VERIFY_SIGNATURE: ${{ inputs.verify-signature }}
+        # Composite steps inherit the job's environment, and the installer takes
+        # a file:// download root for its own tests. Cleared here, where step env
+        # wins, so a workflow-level env: or an earlier step writing GITHUB_ENV
+        # cannot repoint which executable this action runs: the archive and the
+        # checksums.txt it is verified against come from the same root, so a
+        # planted release verifies against its own planted manifest, and the
+        # PATH opt-out because putting semstat on PATH is this action's
+        # contract, not something a job's environment gets to withdraw.
+        SEMSTAT_BASE_URL: ""
+        SEMSTAT_SKIP_PATH: ""
+      run: ${{ github.action_path }}/src/install-semstat.sh
