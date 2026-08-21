@@ -17,6 +17,7 @@ jobs:
   bats:
     name: Run bats tests
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -33,6 +34,7 @@ jobs:
   action:
     name: Run the action end to end
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     # A job environment that would repoint the installer if the action left any
     # of these unbound: an older release, a download root serving nothing, and a
     # demand that semstat stay off the job's PATH. Composite steps inherit it, so
@@ -125,9 +127,16 @@ jobs:
           SEMSTAT_BIN: ${{ steps.install.outputs.path }}
         run: echo "inode=$(stat -c %i "$SEMSTAT_BIN")" >>"$GITHUB_OUTPUT"
 
+      # Has to ask for the same verification as the install above, or it is not
+      # the same install being asked for: the reuse path requires a signature
+      # claim at least as strong as the one requested, so leaving this to the
+      # default would re-download to verify, move a new binary into place, and
+      # fail the inode check below for a reason that is not a reuse bug.
       - name: Install semstat again
         id: reinstall
         uses: ./.github/actions/setup-semstat
+        with:
+          verify-signature: false
 
       - name: Assert the second install reused the first
         env:
@@ -151,6 +160,7 @@ jobs:
   default_verifies:
     name: Verify by default
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -184,6 +194,7 @@ jobs:
   signature:
     name: Verify the release signature
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
