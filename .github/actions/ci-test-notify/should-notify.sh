@@ -10,6 +10,10 @@ set -euo pipefail
 # (or superseded), and a skipped job never executed. Neither warrants a Slack
 # alert, so both are silenced here rather than in every caller.
 #
+# `info` is a status callers set deliberately for a standalone informational
+# notice (e.g. a release candidate landing in staging) rather than a run
+# conclusion; it is not a no-op and always notifies when a webhook is present.
+#
 # An empty webhook (fork PRs, where secrets are unavailable) also suppresses
 # the notification, same as before.
 #

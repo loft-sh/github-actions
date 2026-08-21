@@ -37,6 +37,12 @@ notify_value() {
   [ "$(notify_value)" = "true" ]
 }
 
+@test "info notifies" {
+  STATUS="info" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(notify_value)" = "true" ]
+}
+
 # --- Statuses that must stay silent (the bug this fixes) ---
 
 @test "cancelled does not notify" {

@@ -48,6 +48,13 @@ payload_field() {
   [[ "$(payload_field '.text')" == *"Cancelled"* ]]
 }
 
+@test "info status uses rocket emoji and no status suffix" {
+  STATUS="info" TEST_NAME="Deployed to staging" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  # Exact match asserts there is no trailing status word or whitespace.
+  [ "$(payload_field '.blocks[0].text.text')" = "🚀 Deployed to staging" ]
+}
+
 @test "skipped status produces correct emoji and text" {
   STATUS="skipped" run bash "$SCRIPT"
   [ "$status" -eq 0 ]
