@@ -41,6 +41,12 @@ runs:
     # fails takes the job with it, so nothing reads the marker afterwards, and a
     # caller that swallows that failure meets the installer's own "needs cosign
     # on PATH" check on the next call rather than a silent unverified install.
+    #
+    # This gate is duplicated in semver-validation/action.yml, because a
+    # composite cannot share steps with a sibling. The two copies coordinate
+    # through the marker path below, so a job mixing both actions only installs
+    # cosign once: change the path or the cosign-installer pin in one and the
+    # pair silently stops agreeing. Edit them together.
     - name: Check whether this job still needs cosign
       id: cosign
       if: inputs.verify-signature == 'true'

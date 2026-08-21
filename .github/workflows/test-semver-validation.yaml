@@ -114,10 +114,34 @@ jobs:
           version: v4.9.0
           verify-signature: true
 
-      # The second verified call is where the cosign install is skipped, the
-      # first having recorded that this job already ran cosign-installer.
-      # Verification still has to answer, which is what says the skip left
-      # cosign reachable for it.
+      # Two versions are two inputs to this action, not two semstat releases, so
+      # the call below would otherwise reuse the install the step above verified
+      # and exit before the cosign gate. Dropping the install is what forces it
+      # to verify again; keeping the cosign marker is what makes it do so with
+      # cosign-installer skipped, which is the pairing under test.
+      - name: Drop the semstat install, keep the cosign marker
+        env:
+          COSIGN_MARKER: ${{ runner.temp }}/.setup-semstat-cosign-installed
+        run: |
+          set -euo pipefail
+
+          if [ ! -f "$COSIGN_MARKER" ]; then
+            echo "::error::the verified call left no cosign marker at ${COSIGN_MARKER}, so the call below would install cosign again rather than exercise the skip"
+            exit 1
+          fi
+
+          rm -rf "${RUNNER_TEMP:?}"/semstat-*
+
+          shopt -s nullglob
+          remaining=("$RUNNER_TEMP"/semstat-*)
+
+          if [ "${#remaining[@]}" -ne 0 ]; then
+            echo "::error::a semstat install survived under ${RUNNER_TEMP}, so the next call would take the reuse path instead of verifying: ${remaining[*]}"
+            exit 1
+          fi
+
+      # Re-installs with cosign-installer skipped. If the skip left cosign
+      # unreachable the installer's own gate fails this step.
       - name: A second version answered from the verified semstat
         id: signed_again
         uses: ./.github/actions/semver-validation
