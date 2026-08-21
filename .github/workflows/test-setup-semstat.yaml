@@ -161,9 +161,38 @@ jobs:
 
           "$SEMSTAT_BIN" validate v4.9.0
 
-      # The second call is where the cosign install is skipped: the first one
-      # recorded that this job already ran cosign-installer. Verification still
-      # has to answer, which is what says the skip left cosign reachable for it.
+      # Reaching the cosign gate a second time takes deleting the install: the
+      # reuse fast path exits before both the `command -v cosign` check and
+      # verify-blob, so a second call left to hit the cache proves only that the
+      # cache holds, and would stay green even if the skipped install had left no
+      # cosign at all. The cosign marker is deliberately kept, because that is
+      # what makes the call below skip cosign-installer and still have to verify.
+      - name: Drop the semstat install, keep the cosign marker
+        env:
+          COSIGN_MARKER: ${{ runner.temp }}/.setup-semstat-cosign-installed
+        run: |
+          set -euo pipefail
+
+          if [ ! -f "$COSIGN_MARKER" ]; then
+            echo "::error::the first verified install left no cosign marker at ${COSIGN_MARKER}, so the call below would install cosign again rather than exercise the skip"
+            exit 1
+          fi
+
+          rm -rf "${RUNNER_TEMP:?}"/semstat-*
+
+          # One surviving directory would put the next call back on the fast path
+          # and quietly restore the hole this step exists to close.
+          shopt -s nullglob
+          remaining=("$RUNNER_TEMP"/semstat-*)
+
+          if [ "${#remaining[@]}" -ne 0 ]; then
+            echo "::error::a semstat install survived under ${RUNNER_TEMP}, so the next call would take the reuse path instead of verifying: ${remaining[*]}"
+            exit 1
+          fi
+
+      # A real install with cosign-installer skipped: it re-downloads, and the
+      # installer's own "verify-signature needs cosign on PATH" gate fails the
+      # step if the skip left cosign unreachable. That is the assertion.
       - name: Install again with signature verification
         id: reverify
         uses: ./.github/actions/setup-semstat

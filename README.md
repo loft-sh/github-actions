@@ -1195,9 +1195,10 @@ choose to move.
 
 `semver-validation` is the worked example. `v1`, `v2` and `v3` are the self-contained
 Node implementation; the composite over `semstat` needs egress to the semstat
-releases, needs `curl`/`tar`/`sha256sum`/`jq` on the runner, and puts `semstat` on
-the job's `PATH`, so it went out as `v4` rather than over any of them. Before
-force-pushing a tag, check who pins it:
+releases, needs `curl`/`tar`/`sha256sum`/`jq` on the runner, and drops the
+`semstat_version` input, so it went out as `v4` rather than over any of them. It
+leaves the job's `PATH` alone, which would otherwise have been a reason on its
+own. Before force-pushing a tag, check who pins it:
 
 ```bash
 gh search code 'loft-sh/github-actions/.github/actions/<action-name>@ org:loft-sh'

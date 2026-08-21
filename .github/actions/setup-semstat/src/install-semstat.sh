@@ -239,18 +239,21 @@ done
 
 # Fetched on its own rather than in the loop above, because an absent bundle is a
 # different failure than an absent release and must not be reported as one.
-# semstat signs at the end of goreleaser's publish phase, so a Fulcio or Rekor
-# outage there leaves the release published with the archives but no provenance.
+# semstat publishes its release only once signing has succeeded, so a release
+# carrying the archives and no bundle was either cut before that flow or had
+# signing dropped from its pipeline. Nothing repairs it in place: a release cut
+# under the draft flow is immutable once published, and semstat's pipeline
+# refuses to re-release a published tag either way.
 if [ "$verify_signature" = true ]; then
   bundle=checksums.txt.sigstore.json
   status=0
   curl -fsSL --retry 3 --retry-connrefused --connect-timeout 10 --max-time 120 -o "${work}/${bundle}" "${BASE_URL}/${tag}/${bundle}" || status=$?
   # 22 is curl's HTTP-error status, so the release answered and does not carry
-  # the asset. Any other status is this runner not reaching it, and telling that
-  # runner to re-dispatch semstat's release workflow sends it after the wrong
-  # repair.
+  # the asset. Any other status is this runner not reaching it, which is a
+  # different problem than a release without provenance and must not be reported
+  # as one.
   if [ "$status" -eq 22 ]; then
-    echo "::error::semstat ${tag} publishes no ${bundle}, so its signature cannot be verified; the release may have been published through a signing outage, which a re-dispatch of its release workflow repairs"
+    echo "::error::semstat ${tag} publishes no ${bundle}, so its signature cannot be verified; a published semstat release does not gain one, so pin a release that carries it"
     exit 1
   elif [ "$status" -ne 0 ]; then
     echo "::error::could not download ${bundle} for semstat ${tag}: curl exited ${status}"
