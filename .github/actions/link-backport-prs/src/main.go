@@ -168,7 +168,6 @@ func run() error {
 		bps, err := findBackportPRs(ctx, gh, repos, target, *sourcePR, src.GetMergeCommitSHA(), *repoOwner+"/"+*repoName)
 		if err != nil {
 			warnf("looking up backport PRs for %s: %v", target, err)
-			continue
 		}
 		if len(bps) == 0 {
 			remedyWarning{
@@ -178,26 +177,10 @@ func run() error {
 			continue
 		}
 
-		for _, bp := range bps {
-			if bodyReferencesIssue(bp.PullRequest.GetBody(), sub.Identifier) {
-				noticef("backport PR %s#%d already references %s, skipping", bp.Repository, bp.PullRequest.GetNumber(), sub.Identifier)
-				continue
-			}
-
-			newBody := appendFixes(bp.PullRequest.GetBody(), sub.Identifier)
-			if *dryRun {
-				noticef("[dry-run] would add 'Fixes %s' to backport PR %s#%d (%s)", sub.Identifier, bp.Repository, bp.PullRequest.GetNumber(), target)
-				linked++
-				continue
-			}
-
-			if _, _, err := gh.PullRequests.Edit(ctx, bp.Repository.Owner, bp.Repository.Name, bp.PullRequest.GetNumber(), &github.PullRequest{Body: &newBody}); err != nil {
-				warnf("updating backport PR %s#%d body: %v", bp.Repository, bp.PullRequest.GetNumber(), err)
-				continue
-			}
-			noticef("linked backport PR %s#%d (%s) to %s via 'Fixes %s'", bp.Repository, bp.PullRequest.GetNumber(), target, sub.Identifier, sub.Identifier)
-			linked++
-		}
+		linked += linkPullRequests(bps, sub.Identifier, *dryRun, func(repo repository, number int, body string) error {
+			_, _, err := gh.PullRequests.Edit(ctx, repo.Owner, repo.Name, number, &github.PullRequest{Body: &body})
+			return err
+		})
 	}
 
 	noticef("link-backport-prs: linked %d PR(s) across %d backport target(s)", linked, len(targets))
@@ -362,6 +345,35 @@ func appendFixes(body, identifier string) string {
 	return trimmed + "\n\nFixes " + identifier
 }
 
+// linkPullRequests appends the closing reference to every matching PR. An
+// already-linked or failed PR does not stop the remaining repositories from
+// being processed.
+func linkPullRequests(bps []locatedPullRequest, identifier string, dryRun bool, edit func(repository, int, string) error) int {
+	linked := 0
+	for _, bp := range bps {
+		if bodyReferencesIssue(bp.PullRequest.GetBody(), identifier) {
+			noticef("backport PR %s#%d already references %s, skipping", bp.Repository, bp.PullRequest.GetNumber(), identifier)
+			continue
+		}
+
+		newBody := appendFixes(bp.PullRequest.GetBody(), identifier)
+		target := bp.PullRequest.GetBase().GetRef()
+		if dryRun {
+			noticef("[dry-run] would add 'Fixes %s' to backport PR %s#%d (%s)", identifier, bp.Repository, bp.PullRequest.GetNumber(), target)
+			linked++
+			continue
+		}
+
+		if err := edit(bp.Repository, bp.PullRequest.GetNumber(), newBody); err != nil {
+			warnf("updating backport PR %s#%d body: %v", bp.Repository, bp.PullRequest.GetNumber(), err)
+			continue
+		}
+		noticef("linked backport PR %s#%d (%s) to %s via 'Fixes %s'", bp.Repository, bp.PullRequest.GetNumber(), target, identifier, identifier)
+		linked++
+	}
+	return linked
+}
+
 type repository struct {
 	Owner string
 	Name  string
@@ -408,6 +420,7 @@ func repositoryNames(repos []repository) string {
 // repo, so callers pass every configured repository and all matches are kept.
 func findBackportPRs(ctx context.Context, gh *github.Client, repos []repository, target string, sourcePR int, mergeSHA, sourceRepo string) ([]locatedPullRequest, error) {
 	var found []locatedPullRequest
+	var lookupErrors []string
 	for _, repo := range repos {
 		opts := &github.PullRequestListOptions{
 			State:       "all",
@@ -417,9 +430,10 @@ func findBackportPRs(ctx context.Context, gh *github.Client, repos []repository,
 		for {
 			prs, resp, err := gh.PullRequests.List(ctx, repo.Owner, repo.Name, opts)
 			if err != nil {
-				return nil, fmt.Errorf("list %s pull requests: %w", repo, err)
+				lookupErrors = append(lookupErrors, fmt.Sprintf("list %s pull requests: %v", repo, err))
+				break
 			}
-			for _, pr := range matchingBackportPRs(prs, target, sourcePR, mergeSHA, sourceRepo, repo.String() == sourceRepo) {
+			for _, pr := range matchingBackportPRs(prs, target, sourcePR, mergeSHA, sourceRepo, repo.String(), repo.String() == sourceRepo) {
 				found = append(found, locatedPullRequest{Repository: repo, PullRequest: pr})
 			}
 			if resp == nil || resp.NextPage == 0 {
@@ -428,19 +442,26 @@ func findBackportPRs(ctx context.Context, gh *github.Client, repos []repository,
 			opts.Page = resp.NextPage
 		}
 	}
+	if len(lookupErrors) > 0 {
+		return found, fmt.Errorf("one or more repository lookups failed: %s", strings.Join(lookupErrors, "; "))
+	}
 	return found, nil
 }
 
 // matchingBackportPRs accepts sorenlouv's deterministic branch or the legacy
 // split branch. The legacy match checks both the merge SHA prefix and the
-// fully-qualified source PR reference from the producer's body so another PR
-// on the same release branch cannot be linked by accident.
-func matchingBackportPRs(prs []*github.PullRequest, target string, sourcePR int, mergeSHA, sourceRepo string, allowModern bool) []*github.PullRequest {
+// fully-qualified source PR reference from the producer's body. It also
+// requires the PR head repository to match the repository being searched, so a
+// fork cannot copy those public values and receive a privileged edit.
+func matchingBackportPRs(prs []*github.PullRequest, target string, sourcePR int, mergeSHA, sourceRepo, expectedRepo string, allowModern bool) []*github.PullRequest {
 	modernHead := backportHeadBranch(target, sourcePR)
 	legacyPrefix := "backport/" + target + "/"
 	sourceRef := regexp.MustCompile(regexp.QuoteMeta(fmt.Sprintf("%s#%d", sourceRepo, sourcePR)) + `\b`)
 	var matches []*github.PullRequest
 	for _, pr := range prs {
+		if pr.GetHead().GetRepo().GetFullName() != expectedRepo {
+			continue
+		}
 		if pr.GetBase().GetRef() != target {
 			continue
 		}

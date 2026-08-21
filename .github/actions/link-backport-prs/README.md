@@ -9,14 +9,14 @@ When a merged source PR carries `backport-to-<branch>` labels, the shared workfl
 1. Resolves the source PR's Linear issue (the parent) via Linear's `attachmentsForURL` reverse lookup, falling back to a `TEAM-123` identifier parsed from the branch name or body.
 2. Finds the sub-issue whose title carries the release-line prefix for that target, e.g. `[0.34] Copy of ENGCP-906` for a backport to `v0.34` (a leading `v`, as in `[v0.34]`, is also accepted).
 3. Verifies the release attached to the matched sub-issue agrees with the backport target line, warning on a missing or mismatched release (see below). Linking proceeds either way.
-4. Finds the modern `backport/<target>/pr-<source>` PR in the source repo and any legacy `backport/<target>/<short-sha>` PRs in the configured pro and OSS repos.
+4. Finds the modern `backport/<target>/pr-<source>` PR in the source repo and any legacy `backport/<target>/<short-sha>` PRs in the configured pro and OSS repos. A match must come from the repository being searched, so a fork cannot copy the branch name and body to receive a privileged edit.
 5. Appends `Fixes <sub-issue-id>` to every matching PR body, unless it already references the issue.
 
 The match is by title prefix, not milestone: the `[X.Y] Copy of ...` sub-issues created for a backport family do not reliably carry a patch milestone, so the title is the dependable key.
 
 The release check exists because a title match alone cannot catch a sub-issue attached to the wrong release. After a title match, the action reads the Releases attached to the sub-issue via Linear and derives each release's `X.Y` line from its version field, falling back to the leading version in the release name (`0.33.5 - Security Only` parses to `0.33`). No release attached, or no attached release on the target's line, produces a remedy warning. A matching release stays silent. If the releases query itself fails, verification degrades to a single warning and linking continues.
 
-It is advisory and idempotent: it never fails the backport job (every problem is a warning and it exits 0) and re-runs do not add duplicate `Fixes` lines.
+It is advisory and idempotent: it never fails the backport job (every problem is a warning and it exits 0) and re-runs do not add duplicate `Fixes` lines. A lookup failure in one repository is reported without discarding matches found in another repository.
 
 Every skip that a human can fix is loud. When a source PR carries backport labels but linking hits a dead end, the action emits a GitHub `::warning::` annotation and a job-summary line naming the remedy. This covers an empty `linear-token` (fix the repository secret), an unresolved parent Linear issue (attach the PR to its issue), a release line with no matching `[X.Y]` sub-issue (create or rename the sub-issue), a matched sub-issue with no release attached (attach the line's In Progress release), a matched sub-issue whose release is on a different line (fix the release attachment or the sub-issue title), and a target whose producer opened no PR (backport it manually after the conflict). A source PR with no backport labels stays a plain notice, since there is nothing to fix. The step always publishes a `linked-count` output, 0 when it skips.
 
@@ -87,4 +87,4 @@ Run the unit tests:
 make test-link-backport-prs
 ```
 
-The tests cover modern and legacy PR discovery, mixed pro and OSS results, repository parsing, workflow ordering, release-line extraction, title-prefix matching, sub-issue selection, idempotency of the `Fixes` line, release verification, remedy-warning rendering, and the `linked-count` / job-summary writers.
+The tests cover modern and legacy PR discovery, trusted head-repository checks, partial repository lookup failures, mixed pro and OSS edits, repository parsing, workflow ordering, release-line extraction, title-prefix matching, sub-issue selection, idempotency of the `Fixes` line, release verification, remedy-warning rendering, and the `linked-count` / job-summary writers.
