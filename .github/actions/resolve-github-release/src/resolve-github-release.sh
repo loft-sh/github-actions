@@ -23,51 +23,96 @@ set -euo pipefail
 : "${INPUT_REPO:?INPUT_REPO is required}"
 : "${INPUT_VERSION:?INPUT_VERSION is required}"
 
+# Drawn from the kernel once per process rather than from time and pid, so the
+# heredoc delimiter emit relies on is unguessable rather than merely unlikely.
+# $RANDOM is the documented weak last resort for a runner offering neither
+# source; the same tiering is spelled out at length in oss-commit-sync/lib.sh.
+OUTPUT_DELIM="$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')" || OUTPUT_DELIM=""
+if [ "${#OUTPUT_DELIM}" -ne 32 ]; then
+  OUTPUT_DELIM="$({ tr -d '\n-' < /proc/sys/kernel/random/uuid; } 2>/dev/null)" || OUTPUT_DELIM=""
+fi
+if [ "${#OUTPUT_DELIM}" -ne 32 ]; then
+  OUTPUT_DELIM="$(printf '%04x%04x%04x%04x%04x%04x%04x%04x' \
+    "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM")"
+fi
+
 # emit writes the output in the heredoc-delimiter form so a value containing
 # newlines cannot forge extra key=value pairs. On the pass-through path `version`
 # becomes `tag` verbatim, and future callers of a shared action cannot all be
 # audited for where their `version` came from — harden the sink once instead.
 emit() {
-  local key="$1" value="$2" delim
-  delim="GH_OUTPUT_EOF_$(date +%s%N)_$$"
+  local key="$1" value="$2"
   if [ -n "${GITHUB_OUTPUT:-}" ]; then
     {
-      printf '%s<<%s\n' "$key" "$delim"
+      printf '%s<<GH_OUTPUT_EOF_%s\n' "$key" "$OUTPUT_DELIM"
       printf '%s\n' "$value"
-      printf '%s\n' "$delim"
+      printf 'GH_OUTPUT_EOF_%s\n' "$OUTPUT_DELIM"
     } >>"$GITHUB_OUTPUT"
   fi
   printf '%s=%s\n' "$key" "$value"
 }
 
-main() {
-  local tag="$INPUT_VERSION"
+# Strips leading and trailing whitespace. A version arriving from a multi-line
+# YAML input or a shell capture carries a trailing newline or stray indentation
+# often enough that comparing it raw silently turns "latest" into a literal tag.
+trim() {
+  local s="$1"
+  s="${s#"${s%%[![:space:]]*}"}"
+  s="${s%"${s##*[![:space:]]}"}"
+  printf '%s' "$s"
+}
 
-  if [ "$tag" = "latest" ] || [ "$tag" = "main" ]; then
-    # The latest-release endpoint 404s on a repo with no published release and
+# Classifies the 404 the latest-release endpoint returns. "no published release"
+# and "repo not visible to this token" are indistinguishable on that endpoint —
+# a typo'd name, a private repo the token cannot read, and a real release-less
+# repo all 404 — so ask the repo endpoint, which only the first two 404 on.
+report_404() {
+  if gh api "repos/${INPUT_REPO}" --jq '.full_name' >/dev/null 2>&1; then
+    echo "::error::${INPUT_REPO} has no published releases to resolve '${INPUT_VERSION}' against"
+  else
+    echo "::error::${INPUT_REPO} is not visible to this token: check the repository name, and that the token has contents:read on it"
+  fi
+}
+
+main() {
+  local tag
+  tag="$(trim "$INPUT_VERSION")"
+
+  if [ "${tag,,}" = "latest" ] || [ "${tag,,}" = "main" ]; then
     # `gh api` exits non-zero on any 4xx, so absent-vs-failed must be classified
-    # from stderr — a 200 with an empty tag_name does not happen. Collapsing the
-    # two sends an operator debugging a release-less repo after a network or
-    # auth problem that does not exist.
+    # from stderr. Collapsing the two sends an operator debugging a release-less
+    # repo after a network or auth problem that does not exist.
     local err_file
     err_file=$(mktemp)
     if ! tag=$(gh api "repos/${INPUT_REPO}/releases/latest" --jq '.tag_name // empty' 2>"$err_file"); then
-      if grep -qiE 'not found|HTTP 404' "$err_file"; then
-        echo "::error::${INPUT_REPO} has no published releases to resolve '${INPUT_VERSION}' against"
+      if grep -qiE 'HTTP 404' "$err_file"; then
+        report_404
       else
-        echo "::error::could not resolve the latest release of ${INPUT_REPO}: $(cat "$err_file")"
+        # gh's stderr is multi-line: only the first line would become the
+        # annotation, and any `::`-prefixed line in an API error body would be
+        # read as a workflow command. One line keeps the whole error visible.
+        echo "::error::could not resolve the latest release of ${INPUT_REPO}: $(tr '\n' ' ' <"$err_file")"
       fi
       rm -f "$err_file"
       return 1
     fi
     rm -f "$err_file"
+    # `.tag_name // empty` yields an empty string on any 200 without a
+    # tag_name. Emitting that produces an artifact URL with an empty path
+    # segment, which fails much later as an opaque 404.
+    if [ -z "$tag" ]; then
+      echo "::error::the latest release of ${INPUT_REPO} has no tag_name"
+      return 1
+    fi
     echo "resolved ${INPUT_VERSION} to ${tag}"
   else
     echo "using explicit tag ${tag}"
   fi
 
   if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-    printf '%s release used: `%s`\n' "$INPUT_REPO" "$tag" >>"$GITHUB_STEP_SUMMARY"
+    # A list item, so two steps resolving two repos in one job stay two lines
+    # instead of collapsing into one run-together Markdown paragraph.
+    printf -- '- %s release used: `%s`\n' "$INPUT_REPO" "$tag" >>"$GITHUB_STEP_SUMMARY"
   fi
   emit tag "$tag"
 }
