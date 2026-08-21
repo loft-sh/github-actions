@@ -1,5 +1,5 @@
 name: 'Link Backport PRs to Linear'
-description: 'Links sorenlouv-created backport PRs to the matching Linear sub-issue by adding "Fixes <id>" to the backport PR body, and verifies the sub-issue carries a release on the backport target line'
+description: 'Links modern and legacy backport PRs to the matching Linear sub-issue by adding "Fixes <id>" to each PR body, and verifies the sub-issue carries a release on the backport target line'
 
 inputs:
   source-pr:
@@ -22,6 +22,10 @@ inputs:
     description: 'Prefix of the backport labels on the source PR'
     required: false
     default: 'backport-to-'
+  additional-repos:
+    description: 'Comma-separated owner/repo list to search for cross-repo legacy backport PRs. The source repository is always searched and duplicate entries are ignored.'
+    required: false
+    default: ''
   dry-run:
     description: 'Log intended edits without applying them'
     required: false
@@ -51,6 +55,7 @@ runs:
         INPUT_REPO_OWNER: ${{ inputs.repo-owner }}
         INPUT_REPO_NAME: ${{ inputs.repo-name }}
         INPUT_LABEL_PREFIX: ${{ inputs.label-prefix }}
+        INPUT_ADDITIONAL_REPOS: ${{ inputs.additional-repos }}
         INPUT_DRY_RUN: ${{ inputs.dry-run }}
       run: |
         cd "$ACTION_PATH/src"
@@ -60,6 +65,7 @@ runs:
           -repo-owner="$INPUT_REPO_OWNER" \
           -repo-name="$INPUT_REPO_NAME" \
           -label-prefix="$INPUT_LABEL_PREFIX" \
+          -additional-repos="$INPUT_ADDITIONAL_REPOS" \
           -dry-run="$INPUT_DRY_RUN"
 
 branding:
