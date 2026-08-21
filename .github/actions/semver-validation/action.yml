@@ -68,10 +68,18 @@ runs:
     # this composite without the other, and saying so before the downloads is
     # what keeps a runner missing jq from paying for tools it cannot use.
     # report.sh checks again, for the runs that reach it directly.
+    #
+    # Held back when `version:` is absent, so report.sh stays the one that
+    # answers that case: it checks the missing input first, deliberately above
+    # its own jq check, and emits the outputs alongside the error. Failing here
+    # instead would swap that report for a jq message and leave the outputs
+    # empty. The two checks have to keep agreeing about which comes first.
     - name: Check the runner can read semstat's output
       shell: bash
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
       run: |
-        if ! command -v jq >/dev/null 2>&1; then
+        if [ -n "${INPUT_VERSION-}" ] && ! command -v jq >/dev/null 2>&1; then
           echo "::error::jq is required to read semstat's output and is not on PATH"
           exit 1
         fi
@@ -87,6 +95,12 @@ runs:
     # fails takes the job with it, so nothing reads the marker afterwards, and a
     # caller that swallows that failure meets the installer's own "needs cosign
     # on PATH" check on the next call rather than a silent unverified install.
+    #
+    # This gate is duplicated in setup-semstat/action.yml, because a composite
+    # cannot share steps with a sibling. The two copies coordinate through the
+    # marker path below, so a job mixing both actions only installs cosign once:
+    # change the path or the cosign-installer pin in one and the pair silently
+    # stops agreeing. Edit them together.
     - name: Check whether this job still needs cosign
       id: cosign
       if: inputs.verify-signature == 'true'

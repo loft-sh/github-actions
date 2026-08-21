@@ -86,8 +86,27 @@ the one-line `run:` it reduces to: the `env:` block and the existence check are
 both load-bearing, for the reasons below.
 
 ```yaml
-- name: Install cosign
+- name: Check whether this job still needs cosign
+  id: cosign
   if: inputs.verify-signature == 'true'
+  shell: bash
+  env:
+    COSIGN_MARKER: ${{ runner.temp }}/.setup-semstat-cosign-installed
+  run: |
+    install=true
+    if [ -f "$COSIGN_MARKER" ]; then
+      install=false
+    elif ! : >"$COSIGN_MARKER"; then
+      echo "::error::could not record that this job installs cosign at ${COSIGN_MARKER}"
+      exit 1
+    fi
+    if ! echo "install=${install}" >>"$GITHUB_OUTPUT"; then
+      echo "::error::could not write whether this job needs cosign to GITHUB_OUTPUT"
+      exit 1
+    fi
+
+- name: Install cosign
+  if: inputs.verify-signature == 'true' && steps.cosign.outputs.install == 'true'
   uses: sigstore/cosign-installer@<sha> # v4.1.2
 
 - name: Install semstat
@@ -132,10 +151,16 @@ otherwise dies on bash's bare `No such file or directory` with no `::error::` li
 naming what the checkout has to include.
 
 Verifying also needs `cosign` on `PATH`, which is a `uses:` step and so cannot be
-lent out by a script. If the calling action can be invoked several times in one
-job, guard that step the way `semver-validation` does: cosign-installer
-re-downloads its bootstrap binary on every call, while every semstat install after
-the first is a cache hit that never reaches cosign.
+lent out by a script. That is why the marker step above sits in front of it:
+cosign-installer re-downloads its bootstrap binary on every call, while every
+semstat install after the first is a cache hit that never reaches cosign, so an
+action invoked several times in one job would pay for a bootstrap it does not use.
+The marker lives under `RUNNER_TEMP`, private to the job, which is what makes the
+skip reuse an install this job already did rather than adopt whatever `cosign` a
+runner image happened to ship. Keep the marker path byte-identical to the one in
+`setup-semstat/action.yml` and `semver-validation/action.yml`, since that shared
+path is how a job mixing these actions installs cosign only once. Drop the step
+only if the calling action can run at most once per job.
 
 Set `SEMSTAT_SKIP_PATH: "true"` where the calling action names the binary through
 the step output and never runs a bare `semstat`, because the append is then a
