@@ -1,0 +1,49 @@
+name: Test resolve-github-release
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/test-resolve-github-release.yaml'
+      - '.github/actions/resolve-github-release/**'
+
+permissions:
+  contents: read
+
+jobs:
+  bats:
+    name: Run bats tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: bats-core/bats-action@77d6fb60505b4d0d1d73e48bd035b55074bbfb43 # 4.0.0
+        with:
+          support-install: false
+          assert-install: false
+          detik-install: false
+          file-install: false
+      - name: Run resolve-github-release tests
+        run: bats .github/actions/resolve-github-release/test/*.bats
+
+  # The bats suite invokes the script directly, so it never exercises action.yml:
+  # the env mapping of inputs, the github.action_path dispatch (and the script's
+  # executable bit), or the outputs.tag expression. This pass-through case pins
+  # that wiring without any API call.
+  composite-smoke:
+    name: Composite smoke (explicit tag pass-through)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - id: passthrough
+        uses: ./.github/actions/resolve-github-release
+        with:
+          repo: loft-sh/vcluster
+          version: v0.29.0
+          github-token: ${{ github.token }}
+      - name: Verify explicit tag passes through
+        env:
+          TAG: ${{ steps.passthrough.outputs.tag }}
+        run: '[ "$TAG" = "v0.29.0" ] || { echo "got: $TAG"; exit 1; }'

@@ -105,6 +105,7 @@ func writeKeyValuePairs(w io.Writer, ids ResourceIDs) error {
 		{"security_group_id", ids.SecurityGroupID},
 		{"ami_id", ids.AMIID},
 		{"primary_public_ip", ids.PrimaryPublicIP},
+		{"primary_private_ip", ids.PrimaryPrivateIP},
 		{"instance_ids", strings.Join(ids.InstanceIDs, ",")},
 	}
 	for _, p := range pairs {
@@ -125,6 +126,14 @@ func writeKeyValuePairs(w io.Writer, ids ResourceIDs) error {
 		return fmt.Errorf("encode instance-id-by-role: %w", err)
 	}
 	if _, err := fmt.Fprintf(w, "instance_id_by_role=%s\n", roleJSON); err != nil {
+		return err
+	}
+	// JSON-map of role → private IP, same access pattern as instance-id-by-role.
+	privateIPJSON, err := json.Marshal(ids.PrivateIPByRole)
+	if err != nil {
+		return fmt.Errorf("encode private-ip-by-role: %w", err)
+	}
+	if _, err := fmt.Fprintf(w, "private_ip_by_role=%s\n", privateIPJSON); err != nil {
 		return err
 	}
 	return nil
