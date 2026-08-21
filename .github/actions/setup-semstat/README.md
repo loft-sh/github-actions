@@ -25,20 +25,23 @@ and egress to `github.com/loft-sh/semstat/releases/download` **and**
 `objects.githubusercontent.com`, which release-asset downloads redirect to. A
 proxy allowlist naming only `github.com` fails the download.
 
-`verify-signature: true` needs two more hosts. `cosign` is downloaded from the
-`github.com/sigstore/cosign` releases, by this action rather than by the runner
-image, and cosign then checks the transparency log against a trusted root it
-fetches from `tuf-repo-cdn.sigstore.dev`. An egress-restricted runner has to
-allow both or the step fails inside cosign.
+Two further hosts are needed **by default**, because `verify-signature` defaults to
+true. `cosign` is downloaded from the `github.com/sigstore/cosign` releases, by this
+action rather than by the runner image, and cosign then checks the transparency log
+against a trusted root it fetches from `tuf-repo-cdn.sigstore.dev`. An
+egress-restricted runner has to allow both, or the step fails inside cosign.
+
+`verify-signature: false` drops both, and is the setting for a runner whose
+allowlist cannot be changed.
 
 ## Inputs
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-|      INPUT       |  TYPE  | REQUIRED |  DEFAULT  |                                                                                                                                                              DESCRIPTION                                                                                                                                                              |
-|------------------|--------|----------|-----------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| verify-signature | string |  false   | `"false"` | Verify `checksums.txt` against its cosign bundle <br>before trusting it, proving the release <br>came from semstat's own release workflow <br>at this exact tag rather than <br>only that the download arrived intact. <br>Costs a cosign install on the <br>job, so it is off by <br>default; turn it on for jobs <br>that publish.  |
-|     version      | string |  false   |           |                                               Release of [loft-sh/semstat](https://github.com/loft-sh/semstat) to install. Empty <br>installs the release pinned in `src/install-semstat.sh`, <br>which is where Renovate bumps it <br>and where every entry point reads <br>it from.                                                 |
+|      INPUT       |  TYPE  | REQUIRED | DEFAULT  |                                                                                                                                                                                                                                                                                                                                     DESCRIPTION                                                                                                                                                                                                                                                                                                                                     |
+|------------------|--------|----------|----------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| verify-signature | string |  false   | `"true"` | Verify `checksums.txt` against its cosign bundle <br>before trusting it, proving the release <br>came from semstat's own release workflow <br>at this exact tag rather than <br>only that the download arrived intact. <br>`checksums.txt` is fetched from the same <br>release as the archive, so on <br>its own it proves the download <br>arrived whole and nothing about who <br>published it; this is the check <br>that answers that. On by default. <br>Set it to false to trade <br>the guarantee for a cosign install <br>on the job and a dependency <br>on Sigstore being reachable, which is <br>worth doing for a job that <br>neither publishes nor gates a publish.  |
+|     version      | string |  false   |          |                                                                                                                                                                                                                      Release of [loft-sh/semstat](https://github.com/loft-sh/semstat) to install. Empty <br>installs the release pinned in `src/install-semstat.sh`, <br>which is where Renovate bumps it <br>and where every entry point reads <br>it from.                                                                                                                                                                                                                        |
 
 <!-- AUTO-DOC-INPUT:END -->
 
@@ -205,10 +208,21 @@ https://github.com/loft-sh/semstat/.github/workflows/release.yaml@refs/tags/<ver
 ```
 
 The tag is part of the identity, not a wildcard, so a bundle signed by the same
-workflow on any other ref does not pass. It is off by default because it costs a
-cosign install on every job that touches a release path, and because signature
-verification of a first-party binary out of a first-party release is largely
-ceremony. Turn it on for jobs that publish.
+workflow on any other ref does not pass.
+
+It is on by default. The reasoning that first made it opt-in, that verifying a
+first-party binary out of a first-party release is ceremony, does not survive what
+the release actually looks like: `checksums.txt` is fetched from the same release
+as the archive it vouches for, so anyone able to replace one replaces the other in
+the same call, and a release only stops being replaceable once it is cut under
+GitHub's release immutability. Releases published before that are mutable forever.
+The signature is the only part of the chain that does not come from the thing it
+is checking.
+
+Set it to false where the answer feeds nothing that publishes. That buys back a
+cosign install on the job, and removes a dependency on Sigstore being reachable,
+which is the real cost: with it on, a Sigstore outage fails the job rather than
+degrading it.
 
 ## Reusing an install across steps
 

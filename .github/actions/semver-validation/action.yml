@@ -17,11 +17,16 @@ inputs:
     description: |
       Verify the semstat release's `checksums.txt` against its cosign bundle before
       trusting it, proving the release came from semstat's own release workflow at
-      that exact tag rather than only that the download arrived intact. Costs a
-      cosign install on the job, so it is off by default; turn it on where this
-      action's answer gates a publish.
+      that exact tag rather than only that the download arrived intact. `checksums.txt`
+      is fetched from the same release as the archive, so on its own it proves the
+      download arrived whole and nothing about who published it.
+
+      On by default, because this action's `release_type` and `is_stable` route
+      publishes: a semstat that misreports a prerelease as stable sends an rc out as
+      the newest release. Set it to false to trade that for a cosign install on the
+      job and a dependency on Sigstore being reachable.
     required: false
-    default: "false"
+    default: "true"
 
 outputs:
   is_valid:
