@@ -14,6 +14,9 @@
 #   GH_MOCK_CREATE_FAIL  non-empty → the create call fails
 #   GH_MOCK_PATCH_FAIL   non-empty → a PATCH fails
 #   GH_MOCK_CALLS        path; each invocation appends one line of args
+#   GH_MOCK_CHECKRUN_JSON  body for GET .../check-runs/<id>
+#   GH_MOCK_CHECKRUN_FAIL  non-empty → that lookup fails
+#   GH_MOCK_LATEST_IDS     space-separated ids the commit listing reports as displayed
 
 setup_gh_mock() {
   MOCK_DIR="$(mktemp -d)"
@@ -37,6 +40,7 @@ all="$*"
 # quotes, which produces a body jq cannot parse.
 default_pr='{"head":{"sha":"abc123","ref":"feature/x","repo":{"full_name":"loft-sh/demo"}},"base":{"ref":"main"},"state":"open"}'
 default_create='{"id":4242}'
+default_checkrun='{"id":4242,"name":"e2e-pro: snapshots","head_sha":"abc123"}'
 
 case "$all" in
   *"--method POST"*"check-runs"*)
@@ -50,6 +54,18 @@ case "$all" in
   *"/pulls/"*)
     [ -n "${GH_MOCK_PR_FAIL:-}" ] && { echo "mock: pulls failed" >&2; exit 1; }
     printf '%s\n' "${GH_MOCK_PR_JSON:-$default_pr}"
+    ;;
+  # Before the by-id case: this path also contains "check-runs".
+  *"/commits/"*"check-runs"*)
+    ids=""
+    for id in ${GH_MOCK_LATEST_IDS-4242}; do
+      ids="${ids:+${ids},}{\"id\":${id}}"
+    done
+    printf '{"check_runs":[%s]}\n' "$ids"
+    ;;
+  *"check-runs/"*)
+    [ -n "${GH_MOCK_CHECKRUN_FAIL:-}" ] && { echo "mock: check-run lookup failed" >&2; exit 1; }
+    printf '%s\n' "${GH_MOCK_CHECKRUN_JSON:-$default_checkrun}"
     ;;
   *)
     printf '{}\n'

@@ -104,5 +104,40 @@ if [[ "$published" -eq 0 ]]; then
   exit 1
 fi
 
+# An adopted check-run drops out of the pull request's view if the suite that
+# adopted it re-runs while ours is still in progress. Republish an identical
+# completed one. Best effort: the verdict is already published above.
+republish_if_hidden() {
+  local detail name head_sha create_args
+
+  detail="$(gh api "repos/${repo}/check-runs/${check_run_id}" 2>/dev/null)" || return 0
+  name="$(printf '%s' "$detail" | jq -r '.name // ""')"
+  head_sha="$(printf '%s' "$detail" | jq -r '.head_sha // ""')"
+  [[ -n "$name" && -n "$head_sha" ]] || return 0
+
+  # No filter argument, so this is `latest`, which is what the pull request
+  # renders. One page only: past a hundred checks on one commit, a spurious
+  # duplicate row is a better failure than an unbounded number of API calls.
+  if gh api "repos/${repo}/commits/${head_sha}/check-runs?per_page=100" 2>/dev/null \
+    | jq -r '.check_runs[].id' | grep -qx "$check_run_id"; then
+    return 0
+  fi
+
+  echo "::warning::check-run ${check_run_id} is no longer displayed on ${head_sha}; republishing the same verdict"
+  create_args=(--method POST "repos/${repo}/check-runs"
+    -f "name=${name}"
+    -f "head_sha=${head_sha}"
+    -f "status=completed"
+    -f "conclusion=${conclusion}"
+    -f "output[title]=${title}"
+    -f "output[summary]=${summary}")
+  [[ -n "$details_url" ]] && create_args+=(-f "details_url=${details_url}")
+
+  gh api "${create_args[@]}" >/dev/null 2>&1 ||
+    echo "::warning::could not republish check-run ${check_run_id}"
+}
+
+republish_if_hidden
+
 echo "::notice::published ${conclusion} to check-run ${check_run_id}"
 emit "conclusion" "$conclusion"

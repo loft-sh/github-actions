@@ -116,7 +116,7 @@ patches() { calls_matching "PATCH"; }
 
 @test "it patches the check-run named by the input" {
   run bash "$SCRIPT"
-  [ "$(calls_matching "check-runs/4242")" -eq 1 ]
+  [ "$(calls_matching "PATCH repos/loft-sh/demo/check-runs/4242")" -eq 1 ]
 }
 
 # --- the failure that leaves a stuck check ----------------------------------
@@ -182,4 +182,69 @@ patches() { calls_matching "PATCH"; }
 @test "no details url means no link rather than a broken one" {
   run bash "$SCRIPT"
   [ "$(calls_matching 'View the run')" -eq 0 ]
+}
+
+# --- republishing a check-run that stopped being displayed -------------------
+#
+# A check-run created here is adopted into another workflow's check suite. If
+# that suite re-runs mid-flight ours stays in the old attempt and the pull
+# request stops rendering it, so the verdict is published but invisible.
+
+creates() { calls_matching "method POST repos/loft-sh/demo/check-runs"; }
+
+@test "a still-displayed check-run is not republished" {
+  export GH_MOCK_LATEST_IDS="4242 99"
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(creates)" -eq 0 ]
+}
+
+@test "a hidden check-run is republished" {
+  export GH_MOCK_LATEST_IDS="99 100"
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(creates)" -eq 1 ]
+  [[ "$output" == *"no longer displayed"* ]]
+}
+
+@test "the republished check carries the same name and verdict" {
+  export GH_MOCK_LATEST_IDS="99"
+  export INPUT_SUITE_RESULT="failure"
+  run bash "$SCRIPT"
+  [ "$(calls_matching "name=e2e-pro: snapshots")" -eq 1 ]
+  [ "$(calls_matching "method POST.*conclusion=failure")" -eq 1 ]
+  [ "$(calls_matching "method POST.*status=completed")" -eq 1 ]
+}
+
+@test "an empty listing counts as hidden" {
+  export GH_MOCK_LATEST_IDS=""
+  run bash "$SCRIPT"
+  [ "$(creates)" -eq 1 ]
+}
+
+@test "a failed lookup skips republishing without failing the run" {
+  export INPUT_REPORT_CONCLUSION="success"
+  export GH_MOCK_CHECKRUN_FAIL=1
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(creates)" -eq 0 ]
+  [ "$(kv conclusion)" = "success" ]
+}
+
+@test "a failed republish warns but does not fail the run" {
+  export INPUT_REPORT_CONCLUSION="success"
+  export GH_MOCK_LATEST_IDS="99"
+  export GH_MOCK_CREATE_FAIL=1
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"could not republish"* ]]
+  [ "$(kv conclusion)" = "success" ]
+}
+
+@test "republishing never runs when the patch itself failed" {
+  export GH_MOCK_LATEST_IDS="99"
+  export GH_MOCK_PATCH_FAIL=1
+  run bash "$SCRIPT"
+  [ "$status" -eq 1 ]
+  [ "$(creates)" -eq 0 ]
 }
