@@ -24,6 +24,18 @@ WORKFLOW="$BATS_TEST_DIRNAME/../../../workflows/auto-approve-bot-prs.yaml"
   [ "$status" -eq 0 ]
 }
 
+@test "a failed approval blocks the merge" {
+  # Without this the bypass path merges a PR carrying no approval at all: the
+  # approve step is continue-on-error, so the job marches on regardless.
+  run grep -F "      id: approve" "$ACTION"
+  [ "$status" -eq 0 ]
+  run grep -F "steps.approve.outcome == 'success'" "$ACTION"
+  [ "$status" -eq 0 ]
+  # outcome, not conclusion — continue-on-error rewrites conclusion to success.
+  run grep -F "steps.approve.conclusion" "$ACTION"
+  [ "$status" -ne 0 ]
+}
+
 @test "the tested head is rechecked after CI and passed to every merge request" {
   [ "$(grep -Fc 'EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}' "$ACTION")" -eq 2 ]
   run grep -F "id: recheck" "$ACTION"
