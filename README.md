@@ -296,6 +296,94 @@ Pair with a concurrency group that splits edited from code events
 edit cannot cancel a still-running code run and then skip. See the action
 README for full details.
 
+### Comment-triggered check
+
+Turns a PR comment such as `/test-e2e snapshots` into a check-run on the pull
+request's head commit, and completes it when the caller's work finishes. It
+runs no tests: it decides whether a command should run, resolves the pull
+request identity that an `issue_comment` event does not carry, and owns the
+check-run lifecycle.
+
+Two modes. `start` parses the comment, authorizes the commenter from
+`author_association`, resolves the head SHA and base ref, and opens the
+check-run, in two API calls. `finish` resolves the outcome with a fail-closed
+matrix, completes the check-run, then confirms it is still displayed and
+republishes it if not — three calls, or four when it republishes. So five for a
+normal lifecycle and six when a check-run has to be republished.
+
+**Location:** `.github/actions/comment-triggered-check`
+
+**Usage:**
+
+```yaml
+permissions:
+  checks: write
+  pull-requests: read
+  contents: read
+
+jobs:
+  prepare:
+    if: github.event.issue.pull_request && startsWith(github.event.comment.body, '/test-e2e')
+    runs-on: ubuntu-22.04
+    outputs:
+      should-run: ${{ steps.cmd.outputs.should-run }}
+      filter: ${{ steps.cmd.outputs.filter }}
+      head-sha: ${{ steps.cmd.outputs.head-sha }}
+      base-ref: ${{ steps.cmd.outputs.base-ref }}
+      key: ${{ steps.cmd.outputs.concurrency-key }}
+      check-run-id: ${{ steps.cmd.outputs.check-run-id }}
+    steps:
+      - id: cmd
+        uses: loft-sh/github-actions/.github/actions/comment-triggered-check@comment-triggered-check/v1
+        with:
+          mode: start
+          comment-body: ${{ github.event.comment.body }}
+          comment-author: ${{ github.event.comment.user.login }}
+          author-association: ${{ github.event.comment.author_association }}
+          pr-number: ${{ github.event.issue.number }}
+          run-id: ${{ github.run_id }}
+          server-url: ${{ github.server_url }}
+
+  # Deduplication is GitHub's: a second identical command supersedes this run,
+  # and the always() finish job still closes the superseded check.
+  suite:
+    needs: [prepare]
+    if: needs.prepare.outputs.should-run == 'true'
+    runs-on: large-8_32
+    concurrency:
+      group: comment-triggered-check-suite-${{ github.event.issue.number }}-${{ needs.prepare.outputs.key }}
+      cancel-in-progress: true
+    outputs:
+      check-conclusion: ${{ steps.run.outputs.check-conclusion }}
+    steps:
+      # Replace this placeholder with the suite. It must test head-sha and emit
+      # one of success, failure, neutral, cancelled, or timed_out.
+      - id: run
+        run: echo "check-conclusion=success" >> "$GITHUB_OUTPUT"
+
+  finish:
+    needs: [prepare, suite]
+    if: always() && needs.prepare.outputs.check-run-id != ''
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: loft-sh/github-actions/.github/actions/comment-triggered-check@comment-triggered-check/v1
+        with:
+          mode: finish
+          check-run-id: ${{ needs.prepare.outputs.check-run-id }}
+          report-conclusion: ${{ needs.suite.outputs.check-conclusion }}
+          suite-result: ${{ needs.suite.result }}
+          details-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+```
+
+**Key outputs:** `matched`, `should-run`, `reason`, `head-sha`, `base-ref`,
+`concurrency-key`, `check-name`, `check-run-id`, `conclusion`.
+
+Two things that are easy to get wrong and are handled here. An `issue_comment`
+run's `GITHUB_SHA` is the default branch, so a check-run must be created against
+the resolved head SHA or it never appears on the PR, and neither the head SHA
+nor the base ref can be inferred from the event. Fork PRs are rejected as a
+security boundary, because this trigger is privileged. See the action README.
+
 ### Repository Dispatch
 
 Sends a `repository_dispatch` event to a target repository so any source repo
@@ -1052,6 +1140,7 @@ the action's files change:
 - `test-link-backport-prs.yaml` - triggers on `.github/actions/link-backport-prs/**`
 - `test-linear-release-sync.yaml` - triggers on `.github/actions/linear-release-sync/**`
 - `test-sticky-pr-comment.yaml` - triggers on `.github/actions/sticky-pr-comment/**`
+- `test-comment-triggered-check.yaml` - triggers on `.github/actions/comment-triggered-check/**`
 - `release-linear-release-sync.yaml` - builds and publishes the binary on tag push or `workflow_dispatch`
 
 Each reusable workflow (`workflow_call`) also has a smoke/integration test
