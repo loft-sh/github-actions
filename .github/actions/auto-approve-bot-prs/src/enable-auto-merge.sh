@@ -53,6 +53,13 @@ esac
 # would otherwise fire back-to-back with no delay, so one blip can take out both.
 # This mirrors the retry discipline the CI wait and the mergeability poll already
 # apply. Never fails: the caller decides what a non-zero merge means.
+# The bypass path merges past the review requirement, so it must not run when the
+# approval never landed. Unset means success, keeping direct callers unchanged.
+if [ "${MERGE_WHEN_BLOCKED:-false}" = "true" ] && [ "${APPROVAL_OUTCOME:-success}" != "success" ]; then
+  echo "::error::PR #${PR_NUMBER} was NOT merged: merge-when-blocked needs a recorded approval, and the approve step reported '$(safe "${APPROVAL_OUTCOME:-}")'. Anything waiting on this merge will stall until the approval lands."
+  exit 0
+fi
+
 MERGE_RETRY_SLEEP="${MERGE_RETRY_SLEEP_SECONDS:-5}"
 try_merge() {
   local out rc

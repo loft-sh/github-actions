@@ -39,6 +39,8 @@ set -o pipefail
 #                              GH_MOCK_PR_MERGE_EXIT so tests that don't care
 #                              about the distinction keep working
 # GH_MOCK_PR_MERGE_AUTO_OUT  → stdout for `gh pr merge --auto`
+# GH_MOCK_API_MERGE_EXIT     → exit code for `gh api ... /pulls/N/merge`
+# GH_MOCK_API_MERGE_OUT      → stderr for a failing `gh api ... /pulls/N/merge`
 # GH_MOCK_PR_STATE           → state for `gh pr view --json state` (OPEN|MERGED|CLOSED)
 # GH_MOCK_CALLS              → path; each invocation appends one line of args
 
@@ -143,7 +145,9 @@ case "${1:-}" in
     while [ $# -gt 0 ]; do
       case "$1" in
         --jq) jq_filter="$2"; shift 2 ;;
-        --method|--header|-H|-X|-f|-F) shift 2>/dev/null || true ;;
+        # Two shifts, not `shift 2`: a failed `shift 2` on a trailing flag would
+        # leave $# unchanged and spin this loop forever.
+        --method|--header|-H|-X|-f|-F) shift; shift 2>/dev/null || true ;;
         --paginate) shift ;;
         *) [ -z "$path" ] && path="$1"; shift ;;
       esac

@@ -21,14 +21,14 @@ inputs:
     required: false
     default: 'false'
   merge-when-blocked:
-    description: 'Retry a refused merge through the merge API, so GitHub decides instead of gh''s client-side mergeability check. Needed when the merge token merges via a ruleset bypass. See README "Merging".'
+    description: 'Retry a refused merge through the merge API, so GitHub decides instead of gh''s client-side mergeability check. Needed when the merge token merges via a ruleset bypass. Also requires the approval to have been recorded. See README "Merging".'
     required: false
     default: 'false'
   github-token:
     description: 'PAT used to read PR state and approve. Must NOT match the PR author. Also used to merge when merge-token is omitted.'
     required: true
   merge-token:
-    description: 'Optional token used only to merge when auto-merge is true. Defaults to github-token. It may match the PR author, but needs a merge path on the base branch.'
+    description: 'Optional token used only to merge when auto-merge is true. Defaults to github-token. It may match the PR author, but needs a merge path on the base branch — and with merge-when-blocked, that path is its ruleset bypass.'
     required: false
   ci-read-token:
     description: 'Token for the read-only CI poll only; defaults to the caller GITHUB_TOKEN, which needs `checks: read` and `statuses: read`. Never the approving PAT. See README "Tokens by purpose".'
@@ -111,11 +111,12 @@ runs:
 
           For more information, see https://github.com/loft-sh/github-actions?tab=readme-ov-file#auto-approve-bot-prs.
 
-    # Existing callers keep best-effort approval semantics. The opt-in bypass
-    # path requires a recorded approval; `outcome`, not `conclusion`, preserves
-    # a failure when continue-on-error rewrites the latter to success.
+    # Existing callers keep best-effort approval semantics; the opt-in bypass
+    # path requires a recorded approval. The script enforces that rather than
+    # this `if`, so a refusal is annotated instead of silently skipped.
+    # `outcome`, not `conclusion`: continue-on-error rewrites the latter.
     - name: Merge PR
-      if: steps.recheck.outputs.proceed == 'true' && inputs.auto-merge == 'true' && (inputs.merge-when-blocked != 'true' || steps.approve.outcome == 'success')
+      if: steps.recheck.outputs.proceed == 'true' && inputs.auto-merge == 'true'
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.merge-token || inputs.github-token }}
@@ -123,4 +124,5 @@ runs:
         PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         MERGE_METHOD: ${{ inputs.merge-method }}
         MERGE_WHEN_BLOCKED: ${{ inputs.merge-when-blocked }}
+        APPROVAL_OUTCOME: ${{ steps.approve.outcome }}
       run: ${{ github.action_path }}/src/enable-auto-merge.sh

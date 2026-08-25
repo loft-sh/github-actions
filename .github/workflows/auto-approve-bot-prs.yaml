@@ -16,7 +16,7 @@ on:
         type: boolean
         default: false
       merge-when-blocked:
-        description: 'Retry a refused merge through the merge API so GitHub decides, rather than gh''s client-side check. Set this when the merge token merges via a ruleset bypass.'
+        description: 'Retry a refused merge through the merge API so GitHub decides, rather than gh''s client-side check. Set this when the merge token merges via a ruleset bypass. Also requires the approval to have been recorded.'
         type: boolean
         default: false
       wait-max-attempts:
@@ -36,7 +36,7 @@ on:
         description: 'GitHub PAT for approving PRs (must be different identity from PR author). Also used for merging when merge-token is omitted.'
         required: true
       merge-token:
-        description: 'Optional token used only for merging when auto-merge is true. Defaults to gh-access-token and needs a merge path on the base branch.'
+        description: 'Optional token used only for merging when auto-merge is true. Defaults to gh-access-token and needs a merge path on the base branch — with merge-when-blocked, that path is its ruleset bypass.'
         required: false
       ci-read-token:
         description: 'Optional escape hatch for the read-only CI poll when the caller cannot grant `checks: read` / `statuses: read`. Classic PAT with `repo` scope, or an App token. Never gh-access-token.'

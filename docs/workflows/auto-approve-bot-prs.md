@@ -10,15 +10,15 @@ secret.
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-|       INPUT        |  TYPE   | REQUIRED |                    DEFAULT                     |                                                                                  DESCRIPTION                                                                                   |
-|--------------------|---------|----------|------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-|     auto-merge     | boolean |  false   |                    `false`                     |                                                         Merge the PR after approving it, <br>directly where possible.                                                          |
-|    merge-method    | string  |  false   |                   `"squash"`                   |                                                                      Merge method (squash, merge, rebase)                                                                      |
-| merge-when-blocked | boolean |  false   |                    `false`                     | Retry a refused merge through the <br>merge API so GitHub decides, rather <br>than gh's client-side check. Set this <br>when the merge token merges via <br>a ruleset bypass.  |
-|  trusted-authors   | string  |  false   | `"renovate[bot],loft-bot,github-actions[bot]"` |                                                                   Comma-separated list of trusted bot logins                                                                   |
-| wait-max-attempts  | string  |  false   |                     `"90"`                     |                             Max polling attempts waiting for other <br>CI checks (raise this when a slow required check, e.g. e2e, gates the PR).                              |
-| wait-min-attempts  | string  |  false   |                     `"12"`                     |                                                                 Minimum polls before ci_green=true is allowed.                                                                 |
-| wait-sleep-seconds | string  |  false   |                     `"10"`                     |                                                                       Seconds between polling attempts.                                                                        |
+|       INPUT        |  TYPE   | REQUIRED |                    DEFAULT                     |                                                                                                             DESCRIPTION                                                                                                              |
+|--------------------|---------|----------|------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|     auto-merge     | boolean |  false   |                    `false`                     |                                                                                    Merge the PR after approving it, <br>directly where possible.                                                                                     |
+|    merge-method    | string  |  false   |                   `"squash"`                   |                                                                                                 Merge method (squash, merge, rebase)                                                                                                 |
+| merge-when-blocked | boolean |  false   |                    `false`                     | Retry a refused merge through the <br>merge API so GitHub decides, rather <br>than gh's client-side check. Set this <br>when the merge token merges via <br>a ruleset bypass. Also requires the <br>approval to have been recorded.  |
+|  trusted-authors   | string  |  false   | `"renovate[bot],loft-bot,github-actions[bot]"` |                                                                                              Comma-separated list of trusted bot logins                                                                                              |
+| wait-max-attempts  | string  |  false   |                     `"90"`                     |                                                        Max polling attempts waiting for other <br>CI checks (raise this when a slow required check, e.g. e2e, gates the PR).                                                         |
+| wait-min-attempts  | string  |  false   |                     `"12"`                     |                                                                                            Minimum polls before ci_green=true is allowed.                                                                                            |
+| wait-sleep-seconds | string  |  false   |                     `"10"`                     |                                                                                                  Seconds between polling attempts.                                                                                                   |
 
 <!-- AUTO-DOC-INPUT:END -->
 
@@ -26,11 +26,11 @@ secret.
 
 <!-- AUTO-DOC-SECRETS:START - Do not remove or modify this section -->
 
-|     SECRET      | REQUIRED |                                                                                               DESCRIPTION                                                                                               |
-|-----------------|----------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-|  ci-read-token  |  false   | Optional escape hatch for the read-only <br>CI poll when the caller cannot <br>grant `checks: read` / `statuses: read`. Classic PAT <br>with `repo` scope, or an App <br>token. Never gh-access-token.  |
-| gh-access-token |   true   |                                  GitHub PAT for approving PRs (must be different identity from PR author). <br>Also used for merging when merge-token <br>is omitted.                                   |
-|   merge-token   |  false   |                            Optional token used only for merging <br>when auto-merge is true. Defaults to <br>gh-access-token and needs a merge path <br>on the base branch.                             |
+|     SECRET      | REQUIRED |                                                                                                     DESCRIPTION                                                                                                      |
+|-----------------|----------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|  ci-read-token  |  false   |       Optional escape hatch for the read-only <br>CI poll when the caller cannot <br>grant `checks: read` / `statuses: read`. Classic PAT <br>with `repo` scope, or an App <br>token. Never gh-access-token.         |
+| gh-access-token |   true   |                                        GitHub PAT for approving PRs (must be different identity from PR author). <br>Also used for merging when merge-token <br>is omitted.                                          |
+|   merge-token   |  false   | Optional token used only for merging <br>when auto-merge is true. Defaults to <br>gh-access-token and needs a merge path <br>on the base branch — with <br>merge-when-blocked, that path is its ruleset <br>bypass.  |
 
 <!-- AUTO-DOC-SECRETS:END -->
 

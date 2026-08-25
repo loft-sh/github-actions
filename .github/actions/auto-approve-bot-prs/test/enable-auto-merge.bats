@@ -229,6 +229,30 @@ api_merge_count() { grep -c '^api .*/pulls/42/merge' "$GH_MOCK_CALLS" || true; }
   [[ "$output" == *"api boom"* ]]
 }
 
+@test "merge-when-blocked on + failed approval → refuses to merge, and says why" {
+  # Skipping the step instead would leave nobody a reason for the stall.
+  MERGE_WHEN_BLOCKED=true APPROVAL_OUTCOME=failure GH_MOCK_PR_MERGE_EXIT=0 run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"::error::"* ]]
+  [[ "$output" == *"needs a recorded approval"* ]]
+  assert_no_merge_at_all
+  assert_no_api_merge
+}
+
+@test "merge-when-blocked off + failed approval → merges, as it did before" {
+  MERGE_WHEN_BLOCKED=false APPROVAL_OUTCOME=failure GH_MOCK_PR_MERGE_EXIT=0 run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Merged PR #42 (squash)"* ]]
+  [[ "$output" != *"::error::"* ]]
+}
+
+@test "an unset approval outcome is treated as success" {
+  # Direct callers of the script pass no APPROVAL_OUTCOME at all.
+  MERGE_WHEN_BLOCKED=true GH_MOCK_PR_MERGE_EXIT=0 run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Merged PR #42 (squash)"* ]]
+}
+
 @test "each valid merge method is passed through to gh" {
   for m in squash merge rebase; do
     : > "$GH_MOCK_CALLS"

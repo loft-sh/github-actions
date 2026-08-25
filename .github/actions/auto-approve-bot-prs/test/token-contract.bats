@@ -30,11 +30,24 @@ WORKFLOW="$BATS_TEST_DIRNAME/../../../workflows/auto-approve-bot-prs.yaml"
   # behavior, including release orchestration that already depends on it.
   run grep -F "      id: approve" "$ACTION"
   [ "$status" -eq 0 ]
-  run grep -F "inputs.merge-when-blocked != 'true' || steps.approve.outcome == 'success'" "$ACTION"
+  run grep -F 'APPROVAL_OUTCOME: ${{ steps.approve.outcome }}' "$ACTION"
   [ "$status" -eq 0 ]
   # outcome, not conclusion — continue-on-error rewrites conclusion to success.
   run grep -F "steps.approve.conclusion" "$ACTION"
   [ "$status" -ne 0 ]
+}
+
+@test "merge-when-blocked reaches the merge script and the composite" {
+  # The feature's only activation conduit: a typo here leaves it inert with the
+  # whole suite green, since every script test sets the env var directly.
+  run grep -F 'MERGE_WHEN_BLOCKED: ${{ inputs.merge-when-blocked }}' "$ACTION"
+  [ "$status" -eq 0 ]
+  run grep -F "  merge-when-blocked:" "$ACTION"
+  [ "$status" -eq 0 ]
+  run grep -F 'merge-when-blocked: ${{ inputs.merge-when-blocked }}' "$WORKFLOW"
+  [ "$status" -eq 0 ]
+  run grep -F "      merge-when-blocked:" "$WORKFLOW"
+  [ "$status" -eq 0 ]
 }
 
 @test "the tested head is rechecked after CI and passed to every merge request" {
