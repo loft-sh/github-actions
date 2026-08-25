@@ -2,7 +2,7 @@
 # start mode: decide whether this comment is a command we should act on, and if
 # so open a check-run on the pull request's head commit.
 #
-# Three API calls, and no more. Deduplicating repeated commands is left to the
+# Two API calls, and no more. Deduplicating repeated commands is left to the
 # caller's `concurrency` group (see the README): GitHub already supersedes an
 # older run for the same key, and a superseded job still runs the caller's
 # `always()` finish job, which closes its check. Doing it here instead meant

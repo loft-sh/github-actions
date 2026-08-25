@@ -252,8 +252,10 @@ check-run lifecycle.
 
 Two modes. `start` parses the comment, authorizes the commenter from
 `author_association`, resolves the head SHA and base ref, and opens the
-check-run. `finish` resolves the outcome with a fail-closed matrix and
-completes it. Three API calls in total.
+check-run, in two API calls. `finish` resolves the outcome with a fail-closed
+matrix, completes the check-run, then confirms it is still displayed and
+republishes it if not — three calls, or four when it republishes. So five for a
+normal lifecycle and six when a check-run has to be republished.
 
 **Location:** `.github/actions/comment-triggered-check`
 
