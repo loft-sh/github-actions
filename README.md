@@ -262,6 +262,11 @@ normal lifecycle and six when a check-run has to be republished.
 **Usage:**
 
 ```yaml
+permissions:
+  checks: write
+  pull-requests: read
+  contents: read
+
 jobs:
   prepare:
     if: github.event.issue.pull_request && startsWith(github.event.comment.body, '/test')
@@ -294,8 +299,13 @@ jobs:
     concurrency:
       group: comment-triggered-check-suite-${{ github.event.issue.number }}-${{ needs.prepare.outputs.key }}
       cancel-in-progress: true
+    outputs:
+      check-conclusion: ${{ steps.run.outputs.check-conclusion }}
     steps:
-      - run: echo "... build and test at needs.prepare.outputs.head-sha ..."
+      # Replace this placeholder with the suite. It must test head-sha and emit
+      # one of success, failure, neutral, cancelled, or timed_out.
+      - id: run
+        run: echo "check-conclusion=success" >> "$GITHUB_OUTPUT"
 
   finish:
     needs: [prepare, suite]
@@ -308,6 +318,7 @@ jobs:
           check-run-id: ${{ needs.prepare.outputs.check-run-id }}
           report-conclusion: ${{ needs.suite.outputs.check-conclusion }}
           suite-result: ${{ needs.suite.result }}
+          details-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 ```
 
 **Key outputs:** `matched`, `should-run`, `reason`, `head-sha`, `base-ref`,

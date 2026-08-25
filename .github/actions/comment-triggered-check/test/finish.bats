@@ -231,6 +231,24 @@ creates() { calls_matching "method POST repos/loft-sh/demo/check-runs"; }
   [ "$(kv conclusion)" = "success" ]
 }
 
+@test "a malformed lookup skips republishing without losing the published conclusion" {
+  export INPUT_REPORT_CONCLUSION="success"
+  export GH_MOCK_CHECKRUN_JSON='not json at all'
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(creates)" -eq 0 ]
+  [ "$(kv conclusion)" = "success" ]
+}
+
+@test "a wrong-shaped lookup skips republishing without losing the published conclusion" {
+  export INPUT_REPORT_CONCLUSION="success"
+  export GH_MOCK_CHECKRUN_JSON='{"id":4242,"name":"e2e-pro: snapshots","head_sha":"abc123","app":"unexpected"}'
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(creates)" -eq 0 ]
+  [ "$(kv conclusion)" = "success" ]
+}
+
 @test "a failed republish warns but does not fail the run" {
   export INPUT_REPORT_CONCLUSION="success"
   export GH_MOCK_LATEST_IDS="99"

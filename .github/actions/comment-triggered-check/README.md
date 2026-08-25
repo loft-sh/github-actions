@@ -244,8 +244,10 @@ jobs:
     outputs:
       check-conclusion: ${{ steps.run.outputs.check-conclusion }}
     steps:
+      # Replace this placeholder with the suite. It must test head-sha and emit
+      # one of success, failure, neutral, cancelled, or timed_out.
       - id: run
-        run: echo "... build and test at needs.prepare.outputs.head-sha ..."
+        run: echo "check-conclusion=success" >> "$GITHUB_OUTPUT"
 
   finish:
     needs: [prepare, suite]
@@ -272,6 +274,13 @@ not a command, an unauthorized commenter, or a fork. It must also stay on
 superseded run from leaving one open.
 
 ## What happens if `finish` cannot publish
+
+If GitHub accepts the `start` POST but returns an unreadable response or no
+check-run id, `start` emits `should-run=false` and the caller does not start the
+suite. It cannot close a check-run whose id GitHub did not return. That API
+contract failure can therefore leave an `in_progress` check that must be closed
+by hand; recovering it automatically would require reintroducing check-run
+discovery and reconciliation state.
 
 The PATCH is retried a few times, because this is the last chance to close the
 check-run and a transient API failure is the likely cause. If every attempt

@@ -111,6 +111,12 @@ republish_if_hidden() {
   local detail name head_sha app_id create_args
 
   detail="$(gh api "repos/${repo}/check-runs/${check_run_id}" 2>/dev/null)" || return 0
+  printf '%s' "$detail" | jq -e '
+    type == "object"
+    and (((.name // "") | type) == "string")
+    and (((.head_sha // "") | type) == "string")
+    and (((.app // {}) | type) == "object")
+  ' >/dev/null 2>&1 || return 0
   name="$(printf '%s' "$detail" | jq -r '.name // ""')"
   head_sha="$(printf '%s' "$detail" | jq -r '.head_sha // ""')"
   app_id="$(printf '%s' "$detail" | jq -r '.app.id // "" | tostring')"

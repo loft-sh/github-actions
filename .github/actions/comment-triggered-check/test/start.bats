@@ -169,6 +169,27 @@ created() { calls_matching "POST"; }
   [ "$(kv should-run)" = "false" ]
 }
 
+# The create may have happened even when its response cannot be decoded. The
+# id is unrecoverable here, but callers must still receive the declared refusal
+# outputs instead of an abrupt jq exit with every output undefined.
+@test "a malformed create response is reported with defined outputs" {
+  export GH_MOCK_CREATE_JSON='not json at all'
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv reason)" = "check-run-not-created" ]
+  [ "$(kv check-run-id)" = "" ]
+  [ "$(kv should-run)" = "false" ]
+}
+
+@test "a create response with a non-numeric id is not accepted" {
+  export GH_MOCK_CREATE_JSON='{"id":{"unexpected":true}}'
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv reason)" = "check-run-not-created" ]
+  [ "$(kv check-run-id)" = "" ]
+  [ "$(kv should-run)" = "false" ]
+}
+
 # --- quiet paths -------------------------------------------------------------
 
 @test "an ordinary comment touches no API at all" {
