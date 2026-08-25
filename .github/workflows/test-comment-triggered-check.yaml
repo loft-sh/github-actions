@@ -66,7 +66,7 @@ jobs:
           mode: start
           comment-body: |
             we should run
-            /test snapshots
+            /test-e2e snapshots
             once this lands
           comment-author: someone
           pr-number: '1'
@@ -83,7 +83,7 @@ jobs:
         uses: ./.github/actions/comment-triggered-check
         with:
           mode: start
-          comment-body: '/test'
+          comment-body: '/test-e2e'
           comment-author: someone
           pr-number: '1'
 
@@ -103,7 +103,7 @@ jobs:
         uses: ./.github/actions/comment-triggered-check
         with:
           mode: start
-          comment-body: '/test snapshots'
+          comment-body: '/test-e2e snapshots'
           comment-author: someone
           author-association: CONTRIBUTOR
           pr-number: '1'
@@ -122,7 +122,7 @@ jobs:
         uses: ./.github/actions/comment-triggered-check
         with:
           mode: start
-          comment-body: '/test snapshots'
+          comment-body: '/test-e2e snapshots'
           comment-author: someone
           pr-number: ''
 

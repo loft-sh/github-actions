@@ -11,8 +11,8 @@ SCRIPT="$BATS_TEST_DIRNAME/../src/start.sh"
 setup() {
   setup_gh_mock
   export GITHUB_OUTPUT; GITHUB_OUTPUT="$(mktemp)"
-  export INPUT_COMMAND="/test"
-  export INPUT_COMMENT_BODY="/test snapshots"
+  export INPUT_COMMAND="/test-e2e"
+  export INPUT_COMMENT_BODY="/test-e2e snapshots"
   export INPUT_COMMENT_AUTHOR="dev"
   export INPUT_AUTHOR_ASSOCIATION="MEMBER"
   export INPUT_PR_NUMBER="7"
@@ -32,6 +32,16 @@ kv() { grep "^$1=" "$GITHUB_OUTPUT" | tail -n1 | cut -d= -f2-; }
 created() { calls_matching "POST"; }
 
 # --- happy path --------------------------------------------------------------
+
+@test "defaults to the command used by the e2e caller" {
+  unset INPUT_COMMAND
+  export INPUT_COMMENT_BODY="/test-e2e snapshots"
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv matched)" = "true" ]
+  [ "$(kv should-run)" = "true" ]
+  [ "$(kv check-run-id)" = "4242" ]
+}
 
 @test "opens a check-run and returns the identity the event does not carry" {
   run bash "$SCRIPT"
@@ -87,19 +97,19 @@ created() { calls_matching "POST"; }
 }
 
 @test "emits a concurrency key the caller can interpolate safely" {
-  export INPUT_COMMENT_BODY='/test containsAny {aws, azure}'
+  export INPUT_COMMENT_BODY='/test-e2e containsAny {aws, azure}'
   run bash "$SCRIPT"
   key="$(kv concurrency-key)"
   [[ "$key" =~ ^containsany-aws-azure-[0-9a-f]{8}$ ]]
 }
 
 @test "the emitted key distinguishes filters the slug alone would merge" {
-  export INPUT_COMMENT_BODY='/test snapshots && aws'
+  export INPUT_COMMENT_BODY='/test-e2e snapshots && aws'
   run bash "$SCRIPT"
   first="$(kv concurrency-key)"
 
   : > "$GITHUB_OUTPUT"
-  export INPUT_COMMENT_BODY='/test snapshots || aws'
+  export INPUT_COMMENT_BODY='/test-e2e snapshots || aws'
   run bash "$SCRIPT"
   [ "$first" != "$(kv concurrency-key)" ]
 }
@@ -200,7 +210,7 @@ created() { calls_matching "POST"; }
 }
 
 @test "an empty filter is reported before any API call" {
-  export INPUT_COMMENT_BODY="/test"
+  export INPUT_COMMENT_BODY="/test-e2e"
   run bash "$SCRIPT"
   [ "$(kv reason)" = "empty-filter" ]
   [ "$(call_count)" -eq 0 ]

@@ -11,7 +11,7 @@
 # starting a duplicate build.
 #
 # Inputs (env):
-#   INPUT_COMMAND             command word to match, e.g. "/test"
+#   INPUT_COMMAND             command word to match, e.g. "/test-e2e"
 #   INPUT_COMMENT_BODY        github.event.comment.body
 #   INPUT_COMMENT_AUTHOR      github.event.comment.user.login
 #   INPUT_AUTHOR_ASSOCIATION  github.event.comment.author_association
@@ -26,7 +26,7 @@ set -euo pipefail
 # shellcheck source=.github/actions/comment-triggered-check/src/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-command_word="${INPUT_COMMAND:-/test}"
+command_word="${INPUT_COMMAND:-/test-e2e}"
 comment_body="${INPUT_COMMENT_BODY:-}"
 comment_author="${INPUT_COMMENT_AUTHOR:-}"
 association="${INPUT_AUTHOR_ASSOCIATION:-}"

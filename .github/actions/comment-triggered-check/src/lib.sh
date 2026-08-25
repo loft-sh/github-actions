@@ -19,7 +19,7 @@ trim() {
 # Returns 1 otherwise.
 #
 # First line only, deliberately. Quoting a command while discussing it ("we
-# should run /test snapshots here") must not fire a run, and that is the common
+# should run /test-e2e snapshots here") must not fire a run, and that is the common
 # case in a busy thread. It also keeps the trigger unambiguous when a comment
 # ends with a bot signature.
 parse_command() {

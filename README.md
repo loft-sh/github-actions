@@ -298,7 +298,7 @@ README for full details.
 
 ### Comment-triggered check
 
-Turns a PR comment such as `/test snapshots` into a check-run on the pull
+Turns a PR comment such as `/test-e2e snapshots` into a check-run on the pull
 request's head commit, and completes it when the caller's work finishes. It
 runs no tests: it decides whether a command should run, resolves the pull
 request identity that an `issue_comment` event does not carry, and owns the
@@ -323,7 +323,7 @@ permissions:
 
 jobs:
   prepare:
-    if: github.event.issue.pull_request && startsWith(github.event.comment.body, '/test')
+    if: github.event.issue.pull_request && startsWith(github.event.comment.body, '/test-e2e')
     runs-on: ubuntu-22.04
     outputs:
       should-run: ${{ steps.cmd.outputs.should-run }}

@@ -1,6 +1,6 @@
 # Comment-triggered check
 
-Turns a pull request comment such as `/test snapshots` into a check-run on the
+Turns a pull request comment such as `/test-e2e snapshots` into a check-run on the
 pull request's head commit, and completes that check-run when the caller's work
 finishes.
 
@@ -157,7 +157,7 @@ commenter's access is read from the event payload, not from an API call.
 |    build-result    | string |  false   |                              |                                                                            finish mode. Result of the build <br>job. Pass the matching needs result.                                                                             |
 | check-name-prefix  | string |  false   |           `"e2e"`            |                                                                             start mode. Prefix for the check-run <br>name; the filter is appended.                                                                               |
 |    check-run-id    | string |  false   |                              |                                                          finish mode. The id returned by <br>start mode. Empty is not an <br>error; it means no check was <br>opened.                                                            |
-|      command       | string |  false   |          `"/test"`           |                                                                               Command word that must open the <br>comment, on its own first line.                                                                                |
+|      command       | string |  false   |        `"/test-e2e"`         |                                                                               Command word that must open the <br>comment, on its own first line.                                                                                |
 |   comment-author   | string |  false   |                              |                                                                    start mode. Login of the commenter. <br>Pass the github.event.comment.user.login context.                                                                     |
 |    comment-body    | string |  false   |                              |                                                                          start mode. The comment text. Pass <br>the github.event.comment.body context.                                                                           |
 |    details-url     | string |  false   |                              |                                                                                    finish mode. Link target for the <br>completed check-run.                                                                                     |
@@ -211,7 +211,7 @@ permissions:
 jobs:
   prepare:
     # Cheap pre-filter so the job does not start for every comment in the repo.
-    if: github.event.issue.pull_request && startsWith(github.event.comment.body, '/test')
+    if: github.event.issue.pull_request && startsWith(github.event.comment.body, '/test-e2e')
     runs-on: ubuntu-latest
     outputs:
       should-run: ${{ steps.cmd.outputs.should-run }}

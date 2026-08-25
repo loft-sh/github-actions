@@ -1,6 +1,6 @@
 name: Comment-triggered check
 description: |
-  Turns a pull request comment such as `/test snapshots` into a check-run on the
+  Turns a pull request comment such as `/test-e2e snapshots` into a check-run on the
   pull request's head commit, and completes that check-run when the caller's
   work finishes. Domain-agnostic: it never runs tests, it decides whether a
   command should run, resolves the pull request identity the event does not
@@ -17,7 +17,7 @@ inputs:
   command:
     description: 'Command word that must open the comment, on its own first line.'
     required: false
-    default: '/test'
+    default: '/test-e2e'
   comment-body:
     description: 'start mode. The comment text. Pass the github.event.comment.body context.'
     required: false
