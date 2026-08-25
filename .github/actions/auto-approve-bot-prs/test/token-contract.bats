@@ -24,12 +24,13 @@ WORKFLOW="$BATS_TEST_DIRNAME/../../../workflows/auto-approve-bot-prs.yaml"
   [ "$status" -eq 0 ]
 }
 
-@test "a failed approval blocks the merge" {
-  # Without this the bypass path merges a PR carrying no approval at all: the
-  # approve step is continue-on-error, so the job marches on regardless.
+@test "a failed approval blocks only the opt-in bypass merge" {
+  # The bypass path must not merge a PR carrying no approval at all. Existing
+  # callers leave merge-when-blocked off and retain their best-effort approval
+  # behavior, including release orchestration that already depends on it.
   run grep -F "      id: approve" "$ACTION"
   [ "$status" -eq 0 ]
-  run grep -F "steps.approve.outcome == 'success'" "$ACTION"
+  run grep -F "inputs.merge-when-blocked != 'true' || steps.approve.outcome == 'success'" "$ACTION"
   [ "$status" -eq 0 ]
   # outcome, not conclusion — continue-on-error rewrites conclusion to success.
   run grep -F "steps.approve.conclusion" "$ACTION"

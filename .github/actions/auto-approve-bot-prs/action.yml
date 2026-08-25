@@ -111,11 +111,11 @@ runs:
 
           For more information, see https://github.com/loft-sh/github-actions?tab=readme-ov-file#auto-approve-bot-prs.
 
-    # `outcome`, not `conclusion`: continue-on-error rewrites the latter to
-    # success. Approval is best-effort, but a merge token with a ruleset bypass
-    # would otherwise land the PR with no approval recorded.
+    # Existing callers keep best-effort approval semantics. The opt-in bypass
+    # path requires a recorded approval; `outcome`, not `conclusion`, preserves
+    # a failure when continue-on-error rewrites the latter to success.
     - name: Merge PR
-      if: steps.recheck.outputs.proceed == 'true' && inputs.auto-merge == 'true' && steps.approve.outcome == 'success'
+      if: steps.recheck.outputs.proceed == 'true' && inputs.auto-merge == 'true' && (inputs.merge-when-blocked != 'true' || steps.approve.outcome == 'success')
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.merge-token || inputs.github-token }}
