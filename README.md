@@ -60,7 +60,7 @@ See [linear-release-sync README](./.github/actions/linear-release-sync/README.md
 
 ### Link Backport PRs Action
 
-Links sorenlouv-created backport PRs to the matching Linear sub-issue (`[X.Y] Copy of ...`) by adding `Fixes <id>` to the backport PR body, so the per-release-line issue closes when the backport merges. Wired into the [`backport.yaml`](./docs/workflows/backport.md) reusable workflow and runs automatically after backports are created; advisory and skipped when no `linear-token` is configured.
+Links modern and legacy backport PRs to the matching Linear sub-issue (`[X.Y] Copy of ...`) by adding `Fixes <id>` to every matching PR body, so the per-release-line issue closes when the backport merges. Wired into the [`backport.yaml`](./docs/workflows/backport.md) reusable workflow and runs after both producer paths settle; advisory and skipped when no `linear-token` is configured.
 
 **Location:** `.github/actions/link-backport-prs`
 
@@ -72,6 +72,7 @@ Links sorenlouv-created backport PRs to the matching Linear sub-issue (`[X.Y] Co
     source-pr: ${{ github.event.pull_request.number }}
     repo-owner: ${{ github.repository_owner }}
     repo-name: ${{ github.event.repository.name }}
+    additional-repos: loft-sh/vcluster,loft-sh/vcluster-pro
     github-token: ${{ secrets.GH_ACCESS_TOKEN }}
     linear-token: ${{ secrets.LINEAR_API_TOKEN }}
 ```

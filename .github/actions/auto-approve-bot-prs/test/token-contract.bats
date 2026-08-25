@@ -23,3 +23,14 @@ WORKFLOW="$BATS_TEST_DIRNAME/../../../workflows/auto-approve-bot-prs.yaml"
   run grep -F 'github-token: ${{ secrets.gh-access-token }}' "$WORKFLOW"
   [ "$status" -eq 0 ]
 }
+
+@test "the tested head is rechecked after CI and passed to every merge request" {
+  [ "$(grep -Fc 'EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}' "$ACTION")" -eq 2 ]
+  run grep -F "id: recheck" "$ACTION"
+  [ "$status" -eq 0 ]
+  run grep -F 'run: ${{ github.action_path }}/src/check-pr-after-ci.sh' "$ACTION"
+  [ "$status" -eq 0 ]
+  [ "$(grep -Fc "steps.recheck.outputs.proceed == 'true'" "$ACTION")" -eq 2 ]
+  run grep -F 'PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}' "$ACTION"
+  [ "$status" -eq 0 ]
+}

@@ -63,6 +63,7 @@ runs:
         GH_TOKEN: ${{ inputs.github-token }}
         PR_NUMBER: ${{ github.event.pull_request.number }}
         PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       run: ${{ github.action_path }}/src/check-pr-ready.sh
 
     - name: Wait for other CI to pass
@@ -84,8 +85,18 @@ runs:
         WAIT_SLEEP_SECONDS: ${{ inputs.wait-sleep-seconds }}
       run: ${{ github.action_path }}/src/wait-for-ci.sh
 
-    - name: Approve PR
+    - name: Re-check PR ready after CI
       if: steps.ci.outputs.ci_green == 'true'
+      id: recheck
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      run: ${{ github.action_path }}/src/check-pr-after-ci.sh
+
+    - name: Approve PR
+      if: steps.recheck.outputs.proceed == 'true'
       continue-on-error: true
       uses: hmarr/auto-approve-action@f0939ea97e9205ef24d872e76833fa908a770363 # v4.0.0
       with:
@@ -96,10 +107,11 @@ runs:
           For more information, see https://github.com/loft-sh/github-actions?tab=readme-ov-file#auto-approve-bot-prs.
 
     - name: Merge PR
-      if: steps.ci.outputs.ci_green == 'true' && inputs.auto-merge == 'true'
+      if: steps.recheck.outputs.proceed == 'true' && inputs.auto-merge == 'true'
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.merge-token || inputs.github-token }}
         PR_NUMBER: ${{ github.event.pull_request.number }}
+        PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         MERGE_METHOD: ${{ inputs.merge-method }}
       run: ${{ github.action_path }}/src/enable-auto-merge.sh

@@ -29,7 +29,13 @@ func sampleIDs() ResourceIDs {
 			"worker1": "i-2",
 			"worker2": "i-3",
 		},
-		PrimaryPublicIP: "1.2.3.4",
+		PrimaryPublicIP:  "1.2.3.4",
+		PrimaryPrivateIP: "10.0.1.10",
+		PrivateIPByRole: map[string]string{
+			"primary": "10.0.1.10",
+			"worker1": "10.0.1.11",
+			"worker2": "10.0.1.12",
+		},
 	}
 }
 
@@ -54,6 +60,7 @@ func TestEmitOutput_GitHubOutput(t *testing.T) {
 		"security_group_id=sg-004",
 		"ami_id=ami-005",
 		"primary_public_ip=1.2.3.4",
+		"primary_private_ip=10.0.1.10",
 		"instance_ids=i-1,i-2,i-3",
 		"instance_id_primary=i-1",
 		"instance_id_worker1=i-2",
@@ -64,24 +71,41 @@ func TestEmitOutput_GitHubOutput(t *testing.T) {
 		}
 	}
 
-	// instance_id_by_role must round-trip as valid JSON the action consumer
+	// The JSON-map outputs must round-trip as valid JSON the action consumer
 	// can parse with fromJSON. Map ordering is non-deterministic; assert
-	// the three pairs by parsing.
-	for _, line := range strings.Split(s, "\n") {
-		const prefix = "instance_id_by_role="
+	// the pairs by parsing.
+	assertJSONMapLine(t, s, "instance_id_by_role", map[string]string{
+		"primary": "i-1", "worker1": "i-2", "worker2": "i-3",
+	})
+	assertJSONMapLine(t, s, "private_ip_by_role", map[string]string{
+		"primary": "10.0.1.10", "worker1": "10.0.1.11", "worker2": "10.0.1.12",
+	})
+}
+
+// assertJSONMapLine finds "<key>=<json>" in the emitted output and asserts the
+// JSON parses to exactly the wanted pairs.
+func assertJSONMapLine(t *testing.T, output, key string, want map[string]string) {
+	t.Helper()
+	prefix := key + "="
+	for _, line := range strings.Split(output, "\n") {
 		if !strings.HasPrefix(line, prefix) {
 			continue
 		}
 		var got map[string]string
 		if err := json.Unmarshal([]byte(line[len(prefix):]), &got); err != nil {
-			t.Fatalf("instance_id_by_role is not valid JSON: %v\n%s", err, line)
+			t.Fatalf("%s is not valid JSON: %v\n%s", key, err, line)
 		}
-		if got["primary"] != "i-1" || got["worker1"] != "i-2" || got["worker2"] != "i-3" {
-			t.Errorf("instance_id_by_role mis-parsed: %+v", got)
+		for k, v := range want {
+			if got[k] != v {
+				t.Errorf("%s[%s] = %q, want %q (full map: %+v)", key, k, got[k], v, got)
+			}
+		}
+		if len(got) != len(want) {
+			t.Errorf("%s has %d entries, want %d (full map: %+v)", key, len(got), len(want), got)
 		}
 		return
 	}
-	t.Errorf("instance_id_by_role line not found in output:\n%s", s)
+	t.Errorf("%s line not found in output:\n%s", key, output)
 }
 
 func TestEmitOutput_NonStandardRoles(t *testing.T) {

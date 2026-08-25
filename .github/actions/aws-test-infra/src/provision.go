@@ -7,7 +7,9 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -73,6 +75,8 @@ type ResourceIDs struct {
 	InstanceIDs      []string `json:"instance_ids"`
 	InstanceIDByRole map[string]string `json:"instance_id_by_role"`
 	PrimaryPublicIP  string   `json:"primary_public_ip"`
+	PrimaryPrivateIP string   `json:"primary_private_ip"`
+	PrivateIPByRole  map[string]string `json:"private_ip_by_role"`
 }
 
 func runProvision(ctx context.Context, logger *slog.Logger, name string, args []string) error {
@@ -193,7 +197,7 @@ func Provision(
 	waiter EC2Waiter,
 	cfg ProvisionConfig,
 ) (ResourceIDs, error) {
-	ids := ResourceIDs{InstanceIDByRole: map[string]string{}}
+	ids := ResourceIDs{InstanceIDByRole: map[string]string{}, PrivateIPByRole: map[string]string{}}
 
 	// VPC
 	vpcOut, err := c.CreateVpc(ctx, &ec2.CreateVpcInput{
@@ -391,18 +395,49 @@ func Provision(
 		return ids, fmt.Errorf("wait instance-running: %w", err)
 	}
 
-	// Pull primary public IP (the existing workflows use the public IP of
-	// the first instance — by convention, "primary" — for runner→primary
-	// and worker→primary connectivity).
+	// Pull instance IPs. The public IP of the first instance — by convention,
+	// "primary" — serves runner→primary and worker→primary connectivity
+	// (positional, inherited shape). The private IPs serve intra-VPC addressing
+	// (e.g. a control plane advertising itself to workers): keyed by role, with
+	// PrimaryPrivateIP derived from the role literally named "primary" so it
+	// always agrees with primary-instance-id and private-ip-by-role (and, like
+	// them, is empty when no such role exists).
 	if len(ids.InstanceIDs) > 0 {
 		descOut, err := c.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
-			InstanceIds: []string{ids.InstanceIDs[0]},
+			InstanceIds: ids.InstanceIDs,
 		})
 		if err != nil {
-			return ids, fmt.Errorf("describe primary instance: %w", err)
+			return ids, fmt.Errorf("describe instances: %w", err)
 		}
-		if len(descOut.Reservations) > 0 && len(descOut.Reservations[0].Instances) > 0 {
-			ids.PrimaryPublicIP = aws.ToString(descOut.Reservations[0].Instances[0].PublicIpAddress)
+		privateByID := map[string]string{}
+		publicByID := map[string]string{}
+		for _, res := range descOut.Reservations {
+			for _, inst := range res.Instances {
+				id := aws.ToString(inst.InstanceId)
+				privateByID[id] = aws.ToString(inst.PrivateIpAddress)
+				publicByID[id] = aws.ToString(inst.PublicIpAddress)
+			}
+		}
+		ids.PrimaryPublicIP = publicByID[ids.InstanceIDs[0]]
+		for role, id := range ids.InstanceIDByRole {
+			// Every instance here reached instance-running, and an ENI in a VPC
+			// always has a private address, so a missing one means describe came
+			// back short. Recording the empty string instead would surface far
+			// downstream as something like `--advertise-address=`.
+			ip, ok := privateByID[id]
+			if !ok || ip == "" {
+				return ids, fmt.Errorf("describe instances returned no private IP for role %s (instance %s)", role, id)
+			}
+			ids.PrivateIPByRole[role] = ip
+		}
+		if primaryID, ok := ids.InstanceIDByRole["primary"]; ok {
+			ids.PrimaryPrivateIP = privateByID[primaryID]
+		} else {
+			// primary-public-ip is positional and primary-private-ip is not, so
+			// with arbitrary role names the two disagree. Say so rather than
+			// handing the caller one populated output and one empty one.
+			logger.Info("no instance has the role \"primary\"; primary-private-ip stays empty (use private-ip-by-role)",
+				"roles", slices.Sorted(maps.Keys(ids.InstanceIDByRole)))
 		}
 	}
 

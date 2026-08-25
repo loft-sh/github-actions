@@ -83,21 +83,6 @@ jobs:
           # collapses when x is the empty string.
           auto_backport_label_prefix: ${{ inputs.legacy-split == false && 'backport-to-' || '' }}
 
-      # Link each backport PR to the matching Linear sub-issue ([X.Y] Copy of ...)
-      # so it closes on merge. Advisory: never fails the job, and is skipped when
-      # no linear-token is configured by the caller. Runs even if some backports
-      # hit merge conflicts (sorenlouv ignores those by default).
-      - name: Link backport PRs to Linear sub-issues
-        if: ${{ !cancelled() }}
-        continue-on-error: true
-        uses: loft-sh/github-actions/.github/actions/link-backport-prs@link-backport-prs/v1 # zizmor: ignore[unpinned-uses] -- internal loft-sh/github-actions ref; reusable workflows check out the CALLER repo, so a local ./.github/actions path is not present here. @link-backport-prs/v1 is the floating coordination tag kept aligned with backport/v1 (see DEVOPS-923 pin-drift class).
-        with:
-          source-pr: ${{ github.event.pull_request.number }}
-          repo-owner: ${{ github.repository_owner }}
-          repo-name: ${{ github.event.repository.name }}
-          github-token: ${{ secrets.gh-access-token }}
-          linear-token: ${{ secrets.linear-token }}
-
       - name: Info log
         if: ${{ success() }}
         run: cat ~/.backport/backport.info.log
@@ -217,3 +202,31 @@ jobs:
           pr-number: ${{ github.event.pull_request.number }}
           github-token: ${{ secrets.gh-access-token }}
           expected-author: ${{ steps.pat.outputs.login }}
+
+  # Both producers run independently. Wait for the sorenlouv job and the full
+  # legacy matrix so legacy PR discovery cannot race PR creation. always() lets
+  # successful targets link even when another target conflicts or is skipped.
+  link-backports:
+    name: Link backport PRs to Linear sub-issues
+    needs: [backport, legacy-backport]
+    if: |
+      always() &&
+      !cancelled() &&
+      github.event.pull_request.merged == true &&
+      contains(join(github.event.pull_request.labels.*.name, ','), 'backport-to-') &&
+      (github.event.action == 'closed' || startsWith(github.event.label.name, 'backport-to-'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Link backport PRs to Linear sub-issues
+        continue-on-error: true
+        uses: loft-sh/github-actions/.github/actions/link-backport-prs@link-backport-prs/v1 # zizmor: ignore[unpinned-uses] -- internal loft-sh/github-actions ref; reusable workflows check out the CALLER repo, so a local ./.github/actions path is not present here. @link-backport-prs/v1 is the floating coordination tag kept aligned with backport/v1 (see DEVOPS-923 pin-drift class).
+        with:
+          source-pr: ${{ github.event.pull_request.number }}
+          repo-owner: ${{ github.repository_owner }}
+          repo-name: ${{ github.event.repository.name }}
+          additional-repos: ${{ inputs.legacy-split && format('{0},{1}', inputs.oss-repo, inputs.pro-repo) || '' }}
+          github-token: ${{ secrets.gh-access-token }} # zizmor: ignore[secrets-outside-env] -- PAT passed through workflow_call and required for cross-repo PR edits
+          linear-token: ${{ secrets.linear-token }} # zizmor: ignore[secrets-outside-env] -- optional token passed through workflow_call

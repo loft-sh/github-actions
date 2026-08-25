@@ -147,11 +147,10 @@ below.
 
 - Backport branches use the `backport/` prefix so `auto-approve-bot-prs` and
   `cleanup-backport-branches` keep working.
-- **Linear linking:** these PRs are **not** auto-linked to Linear sub-issues.
-  `link-backport-prs` runs in the reusable workflow's `backport` job against the
-  caller repo keyed on the source PR, and only matches sorenlouv-created PRs; it
-  does not cover the cross-repo PRs this action opens. Cross-repo linking is a
-  separate follow-up (see DEVOPS-1051); link these PRs manually for now.
+- Linear linking runs after the full legacy matrix settles. `link-backport-prs`
+  searches both configured repos for this action's
+  `backport/<target>/<short-sha>` branches and adds the same `Fixes <sub-issue>`
+  reference to every matching pro and OSS PR.
 - Re-runs are idempotent and safe for the conflicted-PR flow: once a PR is open
   for the head->base pair, a re-run leaves the branch **and** PR untouched, so a
   human's manual conflict resolution on that branch is never clobbered. The

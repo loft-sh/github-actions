@@ -9,6 +9,7 @@ setup() {
   export GITHUB_REPOSITORY="owner/repo"
   export PR_NUMBER=42
   export MERGE_METHOD="squash"
+  export PR_HEAD_SHA="tested-head-sha"
   # Every refusal path retries once. Keep the backoff out of the suite runtime —
   # at the 5s default the failure-path tests alone add over a minute.
   export MERGE_RETRY_SLEEP_SECONDS=0
@@ -150,6 +151,15 @@ auto_merge_count() { grep -c '^pr merge .*--auto' "$GH_MOCK_CALLS" || true; }
   done
 }
 
+@test "every direct and queued merge attempt requires the tested head SHA" {
+  GH_MOCK_PR_MERGE_EXIT=1 GH_MOCK_PR_MERGE_AUTO_EXIT=0 GH_MOCK_PR_STATE=OPEN run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  merge_calls="$(grep '^pr merge ' "$GH_MOCK_CALLS")"
+  merge_call_count="$(printf '%s\n' "$merge_calls" | grep -c '^pr merge ')"
+  guarded_call_count="$(printf '%s\n' "$merge_calls" | grep -c -- '--match-head-commit tested-head-sha')"
+  [ "$guarded_call_count" -eq "$merge_call_count" ]
+}
+
 @test "missing PR_NUMBER fails" {
   run env -u PR_NUMBER GITHUB_REPOSITORY=o/r MERGE_METHOD=squash "$SCRIPT"
   [ "$status" -ne 0 ]
@@ -157,6 +167,11 @@ auto_merge_count() { grep -c '^pr merge .*--auto' "$GH_MOCK_CALLS" || true; }
 
 @test "missing MERGE_METHOD fails" {
   run env -u MERGE_METHOD GITHUB_REPOSITORY=o/r PR_NUMBER=1 "$SCRIPT"
+  [ "$status" -ne 0 ]
+}
+
+@test "missing PR_HEAD_SHA fails" {
+  run env -u PR_HEAD_SHA GITHUB_REPOSITORY=o/r PR_NUMBER=1 MERGE_METHOD=squash "$SCRIPT"
   [ "$status" -ne 0 ]
 }
 

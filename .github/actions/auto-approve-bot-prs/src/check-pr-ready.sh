@@ -2,7 +2,8 @@
 # Combines two gates: merge-conflict check and approver-identity check.
 # Only writes proceed=true if BOTH pass.
 #
-# Required env: GH_TOKEN, GITHUB_REPOSITORY, PR_NUMBER, PR_AUTHOR
+# Required env: GH_TOKEN, GITHUB_REPOSITORY, PR_NUMBER, PR_AUTHOR,
+#               EXPECTED_HEAD_SHA
 # Writes: proceed=true|false to $GITHUB_OUTPUT (and stdout).
 # Always exits 0.
 set -euo pipefail
@@ -10,6 +11,7 @@ set -euo pipefail
 : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY required}"
 : "${PR_NUMBER:?PR_NUMBER required}"
 : "${PR_AUTHOR:?PR_AUTHOR required}"
+: "${EXPECTED_HEAD_SHA:?EXPECTED_HEAD_SHA required}"
 
 # The authenticated login below is API-derived and reaches a log line. The API
 # answers in JSON, and a `\r` escape inside a JSON string decodes to a real CR
@@ -37,8 +39,31 @@ mergeable="null"
 mergeable_attempts="${MERGEABLE_MAX_ATTEMPTS:-10}"
 mergeable_sleep="${MERGEABLE_SLEEP_SECONDS:-3}"
 for _ in $(seq 1 "$mergeable_attempts"); do
-  mergeable=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" \
-    --jq '.mergeable | if . == null then "null" else tostring end' 2>/dev/null || echo "null")
+  if ! pr_state=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" \
+    --jq '[
+      (.mergeable | if . == null then "null" else tostring end),
+      (.head.sha // "")
+    ] | @tsv' 2>/dev/null); then
+    mergeable="null"
+    sleep "$mergeable_sleep"
+    continue
+  fi
+  IFS=$'\t' read -r mergeable current_head <<< "$pr_state"
+
+  # A synchronize event can move the PR while this workflow is polling. Check
+  # the event SHA before waiting for GitHub to recompute mergeability so a
+  # force-push reports the real reason immediately instead of timing out.
+  if [ -z "$current_head" ]; then
+    echo "::error::could not resolve the current head SHA for PR #${PR_NUMBER}; not approving because the tested commit cannot be verified"
+    emit proceed false
+    exit 0
+  fi
+  if [ "$current_head" != "$EXPECTED_HEAD_SHA" ]; then
+    echo "::error::PR #${PR_NUMBER} head changed from tested SHA '$(safe "$EXPECTED_HEAD_SHA")' to '$(safe "$current_head")'; not approving. The synchronize run for the new head must verify CI instead"
+    emit proceed false
+    exit 0
+  fi
+
   [ "$mergeable" != "null" ] && break
   sleep "$mergeable_sleep"
 done
