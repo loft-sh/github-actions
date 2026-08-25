@@ -142,6 +142,93 @@ auto_merge_count() { grep -c '^pr merge .*--auto' "$GH_MOCK_CALLS" || true; }
   assert_no_match 'will land once the remaining requirements pass' "$output"
 }
 
+# ---------------------------------------------------------------------------
+# merge-when-blocked: retry a client-side refusal through the API, so a merge
+# token's ruleset bypass gets a chance to apply.
+
+api_merge_attempted() { grep -q '^api .*/pulls/42/merge' "$GH_MOCK_CALLS"; }
+assert_no_api_merge() { assert_no_match '^api .*/pulls/42/merge' "$(cat "$GH_MOCK_CALLS")"; }
+api_merge_count() { grep -c '^api .*/pulls/42/merge' "$GH_MOCK_CALLS" || true; }
+
+@test "merge-when-blocked off → a refused plain merge never reaches the merge API" {
+  GH_MOCK_PR_MERGE_EXIT=1 GH_MOCK_PR_MERGE_AUTO_EXIT=0 GH_MOCK_PR_STATE=OPEN run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  assert_no_api_merge
+  auto_merge_attempted
+}
+
+@test "merge-when-blocked on → refused plain merge is retried through the API and lands" {
+  MERGE_WHEN_BLOCKED=true GH_MOCK_PR_MERGE_EXIT=1 GH_MOCK_PR_STATE=OPEN \
+    GH_MOCK_API_MERGE_EXIT=0 run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  api_merge_attempted
+  [[ "$output" == *"through the merge API"* ]]
+  assert_no_auto_merge
+  [[ "$output" != *"::error::"* ]]
+  [[ "$output" != *"::warning::"* ]]
+}
+
+@test "merge-when-blocked on but the API refuses too → falls back to --auto as before" {
+  MERGE_WHEN_BLOCKED=true GH_MOCK_PR_MERGE_EXIT=1 GH_MOCK_PR_STATE=OPEN \
+    GH_MOCK_API_MERGE_EXIT=1 GH_MOCK_PR_MERGE_AUTO_EXIT=0 run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  api_merge_attempted
+  auto_merge_attempted
+  [[ "$output" == *"::warning::PR #42 could not be merged immediately"* ]]
+}
+
+@test "a token with no bypass is refused by the API, and the error says so" {
+  MERGE_WHEN_BLOCKED=true GH_MOCK_PR_MERGE_EXIT=1 GH_MOCK_PR_STATE=OPEN \
+    GH_MOCK_API_MERGE_EXIT=1 GH_MOCK_API_MERGE_OUT="At least 1 approving review is required" \
+    GH_MOCK_PR_MERGE_AUTO_EXIT=1 run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"::error::"* ]]
+  [[ "$output" == *"Merge API said:"* ]]
+  [[ "$output" == *"At least 1 approving review is required"* ]]
+}
+
+@test "with merge-when-blocked off the error names the setting rather than hiding it" {
+  # Otherwise the annotation blames branch protection for gh declining to ask.
+  GH_MOCK_PR_MERGE_EXIT=1 GH_MOCK_PR_MERGE_AUTO_EXIT=1 GH_MOCK_PR_STATE=OPEN run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"::error::"* ]]
+  [[ "$output" == *"merge-when-blocked is off"* ]]
+  assert_no_match 'Merge API said:' "$output"
+}
+
+@test "the API merge is guarded by the tested head SHA" {
+  MERGE_WHEN_BLOCKED=true GH_MOCK_PR_MERGE_EXIT=1 GH_MOCK_PR_STATE=OPEN \
+    GH_MOCK_API_MERGE_EXIT=0 run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -q -- 'sha=tested-head-sha' "$GH_MOCK_CALLS"
+  grep -q -- 'merge_method=squash' "$GH_MOCK_CALLS"
+}
+
+@test "a refused API merge is retried once, like the other two paths" {
+  MERGE_WHEN_BLOCKED=true GH_MOCK_PR_MERGE_EXIT=1 GH_MOCK_PR_STATE=OPEN \
+    GH_MOCK_API_MERGE_EXIT=1 GH_MOCK_PR_MERGE_AUTO_EXIT=0 run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(api_merge_count)" -eq 2 ]
+}
+
+@test "an already-merged PR short-circuits before the API merge" {
+  # Re-runs are routine; a 405 here would read like a real failure.
+  MERGE_WHEN_BLOCKED=true GH_MOCK_PR_MERGE_EXIT=1 GH_MOCK_PR_STATE=MERGED run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"already merged"* ]]
+  assert_no_api_merge
+}
+
+@test "regression: a CR in the merge-API error cannot forge a workflow command" {
+  MERGE_WHEN_BLOCKED=true GH_MOCK_PR_MERGE_EXIT=1 GH_MOCK_PR_STATE=OPEN \
+    GH_MOCK_API_MERGE_EXIT=1 GH_MOCK_API_MERGE_OUT=$'api boom\r::error::FORGED' \
+    GH_MOCK_PR_MERGE_AUTO_EXIT=1 run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  assert_no_match '\r' "$output"
+  assert_no_match '(?m)^::error::FORGED' "$output"
+  [[ "$output" == *"api boom"* ]]
+}
+
 @test "each valid merge method is passed through to gh" {
   for m in squash merge rebase; do
     : > "$GH_MOCK_CALLS"

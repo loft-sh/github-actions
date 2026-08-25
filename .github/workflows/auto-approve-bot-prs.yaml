@@ -15,6 +15,10 @@ on:
         description: 'Merge the PR after approving it, directly where possible.'
         type: boolean
         default: false
+      merge-when-blocked:
+        description: 'Retry a refused merge through the merge API so GitHub decides, rather than gh''s client-side check. Set this when the merge token merges via a ruleset bypass.'
+        type: boolean
+        default: false
       wait-max-attempts:
         description: 'Max polling attempts waiting for other CI checks (raise this when a slow required check, e.g. e2e, gates the PR).'
         type: string
@@ -71,6 +75,7 @@ jobs:
           trusted-authors: ${{ inputs.trusted-authors }}
           merge-method: ${{ inputs.merge-method }}
           auto-merge: ${{ inputs.auto-merge }}
+          merge-when-blocked: ${{ inputs.merge-when-blocked }}
           wait-max-attempts: ${{ inputs.wait-max-attempts }}
           wait-min-attempts: ${{ inputs.wait-min-attempts }}
           wait-sleep-seconds: ${{ inputs.wait-sleep-seconds }}

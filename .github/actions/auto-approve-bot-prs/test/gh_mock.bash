@@ -71,6 +71,14 @@ emit_api_response() {
     user)
       printf '{"login":"%s"}\n' "${GH_MOCK_APPROVER:-}"
       ;;
+    *"/pulls/"*"/merge")
+      # Must precede the /pulls/ arm, which would otherwise swallow this path.
+      if [ "${GH_MOCK_API_MERGE_EXIT:-0}" != "0" ]; then
+        emit_err "${GH_MOCK_API_MERGE_OUT:-mock: merge API refused}"
+        exit "${GH_MOCK_API_MERGE_EXIT}"
+      fi
+      printf '{"merged":true,"sha":"%s"}\n' "${GH_MOCK_HEAD_SHA:-tested-head-sha}"
+      ;;
     *"/pulls/"*)
       if [ "${GH_MOCK_PULL_FAIL:-}" = "always" ]; then
         emit_err "mock: pull request forced failure"
@@ -129,13 +137,15 @@ apply_filter() {
 case "${1:-}" in
   api)
     shift
-    path="${1:-}"; shift || true
+    # Endpoint is the first non-flag arg: gh takes it either side of the flags.
+    path=""
     jq_filter=""
     while [ $# -gt 0 ]; do
       case "$1" in
         --jq) jq_filter="$2"; shift 2 ;;
-        --paginate|--method|--header|-H|-X) shift 2>/dev/null || true ;;
-        *) shift ;;
+        --method|--header|-H|-X|-f|-F) shift 2>/dev/null || true ;;
+        --paginate) shift ;;
+        *) [ -z "$path" ] && path="$1"; shift ;;
       esac
     done
     emit_api_response "$path" | apply_filter "$jq_filter"

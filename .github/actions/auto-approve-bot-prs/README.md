@@ -80,6 +80,19 @@ rerun that was still coming. That stalled the `v0.34.7` cut
 With `auto-merge: true` the action tries a **plain merge first**, and uses
 GitHub's auto-merge queue (`--auto`) only as a fallback.
 
+`gh pr merge` decides mergeability **client-side**: it reads `mergeStateStatus`
+and refuses with "the base branch policy prohibits the merge" without calling
+the merge API. That verdict describes the pull request, not the caller, so it
+ignores the merge token's ruleset bypass — a token GitHub would let merge is
+turned away before it can try. `merge-when-blocked: true` retries through
+`PUT /pulls/{n}/merge` instead, which has no such gate. It passes `sha`, the
+equivalent of `--match-head-commit`.
+
+The setting grants no privilege, since every rule is still enforced server-side
+and a token without a bypass is refused there too. It is opt-in because for a
+token that *does* carry one, it decides whether the action merges only what CI
+approved or merges past whatever that bypass covers.
+
 The action carries the pull request head SHA from the triggering event through
 the run. It checks that SHA once before polling CI and again after CI passes. If
 Renovate or another actor updates the branch while an older run is still
@@ -148,17 +161,18 @@ PR is benign, and a PR closed unmerged is a human decision.
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-|       INPUT        |  TYPE  | REQUIRED |                    DEFAULT                     |                                                                                              DESCRIPTION                                                                                              |
-|--------------------|--------|----------|------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-|     auto-merge     | string |  false   |                   `"false"`                    |                                                         Merge the PR after approving it, <br>directly where possible. See README "Merging".                                                           |
-|   ci-read-token    | string |  false   |                                                | Token for the read-only CI poll <br>only; defaults to the caller GITHUB_TOKEN, <br>which needs `checks: read` and `statuses: read`. Never <br>the approving PAT. See README "Tokens <br>by purpose".  |
-|    github-token    | string |   true   |                                                |                                   PAT used to read PR state <br>and approve. Must NOT match the <br>PR author. Also used to merge <br>when merge-token is omitted.                                    |
-|    merge-method    | string |  false   |                   `"squash"`                   |                                                                                  Merge method (squash|merge|rebase)                                                                                   |
-|    merge-token     | string |  false   |                                                |             Optional token used only to merge <br>when auto-merge is true. Defaults to <br>github-token. It may match the PR <br>author, but needs a merge path <br>on the base branch.               |
-|  trusted-authors   | string |  false   | `"renovate[bot],loft-bot,github-actions[bot]"` |                                                                              Comma-separated list of trusted bot logins                                                                               |
-| wait-max-attempts  | string |  false   |                     `"90"`                     |                                                                         Max polling attempts waiting for other <br>CI checks                                                                          |
-| wait-min-attempts  | string |  false   |                     `"12"`                     |                          Minimum polls before ci_green=true is allowed. <br>Prevents early approval while slow external <br>checks (e.g. Netlify) have not yet registered.                            |
-| wait-sleep-seconds | string |  false   |                     `"10"`                     |                                                                                   Seconds between polling attempts                                                                                    |
+|       INPUT        |  TYPE  | REQUIRED |                    DEFAULT                     |                                                                                                  DESCRIPTION                                                                                                   |
+|--------------------|--------|----------|------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|     auto-merge     | string |  false   |                   `"false"`                    |                                                              Merge the PR after approving it, <br>directly where possible. See README "Merging".                                                               |
+|   ci-read-token    | string |  false   |                                                |     Token for the read-only CI poll <br>only; defaults to the caller GITHUB_TOKEN, <br>which needs `checks: read` and `statuses: read`. Never <br>the approving PAT. See README "Tokens <br>by purpose".       |
+|    github-token    | string |   true   |                                                |                                       PAT used to read PR state <br>and approve. Must NOT match the <br>PR author. Also used to merge <br>when merge-token is omitted.                                         |
+|    merge-method    | string |  false   |                   `"squash"`                   |                                                                                       Merge method (squash|merge|rebase)                                                                                       |
+|    merge-token     | string |  false   |                                                |                  Optional token used only to merge <br>when auto-merge is true. Defaults to <br>github-token. It may match the PR <br>author, but needs a merge path <br>on the base branch.                   |
+| merge-when-blocked | string |  false   |                   `"false"`                    | Retry a refused merge through the <br>merge API, so GitHub decides instead <br>of gh's client-side mergeability check. Needed <br>when the merge token merges via <br>a ruleset bypass. See README "Merging".  |
+|  trusted-authors   | string |  false   | `"renovate[bot],loft-bot,github-actions[bot]"` |                                                                                   Comma-separated list of trusted bot logins                                                                                   |
+| wait-max-attempts  | string |  false   |                     `"90"`                     |                                                                             Max polling attempts waiting for other <br>CI checks                                                                               |
+| wait-min-attempts  | string |  false   |                     `"12"`                     |                               Minimum polls before ci_green=true is allowed. <br>Prevents early approval while slow external <br>checks (e.g. Netlify) have not yet registered.                                |
+| wait-sleep-seconds | string |  false   |                     `"10"`                     |                                                                                        Seconds between polling attempts                                                                                        |
 
 <!-- AUTO-DOC-INPUT:END -->
 
