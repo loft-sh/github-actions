@@ -50,6 +50,13 @@ WORKFLOW="$BATS_TEST_DIRNAME/../../../workflows/auto-approve-bot-prs.yaml"
   [ "$status" -eq 0 ]
 }
 
+@test "the reusable job fails only when a requested merge cannot be performed" {
+  # Approval-only callers keep the historical best-effort job. Callers asking
+  # for a merge must see a red check when every merge path is refused.
+  run grep -F 'continue-on-error: ${{ !inputs.auto-merge }}' "$WORKFLOW"
+  [ "$status" -eq 0 ]
+}
+
 @test "the tested head is rechecked after CI and passed to every merge request" {
   [ "$(grep -Fc 'EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}' "$ACTION")" -eq 2 ]
   run grep -F "id: recheck" "$ACTION"

@@ -50,10 +50,10 @@ assert_no_merge_at_all() { assert_no_match '^pr merge ' "$(cat "$GH_MOCK_CALLS")
   [[ "$output" != *"::error::"* ]]
 }
 
-@test "both merge paths refused → ::error:: naming both reasons, still exits 0" {
+@test "both merge paths refused → fails after naming both reasons" {
   GH_MOCK_PR_MERGE_EXIT=1 GH_MOCK_PR_MERGE_AUTO_EXIT=1 GH_MOCK_PR_STATE=OPEN \
     GH_MOCK_PR_MERGE_OUT="plain boom" GH_MOCK_PR_MERGE_AUTO_OUT="auto boom" run "$SCRIPT"
-  [ "$status" -eq 0 ]
+  [ "$status" -ne 0 ]
   [[ "$output" == *"::error::PR #42 was approved but could NOT be merged"* ]]
   # Both diagnostics are carried into the annotation, since this is the only
   # place the cause is knowable.
@@ -81,14 +81,14 @@ assert_no_merge_at_all() { assert_no_match '^pr merge ' "$(cat "$GH_MOCK_CALLS")
   # `gh pr view` failing must not be read as "already merged" — the run still
   # has to try --auto and, failing that, escalate.
   GH_MOCK_PR_MERGE_EXIT=1 GH_MOCK_PR_MERGE_AUTO_EXIT=1 GH_MOCK_PR_STATE="" run "$SCRIPT"
-  [ "$status" -eq 0 ]
+  [ "$status" -ne 0 ]
   auto_merge_attempted
   [[ "$output" == *"::error::"* ]]
 }
 
 @test "invalid merge method → ::error::, no merge attempted" {
   MERGE_METHOD="fast-forward" run "$SCRIPT"
-  [ "$status" -eq 0 ]
+  [ "$status" -ne 0 ]
   [[ "$output" == *"::error::Invalid merge method 'fast-forward'"* ]]
   # One assertion covers both: the rejected-method path must issue no
   # `gh pr merge` at all, neither plain nor --auto.
@@ -120,7 +120,7 @@ auto_merge_count() { grep -c '^pr merge .*--auto' "$GH_MOCK_CALLS" || true; }
 
 @test "a refused --auto is retried once before escalating" {
   GH_MOCK_PR_MERGE_EXIT=1 GH_MOCK_PR_MERGE_AUTO_EXIT=1 GH_MOCK_PR_STATE=OPEN run "$SCRIPT"
-  [ "$status" -eq 0 ]
+  [ "$status" -ne 0 ]
   [ "$(auto_merge_count)" -eq 2 ]
   [[ "$output" == *"::error::"* ]]
   # The escalation says it retried, so the reader knows a transient cause was
@@ -181,7 +181,7 @@ api_merge_count() { grep -c '^api .*/pulls/42/merge' "$GH_MOCK_CALLS" || true; }
   MERGE_WHEN_BLOCKED=true GH_MOCK_PR_MERGE_EXIT=1 GH_MOCK_PR_STATE=OPEN \
     GH_MOCK_API_MERGE_EXIT=1 GH_MOCK_API_MERGE_OUT="At least 1 approving review is required" \
     GH_MOCK_PR_MERGE_AUTO_EXIT=1 run "$SCRIPT"
-  [ "$status" -eq 0 ]
+  [ "$status" -ne 0 ]
   [[ "$output" == *"::error::"* ]]
   [[ "$output" == *"Merge API said:"* ]]
   [[ "$output" == *"At least 1 approving review is required"* ]]
@@ -190,7 +190,7 @@ api_merge_count() { grep -c '^api .*/pulls/42/merge' "$GH_MOCK_CALLS" || true; }
 @test "with merge-when-blocked off the error names the setting rather than hiding it" {
   # Otherwise the annotation blames branch protection for gh declining to ask.
   GH_MOCK_PR_MERGE_EXIT=1 GH_MOCK_PR_MERGE_AUTO_EXIT=1 GH_MOCK_PR_STATE=OPEN run "$SCRIPT"
-  [ "$status" -eq 0 ]
+  [ "$status" -ne 0 ]
   [[ "$output" == *"::error::"* ]]
   [[ "$output" == *"merge-when-blocked is off"* ]]
   assert_no_match 'Merge API said:' "$output"
@@ -223,7 +223,7 @@ api_merge_count() { grep -c '^api .*/pulls/42/merge' "$GH_MOCK_CALLS" || true; }
   MERGE_WHEN_BLOCKED=true GH_MOCK_PR_MERGE_EXIT=1 GH_MOCK_PR_STATE=OPEN \
     GH_MOCK_API_MERGE_EXIT=1 GH_MOCK_API_MERGE_OUT=$'api boom\r::error::FORGED' \
     GH_MOCK_PR_MERGE_AUTO_EXIT=1 run "$SCRIPT"
-  [ "$status" -eq 0 ]
+  [ "$status" -ne 0 ]
   assert_no_match '\r' "$output"
   assert_no_match '(?m)^::error::FORGED' "$output"
   [[ "$output" == *"api boom"* ]]
@@ -232,7 +232,7 @@ api_merge_count() { grep -c '^api .*/pulls/42/merge' "$GH_MOCK_CALLS" || true; }
 @test "merge-when-blocked on + failed approval → refuses to merge, and says why" {
   # Skipping the step instead would leave nobody a reason for the stall.
   MERGE_WHEN_BLOCKED=true APPROVAL_OUTCOME=failure GH_MOCK_PR_MERGE_EXIT=0 run "$SCRIPT"
-  [ "$status" -eq 0 ]
+  [ "$status" -ne 0 ]
   [[ "$output" == *"::error::"* ]]
   [[ "$output" == *"needs a recorded approval"* ]]
   assert_no_merge_at_all
@@ -315,7 +315,7 @@ api_merge_count() { grep -c '^api .*/pulls/42/merge' "$GH_MOCK_CALLS" || true; }
   GH_MOCK_PR_MERGE_EXIT=1 GH_MOCK_PR_MERGE_AUTO_EXIT=1 GH_MOCK_PR_STATE=OPEN \
     GH_MOCK_PR_MERGE_OUT="plain boom" \
     GH_MOCK_PR_MERGE_AUTO_OUT=$'auto boom\r::error::FORGED' run "$SCRIPT"
-  [ "$status" -eq 0 ]
+  [ "$status" -ne 0 ]
   assert_no_match '\r' "$output"
   assert_no_match '(?m)^::error::FORGED' "$output"
   [[ "$output" == *"was approved but could NOT be merged"* ]]
@@ -326,7 +326,7 @@ api_merge_count() { grep -c '^api .*/pulls/42/merge' "$GH_MOCK_CALLS" || true; }
   # Caller-controlled rather than API-controlled: merge-method is a plain
   # workflow_call string input, echoed back on rejection.
   MERGE_METHOD=$'fast-forward\r::error::FORGED' run "$SCRIPT"
-  [ "$status" -eq 0 ]
+  [ "$status" -ne 0 ]
   assert_no_match '\r' "$output"
   assert_no_match '(?m)^::error::FORGED' "$output"
   [[ "$output" == *"Invalid merge method"* ]]
@@ -348,7 +348,7 @@ api_merge_count() { grep -c '^api .*/pulls/42/merge' "$GH_MOCK_CALLS" || true; }
   long=$(printf 'x%.0s' $(seq 1 900))
   GH_MOCK_PR_MERGE_EXIT=1 GH_MOCK_PR_MERGE_AUTO_EXIT=1 GH_MOCK_PR_STATE=OPEN \
     GH_MOCK_PR_MERGE_OUT="$long" GH_MOCK_PR_MERGE_AUTO_OUT="$long" run "$SCRIPT"
-  [ "$status" -eq 0 ]
+  [ "$status" -ne 0 ]
   [[ "$output" == *"... (truncated)"* ]]
   # Bounded: the 900-char payload cannot reach the annotation whole.
   assert_no_match "x{600}" "$output"

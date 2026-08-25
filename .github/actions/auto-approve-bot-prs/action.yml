@@ -1,12 +1,10 @@
 name: Auto-approve bot PRs
 description: |
   Approves PRs from trusted bot authors whose title/branch matches a known
-  safe pattern, after all other CI checks pass. Once running, no API, parse or
-  permission failure exits non-zero: each degrades to an annotated skip and exit
-  0, and an out-of-range wait input is coerced to its default with a warning.
-  (Missing required env is the one deliberate exception and does exit non-zero.)
-  Outcomes that need a human and raise no other red signal are annotated at error
-  level; that raises an annotation only, never a non-zero exit.
+  safe pattern, after all other CI checks pass. Approval-only failures degrade to
+  annotated skips. When auto-merge is requested, an invalid merge request or
+  exhaustion of every merge path exits non-zero. The opt-in ruleset-bypass path
+  also fails unless the approval was recorded.
 inputs:
   trusted-authors:
     description: 'Comma-separated list of trusted bot logins'
@@ -21,7 +19,7 @@ inputs:
     required: false
     default: 'false'
   merge-when-blocked:
-    description: 'Retry a refused merge through the merge API, so GitHub decides instead of gh''s client-side mergeability check. Needed when the merge token merges via a ruleset bypass. Also requires the approval to have been recorded. See README "Merging".'
+    description: 'Allow the merge token''s configured ruleset bypass to be evaluated by retrying a refused merge through the API. Generic opt-in: callers must restrict eligible authors, branches and PRs. Also requires a recorded approval. See README "Merging".'
     required: false
     default: 'false'
   github-token:
