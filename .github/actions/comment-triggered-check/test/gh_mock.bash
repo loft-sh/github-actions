@@ -17,6 +17,8 @@
 #   GH_MOCK_CHECKRUN_JSON  body for GET .../check-runs/<id>
 #   GH_MOCK_CHECKRUN_FAIL  non-empty → that lookup fails
 #   GH_MOCK_LATEST_IDS     space-separated ids the commit listing reports as displayed
+#   GH_MOCK_LIST_FAIL      non-empty → the commit check-runs listing request fails
+#   GH_MOCK_LIST_JSON      raw body for that listing, for malformed-response cases
 
 setup_gh_mock() {
   MOCK_DIR="$(mktemp -d)"
@@ -57,6 +59,8 @@ case "$all" in
     ;;
   # Before the by-id case: this path also contains "check-runs".
   *"/commits/"*"check-runs"*)
+    [ -n "${GH_MOCK_LIST_FAIL:-}" ] && { echo "mock: listing failed" >&2; exit 1; }
+    [ -n "${GH_MOCK_LIST_JSON+x}" ] && { printf '%s\n' "$GH_MOCK_LIST_JSON"; exit 0; }
     ids=""
     for id in ${GH_MOCK_LATEST_IDS-4242}; do
       ids="${ids:+${ids},}{\"id\":${id}}"

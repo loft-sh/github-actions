@@ -118,8 +118,24 @@ republish_if_hidden() {
   # No filter argument, so this is `latest`, which is what the pull request
   # renders. One page only: past a hundred checks on one commit, a spurious
   # duplicate row is a better failure than an unbounded number of API calls.
-  if gh api "repos/${repo}/commits/${head_sha}/check-runs?per_page=100" 2>/dev/null \
-    | jq -r '.check_runs[].id' | grep -qx "$check_run_id"; then
+  #
+  # Read and shape are checked separately from the id lookup. A pipeline would
+  # collapse "absent", "request failed" and "unparseable" into one non-zero
+  # exit, and republishing on the last two would create a duplicate without ever
+  # establishing the original is hidden.
+  local listing ids
+  if ! listing="$(gh api "repos/${repo}/commits/${head_sha}/check-runs?per_page=100" 2>/dev/null)"; then
+    echo "::warning::could not list the check-runs on ${head_sha}; leaving check-run ${check_run_id} as published"
+    return 0
+  fi
+
+  if ! printf '%s' "$listing" | jq -e 'type == "object" and (.check_runs | type) == "array"' >/dev/null 2>&1; then
+    echo "::warning::unexpected check-runs response for ${head_sha}; leaving check-run ${check_run_id} as published"
+    return 0
+  fi
+
+  ids="$(printf '%s' "$listing" | jq -r '.check_runs[].id')"
+  if grep -qx "$check_run_id" <<< "$ids"; then
     return 0
   fi
 

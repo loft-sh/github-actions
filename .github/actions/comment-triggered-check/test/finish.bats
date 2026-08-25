@@ -248,3 +248,49 @@ creates() { calls_matching "method POST repos/loft-sh/demo/check-runs"; }
   [ "$status" -eq 1 ]
   [ "$(creates)" -eq 0 ]
 }
+
+# A failed or unparseable listing is not evidence the check is hidden. Creating
+# on either would publish a duplicate without establishing anything.
+
+@test "a failed listing request does not republish" {
+  export INPUT_REPORT_CONCLUSION="success"
+  export GH_MOCK_LIST_FAIL=1
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(creates)" -eq 0 ]
+  [[ "$output" == *"could not list the check-runs"* ]]
+  [ "$(kv conclusion)" = "success" ]
+}
+
+@test "an unparseable listing does not republish" {
+  export INPUT_REPORT_CONCLUSION="success"
+  export GH_MOCK_LIST_JSON='not json at all'
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(creates)" -eq 0 ]
+  [[ "$output" == *"unexpected check-runs response"* ]]
+}
+
+@test "a listing without the check_runs key does not republish" {
+  export INPUT_REPORT_CONCLUSION="success"
+  export GH_MOCK_LIST_JSON='{"message":"Not Found"}'
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(creates)" -eq 0 ]
+  [[ "$output" == *"unexpected check-runs response"* ]]
+}
+
+@test "a scalar listing body does not republish" {
+  export INPUT_REPORT_CONCLUSION="success"
+  export GH_MOCK_LIST_JSON='42'
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(creates)" -eq 0 ]
+}
+
+@test "a well-formed empty listing still republishes" {
+  export INPUT_REPORT_CONCLUSION="success"
+  export GH_MOCK_LIST_JSON='{"check_runs":[]}'
+  run bash "$SCRIPT"
+  [ "$(creates)" -eq 1 ]
+}
