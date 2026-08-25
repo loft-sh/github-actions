@@ -8,11 +8,6 @@
       "groupName": "github-actions"
     },
     {
-      "description": "Group semver-validation npm dependencies",
-      "matchManagers": ["npm"],
-      "groupName": "semver-validation"
-    },
-    {
       "description": "Group linear-pr-commenter Go dependencies",
       "matchManagers": ["gomod"],
       "matchFileNames": [".github/actions/linear-pr-commenter/**"],
@@ -47,6 +42,12 @@
       "matchStrings": ["renovate@(?<currentValue>[^\\s]+)"],
       "depNameTemplate": "renovate",
       "datasourceTemplate": "npm"
+    },
+    {
+      "customType": "regex",
+      "description": "Update the semstat release pinned in the setup-semstat installer",
+      "managerFilePatterns": ["/^\\.github/actions/setup-semstat/src/install-semstat\\.sh$/"],
+      "matchStrings": ["# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\s+DEFAULT_VERSION=(?<currentValue>\\S+)"]
     },
     {
       "customType": "regex",

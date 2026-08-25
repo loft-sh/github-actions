@@ -1,6 +1,6 @@
 name: "Semantic Version Validation"
-description: "Validates if a given version string follows semantic versioning (semver) format"
-author: "Loft Labs"
+description: "Validates a version string against semver, reports its parts and release type, and optionally orders it against a second version."
+author: "vCluster Labs"
 branding:
   icon: "check-circle"
   color: "green"
@@ -9,15 +9,170 @@ inputs:
   version:
     description: "Version string to validate against semver format"
     required: true
+  compare_to:
+    description: "Second version to order `version` against. Leave empty to skip the comparison."
+    required: false
+    default: ""
+  verify-signature:
+    description: |
+      Verify the semstat release's `checksums.txt` against its cosign bundle before
+      trusting it, proving the release came from semstat's own release workflow at
+      that exact tag rather than only that the download arrived intact. `checksums.txt`
+      is fetched from the same release as the archive, so on its own it proves the
+      download arrived whole and nothing about who published it.
+
+      On by default, because this action's `release_type` and `is_stable` route
+      publishes: a semstat that misreports a prerelease as stable sends an rc out as
+      the newest release. Set it to false to trade that for a cosign install on the
+      job and a dependency on Sigstore being reachable.
+    required: false
+    default: "true"
 
 outputs:
   is_valid:
     description: "Whether the version is a valid semver (true/false)"
+    value: ${{ steps.report.outputs.is_valid }}
   parsed_version:
     description: "Parsed version object with major, minor, patch, prerelease, and build metadata"
+    value: ${{ steps.report.outputs.parsed_version }}
   error_message:
     description: "Error message if validation fails"
+    value: ${{ steps.report.outputs.error_message }}
+  is_stable:
+    description: "Whether the version carries no prerelease suffix (true/false). Empty when the version is invalid."
+    value: ${{ steps.report.outputs.is_stable }}
+  release_type:
+    description: "Release channel: stable, alpha, beta, rc, next or next-internal. Empty when the version is invalid, or valid semver with a suffix outside that vocabulary."
+    value: ${{ steps.report.outputs.release_type }}
+  major:
+    description: "Major version number. Empty when the version is invalid."
+    value: ${{ steps.report.outputs.major }}
+  minor:
+    description: "Minor version number. Empty when the version is invalid."
+    value: ${{ steps.report.outputs.minor }}
+  patch:
+    description: "Patch version number. Empty when the version is invalid."
+    value: ${{ steps.report.outputs.patch }}
+  prerelease:
+    description: "Prerelease identifiers without the leading hyphen. Empty for a stable version and for an invalid one."
+    value: ${{ steps.report.outputs.prerelease }}
+  build:
+    description: "Build metadata without the leading plus. Empty when absent and when the version is invalid."
+    value: ${{ steps.report.outputs.build }}
+  comparison:
+    description: "-1, 0 or 1 as version sorts below, equal to, or above compare_to. Empty unless both are valid."
+    value: ${{ steps.report.outputs.comparison }}
+  is_greater:
+    description: "Whether version sorts strictly above compare_to (true/false). Empty unless both are valid."
+    value: ${{ steps.report.outputs.is_greater }}
 
 runs:
-  using: "node24"
-  main: "dist/index.js"
+  using: "composite"
+  steps:
+    # jq belongs to the reporting step below, but a caller cannot run one step of
+    # this composite without the other, and saying so before the downloads is
+    # what keeps a runner missing jq from paying for tools it cannot use.
+    # report.sh checks again, for the runs that reach it directly.
+    #
+    # Held back when `version:` is absent, so report.sh stays the one that
+    # answers that case: it checks the missing input first, deliberately above
+    # its own jq check, and emits the outputs alongside the error. Failing here
+    # instead would swap that report for a jq message and leave the outputs
+    # empty. The two checks have to keep agreeing about which comes first.
+    - name: Check the runner can read semstat's output
+      shell: bash
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+      run: |
+        if [ -n "${INPUT_VERSION-}" ] && ! command -v jq >/dev/null 2>&1; then
+          echo "::error::jq is required to read semstat's output and is not on PATH"
+          exit 1
+        fi
+
+    # cosign-installer re-downloads its bootstrap binary and re-appends to
+    # GITHUB_PATH on every call, so a job that reports on several versions pays
+    # for it once per call while every semstat install after the first is a cache
+    # hit that never reaches cosign. The marker lives under RUNNER_TEMP and so is
+    # private to this job, which is what makes this skip an install this job
+    # already did rather than adopt whatever cosign a runner image shipped.
+    #
+    # Recorded before the install rather than after: a cosign-installer that
+    # fails takes the job with it, so nothing reads the marker afterwards, and a
+    # caller that swallows that failure meets the installer's own "needs cosign
+    # on PATH" check on the next call rather than a silent unverified install.
+    #
+    # This gate is duplicated in setup-semstat/action.yml, because a composite
+    # cannot share steps with a sibling. The two copies coordinate through the
+    # marker path below, so a job mixing both actions only installs cosign once:
+    # change the path or the cosign-installer pin in one and the pair silently
+    # stops agreeing. Edit them together.
+    - name: Check whether this job still needs cosign
+      id: cosign
+      if: inputs.verify-signature == 'true'
+      shell: bash
+      env:
+        COSIGN_MARKER: ${{ runner.temp }}/.setup-semstat-cosign-installed
+      run: |
+        install=true
+        if [ -f "$COSIGN_MARKER" ]; then
+          install=false
+        elif ! : >"$COSIGN_MARKER"; then
+          echo "::error::could not record that this job installs cosign at ${COSIGN_MARKER}"
+          exit 1
+        fi
+        if ! echo "install=${install}" >>"$GITHUB_OUTPUT"; then
+          echo "::error::could not write whether this job needs cosign to GITHUB_OUTPUT"
+          exit 1
+        fi
+
+    - name: Install cosign
+      if: inputs.verify-signature == 'true' && steps.cosign.outputs.install == 'true'
+      uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+    # setup-semstat's installer, run out of the checkout this action came in
+    # rather than through `uses:`. Neither form of `uses:` works for a sibling in
+    # the same repository: a relative `uses: ./...` resolves against the caller's
+    # workspace and finds nothing once this action is consumed from another repo,
+    # and a SHA pin can only name a commit from before the change that needs it,
+    # which then keeps running while fixes to the installer land elsewhere. Both
+    # actions ship from one commit, so running the script off github.action_path
+    # is what makes them impossible to drift apart. Which release is installed,
+    # and the Renovate comment tracking it, live with the script.
+    - name: Install semstat
+      id: install
+      shell: bash
+      env:
+        SEMSTAT_VERIFY_SIGNATURE: ${{ inputs.verify-signature }}
+        # Composite steps inherit the job's environment, and the installer reads
+        # both of these from it. Cleared here, where step env wins, so a
+        # workflow-level env: or an earlier step writing GITHUB_ENV cannot
+        # repoint which executable this action runs: the base URL because the
+        # archive and the checksums.txt it is verified against come from the same
+        # root, so a planted release verifies against its own planted manifest,
+        # and the version because this action ships one pinned release rather
+        # than whichever one the job asks for.
+        SEMSTAT_VERSION: ""
+        SEMSTAT_BASE_URL: ""
+        # The reporting step names the binary through SEMSTAT_BIN and never runs
+        # a bare `semstat`, so the installer's PATH append would be a change to
+        # the caller's job with nothing here reading it.
+        SEMSTAT_SKIP_PATH: "true"
+        INSTALLER: ${{ github.action_path }}/../setup-semstat/src/install-semstat.sh
+      run: |
+        # A checkout that sparsely took only this action's directory leaves the
+        # sibling installer absent, and bash's own "No such file or directory"
+        # names neither what is missing nor what the checkout has to include.
+        if [ ! -x "$INSTALLER" ]; then
+          echo "::error::${INSTALLER} is missing or not executable; this action runs the installer that ships with the sibling setup-semstat action, so a sparse checkout has to take .github/actions/setup-semstat alongside .github/actions/semver-validation"
+          exit 1
+        fi
+        "$INSTALLER"
+
+    - name: Report on the version
+      id: report
+      shell: bash
+      env:
+        SEMSTAT_BIN: ${{ steps.install.outputs.semstat }}
+        INPUT_VERSION: ${{ inputs.version }}
+        INPUT_COMPARE_TO: ${{ inputs.compare_to }}
+      run: ${{ github.action_path }}/src/report.sh
