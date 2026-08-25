@@ -294,3 +294,51 @@ creates() { calls_matching "method POST repos/loft-sh/demo/check-runs"; }
   run bash "$SCRIPT"
   [ "$(creates)" -eq 1 ]
 }
+
+# --- a newer check with the same name is the replacement ---------------------
+#
+# A repeated command opens a second check-run under the same name, and `latest`
+# omits the older id on purpose. Republishing there would make the superseded
+# verdict the newest one and bury the replacement's result.
+
+@test "a newer completed check with the same name suppresses republishing" {
+  export INPUT_REPORT_CONCLUSION="success"
+  export GH_MOCK_LIST_JSON='{"check_runs":[{"id":9001,"name":"e2e-pro: snapshots","app":{"id":1},"status":"completed","conclusion":"success"}]}'
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(creates)" -eq 0 ]
+  [[ "$output" == *"superseded by a newer check"* ]]
+}
+
+@test "a newer in-progress check with the same name suppresses republishing" {
+  export INPUT_REPORT_CONCLUSION="success"
+  export GH_MOCK_LIST_JSON='{"check_runs":[{"id":9002,"name":"e2e-pro: snapshots","app":{"id":1},"status":"in_progress"}]}'
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(creates)" -eq 0 ]
+}
+
+# The supersede shape from the live integration run: the cancelled original is
+# absent from `latest`, the successful replacement is present.
+@test "a cancelled run does not overwrite the replacement that superseded it" {
+  export INPUT_BUILD_RESULT="cancelled"
+  export INPUT_SUITE_RESULT="skipped"
+  export GH_MOCK_LIST_JSON='{"check_runs":[{"id":9003,"name":"e2e-pro: snapshots","app":{"id":1},"status":"completed","conclusion":"success"}]}'
+  run bash "$SCRIPT"
+  [ "$(kv conclusion)" = "cancelled" ]
+  [ "$(creates)" -eq 0 ]
+}
+
+@test "a same-name check from another app does not suppress republishing" {
+  export INPUT_REPORT_CONCLUSION="success"
+  export GH_MOCK_LIST_JSON='{"check_runs":[{"id":9004,"name":"e2e-pro: snapshots","app":{"id":77}}]}'
+  run bash "$SCRIPT"
+  [ "$(creates)" -eq 1 ]
+}
+
+@test "a different name in the listing still republishes" {
+  export INPUT_REPORT_CONCLUSION="success"
+  export GH_MOCK_LIST_JSON='{"check_runs":[{"id":9005,"name":"Suite / E2E Tests","app":{"id":1}}]}'
+  run bash "$SCRIPT"
+  [ "$(creates)" -eq 1 ]
+}

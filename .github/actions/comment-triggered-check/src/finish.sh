@@ -108,11 +108,12 @@ fi
 # adopted it re-runs while ours is still in progress. Republish an identical
 # completed one. Best effort: the verdict is already published above.
 republish_if_hidden() {
-  local detail name head_sha create_args
+  local detail name head_sha app_id create_args
 
   detail="$(gh api "repos/${repo}/check-runs/${check_run_id}" 2>/dev/null)" || return 0
   name="$(printf '%s' "$detail" | jq -r '.name // ""')"
   head_sha="$(printf '%s' "$detail" | jq -r '.head_sha // ""')"
+  app_id="$(printf '%s' "$detail" | jq -r '.app.id // "" | tostring')"
   [[ -n "$name" && -n "$head_sha" ]] || return 0
 
   # No filter argument, so this is `latest`, which is what the pull request
@@ -139,6 +140,22 @@ republish_if_hidden() {
     return 0
   fi
 
+  # Absent is not the same as unrepresented. A repeated command opens a second
+  # check-run under the same name, and `latest` then omits the older id on
+  # purpose. Republishing there would make a superseded verdict the newest one
+  # and bury the replacement's result. Match on the app too, so an unrelated
+  # app's check with the same name cannot suppress a genuine republish.
+  if printf '%s' "$listing" | jq -e --arg n "$name" --arg a "$app_id" '
+        any(.check_runs[];
+            .name == $n
+            and ($a == "" or ((.app.id // "") | tostring) == $a))
+      ' >/dev/null 2>&1; then
+    echo "::notice::check-run ${check_run_id} was superseded by a newer check named \"${name}\"; not republishing"
+    return 0
+  fi
+
+  # Accepted: a replacement appearing between the listing and this create is
+  # still buried. The Checks API has no conditional create to close that gap.
   echo "::warning::check-run ${check_run_id} is no longer displayed on ${head_sha}; republishing the same verdict"
   create_args=(--method POST "repos/${repo}/check-runs"
     -f "name=${name}"

@@ -42,7 +42,7 @@ all="$*"
 # quotes, which produces a body jq cannot parse.
 default_pr='{"head":{"sha":"abc123","ref":"feature/x","repo":{"full_name":"loft-sh/demo"}},"base":{"ref":"main"},"state":"open"}'
 default_create='{"id":4242}'
-default_checkrun='{"id":4242,"name":"e2e-pro: snapshots","head_sha":"abc123"}'
+default_checkrun='{"id":4242,"name":"e2e-pro: snapshots","head_sha":"abc123","app":{"id":1}}'
 
 case "$all" in
   *"--method POST"*"check-runs"*)
@@ -63,7 +63,7 @@ case "$all" in
     [ -n "${GH_MOCK_LIST_JSON+x}" ] && { printf '%s\n' "$GH_MOCK_LIST_JSON"; exit 0; }
     ids=""
     for id in ${GH_MOCK_LATEST_IDS-4242}; do
-      ids="${ids:+${ids},}{\"id\":${id}}"
+      ids="${ids:+${ids},}{\"id\":${id},\"name\":\"check-${id}\",\"app\":{\"id\":1}}"
     done
     printf '{"check_runs":[%s]}\n' "$ids"
     ;;
