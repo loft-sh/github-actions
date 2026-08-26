@@ -211,6 +211,62 @@ payload_field() {
   [[ "$section" == *"Workflow: <https://github.com/org/repo/actions/runs/12345|View workflow run>" ]]
 }
 
+# The limits Slack enforces are in characters, but bash measures in bytes under
+# a POSIX locale, so an ASCII-only fixture cannot tell the two apart. These run
+# the truncation path with multi-byte text, where a byte-based cut both fires
+# far too early and can split a character in half.
+#
+# LC_ALL=C is pinned deliberately. Under a UTF-8 locale bash already counts
+# characters, so these would pass whatever the script did and quietly stop
+# testing anything — the same "green here, red there" trap that unsetting
+# GITHUB_EVENT_NAME avoids in the cve-scan helpers. Pinning the byte locale
+# reproduces the hazard wherever the suite runs.
+
+@test "a multi-byte section is measured in characters, not bytes" {
+  # 2000 three-byte bullets: 2000 characters, 6000 bytes. Under the limit by
+  # Slack's count, so nothing should be truncated.
+  LC_ALL=C DETAILS="$(printf '•%.0s' {1..2000})" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+
+  local chars
+  chars=$(jq -r '.blocks[1].text.text | length' "$PAYLOAD_FILE")
+  [ "$chars" -le 3000 ]
+  [[ "$(jq -r '.blocks[1].text.text' "$PAYLOAD_FILE")" != *"..."* ]]
+}
+
+@test "truncating a multi-byte section never splits a character" {
+  LC_ALL=C DETAILS="$(printf '•%.0s' {1..4000})" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+
+  # U+FFFD is what a half-written UTF-8 sequence decodes to, so its absence is
+  # the assertion: the cut landed on a character boundary.
+  local section
+  section=$(jq -r '.blocks[1].text.text' "$PAYLOAD_FILE")
+  [ "$(jq -r '.blocks[1].text.text | length' "$PAYLOAD_FILE")" -le 3000 ]
+  [[ "$section" != *'�'* ]]
+}
+
+@test "a bottom-positioned run link survives truncation intact" {
+  LC_ALL=C RUN_LINK_POSITION="bottom" DETAILS="$(printf '•%.0s' {1..4000})" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+
+  local section
+  section=$(jq -r '.blocks[1].text.text' "$PAYLOAD_FILE")
+  [ "$(jq -r '.blocks[1].text.text | length' "$PAYLOAD_FILE")" -le 3000 ]
+  [[ "$section" == *"Workflow: <${RUN_URL}|View workflow run>" ]]
+}
+
+# A run URL this long is not reachable from github.server_url and github.run_id,
+# but an unfloored budget would go negative here, and a negative slice length
+# reads as "all but the last n" — overshooting 3000 and losing the whole message
+# to a Slack rejection.
+@test "an absurdly long run URL still yields a section within the limit" {
+  RUN_URL="https://github.com/org/repo/actions/runs/$(printf '9%.0s' {1..3200})"
+  RUN_LINK_POSITION="bottom" DETAILS="some findings" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '.blocks[1].text.text | length' "$PAYLOAD_FILE")" -le 3000 ]
+}
+
 @test "section is not truncated when under 3000 chars" {
   DETAILS="Short details" run bash "$SCRIPT"
   [ "$status" -eq 0 ]
