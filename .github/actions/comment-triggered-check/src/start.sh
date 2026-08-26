@@ -97,6 +97,14 @@ if [[ -z "$filter" ]]; then
   finish_and_exit
 fi
 
+# Refused here rather than by the caller, so a filter that would escape the
+# caller's guards never reaches a dispatch or a check-run.
+if ! filter_is_balanced "$filter"; then
+  reason="malformed-filter"
+  echo "::notice::${command_word} filter has unbalanced parentheses: ${filter}"
+  finish_and_exit
+fi
+
 # --- 2. Authorize the commenter ---------------------------------------------
 # From the event payload, so no API call and no token scope to get wrong. It is
 # coarser than the collaborator endpoint: a read-only collaborator reads as

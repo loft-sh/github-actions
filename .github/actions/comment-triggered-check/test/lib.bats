@@ -70,6 +70,43 @@ setup() {
   [ "$output" = "containsAny {aws, azure}" ]
 }
 
+# --- filter_is_balanced ------------------------------------------------------
+
+@test "filter_is_balanced: a plain filter is balanced" {
+  run filter_is_balanced "snapshots || embedded-etcd"
+  [ "$status" -eq 0 ]
+}
+
+@test "filter_is_balanced: matched groups are balanced" {
+  run filter_is_balanced "(snapshots || cli) && ha"
+  [ "$status" -eq 0 ]
+}
+
+@test "filter_is_balanced: a category label with braces is balanced" {
+  run filter_is_balanced "hyperscaler: containsAny {aws, gcp}"
+  [ "$status" -eq 0 ]
+}
+
+@test "filter_is_balanced: empty is balanced" {
+  run filter_is_balanced ""
+  [ "$status" -eq 0 ]
+}
+
+@test "filter_is_balanced: rejects the guard escape" {
+  run filter_is_balanced "snapshots) || non-default || (snapshots"
+  [ "$status" -eq 1 ]
+}
+
+@test "filter_is_balanced: rejects a close before any open" {
+  run filter_is_balanced "snapshots)"
+  [ "$status" -eq 1 ]
+}
+
+@test "filter_is_balanced: rejects an unclosed open" {
+  run filter_is_balanced "((snapshots"
+  [ "$status" -eq 1 ]
+}
+
 # --- sanitize_slug -----------------------------------------------------------
 
 @test "sanitize_slug: braces, spaces and punctuation become single dashes" {
