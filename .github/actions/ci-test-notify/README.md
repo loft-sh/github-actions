@@ -8,12 +8,13 @@ Replaces the nightly-specific `ci-notify-nightly-tests` action with a generic in
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-|    INPUT    |  TYPE  | REQUIRED | DEFAULT |                                                                                         DESCRIPTION                                                                                         |
-|-------------|--------|----------|---------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-|   details   | string |  false   |         |                                               Markdown text appended after the build <br>URL (test results, versions, artifact links, etc.)                                                 |
-|   status    | string |   true   |         |         Run status, typically `needs.<job>.result` or `job.status`. <br>`success` and `failure` notify; `cancelled` and <br>`skipped` are treated as no-ops and <br>send nothing.           |
-|  test-name  | string |   true   |         | Test suite name for the header <br>(e.g. "E2E Ginkgo Nightly Tests"). Keep under ~130 chars — <br>Slack header blocks have a 150-char <br>limit and the status suffix takes <br>~15 chars.  |
-| webhook-url | string |   true   |         |                                                                                 Slack incoming webhook URL                                                                                  |
+|       INPUT       |  TYPE  | REQUIRED | DEFAULT |                                                                                         DESCRIPTION                                                                                         |
+|-------------------|--------|----------|---------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|      details      | string |  false   |         |                                               Markdown text appended after the build <br>URL (test results, versions, artifact links, etc.)                                                 |
+| run-link-position | string |  false   | `"top"` |                                  Where to render the immutable workflow-run <br>link: `top` (default) or `bottom`. Invalid <br>values fall back to `top`.                                   |
+|      status       | string |   true   |         |   Run status, typically `needs.<job>.result` or `job.status`. <br>`success`, `failure`, and `warning` notify; `cancelled` <br>and `skipped` are treated as no-ops <br>and send nothing.     |
+|     test-name     | string |   true   |         | Test suite name for the header <br>(e.g. "E2E Ginkgo Nightly Tests"). Keep under ~130 chars — <br>Slack header blocks have a 150-char <br>limit and the status suffix takes <br>~15 chars.  |
+|    webhook-url    | string |   true   |         |                                                                                 Slack incoming webhook URL                                                                                  |
 
 <!-- AUTO-DOC-INPUT:END -->
 

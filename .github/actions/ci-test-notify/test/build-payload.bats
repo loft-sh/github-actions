@@ -14,6 +14,7 @@ setup() {
   export RUN_URL="https://github.com/org/repo/actions/runs/12345"
   export REPO="org/repo"
   export RUN_NUMBER="42"
+  export RUN_LINK_POSITION="top"
 }
 
 teardown() {
@@ -39,6 +40,12 @@ payload_field() {
   [ "$status" -eq 0 ]
   [[ "$(payload_field '.text')" == *"❌"* ]]
   [[ "$(payload_field '.text')" == *"Failed"* ]]
+}
+
+@test "warning status produces an advisory header" {
+  STATUS="warning" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(payload_field '.blocks[0].text.text')" = "⚠️ My Test Suite Warning" ]
 }
 
 @test "cancelled status produces correct emoji and text" {
@@ -110,6 +117,22 @@ payload_field() {
   [[ "$section" == *"Line three"* ]]
 }
 
+@test "bottom run link position appends the workflow link after details" {
+  RUN_LINK_POSITION="bottom" DETAILS="High findings: 6" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+
+  local section
+  section=$(payload_field '.blocks[1].text.text')
+  [[ "$section" == "High findings: 6"$'\n\n'"Workflow: <https://github.com/org/repo/actions/runs/12345|View workflow run>" ]]
+}
+
+@test "invalid run link position safely falls back to the top" {
+  RUN_LINK_POSITION="hidden" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"invalid RUN_LINK_POSITION"* ]]
+  [ "$(payload_field '.blocks[1].text.text')" = "Build URL: https://github.com/org/repo/actions/runs/12345" ]
+}
+
 # --- Block Kit structure ---
 
 @test "payload has correct block structure" {
@@ -176,6 +199,16 @@ payload_field() {
   section=$(payload_field '.blocks[1].text.text')
   [ "${#section}" -le 3000 ]
   [[ "$section" == *"..."* ]]
+}
+
+@test "bottom run link is retained when details exceed the section limit" {
+  RUN_LINK_POSITION="bottom" DETAILS="$(printf 'X%.0s' {1..3000})" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+
+  local section
+  section=$(payload_field '.blocks[1].text.text')
+  [ "${#section}" -le 3000 ]
+  [[ "$section" == *"Workflow: <https://github.com/org/repo/actions/runs/12345|View workflow run>" ]]
 }
 
 @test "section is not truncated when under 3000 chars" {
