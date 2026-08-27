@@ -35,29 +35,31 @@ if [[ $HEADER_LEN -gt 150 ]]; then
   HEADER=$(clip_to 150 "$HEADER")
 fi
 
+# Normalise first, so the two positions are each written once and every later
+# reader (the truncation branch below included) sees a value it can trust.
 RUN_LINK_POSITION="${RUN_LINK_POSITION:-top}"
+if [[ "$RUN_LINK_POSITION" != "top" && "$RUN_LINK_POSITION" != "bottom" ]]; then
+  echo "::warning::invalid RUN_LINK_POSITION '$RUN_LINK_POSITION', defaulting to top"
+  RUN_LINK_POSITION="top"
+fi
+
+# The two positions render the link differently, not just in a different place:
+# `top` keeps the bare `Build URL:` line every existing caller already gets, and
+# `bottom` uses a linked label that reads better as a footer. Changing `top`
+# would alter the message for ~30 call sites, so the difference is documented in
+# the input rather than smoothed over here.
 RUN_LINK="Workflow: <${RUN_URL}|View workflow run>"
-case "$RUN_LINK_POSITION" in
-  top)
-    SECTION="Build URL: ${RUN_URL}"
-    if [[ "$DETAILS" =~ [^[:space:]] ]]; then
-      SECTION="$(printf '%s\n\n%s' "$SECTION" "$DETAILS")"
-    fi
-    ;;
-  bottom)
-    SECTION="$RUN_LINK"
-    if [[ "$DETAILS" =~ [^[:space:]] ]]; then
-      SECTION="$(printf '%s\n\n%s' "$DETAILS" "$SECTION")"
-    fi
-    ;;
-  *)
-    echo "::warning::invalid RUN_LINK_POSITION '$RUN_LINK_POSITION', defaulting to top"
-    SECTION="Build URL: ${RUN_URL}"
-    if [[ "$DETAILS" =~ [^[:space:]] ]]; then
-      SECTION="$(printf '%s\n\n%s' "$SECTION" "$DETAILS")"
-    fi
-    ;;
-esac
+if [[ "$RUN_LINK_POSITION" == "bottom" ]]; then
+  SECTION="$RUN_LINK"
+  if [[ "$DETAILS" =~ [^[:space:]] ]]; then
+    SECTION="$(printf '%s\n\n%s' "$DETAILS" "$SECTION")"
+  fi
+else
+  SECTION="Build URL: ${RUN_URL}"
+  if [[ "$DETAILS" =~ [^[:space:]] ]]; then
+    SECTION="$(printf '%s\n\n%s' "$SECTION" "$DETAILS")"
+  fi
+fi
 
 # Slack section blocks reject >3000 chars
 SECTION_LEN=$(str_len "$SECTION")

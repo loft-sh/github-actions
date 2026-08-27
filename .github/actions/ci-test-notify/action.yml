@@ -18,7 +18,7 @@ inputs:
     description: 'Slack incoming webhook URL'
     required: true
   run-link-position:
-    description: 'Where to render the immutable workflow-run link: `top` (default) or `bottom`. Invalid values fall back to `top`.'
+    description: 'Where the immutable workflow-run link goes, and how it reads. `top` (default) puts a bare `Build URL: <url>` line above `details`, unchanged from before this input existed. `bottom` puts a linked `Workflow: View workflow run` line below `details`, so the content leads and the link trails. Invalid values fall back to `top`.'
     required: false
     default: 'top'
 
