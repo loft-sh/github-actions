@@ -8,12 +8,12 @@ Replaces the nightly-specific `ci-notify-nightly-tests` action with a generic in
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-|    INPUT    |  TYPE  | REQUIRED | DEFAULT |                                                                                         DESCRIPTION                                                                                         |
-|-------------|--------|----------|---------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-|   details   | string |  false   |         |                                               Markdown text appended after the build <br>URL (test results, versions, artifact links, etc.)                                                 |
-|   status    | string |   true   |         |         Run status, typically `needs.<job>.result` or `job.status`. <br>`success` and `failure` notify; `cancelled` and <br>`skipped` are treated as no-ops and <br>send nothing.           |
-|  test-name  | string |   true   |         | Test suite name for the header <br>(e.g. "E2E Ginkgo Nightly Tests"). Keep under ~130 chars — <br>Slack header blocks have a 150-char <br>limit and the status suffix takes <br>~15 chars.  |
-| webhook-url | string |   true   |         |                                                                                 Slack incoming webhook URL                                                                                  |
+|    INPUT    |  TYPE  | REQUIRED | DEFAULT |                                                                                                                                            DESCRIPTION                                                                                                                                             |
+|-------------|--------|----------|---------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|   details   | string |  false   |         |                                                                                                   Markdown text appended after the build <br>URL (test results, versions, artifact links, etc.)                                                                                                    |
+|   status    | string |   true   |         | Run status, typically `needs.<job>.result` or `job.status`. <br>`success` and `failure` notify; `cancelled` and <br>`skipped` are treated as no-ops and <br>send nothing. Use `info` for a <br>standalone informational notice (e.g. a deploy) that always <br>notifies with no pass/fail suffix.  |
+|  test-name  | string |   true   |         |                                                    Test suite name for the header <br>(e.g. "E2E Ginkgo Nightly Tests"). Keep under ~130 chars — <br>Slack header blocks have a 150-char <br>limit and the status suffix takes <br>~15 chars.                                                      |
+| webhook-url | string |   true   |         |                                                                                                                                     Slack incoming webhook URL                                                                                                                                     |
 
 <!-- AUTO-DOC-INPUT:END -->
 
@@ -28,6 +28,9 @@ Build URL: <link to workflow run>
 ─────────────────────────────
 <repo> · Run #<number>
 ```
+
+`status: info` renders a 🚀 header with no `[status]` suffix, for informational
+notices (e.g. a deploy) rather than pass/fail results.
 
 ## Usage
 
@@ -56,6 +59,24 @@ Build URL: <link to workflow run>
 
       Sonobuoy results: ${{ steps.upload.outputs.artifact-url }}
     webhook-url: ${{ secrets.SLACK_WEBHOOK_URL_CI_TESTS_ALERTS }}
+```
+
+### Informational deploy notice
+
+`info` always notifies (no pass/fail suffix) and uses a 🚀 header, for a
+standalone notice such as a release candidate landing in staging:
+
+```yaml
+- uses: loft-sh/github-actions/.github/actions/ci-test-notify@ci-test-notify/v1
+  with:
+    test-name: Release candidate deployed to staging.vcluster.cloud
+    status: info
+    details: |
+      • vcluster-platform: `4.10.0-rc.1`
+
+      QA: spin up an instance on staging, verify it's healthy, then tick the
+      pre-release checklist.
+    webhook-url: ${{ secrets.SLACK_WEBHOOK_URL_QA }}
 ```
 
 ### Failure-only with summary

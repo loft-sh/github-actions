@@ -10,10 +10,14 @@ case "$STATUS" in
   failure)    EMOJI="❌"; STATUS_TEXT="Failed" ;;
   cancelled)  EMOJI="⚠️"; STATUS_TEXT="Cancelled" ;;
   skipped)    EMOJI="⏭️"; STATUS_TEXT="Skipped" ;;
+  info)       EMOJI="🚀"; STATUS_TEXT="" ;;
   *)          EMOJI="❓"; STATUS_TEXT="Unknown ($STATUS)" ;;
 esac
 
-HEADER="${EMOJI} ${TEST_NAME} ${STATUS_TEXT}"
+# `info` carries no pass/fail meaning, so it gets no status suffix; every other
+# status appends one (" Success", " Failed", …). Keep the space inside the
+# expansion so an empty suffix leaves no trailing whitespace in the header.
+HEADER="${EMOJI} ${TEST_NAME}${STATUS_TEXT:+ ${STATUS_TEXT}}"
 
 # Slack header blocks reject >150 chars
 if [[ ${#HEADER} -gt 150 ]]; then
