@@ -216,6 +216,15 @@ created() { calls_matching "POST"; }
   [ "$(call_count)" -eq 0 ]
 }
 
+@test "a filter that would escape the caller's guards opens no check-run" {
+  export INPUT_COMMENT_BODY="/test-e2e snapshots) || non-default || (snapshots"
+  run bash "$SCRIPT"
+  [ "$(kv reason)" = "malformed-filter" ]
+  [ "$(kv should-run)" = "false" ]
+  [ "$(kv matched)" = "true" ]
+  [ "$(call_count)" -eq 0 ]
+}
+
 @test "a comment outside a pull request is reported before any API call" {
   export INPUT_PR_NUMBER=""
   run bash "$SCRIPT"

@@ -35,6 +35,24 @@ parse_command() {
   trim "${first#"$command"}"
 }
 
+# filter_is_balanced <string> — true when no ")" precedes its "(" and none is
+# left open. Callers wrap the filter and append guards, `(<filter>) && !x`. An
+# unmatched ")" ends that wrapper early, and Ginkgo binds && tighter than ||, so
+# `a) || x` puts x outside the guard.
+filter_is_balanced() {
+  local s="${1-}" depth=0 i
+  for (( i = 0; i < ${#s}; i++ )); do
+    case "${s:i:1}" in
+      "(") depth=$(( depth + 1 )) ;;
+      ")") depth=$(( depth - 1 )) ;;
+    esac
+    if (( depth < 0 )); then
+      return 1
+    fi
+  done
+  (( depth == 0 ))
+}
+
 # normalize_filter <string> — collapse internal whitespace runs to one space and
 # trim. A Ginkgo label filter is whitespace-insensitive, so this makes the
 # concurrency key and the check name stable across "a && b" and "a &&  b".

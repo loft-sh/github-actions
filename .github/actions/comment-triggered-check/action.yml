@@ -89,10 +89,10 @@ outputs:
     description: 'Argument string with whitespace normalized. This is what to pass to the test runner.'
     value: ${{ steps.start.outputs.filter }}
   should-run:
-    description: 'The caller''s execution gate. "true" only when a check-run was actually opened, so it is false for a comment that was not a command, an empty filter, a fork, a closed or unreadable pull request, a rejected author_association, and a failed check-run creation. Read reason for which. Note the association test is not a permission check: MEMBER means organization membership, and COLLABORATOR does not say at what level.'
+    description: 'The caller''s execution gate. "true" only when a check-run was actually opened, so it is false for a comment that was not a command, an empty or unbalanced filter, a fork, a closed or unreadable pull request, a rejected author_association, and a failed check-run creation. Read reason for which. Note the association test is not a permission check: MEMBER means organization membership, and COLLABORATOR does not say at what level.'
     value: ${{ steps.start.outputs.should-run }}
   reason:
-    description: 'Why the command will not run: fork, insufficient-permission, empty-filter, not-a-pull-request, pull-request-closed, pull-request-unreadable, or check-run-not-created. Empty when it will.'
+    description: 'Why the command will not run: fork, insufficient-permission, empty-filter, malformed-filter, not-a-pull-request, pull-request-closed, pull-request-unreadable, or check-run-not-created. Empty when it will.'
     value: ${{ steps.start.outputs.reason }}
   head-sha:
     description: 'Resolved head commit of the pull request. The event does not carry it.'
