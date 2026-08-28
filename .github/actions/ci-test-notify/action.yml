@@ -8,7 +8,7 @@ inputs:
     description: 'Test suite name for the header (e.g. "E2E Ginkgo Nightly Tests"). Keep under ~130 chars — Slack header blocks have a 150-char limit and the status suffix takes ~15 chars.'
     required: true
   status:
-    description: 'Run status, typically `needs.<job>.result` or `job.status`. `success` and `failure` notify; `cancelled` and `skipped` are treated as no-ops and send nothing.'
+    description: 'Run status, typically `needs.<job>.result` or `job.status`. `success`, `failure`, and `warning` notify; `cancelled` and `skipped` are treated as no-ops and send nothing.'
     required: true
   details:
     description: 'Markdown text appended after the build URL (test results, versions, artifact links, etc.)'
@@ -17,6 +17,10 @@ inputs:
   webhook-url:
     description: 'Slack incoming webhook URL'
     required: true
+  run-link-position:
+    description: 'Where the immutable workflow-run link goes, and how it reads. `top` (default) puts a bare `Build URL: <url>` line above `details`, unchanged from before this input existed. `bottom` puts a linked `Workflow: View workflow run` line below `details`, so the content leads and the link trails. Invalid values fall back to `top`.'
+    required: false
+    default: 'top'
 
 runs:
   using: "composite"
@@ -40,6 +44,7 @@ runs:
         RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         REPO: ${{ github.repository }}
         RUN_NUMBER: ${{ github.run_number }}
+        RUN_LINK_POSITION: ${{ inputs.run-link-position }}
       run: ${{ github.action_path }}/build-payload.sh
 
     - name: Send Slack notification
