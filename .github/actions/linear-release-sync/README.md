@@ -1,11 +1,11 @@
 # Linear Release Sync
 
-A GitHub Action that syncs Linear issues to the "Released" state when a GitHub release is published. It finds all PRs between two releases, extracts Linear issue IDs from PR descriptions and branch names, and moves matching issues from "Ready for Release" to "Released".
+A GitHub Action that syncs Linear issues to the "Released" state when a GitHub release is published. It finds all PRs between two releases, extracts Linear issue IDs from PR descriptions, and moves matching issues from "Ready for Release" to "Released".
 
 ## Features
 
 - Fetches all team keys from Linear to filter false positive issue IDs (e.g. `pr-3354`, `snap-1`)
-- Extracts Linear issue IDs from PR descriptions and branch names (e.g., `ENG-1234`, `DEVOPS-471`)
+- Extracts Linear issue IDs from PR descriptions (e.g., `ENG-1234`, `DEVOPS-471`)
 - Strict time-based filtering: only includes PRs merged before the release was published
 - Moves issues from "Ready for Release" to "Released" state (only issues in that state are moved)
 - Adds release comments with version and date

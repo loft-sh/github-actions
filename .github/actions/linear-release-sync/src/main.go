@@ -193,8 +193,8 @@ func run(
 		}
 	}
 
-	// Deduplicate issue IDs - same issue can appear in both PR body and branch name,
-	// or across multiple PRs referencing the same issue
+	// Deduplicate issue IDs. The same issue can appear more than once in one PR
+	// body or across multiple PRs.
 	releasedIssues = deduplicateIssueIDs(releasedIssues)
 
 	logger.Info("Found issues in pull requests", "count", len(releasedIssues))
