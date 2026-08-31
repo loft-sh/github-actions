@@ -42,7 +42,7 @@ payload_field() {
   [[ "$(payload_field '.text')" == *"Failed"* ]]
 }
 
-@test "warning status produces an advisory header" {
+@test "warning status produces a warning header without a status suffix" {
   STATUS="warning" run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   [ "$(payload_field '.blocks[0].text.text')" = "⚠️ My Test Suite" ]
