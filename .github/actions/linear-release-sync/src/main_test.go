@@ -337,29 +337,22 @@ func TestDeduplicateIssueIDs(t *testing.T) {
 	}
 }
 
-func TestIssueIDs_DuplicateAcrossBodyAndBranch(t *testing.T) {
+func TestIssueIDs_IgnoresUnrelatedBranchReference(t *testing.T) {
 	pr := LinearPullRequest{
 		PullRequest: pullrequests.PullRequest{
 			Number:      1,
-			Body:        "Fixes ENG-1234",
-			HeadRefName: "eng-1234/fix-bug",
+			Body:        "Fixes ENG-200",
+			HeadRefName: "eng-100-backport-v0.34",
 		},
 		validTeamKeys: nil,
 	}
 
 	ids := pr.IssueIDs()
-	// Same issue appears in both body and branch — IssueIDs returns both,
-	// deduplication happens later in deduplicateIssueIDs
-	if len(ids) != 2 {
-		t.Errorf("expected 2 raw matches (dedup happens upstream), got %d: %v", len(ids), ids)
+	if len(ids) != 1 {
+		t.Fatalf("expected only the body reference, got %d: %v", len(ids), ids)
 	}
-
-	deduped := deduplicateIssueIDs(ids)
-	if len(deduped) != 1 {
-		t.Errorf("expected 1 after dedup, got %d: %v", len(deduped), deduped)
-	}
-	if deduped[0] != "eng-1234" {
-		t.Errorf("expected eng-1234, got %s", deduped[0])
+	if ids[0] != "eng-200" {
+		t.Errorf("expected eng-200, got %s", ids[0])
 	}
 }
 
@@ -422,51 +415,51 @@ func TestTeamAndProjectFiltering(t *testing.T) {
 	}
 
 	testCases := []struct {
-		name            string
-		teamFilter      string
-		projectFilter   string
+		name             string
+		teamFilter       string
+		projectFilter    string
 		expectedIssueIDs []string
 	}{
 		{
-			name:            "no filters passes everything",
-			teamFilter:      "",
-			projectFilter:   "",
+			name:             "no filters passes everything",
+			teamFilter:       "",
+			projectFilter:    "",
 			expectedIssueIDs: []string{"ENG-1", "ENG-2", "DOC-1", "DEVOPS-1"},
 		},
 		{
-			name:            "filter by single team",
-			teamFilter:      "Engineering",
-			projectFilter:   "",
+			name:             "filter by single team",
+			teamFilter:       "Engineering",
+			projectFilter:    "",
 			expectedIssueIDs: []string{"ENG-1", "ENG-2"},
 		},
 		{
-			name:            "filter by multiple teams",
-			teamFilter:      "Engineering,Docs",
-			projectFilter:   "",
+			name:             "filter by multiple teams",
+			teamFilter:       "Engineering,Docs",
+			projectFilter:    "",
 			expectedIssueIDs: []string{"ENG-1", "ENG-2", "DOC-1"},
 		},
 		{
-			name:            "filter by project",
-			teamFilter:      "",
-			projectFilter:   "vCluster",
+			name:             "filter by project",
+			teamFilter:       "",
+			projectFilter:    "vCluster",
 			expectedIssueIDs: []string{"ENG-1", "DOC-1"},
 		},
 		{
-			name:            "filter by team and project",
-			teamFilter:      "Engineering",
-			projectFilter:   "Platform",
+			name:             "filter by team and project",
+			teamFilter:       "Engineering",
+			projectFilter:    "Platform",
 			expectedIssueIDs: []string{"ENG-2"},
 		},
 		{
-			name:            "filter excludes all",
-			teamFilter:      "NonExistentTeam",
-			projectFilter:   "",
+			name:             "filter excludes all",
+			teamFilter:       "NonExistentTeam",
+			projectFilter:    "",
 			expectedIssueIDs: []string{},
 		},
 		{
-			name:            "empty project does not match project filter",
-			teamFilter:      "",
-			projectFilter:   "vCluster",
+			name:             "empty project does not match project filter",
+			teamFilter:       "",
+			projectFilter:    "vCluster",
 			expectedIssueIDs: []string{"ENG-1", "DOC-1"},
 		},
 	}
@@ -544,6 +537,13 @@ func TestIssueIDs_InvalidPatterns(t *testing.T) {
 			teamKeys:    nil,
 			expectedLen: 0, // regex requires [A-Z] prefix
 		},
+		{
+			name:        "space-slash separator does not match the hyphenated pattern",
+			body:        "See ENGCP / 1395 for context",
+			branch:      "main",
+			teamKeys:    nil,
+			expectedLen: 0, // "ENGCP / 1395" has no hyphen joining the team key and number
+		},
 	}
 
 	for _, tc := range testCases {
@@ -617,7 +617,7 @@ func TestTeamKeyFiltering(t *testing.T) {
 			prBody:         "Fixes eng-1234 and ENG-5678",
 			prBranch:       "DOC-999/update",
 			validTeamKeys:  validKeys,
-			expectedIssues: []string{"eng-1234", "eng-5678", "doc-999"},
+			expectedIssues: []string{"eng-1234", "eng-5678"},
 			description:    "Should match team keys case-insensitively",
 		},
 		{

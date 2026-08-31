@@ -240,10 +240,10 @@ func TestIssueIDsExtraction(t *testing.T) {
 			expected:    []string{"eng-1234"},
 		},
 		{
-			name:        "Issue ID in branch name",
+			name:        "Ignore issue ID in branch name",
 			body:        "This is a regular PR",
 			headRefName: "feature/ENG-1234-new-thing",
-			expected:    []string{"eng-1234"},
+			expected:    []string{},
 		},
 		{
 			name:        "Multiple issue IDs",
@@ -273,7 +273,7 @@ func TestIssueIDsExtraction(t *testing.T) {
 			name:        "Mixed team keys",
 			body:        "This PR fixes ENG-1234 and DEVOPS-471",
 			headRefName: "feature/QA-99-cross-team",
-			expected:    []string{"eng-1234", "devops-471", "qa-99"},
+			expected:    []string{"eng-1234", "devops-471"},
 		},
 		{
 			name:        "Issue with short number",
