@@ -20,13 +20,13 @@ clip_to() {
 case "$STATUS" in
   success)    EMOJI="✅"; STATUS_TEXT="Success" ;;
   failure)    EMOJI="❌"; STATUS_TEXT="Failed" ;;
-  warning)    EMOJI="⚠️"; STATUS_TEXT="Warning" ;;
+  warning)    EMOJI="⚠️"; STATUS_TEXT="" ;;
   cancelled)  EMOJI="⚠️"; STATUS_TEXT="Cancelled" ;;
   skipped)    EMOJI="⏭️"; STATUS_TEXT="Skipped" ;;
   *)          EMOJI="❓"; STATUS_TEXT="Unknown ($STATUS)" ;;
 esac
 
-HEADER="${EMOJI} ${TEST_NAME} ${STATUS_TEXT}"
+HEADER="${EMOJI} ${TEST_NAME}${STATUS_TEXT:+ ${STATUS_TEXT}}"
 
 # Slack header blocks reject >150 chars
 HEADER_LEN=$(str_len "$HEADER")

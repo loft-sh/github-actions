@@ -45,7 +45,7 @@ payload_field() {
 @test "warning status produces an advisory header" {
   STATUS="warning" run bash "$SCRIPT"
   [ "$status" -eq 0 ]
-  [ "$(payload_field '.blocks[0].text.text')" = "⚠️ My Test Suite Warning" ]
+  [ "$(payload_field '.blocks[0].text.text')" = "⚠️ My Test Suite" ]
 }
 
 @test "cancelled status produces correct emoji and text" {
