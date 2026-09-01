@@ -49,10 +49,18 @@ fi
 # is an invalid octal literal, so (( )) would print its own "value too great for
 # base" next to our warning; and forwarding "08" verbatim would fail in ginkgo
 # too, since Go's flag package auto-detects the base. Normalizing fixes both.
+#
+# The length bound comes BEFORE the arithmetic, because bash wraps at signed
+# 64-bit while ginkgo's Go int flag rejects out-of-range values - so without it
+# the comparison is decided by the overflow. 18446744073709551617 wraps to 1 and
+# would silently disable the retries the caller asked for, with no warning;
+# 18446744073709551618 wraps to 2 and would forward the original huge value for
+# ginkgo to reject. Same guard, and same reason, as numeric_or_default in
+# auto-approve-bot-prs.
 if [[ -n "${FLAKE_ATTEMPTS:-}" ]]; then
   flake_attempts="${FLAKE_ATTEMPTS#"${FLAKE_ATTEMPTS%%[!0]*}"}"
   [[ -n "$flake_attempts" ]] || flake_attempts=0
-  if [[ "$FLAKE_ATTEMPTS" =~ ^[0-9]+$ ]] && (( flake_attempts >= 1 )); then
+  if [[ "$FLAKE_ATTEMPTS" =~ ^[0-9]+$ ]] && (( ${#flake_attempts} <= 9 )) && (( flake_attempts >= 1 )); then
     # `if` rather than `(( … )) && …`, matching the sibling appends above: the
     # AND-list form returns non-zero when the condition is false, which is
     # harmless here only because statements follow it.

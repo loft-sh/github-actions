@@ -254,3 +254,37 @@ teardown() {
   has_arg "--procs=8"
   [[ "$(cat "$MOCK_ARGS_FILE")" != *"--flake-attempts"* ]]
 }
+
+@test "flake-attempts: an out-of-range value is rejected, not wrapped" {
+  # Bash wraps at signed 64-bit; ginkgo's Go int flag does not. Without a length
+  # bound ahead of the arithmetic, this wraps to 1: no warning, no flag, and the
+  # retries the caller asked for silently do not happen.
+  cd "$WORK_DIR"
+  export FLAKE_ATTEMPTS="18446744073709551617"
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"is not an integer >= 1"* ]]
+  has_arg "--procs=8"
+  [[ "$(cat "$MOCK_ARGS_FILE")" != *"--flake-attempts"* ]]
+}
+
+@test "flake-attempts: a value that wraps ABOVE 1 is also rejected" {
+  # The nastier half: this one wraps to 2, so it would pass the >1 test and
+  # forward the original huge string for ginkgo to reject after suite setup.
+  cd "$WORK_DIR"
+  export FLAKE_ATTEMPTS="18446744073709551618"
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"is not an integer >= 1"* ]]
+  has_arg "--procs=8"
+  [[ "$(cat "$MOCK_ARGS_FILE")" != *"--flake-attempts"* ]]
+}
+
+@test "flake-attempts: the largest in-range value is still accepted" {
+  cd "$WORK_DIR"
+  export FLAKE_ATTEMPTS="999999999"
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"is not an integer >= 1"* ]]
+  has_arg "--flake-attempts=999999999"
+}
