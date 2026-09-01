@@ -43,6 +43,10 @@ contains() { case " $1 " in *" $2 "*) return 0 ;; *) return 1 ;; esac; }
 
 if [[ "$sub" == "api" ]]; then
   path="$1"
+  # api_exists calls `gh api <path> --silent -i`; every other call reads a value.
+  # The tag endpoint is used both ways, so the stub has to distinguish them.
+  wants_status=0
+  for _a in "$@"; do case "$_a" in --silent|-i) wants_status=1 ;; esac; done
   # emit_status <present:0|1> <scope> - print an HTTP status line and exit like
   # real gh. Real gh prints the status line to stdout for 200 AND 404, but exits
   # non-zero on 404. GH_STUB_TRANSIENT=1 simulates a network/auth failure (no
@@ -67,6 +71,11 @@ if [[ "$sub" == "api" ]]; then
     repos/*/git/ref/tags/*)
       # Singular endpoint: exact match, 404 otherwise (mirrors the real API).
       rest="${path#repos/}"; repo="${rest%%/git/ref/tags/*}"; tag="${rest##*/git/ref/tags/}"
+      if [[ "$wants_status" -eq 0 ]]; then
+        # release_state resolving the tag to a commit, to scope the run count.
+        contains "${GH_STUB_TAGS:-}" "${repo}:${tag}" && echo "deadbeefcafe1234"
+        exit 0
+      fi
       contains "${GH_STUB_TAGS:-}" "${repo}:${tag}" && emit_status 0 tags || emit_status 1 tags ;;
     repos/*/git/refs/tags/*)
       # Plural endpoint: prefix match (mirrors the real API). Kept so a regression
@@ -89,9 +98,22 @@ if [[ "$sub" == "api" ]]; then
       # Fail only once a tag has been created, i.e. once the cut has passed
       # release_state and is inside the post-dispatch barrier.
       if [[ "${GH_STUB_RUNS_FAIL_AFTER_TAG:-}" == "1" && -f "$(dirname "$0")/tag_created" ]]; then exit 1; fi
+      # GH_STUB_RUNS_VISIBLE_AFTER models a dispatched run that takes N calls to
+      # register, so the barrier's early-exit path is exercised rather than only
+      # its exhaustion path.
+      if [[ -n "${GH_STUB_RUNS_VISIBLE_AFTER:-}" ]]; then
+        _rf="$(dirname "$0")/runs_calls"
+        _rn=0; [ -f "$_rf" ] && _rn="$(cat "$_rf")"; _rn=$(( _rn + 1 )); echo "$_rn" > "$_rf"
+        if [ "$_rn" -ge "${GH_STUB_RUNS_VISIBLE_AFTER}" ]; then echo "1 0"; else echo "0 0"; fi
+        exit 0
+      fi
       _active=0; _total=0
       contains "${GH_STUB_ACTIVE_RUNS:-}" "${repo}:${ref}" && _active=1
       contains "${GH_STUB_DISPATCHED:-}" "${repo}:${ref}" && _total=1
+      # A run that carries this tag NAME but a different head_sha - the old
+      # incarnation of a re-cut tag. The script scopes its total to the tag's
+      # current sha, so such a run must not count toward "already dispatched".
+      [[ "${GH_STUB_RUN_SHA_MISMATCH:-}" == "1" ]] && _total=0
       [ "$_active" -eq 1 ] && _total=1
       echo "${_total} ${_active}"
       exit 0 ;;
@@ -1208,4 +1230,42 @@ EOF
   [[ "$output" == *"did not become queryable"* ]]
   [[ "$output" != *"::error::"* ]]
   [[ "$output" != *"Not treating as un-dispatched"* ]]
+}
+
+@test "resume: a completed run from an OLD incarnation of the tag does not suppress the dispatch" {
+  # Delete the tag, re-cut it at a new commit, lose the dispatch. An unscoped run
+  # count would see the old completed run, call the version dispatched, and
+  # silently never build the new commit. The count is scoped to the tag's sha.
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.37"
+  export GH_STUB_TAGS="loft-sh/vcluster-pro:v0.37.2"
+  export GH_STUB_DISPATCHED="loft-sh/vcluster-pro:v0.37.2"
+  export GH_STUB_RUN_SHA_MISMATCH="1"
+  INPUT_VERSION="v0.37.2" INPUT_DRY_RUN="false" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"already tagged but never dispatched; resuming at the dispatch"* ]]
+  [[ "$output" == *"dispatched release.yaml in loft-sh/vcluster-pro "* ]]
+  # And it must not re-point the tag.
+  [[ "$output" != *"created tag v0.37.2 in loft-sh/vcluster-pro "* ]]
+}
+
+@test "resume: a run at the tag's CURRENT sha still counts as dispatched" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.37"
+  export GH_STUB_TAGS="loft-sh/vcluster-pro:v0.37.2"
+  export GH_STUB_DISPATCHED="loft-sh/vcluster-pro:v0.37.2"
+  INPUT_VERSION="v0.37.2" INPUT_DRY_RUN="false" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"already tagged and dispatched"* ]]
+  [[ "$output" != *"dispatched release.yaml in loft-sh/vcluster-pro "* ]]
+}
+
+@test "dispatch: the barrier stops polling as soon as the run registers" {
+  # Invisible, invisible, then visible: it must return quietly rather than run
+  # out its attempts and warn.
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.37"
+  export GH_STUB_RUNS_VISIBLE_AFTER=3
+  export DISPATCH_VISIBLE_ATTEMPTS=6
+  INPUT_VERSION="v0.37.2" INPUT_DRY_RUN="false" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"dispatched release.yaml in loft-sh/vcluster-pro "* ]]
+  [[ "$output" != *"did not become queryable"* ]]
 }

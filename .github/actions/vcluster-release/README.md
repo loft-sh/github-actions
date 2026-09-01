@@ -96,7 +96,7 @@ Before touching anything the action resolves a per-repo state:
 | --- | --- | --- |
 | `absent` | no tag | tag, then dispatch |
 | `tagged` | tag exists, build never dispatched | dispatch only |
-| `dispatched` | a `release.yaml` run exists at the tag | nothing; prints how to inspect that run |
+| `dispatched` | a `release.yaml` run exists **at the tag's current commit** | nothing; prints how to inspect that run |
 | `released` | a GitHub Release exists | nothing for this repo |
 
 The pro dependency bump is resumed the same way: an already-merged bump PR is not
@@ -127,6 +127,11 @@ Two properties this preserves:
 - **A tag is never re-pointed.** The tag a previous run created is what its
   already-dispatched build is building; moving it would change what ships under a
   version that is already in flight.
+The run count is scoped to the commit the tag points at, not just the tag name.
+Run records outlive tags, so an unscoped count would let a completed run from a
+previous incarnation of a re-cut tag read as "already dispatched" and silently
+suppress the build of the new commit.
+
 - **A build is never dispatched twice.** A run at the tag counts as dispatched in
   *any* conclusion, failed included — a failed build is re-run from its own
   workflow, where the operator can see why it broke. After dispatching, the

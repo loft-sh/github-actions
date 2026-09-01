@@ -271,24 +271,53 @@ require_branch() {
   fi
 }
 
-# runs_at_ref <repo> <ref> - prints "<total> <active>": how many release.yaml runs
-# exist at <ref>, and how many of those have not completed.
+# runs_at_ref <repo> <ref> [head-sha] [quiet] - prints "<total> <active>".
 #
-# ONE request, with the active count derived from each run's own status rather
-# than from a status= filter. Two filtered requests (in_progress, then queued)
-# would both miss a run that transitioned between them, and would ignore the
-# other non-completed states the API reports (requested, waiting, pending).
+#   total   runs at <ref>, restricted to <head-sha> when one is given
+#   active  runs at <ref> that have not completed, regardless of sha
+#
+# The sha restriction is what makes `dispatched` mean "dispatched for THIS tag
+# object" rather than "some run once used this tag name". Run records outlive the
+# tag: delete a tag, re-cut it at a new commit, lose the dispatch, and an
+# unrestricted count would see the OLD completed run, call the version
+# dispatched, and silently never build the new commit. create_tag writes
+# lightweight tags, so the tag ref's object sha IS the commit sha the run
+# reports as head_sha.
+#
+# `active` stays unrestricted on purpose: it is only consulted when the tag is
+# gone, where there is no sha to match and any in-flight build at that ref name
+# is the thing we must not tag over.
+#
+# ONE request, and both counts come from each run's own fields rather than a
+# status= filter. Two filtered requests (in_progress, then queued) would both
+# miss a run that transitioned between them, and would ignore the other
+# non-completed states the API reports (requested, waiting, pending).
 #
 # `gh workflow run --ref <tag>` records the tag name verbatim in head_branch, and
 # the runs endpoint's `branch=` filter matches on that field, so a tag ref queries
 # cleanly here (verified against real dispatched release runs in both repos).
 #
-# Returns non-zero when the answer is unknown. Callers fail closed: read as
-# "nothing running", this would re-tag and re-dispatch a release already building.
+# Returns non-zero when the answer is unknown, including when the response is not
+# the shape we expect. Callers fail closed: read as "nothing running", this would
+# re-tag and re-dispatch a release already building.
 runs_at_ref() {
-  local repo="$1" ref="$2" quiet="${3:-}" out rc=0
+  local repo="$1" ref="$2" head_sha="${3:-}" quiet="${4:-}" out rc=0 sha_clause="true"
+  # `gh api` has no --arg, so the sha is interpolated into the filter. Validate
+  # it is a hex object name first: it comes from our own API read, but an
+  # unvalidated value spliced into a jq program is how that stops being true.
+  if [[ -n "$head_sha" ]]; then
+    if [[ ! "$head_sha" =~ ^[0-9a-f]{7,64}$ ]]; then
+      [[ -n "$quiet" ]] || echo "::error::refusing to scope the run query for ${ref} in ${repo} to a non-hex object name" >&2
+      return 1
+    fi
+    sha_clause='.head_sha == "'"${head_sha}"'"'
+  fi
+  # `.workflow_runs` must be an array. Without that assertion a truncated or
+  # error-shaped body renders as a plausible "0 0" and reads as "nothing here".
   out="$(gh api "repos/${repo}/actions/workflows/${WORKFLOW}/runs?branch=${ref}&per_page=100" \
-    --jq '"\(.total_count // 0) \([.workflow_runs[]? | select(.status != "completed")] | length)"' 2>&1)" || rc=$?
+    --jq 'if (.workflow_runs | type) != "array" then error("workflow_runs is not an array") else
+      "\([.workflow_runs[] | select('"${sha_clause}"')] | length) \([.workflow_runs[] | select(.status != "completed")] | length)"
+    end' 2>&1)" || rc=$?
   if (( rc != 0 )); then
     # Quiet for the post-dispatch barrier: it polls this in a loop on a cut that
     # is going to succeed, so an ::error:: per attempt would paint a green
@@ -302,6 +331,20 @@ runs_at_ref() {
     [[ -n "$quiet" ]] || echo "::error::unexpected run-count response for ${ref} in ${repo}: $(printf '%s' "$out" | tr '\n' ' ')" >&2
     return 1
   fi
+  printf '%s\n' "$out"
+}
+
+# tag_sha_of <repo> <tag> - the commit a tag points at, or empty if unknown.
+#
+# On a 404 `gh api --jq` prints the raw error body to stdout without applying the
+# filter, so the result has to be shape-checked rather than trusted. Callers
+# decide what empty means: release_state treats it as fatal (it must not silently
+# fall back to an unscoped count), the post-dispatch barrier treats it as
+# "count everything", which only ever makes the barrier wait longer.
+tag_sha_of() {
+  local repo="$1" tag="$2" out
+  out="$(gh api "repos/${repo}/git/ref/tags/${tag}" --jq '.object.sha // empty' 2>/dev/null)" || return 0
+  [[ "$out" =~ ^[0-9a-f]{7,64}$ ]] || return 0
   printf '%s\n' "$out"
 }
 
@@ -321,19 +364,11 @@ runs_at_ref() {
 # an output, not a trigger: only a green build publishes one. So "released"
 # is the single state that proves the version actually shipped.
 release_state() {
-  local repo="$1" tag="$2" counts total active
+  local repo="$1" tag="$2" counts total active tag_sha=""
   if api_exists "repos/${repo}/releases/tags/${tag}" "release ${tag} in ${repo}"; then
     printf 'released\n'
     return 0
   fi
-  # One runs query answers both questions below, so the "is anything running?"
-  # and "was anything ever dispatched?" checks can never disagree about a run
-  # that changed state between two separate requests.
-  if ! counts="$(runs_at_ref "$repo" "$tag")"; then
-    exit 1
-  fi
-  total="${counts%% *}"
-  active="${counts##* }"
   # Singular `git/ref/tags/` requires an exact match (404s otherwise). The plural
   # `git/refs/tags/` prefix-matches, so it would report `v0.35.4` as existing when
   # only `v0.35.4-rc.1` had been tagged - a false double-cut on the final release.
@@ -349,6 +384,12 @@ release_state() {
     # tag (they persist for the repo's retention window), so keying on "any run
     # ever" would permanently block the documented re-cut path of deleting the
     # tag and release and starting over.
+    # No tag, so there is no sha to scope by, and none is wanted: any in-flight
+    # build at this ref name is the thing we must not tag over.
+    if ! counts="$(runs_at_ref "$repo" "$tag")"; then
+      exit 1
+    fi
+    active="${counts##* }"
     if [[ "$active" -gt 0 ]]; then
       printf 'dispatched-tag-missing\n'
       return 0
@@ -356,6 +397,19 @@ release_state() {
     printf 'absent\n'
     return 0
   fi
+  # The tag exists, so scope the count to the commit it points at. Failing to
+  # resolve it must not degrade to an unscoped count: that is exactly how a
+  # completed run from a previous incarnation of this tag would read as
+  # "already dispatched" and silently suppress the build of the new commit.
+  tag_sha="$(tag_sha_of "$repo" "$tag")"
+  if [[ -z "$tag_sha" ]]; then
+    echo "::error::${tag} exists in ${repo} but its commit could not be resolved, so runs of an earlier incarnation of this tag cannot be told apart from runs of this one. Refusing to guess whether the build has already been dispatched." >&2
+    exit 1
+  fi
+  if ! counts="$(runs_at_ref "$repo" "$tag" "$tag_sha")"; then
+    exit 1
+  fi
+  total="${counts%% *}"
   if [[ "$total" -gt 0 ]]; then
     printf 'dispatched\n'
   else
@@ -462,9 +516,10 @@ dispatch() {
   #
   # A warning, not an error: the build IS running at this point, and failing the
   # cut here would be worse than the double-dispatch window it guards.
-  local i counts
+  local i counts barrier_sha
+  barrier_sha="$(tag_sha_of "$repo" "$tag")"
   for (( i = 1; i <= DISPATCH_VISIBLE_ATTEMPTS; i++ )); do
-    if counts="$(runs_at_ref "$repo" "$tag" quiet)" && [[ "${counts%% *}" -gt 0 ]]; then
+    if counts="$(runs_at_ref "$repo" "$tag" "$barrier_sha" quiet)" && [[ "${counts%% *}" -gt 0 ]]; then
       return 0
     fi
     (( i < DISPATCH_VISIBLE_ATTEMPTS )) && sleep "${DISPATCH_VISIBLE_SLEEP_SECONDS}"
