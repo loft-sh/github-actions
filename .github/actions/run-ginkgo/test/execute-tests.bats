@@ -56,6 +56,7 @@ teardown() {
   export GINKGO_LABEL=""
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
+  has_arg "--procs=8"
   ! grep -q "\-\-label-filter" "$MOCK_ARGS_FILE"
   ! grep -q "^-r$" "$MOCK_ARGS_FILE"
 }
@@ -134,6 +135,7 @@ teardown() {
   export ADDITIONAL_ARGS=""
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
+  has_arg "--procs=8"
   ! grep -qx -- '--' "$MOCK_ARGS_FILE"
 }
 
@@ -171,6 +173,7 @@ teardown() {
   export GINKGO_LABEL="suite"
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
+  has_arg "--procs=8"
   ! grep -q -- '--focus=' "$MOCK_ARGS_FILE"
 }
 
