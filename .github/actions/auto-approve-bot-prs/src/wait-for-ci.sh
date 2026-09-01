@@ -364,7 +364,6 @@ while [ "$attempt" -lt "$max_attempts" ]; do
   first_error=""
 
   pending=$(( cr_pending + st_pending ))
-  real_failed=$(( cr_real_failed + st_failed ))
   echo "attempt ${attempt}/${max_attempts}: check_runs(pending=${cr_pending} failed=${cr_real_failed} cancelled=${cr_cancelled}) statuses(pending=${st_pending} failed=${st_failed})"
 
   # Terminal failures bail - unless a newer check suite is still running, which
