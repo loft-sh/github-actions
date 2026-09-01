@@ -75,7 +75,7 @@ TRIGGERED_BY="${TRIGGERED_BY:-}"
 # helpers below already tolerate both spellings (parse_major_minor strips an
 # optional v), but the raw string is used VERBATIM as the tag name and as the
 # double-cut probe key - so an un-normalized "0.37.1" would create a v-less tag
-# AND sail past guard_not_released, which probes for "v0.37.1" and gets a 404.
+# AND sail past the double-cut guard, which probes for "v0.37.1" and gets a 404.
 # That silently re-releases an already-shipped version, and the resulting tag can
 # never be promoted (promote-release requires ^v[0-9]+\.[0-9]+\.[0-9]+$) nor be
 # resolved by the Go module proxy, which requires the v. Normalizing here, before
@@ -265,24 +265,114 @@ require_branch() {
   fi
 }
 
-# guard_not_released <repo> <tag> - double-cut guard. A pre-existing tag or
-# release for this version is a hard error: releases are cut once.
-guard_not_released() {
-  local repo="$1" tag="$2"
-  # Both probes go through api_exists, so a transient API failure (rate-limit /
-  # auth / DNS) aborts loudly instead of being misread as "not released" - which
-  # would silently skip the double-cut guard.
-  if api_exists "repos/${repo}/releases/tags/${tag}" "release ${tag} in ${repo}"; then
-    echo "::error::release ${tag} already exists in ${repo}. Refusing to re-cut (double-cut guard)." >&2
+# workflow_runs_at_ref <repo> <ref> -> 0 if this line's release.yaml has already
+# been dispatched at <ref>, 1 if it has not.
+#
+# `gh workflow run --ref <tag>` records the tag name verbatim in head_branch, and
+# the runs endpoint's `branch=` filter matches on that field, so a tag ref
+# queries cleanly here (verified against real dispatched release runs in both
+# repos). This is what keeps a resume from firing a second build of a release
+# that is already building.
+#
+# Fail-closed like api_exists: a probe that cannot answer must never read as
+# "not dispatched", because that is the one wrong answer that duplicates a build.
+workflow_runs_at_ref() {
+  local repo="$1" ref="$2" out rc=0
+  out="$(gh api "repos/${repo}/actions/workflows/${WORKFLOW}/runs?branch=${ref}&per_page=1" \
+    --jq '.total_count // 0' 2>&1)" || rc=$?
+  if (( rc != 0 )); then
+    echo "::error::failed to list ${WORKFLOW} runs at ${ref} in ${repo} (needs actions:read on the token). Not treating as un-dispatched: $(printf '%s' "$out" | tr '\n' ' ')" >&2
     exit 1
+  fi
+  if [[ ! "$out" =~ ^[0-9]+$ ]]; then
+    echo "::error::unexpected run-count response for ${ref} in ${repo}: $(printf '%s' "$out" | tr '\n' ' ')" >&2
+    exit 1
+  fi
+  (( out > 0 ))
+}
+
+# release_state <repo> <tag> -> absent | tagged | dispatched | released
+#
+# How far a previous cut got for this version in this repo. Every mutating step
+# is keyed off this so re-running the button resumes an interrupted cut instead
+# of colliding with its own earlier progress. The states are ordered: each one
+# implies every step before it is already done.
+#
+#   absent     nothing exists; do everything
+#   tagged     tag created, build never dispatched
+#   dispatched build dispatched (running, failed, or finished without publishing)
+#   released   a GitHub Release exists - the pipeline's terminal output
+#
+# The release is the terminal marker precisely because this script treats it as
+# an output, not a trigger: only a green build publishes one. So "released"
+# is the single state that proves the version actually shipped.
+release_state() {
+  local repo="$1" tag="$2"
+  if api_exists "repos/${repo}/releases/tags/${tag}" "release ${tag} in ${repo}"; then
+    printf 'released\n'
+    return 0
   fi
   # Singular `git/ref/tags/` requires an exact match (404s otherwise). The plural
   # `git/refs/tags/` prefix-matches, so it would report `v0.35.4` as existing when
   # only `v0.35.4-rc.1` had been tagged - a false double-cut on the final release.
-  if api_exists "repos/${repo}/git/ref/tags/${tag}" "tag ${tag} in ${repo}"; then
-    echo "::error::tag ${tag} already exists in ${repo}. Delete it to re-cut, or bump the version." >&2
+  if ! api_exists "repos/${repo}/git/ref/tags/${tag}" "tag ${tag} in ${repo}"; then
+    printf 'absent\n'
+    return 0
+  fi
+  if workflow_runs_at_ref "$repo" "$tag"; then
+    printf 'dispatched\n'
+  else
+    printf 'tagged\n'
+  fi
+}
+
+# release_state_of <repo> <tag> - sets RELEASE_STATE to release_state's answer.
+#
+# release_state must run in a command substitution to hand back a value, and an
+# `exit` inside one only kills the subshell. Its probes are fail-closed - a
+# transient API error is meant to abort the cut rather than read as "nothing
+# exists" - so that abort has to be re-raised here or it would be silently
+# downgraded to an empty state, which is the exact misreading api_exists exists
+# to prevent.
+release_state_of() {
+  if ! RELEASE_STATE="$(release_state "$1" "$2")"; then
     exit 1
   fi
+}
+
+# guard_double_cut <version> <state>... - the one state that is still fatal.
+#
+# Fatal only when EVERY target repo has a published release, because that is the
+# only combination that means "this version already shipped". Anything short of
+# it is an interrupted cut, and the ensure_* steps below resume it per repo.
+#
+# The legacy path is why this counts repos instead of failing on the first
+# release it finds: a cut that died between the OSS dispatch and the pro one
+# leaves OSS released and pro untagged, which is the single most common partial
+# failure and exactly the case an operator needs to be able to finish.
+guard_double_cut() {
+  local version="$1"
+  shift
+  local state all_released="true"
+  for state in "$@"; do
+    [[ "$state" == "released" ]] || all_released="false"
+  done
+  if [[ "$all_released" == "true" ]]; then
+    echo "::error::release ${version} already exists in every target repo. Refusing to re-cut (double-cut guard). Delete the release(s) and tag(s) to genuinely re-cut, or bump the version." >&2
+    exit 1
+  fi
+}
+
+# announce_state <repo> <tag> <state> - one line per repo so the run log opens
+# with what the cut found, before it changes anything.
+announce_state() {
+  local repo="$1" tag="$2" state="$3"
+  case "$state" in
+    absent)     echo "::notice::${repo}: ${tag} not started; will tag and dispatch." ;;
+    tagged)     echo "::notice::${repo}: ${tag} already tagged but never dispatched; resuming at the dispatch." ;;
+    dispatched) echo "::notice::${repo}: ${tag} already tagged and dispatched; nothing left to do here. Inspect: gh run list --repo ${repo} --workflow ${WORKFLOW} --branch ${tag}" ;;
+    released)   echo "::notice::${repo}: ${tag} already released; skipping this repo." ;;
+  esac
 }
 
 # create_tag <repo> <branch> <tag> - tag the branch head. Inert w.r.t. release
@@ -323,9 +413,60 @@ dispatch() {
   echo "dispatched ${WORKFLOW} in ${repo} at ${tag}"
 }
 
+# ensure_tag <repo> <branch> <tag> <state> - create the tag only when this repo
+# has not got one yet. Skipping on a resume is not just an optimisation: the tag
+# a previous run created is what its already-dispatched build is building, so
+# re-pointing it would change what ships under a version that is already moving.
+ensure_tag() {
+  local repo="$1" branch="$2" tag="$3" state="$4"
+  case "$state" in
+    absent) create_tag "$repo" "$branch" "$tag" ;;
+    *)      echo "resume: tag ${tag} already exists in ${repo}; not re-tagging" ;;
+  esac
+}
+
+# ensure_dispatch <repo> <tag> <state> [extra gh flags...] - dispatch this line's
+# release.yaml unless a run already exists at the tag.
+#
+# A run in ANY conclusion counts as dispatched, failed ones included. A failed
+# build is re-run from its own workflow, where the operator can see why it broke;
+# firing a fresh one from the release button would hide that behind a second run
+# of the same tag.
+ensure_dispatch() {
+  local repo="$1" tag="$2" state="$3"
+  shift 3
+  case "$state" in
+    dispatched)
+      echo "resume: ${WORKFLOW} already dispatched at ${tag} in ${repo}; not dispatching again"
+      echo "        inspect it with: gh run list --repo ${repo} --workflow ${WORKFLOW} --branch ${tag}"
+      ;;
+    released)
+      echo "resume: ${tag} is already released in ${repo}; not dispatching"
+      ;;
+    *)
+      dispatch "$repo" "$tag" "$@"
+      ;;
+  esac
+}
+
 # ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
+
+# bump_pr_probe <bump_branch> <base> - one read of the bump PR, as "<state>|<merged_at>".
+# Prints "none|" when no PR exists yet. Unlike the poll below a single failed
+# read is not fatal here: the caller only uses this to decide whether the bump
+# workflow still needs dispatching, and re-dispatching is the safe default.
+bump_pr_probe() {
+  local bump_branch="$1" base="$2" out
+  if ! out="$(gh api "repos/${PRO_REPO}/pulls?head=${PRO_OWNER}:${bump_branch}&base=${base}&state=all" \
+    --jq "$BUMP_PR_JQ" 2>/dev/null)"; then
+    printf 'none|\n'
+    return 0
+  fi
+  [[ -n "$out" ]] || out="none|"
+  printf '%s\n' "$out"
+}
 
 # bump_pro_dependency <version> <line> - dispatch the pro release-bump workflow
 # to open a loft-bot PR bumping the vendored github.com/loft-sh/vcluster
@@ -334,16 +475,45 @@ dispatch() {
 # used to precede a legacy cut, so the pro tag created next builds against the
 # OSS code being co-released.
 #
-# Honors DRY_RUN: prints the dispatch and the PR it would wait on, mutates
-# nothing. The bump branch name is the contract shared with the pro
-# release-bump-vcluster.yaml (which creates it) and this poll's head= filter.
-# auto-approve-bot-prs enables auto-merge for the PR via the vcluster-pro
-# caller's branch-scoped `if:` (chore/*/bump-vcluster-*) PLUS the action's own
-# eligibility gate (trusted author loft-bot + a chore-prefixed PR *title*) --
-# the branch match alone is not auto-approve's merge lever.
+# Probes the PR before dispatching, because the bump workflow is not idempotent
+# from this side: dispatched a second time against a branch that already carries
+# the bump it opens nothing (or an empty PR that can never merge), and the wait
+# below would then block on a PR that will never move. A resume therefore reuses
+# whatever bump already exists:
+#   merged -> the dependency is already on the branch; nothing to do
+#   open   -> skip the dispatch, just wait for the existing PR to merge
+#   closed -> the previous attempt was abandoned; dispatch a fresh one
+#   none   -> first time through; dispatch
+#
+# Honors DRY_RUN: prints what it would do, mutates nothing. The bump branch name
+# is the contract shared with the pro release-bump-vcluster.yaml (which creates
+# it) and this poll's head= filter. auto-approve-bot-prs enables auto-merge for
+# the PR via the vcluster-pro caller's branch-scoped `if:`
+# (chore/*/bump-vcluster-*) PLUS the action's own eligibility gate (trusted
+# author loft-bot + a chore-prefixed PR *title*) -- the branch match alone is not
+# auto-approve's merge lever.
 bump_pro_dependency() {
   local version="$1" line="$2"
-  local bump_branch="chore/${line}/bump-vcluster-${version}"
+  local bump_branch="chore/${line}/bump-vcluster-${version}" tuple state merged
+  tuple="$(bump_pr_probe "$bump_branch" "$line")"
+  state="${tuple%%|*}"
+  merged="${tuple#*|}"
+
+  if [[ -n "$merged" ]]; then
+    echo "::notice::resume: bump PR ${bump_branch} was already merged into ${line} (${merged}); skipping the bump dispatch."
+    return 0
+  fi
+
+  if [[ "$state" == "open" ]]; then
+    echo "::notice::resume: bump PR ${bump_branch} is already open; skipping the dispatch and waiting on it."
+    if [[ "${DRY_RUN:-true}" == "true" ]]; then
+      echo "[dry-run] would wait for PR ${PRO_OWNER}:${bump_branch} -> ${line} to merge, then tag ${PRO_REPO}@${line}"
+      return 0
+    fi
+    wait_for_bump_merge "${bump_branch}" "${line}" "true"
+    return 0
+  fi
+
   if [[ "${DRY_RUN:-true}" == "true" ]]; then
     echo "[dry-run] gh workflow run ${BUMP_WORKFLOW} --repo ${PRO_REPO} --ref ${PRO_DEFAULT_BRANCH} -f version=${version} -f branch=${line}"
     echo "[dry-run] would wait for PR ${PRO_OWNER}:${bump_branch} -> ${line} to merge, then tag ${PRO_REPO}@${line}"
@@ -369,7 +539,12 @@ bump_pro_dependency() {
 # auth error surfaces with its own cause instead of the generic timeout.
 wait_for_bump_merge() {
   local bump_branch="$1" base="$2" i out rc tuple state merged
-  local seen_open="false" fails=0
+  # A resume that already observed the PR open passes seen_open=true, so a PR
+  # that closes unmerged from here aborts immediately instead of being read as
+  # the "stale closed PR from a previous attempt" case and waiting out the full
+  # timeout. Losing that observation is the difference between failing in
+  # seconds and failing in two hours.
+  local seen_open="${3:-false}" fails=0
   for (( i = 1; i <= BUMP_WAIT_ATTEMPTS; i++ )); do
     rc=0
     out="$(gh api "repos/${PRO_REPO}/pulls?head=${PRO_OWNER}:${bump_branch}&base=${base}&state=all" \
@@ -409,62 +584,76 @@ wait_for_bump_merge() {
 }
 
 cut_legacy() {
-  local version="$1" line="$2"
+  local version="$1" line="$2" oss_state pro_state
   echo "Routing ${version} -> legacy (line ${line}); dispatch order: ${OSS_REPO} then ${PRO_REPO}"
   # Both repos must be ready before we mutate anything.
   require_branch "$OSS_REPO" "$line"
   require_branch "$PRO_REPO" "$line"
-  guard_not_released "$OSS_REPO" "$version"
-  guard_not_released "$PRO_REPO" "$version"
+  # Read how far a previous cut got in each repo BEFORE touching either, so the
+  # log opens with the full picture and every step below can be skipped on its
+  # own. Re-running the button is the documented way to finish an interrupted
+  # cut; only an all-released version is refused.
+  release_state_of "$OSS_REPO" "$version"; oss_state="$RELEASE_STATE"
+  release_state_of "$PRO_REPO" "$version"; pro_state="$RELEASE_STATE"
+  guard_double_cut "$version" "$oss_state" "$pro_state"
+  announce_state "$OSS_REPO" "$version" "$oss_state"
+  announce_state "$PRO_REPO" "$version" "$pro_state"
   # Tag OSS first so `go get github.com/loft-sh/vcluster@${version}` resolves the
   # freshly cut tag during the pro dependency bump below.
-  create_tag "$OSS_REPO" "$line" "$version"
+  ensure_tag "$OSS_REPO" "$line" "$version" "$oss_state"
   # Bump the vendored OSS dependency on the pro release branch to the tag just
   # created and wait for the auto-merged PR to land, so the pro tag/build below
   # ships the OSS code being co-released. Automates the old manual release-prep PR.
-  bump_pro_dependency "$version" "$line"
+  # Skipped entirely once pro has moved past tagging: the bump is upstream of the
+  # pro tag, so a tagged/dispatched/released pro already has it.
+  if [[ "$pro_state" == "absent" ]]; then
+    bump_pro_dependency "$version" "$line"
+  else
+    echo "::notice::resume: ${PRO_REPO} is already at '${pro_state}' for ${version}; the dependency bump already landed, skipping it."
+  fi
   # Tag pro at the now-bumped branch head. Both tags still precede either
   # dispatch, preserving the tag-before-dispatch invariant.
-  create_tag "$PRO_REPO" "$line" "$version"
-  dispatch "$OSS_REPO" "$version"
-  # OSS is now building. This sequence is non-atomic: if the pro dispatch below
-  # fails, the correct recovery is to dispatch pro ONLY. Deleting the tags and
-  # re-running this action would re-dispatch (and rebuild) OSS and re-open the
-  # bump PR. Emit the true progress state so a partial failure is diagnosable
-  # from the run log rather than misread as a plain double-cut. See README >
-  # Partial-failure recovery.
+  ensure_tag "$PRO_REPO" "$line" "$version" "$pro_state"
+  ensure_dispatch "$OSS_REPO" "$version" "$oss_state"
+  # OSS is now building. This sequence is non-atomic, but it is resumable: if the
+  # pro dispatch below fails, re-run this action with the same version. It reads
+  # the state back, sees OSS dispatched, and picks up at the pro dispatch alone.
   if [[ "${DRY_RUN:-true}" != "true" ]]; then
-    echo "::notice::${OSS_REPO} dispatched for ${version}. If the ${PRO_REPO} dispatch below fails, recover by dispatching ${PRO_REPO} only - do NOT delete tags and re-run this action (that re-dispatches OSS)."
+    echo "::notice::${OSS_REPO} dispatched for ${version}. If the ${PRO_REPO} dispatch below fails, just re-run this action with the same version - it resumes and will not re-dispatch ${OSS_REPO}."
   fi
-  dispatch "$PRO_REPO" "$version"
+  ensure_dispatch "$PRO_REPO" "$version" "$pro_state"
 }
 
 cut_monorepo() {
-  local version="$1" target="$2"
+  local version="$1" target="$2" state
   echo "Routing ${version} -> monorepo (target ${target}); dispatch: ${PRO_REPO} only"
   # The target is resolved from the suffix matrix, so it must already exist:
   # stable/rc name a vX.Y branch that has to be cut first, alpha/beta name main.
   # Refusing to guess is the point - never fall back to a different branch.
   require_branch "$PRO_REPO" "$target"
-  guard_not_released "$PRO_REPO" "$version"
-  create_tag "$PRO_REPO" "$target" "$version"
+  release_state_of "$PRO_REPO" "$version"; state="$RELEASE_STATE"
+  guard_double_cut "$version" "$state"
+  announce_state "$PRO_REPO" "$version" "$state"
+  ensure_tag "$PRO_REPO" "$target" "$version" "$state"
   local dispatch_args=()
   [[ -n "${TRIGGERED_BY}" ]] && dispatch_args=(-f "triggered_by=${TRIGGERED_BY}")
-  dispatch "$PRO_REPO" "$version" "${dispatch_args[@]}"
+  ensure_dispatch "$PRO_REPO" "$version" "$state" "${dispatch_args[@]}"
 }
 
 # cut_feature_prerelease <version> <feature-branch> - -next / -next.internal are
 # cut from a short-lived feature branch and only ever build pro (they are
 # prereleases of a future, monorepo-era line). Bypasses the era fan-out.
 cut_feature_prerelease() {
-  local version="$1" feature="$2"
+  local version="$1" feature="$2" state
   echo "Routing ${version} -> feature-branch prerelease (source ${feature}); dispatch: ${PRO_REPO} only"
   require_branch "$PRO_REPO" "$feature"
-  guard_not_released "$PRO_REPO" "$version"
-  create_tag "$PRO_REPO" "$feature" "$version"
+  release_state_of "$PRO_REPO" "$version"; state="$RELEASE_STATE"
+  guard_double_cut "$version" "$state"
+  announce_state "$PRO_REPO" "$version" "$state"
+  ensure_tag "$PRO_REPO" "$feature" "$version" "$state"
   local dispatch_args=()
   [[ -n "${TRIGGERED_BY}" ]] && dispatch_args=(-f "triggered_by=${TRIGGERED_BY}")
-  dispatch "$PRO_REPO" "$version" "${dispatch_args[@]}"
+  ensure_dispatch "$PRO_REPO" "$version" "$state" "${dispatch_args[@]}"
 }
 
 main() {

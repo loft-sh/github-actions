@@ -66,10 +66,14 @@ builds against the OSS code being co-released.
 
 ## Guards
 
-- **Double-cut:** fails if the tag or a release for `version` already exists in a
-  target repo. The tag lookup is an exact match (a prerelease like `v0.35.4-rc.1`
-  does not block the final `v0.35.4`), and like the branch check it distinguishes
-  a real 404 from a transient API error rather than silently skipping the guard.
+- **Double-cut:** fails only if **every** target repo already has a published
+  release for `version`. A release is the pipeline's terminal output (only a
+  green build publishes one), so all-released is the one state that proves the
+  version actually shipped. Anything short of it is an interrupted cut and is
+  resumed instead — see [Re-running a cut](#re-running-a-cut). The tag lookup is
+  an exact match (a prerelease like `v0.35.4-rc.1` does not block the final
+  `v0.35.4`), and like the branch check every probe distinguishes a real 404 from
+  a transient API error rather than silently skipping the guard.
 - **Unprepared line:** fails loudly if a required `vX.Y` branch is absent (no
   silent fallback), distinguishing a real 404 from a transient API error.
 - **Dry-run** still performs the read-only checks, so a bad routing decision
@@ -78,29 +82,44 @@ builds against the OSS code being co-released.
   `dry-run` value (a typo, wrong case, empty) stays in dry-run and warns, so a
   misconfigured caller cannot accidentally fire a real cross-repo release.
 
-## Partial-failure recovery
+## Re-running a cut
 
-The legacy path (tag OSS → bump+merge pro → tag pro → dispatch OSS → dispatch
-pro) is **not atomic**. If a run dies partway, read the log to see how far it
-got before recovering, so an interrupted cut is not mistaken for a genuine
-double-cut:
+**Re-running the action with the same version is the recovery procedure.** The
+legacy path (tag OSS → bump+merge pro → tag pro → dispatch OSS → dispatch pro) is
+not atomic, so a run that dies partway leaves real state behind. Rather than ask
+an operator to read the log and hand-unwind it, every step reads that state back
+and skips what is already done.
 
-- **Failed during the pro bump** (the log shows the bump dispatch / merge-wait
-  but the cut aborted before tagging pro — a closed-unmerged bump PR or a merge
-  timeout): only the OSS tag exists and nothing has been dispatched. Delete the
-  OSS tag, resolve why the bump PR did not merge (inspect the
-  `release-bump-vcluster.yaml` run and `auto-approve-bot-prs`), then re-run the
-  action.
-- **Failed during tagging** (one repo tagged, the other not, nothing dispatched):
-  delete the orphaned tag and re-run the action. Nothing has been built yet.
-- **Failed after the OSS dispatch** (the log shows the `::notice::` that
-  `loft-sh/vcluster` was dispatched, but the pro dispatch did not run): the OSS
-  build is already in flight. **Do not** delete the tags and re-run this action
-  wholesale (that would dispatch OSS a second time). Instead, dispatch pro only:
+Before touching anything the action resolves a per-repo state:
 
-  ```bash
-  gh workflow run release.yaml --repo loft-sh/vcluster-pro --ref <version>
-  ```
+| State | Meaning | What a re-run does |
+| --- | --- | --- |
+| `absent` | no tag | tag, then dispatch |
+| `tagged` | tag exists, build never dispatched | dispatch only |
+| `dispatched` | a `release.yaml` run exists at the tag | nothing; prints how to inspect that run |
+| `released` | a GitHub Release exists | nothing for this repo |
+
+The pro dependency bump is resumed the same way: an already-merged bump PR is not
+re-dispatched, an already-open one is waited on rather than duplicated, and a pro
+repo that is past `absent` skips the bump entirely (the bump is upstream of the
+pro tag, so it must already have landed).
+
+Two properties this preserves:
+
+- **A tag is never re-pointed.** The tag a previous run created is what its
+  already-dispatched build is building; moving it would change what ships under a
+  version that is already in flight.
+- **A build is never dispatched twice.** A run at the tag counts as dispatched in
+  *any* conclusion, failed included — a failed build is re-run from its own
+  workflow, where the operator can see why it broke.
+
+So the recovery for every partial failure is the same: fix whatever blocked it
+(a bump PR that would not merge, a missing branch, an expired token), then press
+**Cut release** again with the same version. Use `dry-run: true` first to print
+the resume plan without mutating anything.
+
+Genuinely re-cutting an already-shipped version is still refused. To force one,
+delete its releases and tags first, or cut a new version.
 
 ## Usage
 
@@ -146,6 +165,13 @@ jobs:
 `workflow` scope on **both** `loft-sh/vcluster` and `loft-sh/vcluster-pro`
 (cross-repo tag creation and dispatch). `secrets.GITHUB_TOKEN` cannot dispatch
 into other repos.
+
+It also needs to **read workflow runs** in both repos — `repo` scope covers this
+on a classic PAT; a fine-grained PAT needs `Actions: read` granted explicitly.
+That read is what tells a re-run whether a tag has already been dispatched, and
+it is fail-closed: if the probe cannot answer, the cut aborts naming
+`actions:read` rather than risk dispatching a second build of a release that is
+already building.
 
 ## Testing
 
