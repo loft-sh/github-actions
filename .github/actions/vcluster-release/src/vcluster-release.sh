@@ -64,6 +64,15 @@ DISPATCH_VISIBLE_SLEEP_SECONDS="${DISPATCH_VISIBLE_SLEEP_SECONDS:-5}"
 # a null (no PR yet) collapses to "none|" via the // fallbacks so parsing never
 # errors. Extracted so the bats suite can validate the exact expression.
 BUMP_PR_JQ='.[0] | "\(.state // "none")|\(.merged_at // "")"'
+# jq filter reducing a workflow-runs page to "<total> <active>". Extracted, like
+# BUMP_PR_JQ, so the bats suite can run the real expression against real API
+# JSON rather than a hand-emitted approximation of its output. %SHA_CLAUSE% is
+# substituted with either `true` or a head_sha comparison before use.
+RUNS_JQ='if (.workflow_runs | type) != "array" then error("workflow_runs is not an array") else
+      "\([.workflow_runs[] | select(%SHA_CLAUSE%)] | length) \([.workflow_runs[] | select(.status != "completed")] | length)"
+    end'
+# jq filter reading a tag ref as "<sha> <type>". Same reason.
+TAG_REF_JQ='"\(.object.sha // "") \(.object.type // "")"'
 # The human who invoked cut-release. Forwarded to the monorepo-era release.yaml
 # (-f triggered_by=...) so the Slack banner attributes the person, not the bot
 # PAT that dispatches the build. Only passed on paths whose release.yaml declares
@@ -315,9 +324,7 @@ runs_at_ref() {
   # `.workflow_runs` must be an array. Without that assertion a truncated or
   # error-shaped body renders as a plausible "0 0" and reads as "nothing here".
   out="$(gh api "repos/${repo}/actions/workflows/${WORKFLOW}/runs?branch=${ref}&per_page=100" \
-    --jq 'if (.workflow_runs | type) != "array" then error("workflow_runs is not an array") else
-      "\([.workflow_runs[] | select('"${sha_clause}"')] | length) \([.workflow_runs[] | select(.status != "completed")] | length)"
-    end' 2>&1)" || rc=$?
+    --jq "${RUNS_JQ//%SHA_CLAUSE%/${sha_clause}}" 2>&1)" || rc=$?
   if (( rc != 0 )); then
     # Quiet for the post-dispatch barrier: it polls this in a loop on a cut that
     # is going to succeed, so an ::error:: per attempt would paint a green
@@ -337,13 +344,13 @@ runs_at_ref() {
 # tag_sha_of <repo> <tag> - the commit a tag points at, or empty if unknown.
 #
 # On a 404 `gh api --jq` prints the raw error body to stdout without applying the
-# filter, so the result has to be shape-checked rather than trusted. Callers
+# filter, so the result has to be shape-checked rather than trusted.
 # Empty means "unknown", and NO caller may treat that as an unscoped count: an
 # unscoped count includes runs of previous incarnations of a re-cut tag. Both
 # callers refuse instead - release_state aborts, the barrier keeps waiting.
 tag_sha_of() {
   local repo="$1" tag="$2" out sha type
-  out="$(gh api "repos/${repo}/git/ref/tags/${tag}" --jq '"\(.object.sha // "") \(.object.type // "")"' 2>/dev/null)" || return 0
+  out="$(gh api "repos/${repo}/git/ref/tags/${tag}" --jq "$TAG_REF_JQ" 2>/dev/null)" || return 0
   sha="${out%% *}"
   type="${out##* }"
   [[ "$sha" =~ ^[0-9a-f]{7,64}$ ]] || return 0
@@ -360,6 +367,7 @@ tag_sha_of() {
 }
 
 # release_state <repo> <tag> -> absent | tagged | dispatched | released
+#                             | dispatched-tag-missing | dispatched-other-commit
 #
 # How far a previous cut got for this version in this repo. Every mutating step
 # is keyed off this so re-running the button resumes an interrupted cut instead
@@ -370,6 +378,13 @@ tag_sha_of() {
 #   tagged     tag created, build never dispatched
 #   dispatched build dispatched (running, failed, or finished without publishing)
 #   released   a GitHub Release exists - the pipeline's terminal output
+#
+# Plus two states that are not points on that line but conflicts, both fatal in
+# guard_double_cut rather than resumable:
+#
+#   dispatched-tag-missing   a run is in flight but the tag is gone
+#   dispatched-other-commit  a run is in flight against a different commit than
+#                            the tag now points at
 #
 # The release is the terminal marker precisely because this script treats it as
 # an output, not a trigger: only a green build publishes one. So "released"
@@ -466,14 +481,19 @@ release_state_of() {
 guard_double_cut() {
   local version="$1"
   shift
-  local state all_released="true"
-  for state in "$@"; do
+  local pair repo state all_released="true"
+  for pair in "$@"; do
+    # "<repo>=<state>", so a refusal can name which repo it came from. On the
+    # legacy path announce_state does that too, but it only runs after this
+    # guard, so without the repo here nothing in the log disambiguates.
+    repo="${pair%%=*}"
+    state="${pair#*=}"
     if [[ "$state" == "dispatched-tag-missing" ]]; then
-      echo "::error::a ${WORKFLOW} run for ${version} is still in flight, but its tag no longer exists. Someone deleted the tag under a running build. Wait for that run to finish (or cancel it) and reconcile the tag before cutting ${version} again - re-tagging now would point ${version} at a different commit than the build that is running." >&2
+      echo "::error::${repo}: a ${WORKFLOW} run for ${version} is still in flight, but its tag no longer exists. Someone deleted the tag under a running build. Wait for that run to finish (or cancel it) and reconcile the tag before cutting ${version} again - re-tagging now would point ${version} at a different commit than the build that is running." >&2
       exit 1
     fi
     if [[ "$state" == "dispatched-other-commit" ]]; then
-      echo "::error::a ${WORKFLOW} run for ${version} is still in flight against a DIFFERENT commit than the ${version} tag now points at. The tag was re-pointed under a running build. Wait for that run to finish (or cancel it) before cutting ${version} again - dispatching now would leave two builds racing to publish ${version} from two different commits." >&2
+      echo "::error::${repo}: a ${WORKFLOW} run for ${version} is still in flight against a DIFFERENT commit than the ${version} tag now points at. The tag was re-pointed under a running build. Wait for that run to finish (or cancel it) before cutting ${version} again - dispatching now would leave two builds racing to publish ${version} from two different commits." >&2
       exit 1
     fi
     [[ "$state" == "released" ]] || all_released="false"
@@ -486,6 +506,10 @@ guard_double_cut() {
 
 # announce_state <repo> <tag> <state> - one line per repo so the run log opens
 # with what the cut found, before it changes anything.
+#
+# Only the four resumable states have an arm. The two fatal ones
+# (dispatched-tag-missing, dispatched-other-commit) exit inside guard_double_cut,
+# which runs first, so an arm for either here would be unreachable.
 announce_state() {
   local repo="$1" tag="$2" state="$3"
   case "$state" in
@@ -493,8 +517,6 @@ announce_state() {
     tagged)     echo "::notice::${repo}: ${tag} already tagged but never dispatched; resuming at the dispatch." ;;
     dispatched) echo "::notice::${repo}: ${tag} already tagged and dispatched; nothing left to do here. Inspect: gh run list --repo ${repo} --workflow ${WORKFLOW} --branch ${tag}" ;;
     released)   echo "::notice::${repo}: ${tag} already released; skipping this repo." ;;
-    dispatched-tag-missing)
-                echo "::notice::${repo}: ${tag} has a run in flight but no tag." ;;
   esac
 }
 
@@ -683,36 +705,18 @@ bump_pr_probe() {
 # auto-approve's merge lever.
 bump_pro_dependency() {
   local version="$1" line="$2"
-  local bump_branch="chore/${line}/bump-vcluster-${version}" tuple state merged bump_rc
+  local bump_branch="chore/${line}/bump-vcluster-${version}" tuple state merged
   tuple="$(bump_pr_probe "$bump_branch" "$line")"
   state="${tuple%%|*}"
   merged="${tuple#*|}"
 
   if [[ -n "$merged" ]]; then
-    BUMP_FOUND_VERSION=""
-    # `rc=0; f || rc=$?`, never a bare call: under `set -e` a function returning
-    # non-zero exits the shell before `case` is reached, which made every message
-    # below dead code in production. The bats suite cannot catch that - `run`
-    # disables errexit for the call it wraps - so this is covered by a test that
-    # executes the script in a child bash instead.
-    bump_rc=0
-    bump_landed_at_ref "$line" "$version" || bump_rc=$?
-    case $bump_rc in
-      0)
-        echo "::notice::resume: bump PR ${bump_branch} was already merged into ${line} (${merged}) and go.mod requires ${BUMP_FOUND_VERSION}; skipping the bump dispatch."
-        return 0
-        ;;
-      1)
-        echo "::error::bump PR ${bump_branch} is merged (${merged}) but ${PRO_REPO}@${line} go.mod requires github.com/loft-sh/vcluster ${BUMP_FOUND_VERSION}, not ${version}. The bump was reverted or the branch was force-pushed. Refusing to tag pro against an un-bumped go.mod - reconcile ${line} before re-running." >&2
-        exit 1
-        ;;
-      *)
-        echo "::error::bump PR ${bump_branch} is merged (${merged}) but ${PRO_REPO}@${line} go.mod could not be read, so the bump cannot be confirmed. Refusing to tag pro against a dependency state we cannot verify." >&2
-        exit 1
-        ;;
-    esac
+    # Only decides whether to dispatch. Whether the bump actually landed is
+    # checked by require_bump_landed after this returns, on every path - this
+    # probe fails open, so it must not be the thing that gates the pro tag.
+    echo "::notice::resume: bump PR ${bump_branch} was already merged into ${line} (${merged}); skipping the bump dispatch."
+    return 0
   fi
-
   if [[ "$state" == "open" ]]; then
     echo "::notice::resume: bump PR ${bump_branch} is already open; skipping the dispatch and waiting on it."
     if [[ "${DRY_RUN:-true}" == "true" ]]; then
@@ -792,8 +796,63 @@ wait_for_bump_merge() {
   exit 1
 }
 
+# require_bump_landed <ref> <version> <what> [advisory] - stop unless <ref>'s
+# go.mod requires the OSS version being co-released.
+#
+# This is the single gate on "pro must not be tagged against an un-bumped
+# go.mod", and it is deliberately NOT attached to any one way of getting there.
+# It used to hang off the branch where bump_pr_probe reported an already-merged
+# PR, which left a hole: bump_pr_probe fails open, so a transient API error made
+# it report "no PR", the bump was re-dispatched, wait_for_bump_merge saw the
+# already-merged PR and returned, and pro was tagged with the check never having
+# run. Gating the tag itself instead of one path to it closes that by
+# construction.
+#
+# `advisory` downgrades a mismatch to a notice. Used only in dry-run, where the
+# bump was printed rather than dispatched, so the branch legitimately does not
+# carry it yet.
+require_bump_landed() {
+  local ref="$1" version="$2" what="$3" advisory="${4:-}" rc=0 detail
+  BUMP_FOUND_VERSION=""
+  # `rc=0; f || rc=$?` and not a bare call: under `set -e` a function returning
+  # non-zero exits the shell before `case` is reached, which would make every
+  # message below dead code. bats' `run` disables errexit, so only the
+  # child-process tests can catch a regression here.
+  bump_landed_at_ref "$ref" "$version" || rc=$?
+  if (( rc == 0 )); then
+    echo "::notice::${what}: go.mod at ${ref} requires ${BUMP_FOUND_VERSION}."
+    return 0
+  fi
+  if (( rc == 1 )); then
+    detail="requires github.com/loft-sh/vcluster ${BUMP_FOUND_VERSION}, not ${version}"
+  else
+    detail="could not be read, so the dependency bump cannot be confirmed"
+  fi
+  if [[ -n "$advisory" ]]; then
+    echo "::notice::${what}: go.mod at ${ref} ${detail}. Not a failure in dry-run - the bump has only been printed, not dispatched."
+    return 0
+  fi
+  echo "::error::${what}: go.mod at ${ref} ${detail}. Refusing to tag ${PRO_REPO} ${version} against a dependency state that does not match the release: pro would ship the wrong OSS code." >&2
+  exit 1
+}
+
+# require_oss_not_behind_pro <version> <oss_state> <pro_state> - the legacy
+# fan-out always tags OSS before pro, so OSS can never legitimately be behind pro
+# for the same version. If it is, the OSS tag was deleted after the fact, and
+# resuming would re-create it at whatever the release branch looks like NOW -
+# publishing an OSS half built from different source than the pro half that
+# already shipped against the original. Two artifacts, one version, different
+# code. Previously a hard error via the tag guard; keep it one rather than let
+# the resume paper over it.
+require_oss_not_behind_pro() {
+  local version="$1" oss_state="$2" pro_state="$3"
+  [[ "$oss_state" == "absent" && "$pro_state" != "absent" ]] || return 0
+  echo "::error::${PRO_REPO} is already at '${pro_state}' for ${version} but ${OSS_REPO} has no ${version} tag. OSS is always tagged first, so the OSS tag was deleted after this cut started. Re-creating it now would point ${version} at a different commit than the pro half was built against. Restore the OSS tag at its original commit, or delete the pro tag and release and re-cut ${version} cleanly." >&2
+  exit 1
+}
+
 cut_legacy() {
-  local version="$1" line="$2" oss_state pro_state bump_rc
+  local version="$1" line="$2" oss_state pro_state advisory=""
   echo "Routing ${version} -> legacy (line ${line}); dispatch order: ${OSS_REPO} then ${PRO_REPO}"
   # Both repos must be ready before we mutate anything.
   require_branch "$OSS_REPO" "$line"
@@ -804,55 +863,28 @@ cut_legacy() {
   # cut; only an all-released version is refused.
   release_state_of "$OSS_REPO" "$version"; oss_state="$RELEASE_STATE"
   release_state_of "$PRO_REPO" "$version"; pro_state="$RELEASE_STATE"
-  guard_double_cut "$version" "$oss_state" "$pro_state"
-  # The legacy fan-out always tags OSS before pro, so OSS can never legitimately
-  # be behind pro for the same version. If it is, the OSS tag was deleted after
-  # the fact, and resuming would re-create it at whatever the release branch
-  # looks like NOW - publishing an OSS half built from different source than the
-  # pro half that already shipped against the original. Two artifacts, one
-  # version, different code. Previously a hard error via the tag guard; keep it
-  # one rather than let the resume paper over it.
-  if [[ "$oss_state" == "absent" && "$pro_state" != "absent" ]]; then
-    echo "::error::${PRO_REPO} is already at '${pro_state}' for ${version} but ${OSS_REPO} has no ${version} tag. OSS is always tagged first, so the OSS tag was deleted after this cut started. Re-creating it now would point ${version} at a different commit than the pro half was built against. Restore the OSS tag at its original commit, or delete the pro tag and release and re-cut ${version} cleanly." >&2
-    exit 1
-  fi
+  guard_double_cut "$version" "${OSS_REPO}=${oss_state}" "${PRO_REPO}=${pro_state}"
+  require_oss_not_behind_pro "$version" "$oss_state" "$pro_state"
   announce_state "$OSS_REPO" "$version" "$oss_state"
   announce_state "$PRO_REPO" "$version" "$pro_state"
   # Tag OSS first so `go get github.com/loft-sh/vcluster@${version}` resolves the
   # freshly cut tag during the pro dependency bump below.
   ensure_tag "$OSS_REPO" "$line" "$version" "$oss_state"
-  # Bump the vendored OSS dependency on the pro release branch to the tag just
-  # created and wait for the auto-merged PR to land, so the pro tag/build below
-  # ships the OSS code being co-released. Automates the old manual release-prep PR.
-  # Skipped entirely once pro has moved past tagging: the bump is upstream of the
-  # pro tag, so a tagged/dispatched/released pro already has it.
   if [[ "$pro_state" == "absent" ]]; then
+    # Bump the vendored OSS dependency on the pro release branch to the tag just
+    # created and wait for the auto-merged PR to land, so the pro tag/build below
+    # ships the OSS code being co-released. Automates the old manual release-prep
+    # PR. In dry-run this only prints, so the gate below is advisory there.
     bump_pro_dependency "$version" "$line"
+    [[ "${DRY_RUN:-true}" == "true" ]] && advisory="advisory"
+    require_bump_landed "$line" "$version" "${PRO_REPO}@${line}" "$advisory"
   else
     # Pro is already tagged, so ensure_tag will not create one and that existing
-    # tag is what ships. Skipping the bump here therefore has to be justified by
-    # the TAG's content, not by the branch's and not by a merged PR: the tag is
-    # the artifact, and "a pro tag exists" on its own says nothing about which
-    # OSS version it vendored. Under the old code any pre-existing pro tag was a
-    # hard stop, so this inference was never load-bearing. It is now, so check it.
-    BUMP_FOUND_VERSION=""
-    # See the note at the other call site: a bare call exits under set -e before
-    # `case` runs, silently swallowing the messages below.
-    bump_rc=0
-    bump_landed_at_ref "$version" "$version" || bump_rc=$?
-    case $bump_rc in
-      0)
-        echo "::notice::resume: ${PRO_REPO} is already at '${pro_state}' for ${version} and that tag's go.mod requires ${BUMP_FOUND_VERSION}; the dependency bump already landed, skipping it."
-        ;;
-      1)
-        echo "::error::${PRO_REPO} is already tagged ${version}, but that tag's go.mod requires github.com/loft-sh/vcluster ${BUMP_FOUND_VERSION}, not ${version}. That tag was not built against the OSS code being co-released. Delete it and re-cut, or investigate how it was created - refusing to dispatch a pro build that ships the wrong OSS version." >&2
-        exit 1
-        ;;
-      *)
-        echo "::error::${PRO_REPO} is already tagged ${version}, but that tag's go.mod could not be read, so the dependency bump cannot be confirmed. Refusing to dispatch a pro build whose OSS version we cannot verify." >&2
-        exit 1
-        ;;
-    esac
+    # tag is what ships. The bump is upstream of the pro tag, but "a pro tag
+    # exists" says nothing about which OSS version it vendored - so verify the
+    # TAG's content, not the branch's. Under the old code any pre-existing pro
+    # tag was a hard stop, so this inference was never load-bearing. It is now.
+    require_bump_landed "$version" "$version" "${PRO_REPO} tag ${version}"
   fi
   # Tag pro at the now-bumped branch head. Both tags still precede either
   # dispatch, preserving the tag-before-dispatch invariant.
@@ -875,7 +907,7 @@ cut_monorepo() {
   # Refusing to guess is the point - never fall back to a different branch.
   require_branch "$PRO_REPO" "$target"
   release_state_of "$PRO_REPO" "$version"; state="$RELEASE_STATE"
-  guard_double_cut "$version" "$state"
+  guard_double_cut "$version" "${PRO_REPO}=${state}"
   announce_state "$PRO_REPO" "$version" "$state"
   ensure_tag "$PRO_REPO" "$target" "$version" "$state"
   local dispatch_args=()
@@ -891,7 +923,7 @@ cut_feature_prerelease() {
   echo "Routing ${version} -> feature-branch prerelease (source ${feature}); dispatch: ${PRO_REPO} only"
   require_branch "$PRO_REPO" "$feature"
   release_state_of "$PRO_REPO" "$version"; state="$RELEASE_STATE"
-  guard_double_cut "$version" "$state"
+  guard_double_cut "$version" "${PRO_REPO}=${state}"
   announce_state "$PRO_REPO" "$version" "$state"
   ensure_tag "$PRO_REPO" "$feature" "$version" "$state"
   local dispatch_args=()

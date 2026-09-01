@@ -107,7 +107,8 @@ OSS version it vendored. A mismatch is a hard error, never a guess, because
 tagging pro against an un-bumped `go.mod` ships a release built on the wrong
 OSS code.
 
-Two further states are refused outright rather than resumed:
+Two further `release_state` values are conflicts rather than points on that
+line, and are refused outright rather than resumed:
 
 - **A tag deleted under a running build.** No tag, but a `release.yaml` run for
   the version has not completed. Re-tagging would point the version at a
@@ -122,6 +123,9 @@ Two further states are refused outright rather than resumed:
   a different one. Dispatching would leave two builds racing to publish one
   version from two commits. (`active` is deliberately counted unscoped so this is
   visible even though the dispatched check is scoped to the commit.)
+One further refusal is a comparison ACROSS the two repos rather than a state of
+either:
+
 - **OSS behind pro.** The legacy fan-out always tags OSS first, so OSS can never
   legitimately lag pro. If it does, the OSS tag was deleted, and re-creating it
   now would publish an OSS half built from different source than the pro half
@@ -131,12 +135,11 @@ Two properties this preserves:
 
 - **A tag is never re-pointed.** The tag a previous run created is what its
   already-dispatched build is building; moving it would change what ships under a
-  version that is already in flight.
-The run count is scoped to the commit the tag points at (peeling annotated tags),
-not just the tag name.
-Run records outlive tags, so an unscoped count would let a completed run from a
-previous incarnation of a re-cut tag read as "already dispatched" and silently
-suppress the build of the new commit.
+  version that is already in flight. The run count is scoped to the commit the
+  tag points at (peeling annotated tags), not just the tag name: run records
+  outlive tags, so an unscoped count would let a completed run from a previous
+  incarnation of a re-cut tag read as "already dispatched" and silently suppress
+  the build of the new commit.
 
 - **A build is never dispatched twice.** A run at the tag counts as dispatched in
   *any* conclusion, failed included — a failed build is re-run from its own
