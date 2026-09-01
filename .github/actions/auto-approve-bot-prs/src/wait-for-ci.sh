@@ -273,8 +273,20 @@ while [ "$attempt" -lt "$max_attempts" ]; do
   # gave up at 22:47:42, the rerun went green at 00:54, and the release cut
   # waiting on the merge had timed out long before.
   #
-  # This holds ONLY while a newer suite is actually running, so a genuinely
-  # broken PR still bails in seconds instead of burning max_attempts.
+  # The watermark is deliberately NOT scoped to the failing check's own name. A
+  # rerun queued behind an earlier job in its workflow has not published its
+  # check-run yet, so there is no name to match on - that is the whole reason the
+  # cancelled path reads "any newer suite" rather than "the replacement exists",
+  # and the failure path inherits both the signal and its imprecision.
+  #
+  # The cost is real and worth stating plainly: an unrelated workflow can vouch
+  # for the failure. A fast lint failure alongside a 40-minute e2e in a
+  # higher-numbered suite holds the bail until max_attempts and then exits
+  # through the timeout path, whose message does not name the lint failure that
+  # actually blocked it. That is bounded (90 x 10s by default) and always ends
+  # ci_green=false, so it costs latency and diagnosability, never merge safety.
+  # Traded knowingly: missing a real rerun stalls a release cut, which is the
+  # failure this hold exists to prevent.
   cr_newer_suite_pending=0
   if [ "$poll_errored" -eq 0 ] && { [ "$cr_cancelled" -gt 0 ] || [ "$cr_real_failed" -gt 0 ]; }; then
     # shellcheck disable=SC2016  # $w is a jq variable, not a shell one
@@ -364,9 +376,21 @@ while [ "$attempt" -lt "$max_attempts" ]; do
   # real outcome and something downstream may be blocking on it. As a notice this
   # step read as a clean green job while the release cut it gated sat waiting for
   # a merge that was never coming.
-  if [ "$real_failed" -gt 0 ] && [ "$cr_newer_suite_pending" -eq 0 ]; then
-    # Sanitized: these carry attacker-settable check names / status contexts.
-    details=$(printf '%s\n%s' "$cr_real_failed_detail" "$st_failed_detail" | awk 'NF' | paste -sd, - | sed 's/,/, /g' | sanitize_for_log 1000)
+  # A commit status is never held. The watermark is derived from check-run suite
+  # ids, and statuses carry none, so a running check suite would otherwise vouch
+  # for an unrelated external failure it knows nothing about - holding a Netlify
+  # failure for the full wait budget on the strength of an e2e rerun. External
+  # systems also have no rerun concept here, so their verdict is final.
+  if [ "$st_failed" -gt 0 ]; then
+    details=$(printf '%s' "$st_failed_detail" | sanitize_for_log 1000)
+    echo "::error::A commit status reported failure; refusing to approve. Failing: ${details:-unknown}"
+    emit ci_green false
+    exit 0
+  fi
+
+  if [ "$cr_real_failed" -gt 0 ] && [ "$cr_newer_suite_pending" -eq 0 ]; then
+    # Sanitized: these carry attacker-settable check names.
+    details=$(printf '%s' "$cr_real_failed_detail" | sanitize_for_log 1000)
     echo "::error::Other CI checks failed and no rerun is in flight; refusing to approve. Failing: ${details:-unknown}"
     emit ci_green false
     exit 0

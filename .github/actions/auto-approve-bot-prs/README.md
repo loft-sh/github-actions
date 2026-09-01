@@ -90,12 +90,18 @@ vcluster-pro#2367 one flaky spec out of 190 failed at 22:47, the bot gave up at
 22:47:42, the rerun passed at 00:54 — and the release cut waiting on that merge
 had already timed out.
 
-A genuinely broken PR still bails on the first poll: the hold only engages when a
-newer suite is actually running, so nothing burns `wait-max-attempts` waiting for
-a rerun nobody started.
+With nothing newer running, a broken PR still bails on the first poll. That
+guarantee is conditional, though: the watermark is not scoped to the failing
+check's own name, so an unrelated workflow in a higher-numbered suite holds the
+bail until `wait-max-attempts`. Name-scoping would be more precise but would
+break the cancelled case it borrows from — a replacement queued behind an earlier
+job has not published a check-run to match on yet. The hold stays fail-closed
+either way, so the cost is latency and a less specific timeout message, never a
+wrong merge.
 
-Commit statuses are excluded from the hold. They carry no suite id and have no
-rerun concept, so an external system reporting `failure`/`error` is final.
+Commit statuses are excluded from the hold and bail immediately. They carry no
+suite id, so a running check suite would otherwise vouch for an external failure
+it knows nothing about, and external systems have no rerun concept here.
 
 Refusing to approve is reported as an `::error::`. The job keeps its
 `continue-on-error` safety net, so it cannot turn a caller's CI red, but a

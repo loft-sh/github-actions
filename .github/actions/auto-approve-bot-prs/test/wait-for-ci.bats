@@ -1027,9 +1027,11 @@ kv() { grep "^$1=" "$GITHUB_OUTPUT" | tail -n1; }
   [[ "$output" != *"no rerun is in flight"* ]]
 }
 
-@test "devops-1452: a failed check with no newer suite still bails immediately" {
-  # The other half: a genuinely broken PR must not burn max_attempts waiting
-  # for a rerun that nobody started.
+@test "devops-1452: a failed check bails on the first poll when no newer suite runs" {
+  # The other half: with nothing newer running, a broken PR bails on the first
+  # poll rather than burning max_attempts. Note this guarantee is conditional -
+  # an unrelated newer suite WILL hold the bail (see the watermark comment in
+  # wait-for-ci.sh); it stays fail-closed either way.
   export WAIT_MAX_ATTEMPTS=20
   GH_MOCK_CHECK_RUNS_JSON='{"check_runs":[
     {"name":"e2e","status":"completed","conclusion":"failure","started_at":"2026-04-17T05:00:00Z","check_suite":{"id":100},"details_url":"https://github.com/o/r/actions/runs/333/job/1"}
@@ -1076,5 +1078,24 @@ kv() { grep "^$1=" "$GITHUB_OUTPUT" | tail -n1; }
   ]}' run "$SCRIPT"
   [ "$status" -eq 0 ]
   [ "$(kv ci_green)" = "ci_green=false" ]
-  [[ "$output" == *"no rerun is in flight"* ]]
+  [[ "$output" == *"A commit status reported failure"* ]]
+}
+
+@test "devops-1452: a commit-status failure is not held by an unrelated rerun" {
+  # The watermark comes from check-run suite ids; statuses carry none. A running
+  # e2e rerun must not vouch for an unrelated Netlify failure and hold it for the
+  # whole wait budget.
+  export WAIT_MAX_ATTEMPTS=20
+  GH_MOCK_CHECK_RUNS_JSON='{"check_runs":[
+    {"name":"e2e","status":"completed","conclusion":"failure","started_at":"2026-04-17T05:00:00Z","check_suite":{"id":100},"details_url":"https://github.com/o/r/actions/runs/333/job/1"},
+    {"name":"e2e-rerun","status":"in_progress","conclusion":null,"started_at":"2026-04-17T06:00:00Z","check_suite":{"id":200},"details_url":"https://github.com/o/r/actions/runs/444/job/1"}
+  ]}' \
+  GH_MOCK_STATUSES_JSON='{"statuses":[
+    {"context":"netlify","state":"failure","target_url":"https://netlify.example/x"}
+  ]}' run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv ci_green)" = "ci_green=false" ]
+  [[ "$output" == *"A commit status reported failure"* ]]
+  # Bailed on the first poll rather than burning the budget on the check rerun.
+  [[ "$output" != *"attempt 20/20"* ]]
 }
