@@ -134,7 +134,10 @@ if [[ "$sub" == "api" ]]; then
       # incarnation of a re-cut tag. The script scopes its total to the tag's
       # current sha, so such a run must not count toward "already dispatched".
       [[ "${GH_STUB_RUN_SHA_MISMATCH:-}" == "1" ]] && _total=0
-      [ "$_active" -eq 1 ] && _total=1
+      # Without the mismatch flag an active run is also a run at this commit.
+      # With it, the active run belongs to a different commit, so it must NOT
+      # count toward the sha-scoped total.
+      if [ "$_active" -eq 1 ] && [[ "${GH_STUB_RUN_SHA_MISMATCH:-}" != "1" ]]; then _total=1; fi
       echo "${_total} ${_active}"
       exit 0 ;;
     repos/*/contents/go.mod*)
@@ -1318,4 +1321,31 @@ EOF
   [ "$status" -eq 0 ]
   [[ "$output" == *"did not become queryable"* ]]
   [[ "$output" != *"::error::"* ]]
+}
+
+@test "resume: a build in flight at a DIFFERENT commit than the tag is refused" {
+  # The tag was re-pointed under a running build. Scoping the total to the
+  # commit hides that run from `total`, so `active` has to catch it - otherwise
+  # this dispatches and two builds race to publish one version from two commits.
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.37"
+  export GH_STUB_TAGS="loft-sh/vcluster-pro:v0.37.2"
+  export GH_STUB_ACTIVE_RUNS="loft-sh/vcluster-pro:v0.37.2"
+  export GH_STUB_RUN_SHA_MISMATCH="1"
+  INPUT_VERSION="v0.37.2" INPUT_DRY_RUN="false" run bash "$SCRIPT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"against a DIFFERENT commit"* ]]
+  [[ "$output" != *"dispatched release.yaml"* ]]
+  [[ "$output" != *"created tag"* ]]
+}
+
+@test "resume: a COMPLETED run at a different commit still allows the dispatch" {
+  # The other half: an old finished build must not block the new commit. Only an
+  # in-flight one does.
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.37"
+  export GH_STUB_TAGS="loft-sh/vcluster-pro:v0.37.2"
+  export GH_STUB_DISPATCHED="loft-sh/vcluster-pro:v0.37.2"
+  export GH_STUB_RUN_SHA_MISMATCH="1"
+  INPUT_VERSION="v0.37.2" INPUT_DRY_RUN="false" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"dispatched release.yaml in loft-sh/vcluster-pro "* ]]
 }

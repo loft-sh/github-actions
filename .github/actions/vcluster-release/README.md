@@ -117,6 +117,11 @@ Two further states are refused outright rather than resumed:
   cannot disagree about a run that changed state between two requests, and the
   count is taken from each run's own status rather than a `status=` filter, which
   would miss `requested`, `waiting` and `pending`.
+- **A tag re-pointed under a running build.** The tag exists, no run matches the
+  commit it now points at, but a run for that tag name is still in flight against
+  a different one. Dispatching would leave two builds racing to publish one
+  version from two commits. (`active` is deliberately counted unscoped so this is
+  visible even though the dispatched check is scoped to the commit.)
 - **OSS behind pro.** The legacy fan-out always tags OSS first, so OSS can never
   legitimately lag pro. If it does, the OSS tag was deleted, and re-creating it
   now would publish an OSS half built from different source than the pro half
