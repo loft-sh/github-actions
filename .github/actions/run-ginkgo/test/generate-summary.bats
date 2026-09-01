@@ -279,8 +279,10 @@ get_summary_line() {
   local summary
   summary="$(get_summary)"
   [[ "$summary" == *"Flaked (passed on retry): 1"* ]]
-  # Still counted as passed, matching ginkgo's own accounting.
-  [[ "$summary" == *"All tests passed!"* ]]
+  # Still counted as passed, matching ginkgo's own accounting - but the headline
+  # is qualified rather than an unbroken "All tests passed!".
+  [[ "$summary" == *"All tests passed (2/3), 1 only on a retry"* ]]
+  [[ "$summary" != *"All tests passed!"* ]]
 }
 
 @test "a clean run reports no flaked line even with retries enabled" {
