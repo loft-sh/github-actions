@@ -32,7 +32,7 @@ teardown() {
 # `workflow run` succeed (only reached in non-dry-run tests). GH_STUB_TRANSIENT /
 # GH_STUB_UNEXPECTED simulate API failures on every probe; GH_STUB_TRANSIENT_TAGS
 # scopes a transient failure to the double-cut probes only (branch check still
-# passes), to exercise guard_not_released's transient handling in isolation.
+# passes), to exercise the double-cut probe's transient handling in isolation.
 install_gh_stub() {
   cat >"${STUB_DIR}/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -141,7 +141,7 @@ if [[ "$sub" == "api" ]]; then
       echo "${_total} ${_active}"
       exit 0 ;;
     repos/*/contents/go.mod*)
-      # bump_landed_on_branch reads go.mod off the release branch. The script
+      # bump_landed_at_ref reads go.mod off a branch or tag. The script
       # pipes .content through `base64 -d`, so emit base64 like the real API.
       # GH_STUB_GOMOD_FAIL makes the read unanswerable.
       if [[ "${GH_STUB_GOMOD_FAIL:-}" == "1" ]]; then exit 1; fi
@@ -182,6 +182,9 @@ if [[ "$sub" == "api" ]]; then
         none_open_closed) if [ "$_n" -le 1 ]; then echo "none|"; elif [ "$_n" -le 2 ]; then echo "open|"; else echo "closed|"; fi ;;
         open_then_closed) if [ "$_n" -le 1 ]; then echo "open|"; else echo "closed|"; fi ;;
         fail)             exit 1 ;;                     # simulate a gh api failure
+        # The probe fails (so it reports "no PR" and re-dispatches), then the
+        # poll finds the PR already merged - the fail-open path.
+        fail_then_merged) if [ "$_n" -le 1 ]; then exit 1; else echo "closed|2026-01-02T03:04:05Z"; fi ;;
         *)                echo "none|" ;;
       esac
       exit 0 ;;
@@ -591,7 +594,7 @@ EOF
   export GH_STUB_GOMOD_VERSION="v0.35.4"
   INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run main
   [ "$status" -eq 0 ]
-  [[ "$output" == *"the dependency bump already landed, skipping it"* ]]
+  [[ "$output" == *"loft-sh/vcluster-pro tag v0.35.4: go.mod at v0.35.4 requires v0.35.4"* ]]
   [[ "$output" != *"dispatching release-bump-vcluster.yaml"* ]]
   [[ "$output" == *"dispatched release.yaml in loft-sh/vcluster-pro "* ]]
 }
@@ -605,7 +608,7 @@ EOF
   export GH_STUB_GOMOD_VERSION="v0.35.3"
   INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run main
   [ "$status" -ne 0 ]
-  [[ "$output" == *"was not built against the OSS code being co-released"* ]]
+  [[ "$output" == *"pro would ship the wrong OSS code"* ]]
   [[ "$output" != *"dispatched release.yaml"* ]]
 }
 
@@ -643,7 +646,7 @@ EOF
 }
 
 @test "resume: a transient failure on the dispatched-runs probe aborts loudly" {
-  # workflow_runs_at_ref is fail-closed for the same reason api_exists is: read
+  # runs_at_ref is fail-closed for the same reason api_exists is: read
   # as "not dispatched", it would fire a second build of a release already
   # building. It runs inside a command substitution, so its abort has to survive
   # the subshell.
@@ -658,7 +661,7 @@ EOF
 
 @test "guard: a transient failure on the double-cut probe aborts loudly (not read as not-released)" {
   # The branch check passes; only the guard's release/tag probe transient-fails.
-  # guard_not_released must abort, not silently treat the API error as "absent".
+  # release_state must abort, not silently treat the API error as "absent".
   export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.37"
   export GH_STUB_TRANSIENT_TAGS="1"
   INPUT_VERSION="v0.37.2" INPUT_DRY_RUN="true" run main
@@ -1090,7 +1093,8 @@ EOF
   export GH_STUB_GOMOD_VERSION="v0.35.4"
   INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run main
   [ "$status" -eq 0 ]
-  [[ "$output" == *"go.mod requires v0.35.4"* ]]
+  # Pro is absent, so the gate reads the release BRANCH, not a tag.
+  [[ "$output" == *"loft-sh/vcluster-pro@v0.35: go.mod at v0.35 requires v0.35.4"* ]]
   [[ "$output" == *"created tag v0.35.4 in loft-sh/vcluster-pro "* ]]
 }
 
@@ -1104,7 +1108,7 @@ EOF
   export GH_STUB_GOMOD_VERSION="v0.35.3"
   INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run main
   [ "$status" -ne 0 ]
-  [[ "$output" == *"reverted or the branch was force-pushed"* ]]
+  [[ "$output" == *"pro would ship the wrong OSS code"* ]]
   [[ "$output" != *"created tag v0.35.4 in loft-sh/vcluster-pro "* ]]
   [[ "$output" != *"dispatched release.yaml in loft-sh/vcluster "* ]]
 }
@@ -1130,7 +1134,7 @@ EOF
   export GH_STUB_GOMOD_VERSION="v0.35.4-rc.1"
   INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run main
   [ "$status" -ne 0 ]
-  [[ "$output" == *"reverted or the branch was force-pushed"* ]]
+  [[ "$output" == *"pro would ship the wrong OSS code"* ]]
 }
 
 @test "resume: an unreadable go.mod fails closed rather than trusting the PR" {
@@ -1159,7 +1163,7 @@ EOF
   export GH_STUB_GOMOD_VERSION="v0.35.3"
   INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run bash "$SCRIPT"
   [ "$status" -eq 1 ]
-  [[ "$output" == *"reverted or the branch was force-pushed"* ]]
+  [[ "$output" == *"pro would ship the wrong OSS code"* ]]
 }
 
 @test "errexit: an unreadable branch go.mod PRINTS its diagnostic" {
@@ -1178,7 +1182,7 @@ EOF
   export GH_STUB_GOMOD_VERSION="v0.35.3"
   INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run bash "$SCRIPT"
   [ "$status" -eq 1 ]
-  [[ "$output" == *"was not built against the OSS code being co-released"* ]]
+  [[ "$output" == *"pro would ship the wrong OSS code"* ]]
 }
 
 @test "errexit: an unreadable pro-tag go.mod PRINTS its diagnostic" {
@@ -1348,4 +1352,122 @@ EOF
   INPUT_VERSION="v0.37.2" INPUT_DRY_RUN="false" run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   [[ "$output" == *"dispatched release.yaml in loft-sh/vcluster-pro "* ]]
+}
+
+# ---- the real jq filters, run against real API JSON ----
+#
+# The gh stub hand-emits already-parsed output, which is fast but means the
+# filters themselves are never executed by the suite. These pipe genuine API
+# response shapes through the actual RUNS_JQ / TAG_REF_JQ expressions using the
+# real jq binary, the way the bump-poll filter is already covered.
+
+@test "RUNS_JQ: counts total at a sha and active regardless of sha" {
+  run jq -r "${RUNS_JQ//%SHA_CLAUSE%/.head_sha == \"aaaa1111\"}" <<'JSON'
+{"total_count":3,"workflow_runs":[
+  {"status":"completed","conclusion":"success","head_sha":"aaaa1111"},
+  {"status":"completed","conclusion":"failure","head_sha":"bbbb2222"},
+  {"status":"in_progress","conclusion":null,"head_sha":"bbbb2222"}
+]}
+JSON
+  [ "$status" -eq 0 ]
+  # One run at the requested sha; one still running (at the other sha).
+  [ "$output" = "1 1" ]
+}
+
+@test "RUNS_JQ: an unscoped clause counts every run" {
+  run jq -r "${RUNS_JQ//%SHA_CLAUSE%/true}" <<'JSON'
+{"total_count":2,"workflow_runs":[
+  {"status":"completed","conclusion":"success","head_sha":"aaaa1111"},
+  {"status":"queued","conclusion":null,"head_sha":"bbbb2222"}
+]}
+JSON
+  [ "$status" -eq 0 ]
+  [ "$output" = "2 1" ]
+}
+
+@test "RUNS_JQ: every non-completed status counts as active" {
+  # A status= filter would have to enumerate these; deriving from .status does not.
+  run jq -r "${RUNS_JQ//%SHA_CLAUSE%/true}" <<'JSON'
+{"total_count":5,"workflow_runs":[
+  {"status":"queued","head_sha":"a"},
+  {"status":"in_progress","head_sha":"a"},
+  {"status":"requested","head_sha":"a"},
+  {"status":"waiting","head_sha":"a"},
+  {"status":"pending","head_sha":"a"}
+]}
+JSON
+  [ "$status" -eq 0 ]
+  [ "$output" = "5 5" ]
+}
+
+@test "RUNS_JQ: an empty run list is 0 0, not an error" {
+  run jq -r "${RUNS_JQ//%SHA_CLAUSE%/true}" <<'JSON'
+{"total_count":0,"workflow_runs":[]}
+JSON
+  [ "$status" -eq 0 ]
+  [ "$output" = "0 0" ]
+}
+
+@test "RUNS_JQ: a response with no run array errors instead of reading as empty" {
+  # {"total_count":1} used to render "1 0" and a null array "0 0", either of
+  # which reads as a confident answer drawn from a body that has none.
+  run jq -r "${RUNS_JQ//%SHA_CLAUSE%/true}" <<<'{"total_count":1}'
+  [ "$status" -ne 0 ]
+  run jq -r "${RUNS_JQ//%SHA_CLAUSE%/true}" <<<'{"workflow_runs":null}'
+  [ "$status" -ne 0 ]
+  run jq -r "${RUNS_JQ//%SHA_CLAUSE%/true}" <<<'{"message":"Not Found","status":"404"}'
+  [ "$status" -ne 0 ]
+}
+
+@test "TAG_REF_JQ: reads sha and type off a real tag ref" {
+  run jq -r "$TAG_REF_JQ" <<'JSON'
+{"ref":"refs/tags/v0.35.4","object":{"sha":"34fe3680f9bf11b405a9b3bac76b195c2ebdbffe","type":"commit"}}
+JSON
+  [ "$status" -eq 0 ]
+  [ "$output" = "34fe3680f9bf11b405a9b3bac76b195c2ebdbffe commit" ]
+}
+
+@test "TAG_REF_JQ: reports an annotated tag as type tag" {
+  run jq -r "$TAG_REF_JQ" <<'JSON'
+{"ref":"refs/tags/v0.35.4","object":{"sha":"1111222233334444555566667777888899990000","type":"tag"}}
+JSON
+  [ "$status" -eq 0 ]
+  [ "$output" = "1111222233334444555566667777888899990000 tag" ]
+}
+
+@test "TAG_REF_JQ: a 404 body yields no usable sha" {
+  # gh prints the error body to stdout without applying the filter on a 404, so
+  # tag_sha_of shape-checks the result; this covers the filter's own half.
+  run jq -r "$TAG_REF_JQ" <<<'{"message":"Not Found","status":"404"}'
+  [ "$status" -eq 0 ]
+  [ "$output" = " " ]
+}
+
+# ---- the go.mod gate is not attached to any one path to the tag ----
+
+@test "a bump probe that fails open still cannot skip the go.mod gate" {
+  # bump_pr_probe fails open, so a transient API error reports "no PR", the bump
+  # is re-dispatched, and wait_for_bump_merge then sees the already-merged PR and
+  # returns. When the gate hung off the probe's merged branch, pro was tagged
+  # with the check never having run.
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  export GH_STUB_TAGS="loft-sh/vcluster:v0.35.4"
+  export GH_STUB_BUMP_PR="fail_then_merged"
+  export GH_STUB_GOMOD_VERSION="v0.35.3"
+  INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run bash "$SCRIPT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"pro would ship the wrong OSS code"* ]]
+  [[ "$output" != *"created tag v0.35.4 in loft-sh/vcluster-pro "* ]]
+  [[ "$output" != *"dispatched release.yaml"* ]]
+}
+
+@test "dry-run: an un-bumped branch is advisory, not a failure" {
+  # On a fresh dry-run the bump was printed, not dispatched, so the branch
+  # legitimately does not carry it yet.
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  export GH_STUB_GOMOD_VERSION="v0.35.3"
+  INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="true" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Not a failure in dry-run"* ]]
+  [[ "$output" != *"::error::"* ]]
 }
