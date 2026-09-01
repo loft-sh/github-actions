@@ -286,15 +286,20 @@ require_branch() {
 # Returns non-zero when the answer is unknown. Callers fail closed: read as
 # "nothing running", this would re-tag and re-dispatch a release already building.
 runs_at_ref() {
-  local repo="$1" ref="$2" out rc=0
+  local repo="$1" ref="$2" quiet="${3:-}" out rc=0
   out="$(gh api "repos/${repo}/actions/workflows/${WORKFLOW}/runs?branch=${ref}&per_page=100" \
     --jq '"\(.total_count // 0) \([.workflow_runs[]? | select(.status != "completed")] | length)"' 2>&1)" || rc=$?
   if (( rc != 0 )); then
-    echo "::error::failed to list ${WORKFLOW} runs at ${ref} in ${repo} (needs actions:read; any token that can already dispatch workflows has it). Not treating as un-dispatched: $(printf '%s' "$out" | tr '\n' ' ')" >&2
+    # Quiet for the post-dispatch barrier: it polls this in a loop on a cut that
+    # is going to succeed, so an ::error:: per attempt would paint a green
+    # release red - the exact inverse of what the failure alerting is for - and
+    # its "not treating as un-dispatched" wording is wrong once the dispatch has
+    # already happened.
+    [[ -n "$quiet" ]] || echo "::error::failed to list ${WORKFLOW} runs at ${ref} in ${repo} (needs actions:read; any token that can already dispatch workflows has it). Not treating as un-dispatched: $(printf '%s' "$out" | tr '\n' ' ')" >&2
     return 1
   fi
   if [[ ! "$out" =~ ^[0-9]+\ [0-9]+$ ]]; then
-    echo "::error::unexpected run-count response for ${ref} in ${repo}: $(printf '%s' "$out" | tr '\n' ' ')" >&2
+    [[ -n "$quiet" ]] || echo "::error::unexpected run-count response for ${ref} in ${repo}: $(printf '%s' "$out" | tr '\n' ' ')" >&2
     return 1
   fi
   printf '%s\n' "$out"
@@ -459,10 +464,10 @@ dispatch() {
   # cut here would be worse than the double-dispatch window it guards.
   local i counts
   for (( i = 1; i <= DISPATCH_VISIBLE_ATTEMPTS; i++ )); do
-    if counts="$(runs_at_ref "$repo" "$tag")" && [[ "${counts%% *}" -gt 0 ]]; then
+    if counts="$(runs_at_ref "$repo" "$tag" quiet)" && [[ "${counts%% *}" -gt 0 ]]; then
       return 0
     fi
-    sleep "${DISPATCH_VISIBLE_SLEEP_SECONDS}"
+    (( i < DISPATCH_VISIBLE_ATTEMPTS )) && sleep "${DISPATCH_VISIBLE_SLEEP_SECONDS}"
   done
   echo "::warning::${WORKFLOW} was dispatched in ${repo} at ${tag} but the run did not become queryable within $(( DISPATCH_VISIBLE_ATTEMPTS * DISPATCH_VISIBLE_SLEEP_SECONDS ))s. The build is running; just be aware that a cut re-run started right now could dispatch it a second time."
 }
