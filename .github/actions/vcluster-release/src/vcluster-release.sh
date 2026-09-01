@@ -421,11 +421,22 @@ release_state() {
     exit 1
   fi
   total="${counts%% *}"
+  active="${counts##* }"
   if [[ "$total" -gt 0 ]]; then
     printf 'dispatched\n'
-  else
-    printf 'tagged\n'
+    return 0
   fi
+  # No run for THIS commit, but something is still building under this tag name -
+  # so the tag was re-pointed while its previous build was in flight. Calling this
+  # `tagged` and dispatching would leave two builds racing to publish one version
+  # from two different commits, which is worse than either of the states the
+  # resume exists to recover. Scoping the total to the commit is what opened this
+  # up; `active` is deliberately unscoped so it still catches it.
+  if [[ "$active" -gt 0 ]]; then
+    printf 'dispatched-other-commit\n'
+    return 0
+  fi
+  printf 'tagged\n'
 }
 
 # release_state_of <repo> <tag> - sets RELEASE_STATE to release_state's answer.
@@ -459,6 +470,10 @@ guard_double_cut() {
   for state in "$@"; do
     if [[ "$state" == "dispatched-tag-missing" ]]; then
       echo "::error::a ${WORKFLOW} run for ${version} is still in flight, but its tag no longer exists. Someone deleted the tag under a running build. Wait for that run to finish (or cancel it) and reconcile the tag before cutting ${version} again - re-tagging now would point ${version} at a different commit than the build that is running." >&2
+      exit 1
+    fi
+    if [[ "$state" == "dispatched-other-commit" ]]; then
+      echo "::error::a ${WORKFLOW} run for ${version} is still in flight against a DIFFERENT commit than the ${version} tag now points at. The tag was re-pointed under a running build. Wait for that run to finish (or cancel it) before cutting ${version} again - dispatching now would leave two builds racing to publish ${version} from two different commits." >&2
       exit 1
     fi
     [[ "$state" == "released" ]] || all_released="false"
