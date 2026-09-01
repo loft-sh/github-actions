@@ -12,7 +12,7 @@ markdown summary generation.
 |-------------------------|--------|----------|-------------------------|---------------------------------------------------------------------------------------------------------------------------------------------|
 |     additional-args     | string |  false   |                         |                                          Extra arguments passed to the test <br>binary (after --)                                           |
 | additional-ginkgo-flags | string |  false   |                         |                                Extra ginkgo CLI flags (e.g. -v, --skip-package=linters, --show-node-events)                                 |
-|     flake-attempts      | string |  false   |          `"1"`          |                                 Attempts a failing spec gets before <br>it is reported failed. See README.                                  |
+|     flake-attempts      | string |  false   |          `"1"`          |    Attempts a failing spec gets before <br>it is reported failed. Use 2 <br>only where a flake must not <br>redden the job. See README.     |
 |      ginkgo-label       | string |  false   |                         |                           Ginkgo label filter expression. When set, <br>adds --label-filter and -r (recursive).                             |
 |      github-token       | string |  false   | `"${{ github.token }}"` |                               GitHub token for the gh CLI <br>to fetch job details during report <br>upload.                                |
 |          procs          | string |  false   |          `"8"`          |                                                     Number of parallel Ginkgo processes                                                     |

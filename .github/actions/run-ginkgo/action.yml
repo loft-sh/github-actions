@@ -43,7 +43,7 @@ inputs:
     required: false
     default: "false"
   flake-attempts:
-    description: "Attempts a failing spec gets before it is reported failed. See README."
+    description: "Attempts a failing spec gets before it is reported failed. Use 2 only where a flake must not redden the job. See README."
     required: false
     default: "1"
   rerun-failed-only:
