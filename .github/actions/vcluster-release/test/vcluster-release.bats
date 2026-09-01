@@ -86,6 +86,9 @@ if [[ "$sub" == "api" ]]; then
       rest="${path#repos/}"; repo="${rest%%/actions/*}"
       ref="${path##*branch=}"; ref="${ref%%&*}"
       if [[ "${GH_STUB_RUNS_FAIL:-}" == "1" ]]; then exit 1; fi
+      # Fail only once a tag has been created, i.e. once the cut has passed
+      # release_state and is inside the post-dispatch barrier.
+      if [[ "${GH_STUB_RUNS_FAIL_AFTER_TAG:-}" == "1" && -f "$(dirname "$0")/tag_created" ]]; then exit 1; fi
       _active=0; _total=0
       contains "${GH_STUB_ACTIVE_RUNS:-}" "${repo}:${ref}" && _active=1
       contains "${GH_STUB_DISPATCHED:-}" "${repo}:${ref}" && _total=1
@@ -135,7 +138,9 @@ if [[ "$sub" == "api" ]]; then
       esac
       exit 0 ;;
     *)
-      # POST repos/<repo>/git/refs and anything else: succeed.
+      # POST repos/<repo>/git/refs and anything else: succeed. Record tag
+      # creation so GH_STUB_RUNS_FAIL_AFTER_TAG can target the barrier only.
+      case "$path" in repos/*/git/refs) : > "$(dirname "$0")/tag_created" ;; esac
       exit 0 ;;
   esac
 fi
@@ -1189,4 +1194,18 @@ EOF
   INPUT_VERSION="v0.37.2" INPUT_DRY_RUN="false" run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   [[ "$output" != *"did not become queryable"* ]]
+}
+
+@test "dispatch: the visibility barrier does not paint a successful cut red" {
+  # The barrier polls in a loop on a cut that succeeds. An ::error:: per attempt
+  # would make a green release look failed - the inverse of what the failure
+  # alerting exists for - and anything paging on ::error:: would fire.
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.37"
+  export GH_STUB_RUNS_FAIL_AFTER_TAG="1"
+  export DISPATCH_VISIBLE_ATTEMPTS=3
+  INPUT_VERSION="v0.37.2" INPUT_DRY_RUN="false" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"did not become queryable"* ]]
+  [[ "$output" != *"::error::"* ]]
+  [[ "$output" != *"Not treating as un-dispatched"* ]]
 }
