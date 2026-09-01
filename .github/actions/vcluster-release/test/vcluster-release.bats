@@ -146,11 +146,14 @@ if [[ "$sub" == "api" ]]; then
       # bump_landed_at_ref reads go.mod off a branch or tag. The script
       # pipes .content through `base64 -d`, so emit base64 like the real API.
       # GH_STUB_GOMOD_FAIL makes the read unanswerable.
+      # Counted before any early exit, so a test can assert how many reads
+      # actually happened - a refusal alone does not prove the fetch was not
+      # retried, and a failing read is still a read.
+      _gf="$(dirname "$0")/gomod_calls"
+      _gn=0; [ -f "$_gf" ] && _gn="$(cat "$_gf")"; _gn=$(( _gn + 1 )); echo "$_gn" > "$_gf"
       if [[ "${GH_STUB_GOMOD_FAIL:-}" == "1" ]]; then exit 1; fi
       # Fail the first N reads only, to exercise the retry budget.
       if [[ -n "${GH_STUB_GOMOD_FAIL_TIMES:-}" ]]; then
-        _gf="$(dirname "$0")/gomod_calls"
-        _gn=0; [ -f "$_gf" ] && _gn="$(cat "$_gf")"; _gn=$(( _gn + 1 )); echo "$_gn" > "$_gf"
         [ "$_gn" -le "${GH_STUB_GOMOD_FAIL_TIMES}" ] && exit 1
       fi
       case "${GH_STUB_GOMOD_MODE:-block}" in
@@ -1493,6 +1496,8 @@ JSON
   [ "$status" -eq 0 ]
   [[ "$output" == *"go.mod at v0.35 requires v0.35.4"* ]]
   [[ "$output" == *"created tag v0.35.4 in loft-sh/vcluster-pro "* ]]
+  # Two failures then a success: exactly three reads, so the budget was used.
+  [ "$(cat "${STUB_DIR}/gomod_calls")" = "3" ]
 }
 
 @test "go.mod read: a sustained failure still fails closed" {
@@ -1503,6 +1508,8 @@ JSON
   [ "$status" -ne 0 ]
   [[ "$output" == *"could not be read"* ]]
   [[ "$output" != *"created tag v0.35.4 in loft-sh/vcluster-pro "* ]]
+  # Exhausted the budget rather than giving up early or spinning past it.
+  [ "$(cat "${STUB_DIR}/gomod_calls")" = "3" ]
 }
 
 @test "go.mod read: a clean read of the WRONG version is not retried into a pass" {
@@ -1513,4 +1520,7 @@ JSON
   INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run bash "$SCRIPT"
   [ "$status" -ne 0 ]
   [[ "$output" == *"pro would ship the wrong OSS code"* ]]
+  # Refusing is not enough: an implementation that re-fetched the same wrong
+  # version five times would also refuse. Prove the answer was taken first time.
+  [ "$(cat "${STUB_DIR}/gomod_calls")" = "1" ]
 }
