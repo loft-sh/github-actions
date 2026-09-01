@@ -468,7 +468,7 @@ release_state_of() {
   fi
 }
 
-# guard_double_cut <version> <state>... - the one state that is still fatal.
+# guard_double_cut <version> <repo>=<state>... - the states that are still fatal.
 #
 # Fatal only when EVERY target repo has a published release, because that is the
 # only combination that means "this version already shipped". Anything short of
