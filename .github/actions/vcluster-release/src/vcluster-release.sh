@@ -338,14 +338,25 @@ runs_at_ref() {
 #
 # On a 404 `gh api --jq` prints the raw error body to stdout without applying the
 # filter, so the result has to be shape-checked rather than trusted. Callers
-# decide what empty means: release_state treats it as fatal (it must not silently
-# fall back to an unscoped count), the post-dispatch barrier treats it as
-# "count everything", which only ever makes the barrier wait longer.
+# Empty means "unknown", and NO caller may treat that as an unscoped count: an
+# unscoped count includes runs of previous incarnations of a re-cut tag. Both
+# callers refuse instead - release_state aborts, the barrier keeps waiting.
 tag_sha_of() {
-  local repo="$1" tag="$2" out
-  out="$(gh api "repos/${repo}/git/ref/tags/${tag}" --jq '.object.sha // empty' 2>/dev/null)" || return 0
-  [[ "$out" =~ ^[0-9a-f]{7,64}$ ]] || return 0
-  printf '%s\n' "$out"
+  local repo="$1" tag="$2" out sha type
+  out="$(gh api "repos/${repo}/git/ref/tags/${tag}" --jq '"\(.object.sha // "") \(.object.type // "")"' 2>/dev/null)" || return 0
+  sha="${out%% *}"
+  type="${out##* }"
+  [[ "$sha" =~ ^[0-9a-f]{7,64}$ ]] || return 0
+  # An annotated tag's ref points at a tag OBJECT, not a commit, while a workflow
+  # run reports the peeled commit as head_sha - so the unpeeled value would match
+  # nothing and make an already-dispatched tag look un-dispatched. create_tag
+  # only ever writes lightweight tags, but a hand-made tag on a resume path can
+  # be annotated, and that is exactly a resume path.
+  if [[ "$type" == "tag" ]]; then
+    sha="$(gh api "repos/${repo}/git/tags/${sha}" --jq '.object.sha // empty' 2>/dev/null)" || return 0
+    [[ "$sha" =~ ^[0-9a-f]{7,64}$ ]] || return 0
+  fi
+  printf '%s\n' "$sha"
 }
 
 # release_state <repo> <tag> -> absent | tagged | dispatched | released
@@ -516,10 +527,18 @@ dispatch() {
   #
   # A warning, not an error: the build IS running at this point, and failing the
   # cut here would be worse than the double-dispatch window it guards.
+  # Resolved inside the loop, and never allowed to be empty. An empty sha makes
+  # runs_at_ref count every run that ever carried this tag NAME, so a completed
+  # run from a previous incarnation of a re-cut tag would satisfy the barrier
+  # instantly - releasing serialization on the strength of an old build and
+  # letting the next cut dispatch this commit a second time. An unknown sha is
+  # not evidence of visibility, so the barrier keeps waiting instead.
   local i counts barrier_sha
-  barrier_sha="$(tag_sha_of "$repo" "$tag")"
   for (( i = 1; i <= DISPATCH_VISIBLE_ATTEMPTS; i++ )); do
-    if counts="$(runs_at_ref "$repo" "$tag" "$barrier_sha" quiet)" && [[ "${counts%% *}" -gt 0 ]]; then
+    barrier_sha="$(tag_sha_of "$repo" "$tag")"
+    if [[ -n "$barrier_sha" ]] \
+      && counts="$(runs_at_ref "$repo" "$tag" "$barrier_sha" quiet)" \
+      && [[ "${counts%% *}" -gt 0 ]]; then
       return 0
     fi
     (( i < DISPATCH_VISIBLE_ATTEMPTS )) && sleep "${DISPATCH_VISIBLE_SLEEP_SECONDS}"

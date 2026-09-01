@@ -42,7 +42,12 @@ sub="$1"; shift || true
 contains() { case " $1 " in *" $2 "*) return 0 ;; *) return 1 ;; esac; }
 
 if [[ "$sub" == "api" ]]; then
-  path="$1"
+  # Real gh takes the path as the first positional, but create_tag calls
+  # `gh api -X POST repos/...`, so "$1" is a flag there. Scan for the first
+  # argument that looks like an API path instead.
+  path=""
+  for _a in "$@"; do case "$_a" in repos/*) path="$_a"; break ;; esac; done
+  [ -n "$path" ] || path="$1"
   # api_exists calls `gh api <path> --silent -i`; every other call reads a value.
   # The tag endpoint is used both ways, so the stub has to distinguish them.
   wants_status=0
@@ -72,8 +77,23 @@ if [[ "$sub" == "api" ]]; then
       # Singular endpoint: exact match, 404 otherwise (mirrors the real API).
       rest="${path#repos/}"; repo="${rest%%/git/ref/tags/*}"; tag="${rest##*/git/ref/tags/}"
       if [[ "$wants_status" -eq 0 ]]; then
-        # release_state resolving the tag to a commit, to scope the run count.
-        contains "${GH_STUB_TAGS:-}" "${repo}:${tag}" && echo "deadbeefcafe1234"
+        # release_state / the barrier resolving the tag to a commit. Emulates
+        # --jq '"\(.object.sha) \(.object.type)"'. GH_STUB_TAG_ANNOTATED makes it
+        # a tag OBJECT, which must then be peeled via git/tags/<sha>.
+        # Make the sha unresolvable only once a tag has been created, so the
+        # barrier is exercised rather than release_state.
+        if [[ "${GH_STUB_TAG_UNRESOLVABLE_AFTER_TAG:-}" == "1" && -f "$(dirname "$0")/tag_created" ]]; then
+          exit 0
+        fi
+        # Resolvable if the tag pre-existed OR this run just created it - the
+        # post-dispatch barrier resolves the tag it has only just written.
+        if contains "${GH_STUB_TAGS:-}" "${repo}:${tag}" || [ -f "$(dirname "$0")/tag_created" ]; then
+          if [[ "${GH_STUB_TAG_ANNOTATED:-}" == "1" ]]; then
+            echo "aaaabbbbccccdddd tag"
+          else
+            echo "deadbeefcafe1234 commit"
+          fi
+        fi
         exit 0
       fi
       contains "${GH_STUB_TAGS:-}" "${repo}:${tag}" && emit_status 0 tags || emit_status 1 tags ;;
@@ -130,6 +150,9 @@ if [[ "$sub" == "api" ]]; then
         *) printf 'require (\n\tgithub.com/loft-sh/vcluster %s\n)\n' "${GH_STUB_GOMOD_VERSION:-v0.35.4}" ;;
       esac | base64 -w0
       exit 0 ;;
+    repos/*/git/tags/*)
+      # Peeling an annotated tag object to the commit it points at.
+      echo "deadbeefcafe1234"; exit 0 ;;
     repos/*/git/refs/heads/*)
       echo "deadbeefcafe"; exit 0 ;;
     repos/*/pulls*)
@@ -1268,4 +1291,31 @@ EOF
   [ "$status" -eq 0 ]
   [[ "$output" == *"dispatched release.yaml in loft-sh/vcluster-pro "* ]]
   [[ "$output" != *"did not become queryable"* ]]
+}
+
+@test "resume: an annotated tag is peeled to its commit before scoping runs" {
+  # An annotated tag's ref points at a tag object, but a workflow run reports the
+  # peeled commit. Without peeling, an already-dispatched tag looks un-dispatched
+  # and gets built a second time.
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.37"
+  export GH_STUB_TAGS="loft-sh/vcluster-pro:v0.37.2"
+  export GH_STUB_DISPATCHED="loft-sh/vcluster-pro:v0.37.2"
+  export GH_STUB_TAG_ANNOTATED="1"
+  INPUT_VERSION="v0.37.2" INPUT_DRY_RUN="false" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"already tagged and dispatched"* ]]
+  [[ "$output" != *"dispatched release.yaml in loft-sh/vcluster-pro "* ]]
+}
+
+@test "dispatch: an unresolvable tag sha never satisfies the barrier" {
+  # An empty sha would make the run count unscoped, so a completed run from a
+  # previous incarnation of a re-cut tag would satisfy the barrier instantly -
+  # releasing serialization on the strength of an old build.
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.37"
+  export GH_STUB_TAG_UNRESOLVABLE_AFTER_TAG="1"
+  export DISPATCH_VISIBLE_ATTEMPTS=2
+  INPUT_VERSION="v0.37.2" INPUT_DRY_RUN="false" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"did not become queryable"* ]]
+  [[ "$output" != *"::error::"* ]]
 }
