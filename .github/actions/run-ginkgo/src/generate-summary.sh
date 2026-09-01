@@ -62,7 +62,13 @@ RUNTIME=$(echo "$STATS" | jq -r '.runtime')
     echo "❌ Failed: ${FAILED_COUNT}"
     echo "✅ Passed: ${PASSED_COUNT}"
   else
-    echo "✅ All tests passed! (${PASSED_COUNT}/${SPECS_TO_RUN})"
+    if [[ "$FLAKED_COUNT" -gt 0 ]]; then
+      # Not "All tests passed!" unqualified - some only passed on a retry, and
+      # saying so here is the whole point of tracking them.
+      echo "✅ All tests passed (${PASSED_COUNT}/${SPECS_TO_RUN}), ${FLAKED_COUNT} only on a retry"
+    else
+      echo "✅ All tests passed! (${PASSED_COUNT}/${SPECS_TO_RUN})"
+    fi
   fi
 
   if [[ "$SKIPPED_COUNT" -gt 0 ]]; then
