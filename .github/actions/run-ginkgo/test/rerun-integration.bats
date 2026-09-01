@@ -52,6 +52,9 @@ export_resolved_focus() {
   cd "$WORK_DIR"
   run bash "$EXECUTE"
   [ "$status" -eq 0 ]
+  # Positive half: `! grep` also succeeds on a file the mock never wrote, so
+  # without this "no --focus was passed" and "ginkgo never ran" look identical.
+  grep -qxF -- "--label-filter=pr" "$MOCK_ARGS_FILE"
   ! grep -q -- '--focus=' "$MOCK_ARGS_FILE"
 }
 
