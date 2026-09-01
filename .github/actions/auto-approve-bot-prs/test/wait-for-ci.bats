@@ -1007,3 +1007,74 @@ kv() { grep "^$1=" "$GITHUB_OUTPUT" | tail -n1; }
   [ "$status" -ne 0 ]
   assert_no_match 'ci_green=true' "$output"
 }
+
+# ---- DEVOPS-1452: a failed check is not the last word when a rerun is running ----
+
+@test "devops-1452: a failed check with a newer suite still running does not bail" {
+  # The window that cost vcluster-pro#2367 two hours: e2e failed, someone
+  # re-ran it, and the replacement was already running when the bot polled.
+  # Bailing here throws away the run that is about to supersede the failure.
+  # Held, not approved: the verdict is not in yet, so this times out instead.
+  export WAIT_MAX_ATTEMPTS=2
+  GH_MOCK_CHECK_RUNS_JSON='{"check_runs":[
+    {"name":"e2e","status":"completed","conclusion":"failure","started_at":"2026-04-17T05:00:00Z","check_suite":{"id":100},"details_url":"https://github.com/o/r/actions/runs/333/job/1"},
+    {"name":"e2e-rerun","status":"in_progress","conclusion":null,"started_at":"2026-04-17T06:00:00Z","check_suite":{"id":200},"details_url":"https://github.com/o/r/actions/runs/444/job/1"}
+  ]}' run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv ci_green)" = "ci_green=false" ]
+  # Held for the rerun, not bailed on the failure.
+  [[ "$output" == *"newer check suite still running"* ]]
+  [[ "$output" != *"no rerun is in flight"* ]]
+}
+
+@test "devops-1452: a failed check with no newer suite still bails immediately" {
+  # The other half: a genuinely broken PR must not burn max_attempts waiting
+  # for a rerun that nobody started.
+  export WAIT_MAX_ATTEMPTS=20
+  GH_MOCK_CHECK_RUNS_JSON='{"check_runs":[
+    {"name":"e2e","status":"completed","conclusion":"failure","started_at":"2026-04-17T05:00:00Z","check_suite":{"id":100},"details_url":"https://github.com/o/r/actions/runs/333/job/1"}
+  ]}' run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv ci_green)" = "ci_green=false" ]
+  [[ "$output" == *"no rerun is in flight"* ]]
+  # Bailed on the first poll, not after the full attempt budget.
+  [[ "$output" != *"attempt 20/20"* ]]
+}
+
+@test "devops-1452: refusing to approve is an ::error::, not a ::notice::" {
+  # Reported as a notice, this step read as a clean green job while the release
+  # cut it gated waited for a merge that was never coming.
+  GH_MOCK_CHECK_RUNS_JSON='{"check_runs":[
+    {"name":"e2e","status":"completed","conclusion":"failure","check_suite":{"id":100},"details_url":"https://github.com/o/r/actions/runs/333/job/1"}
+  ]}' run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"::error::Other CI checks failed"* ]]
+  [[ "$output" != *"::notice::Other CI checks failed"* ]]
+}
+
+@test "devops-1452: a rerun that lands green after a failure is approved" {
+  # The whole point: failure then success on the same check name must resolve
+  # to success. The dedup ranking already did this; the bail never let it.
+  GH_MOCK_CHECK_RUNS_JSON='{"check_runs":[
+    {"name":"e2e","status":"completed","conclusion":"failure","started_at":"2026-04-17T05:00:00Z","check_suite":{"id":100},"details_url":"https://github.com/o/r/actions/runs/333/job/1"},
+    {"name":"e2e","status":"completed","conclusion":"success","started_at":"2026-04-17T06:00:00Z","check_suite":{"id":200},"details_url":"https://github.com/o/r/actions/runs/444/job/1"}
+  ]}' run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv ci_green)" = "ci_green=true" ]
+}
+
+@test "devops-1452: a commit-status failure bails even while a check suite runs" {
+  # Commit statuses have no rerun concept and carry no suite id, so the
+  # watermark cannot vouch for them. An external system reporting failure is
+  # final regardless of what Actions is doing.
+  export WAIT_MAX_ATTEMPTS=2
+  GH_MOCK_CHECK_RUNS_JSON='{"check_runs":[
+    {"name":"e2e","status":"in_progress","conclusion":null,"check_suite":{"id":200},"details_url":"https://github.com/o/r/actions/runs/444/job/1"}
+  ]}' \
+  GH_MOCK_STATUSES_JSON='{"statuses":[
+    {"context":"netlify","state":"failure","target_url":"https://netlify.example/x"}
+  ]}' run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv ci_green)" = "ci_green=false" ]
+  [[ "$output" == *"no rerun is in flight"* ]]
+}
