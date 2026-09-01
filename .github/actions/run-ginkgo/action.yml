@@ -42,6 +42,10 @@ inputs:
     description: "Set to 'true' to upload the Ginkgo JSON report to GCS after the test run. Requires reports-bucket and workflow-file to be set."
     required: false
     default: "false"
+  flake-attempts:
+    description: "Attempts a failing spec gets before the suite reports it failed. Ginkgo retries only that spec. Use 2 on runs where an infra flake must not redden the job (a release bump PR); leave at 1 wherever the signal has to stay honest."
+    required: false
+    default: "1"
   rerun-failed-only:
     description: "Set to 'true' to narrow a re-run to the previous attempt's failures. Requires upload-report."
     required: false
@@ -87,6 +91,7 @@ runs:
         PROCS: ${{ inputs.procs }}
         ADDITIONAL_ARGS: ${{ inputs.additional-args }}
         ADDITIONAL_GINKGO_FLAGS: ${{ inputs.additional-ginkgo-flags }}
+        FLAKE_ATTEMPTS: ${{ inputs.flake-attempts }}
       run: ${{ github.action_path }}/src/execute-tests.sh
 
     - name: Generate failure summary
