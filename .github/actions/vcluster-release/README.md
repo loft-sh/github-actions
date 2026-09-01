@@ -111,8 +111,12 @@ Two further states are refused outright rather than resumed:
 
 - **A tag deleted under a running build.** No tag, but a `release.yaml` run for
   the version has not completed. Re-tagging would point the version at a
-  different commit than the build in flight. Scoped to in-flight runs only, so
-  the delete-the-tag-and-re-cut path still works once the run has finished.
+  different commit than the build in flight. Keyed on in-flight runs only, so the
+  delete-the-tag-and-re-cut path still works once the run has finished. Both the
+  "any run" and "still running" questions come from a single query, so they
+  cannot disagree about a run that changed state between two requests, and the
+  count is taken from each run's own status rather than a `status=` filter, which
+  would miss `requested`, `waiting` and `pending`.
 - **OSS behind pro.** The legacy fan-out always tags OSS first, so OSS can never
   legitimately lag pro. If it does, the OSS tag was deleted, and re-creating it
   now would publish an OSS half built from different source than the pro half
@@ -125,7 +129,9 @@ Two properties this preserves:
   version that is already in flight.
 - **A build is never dispatched twice.** A run at the tag counts as dispatched in
   *any* conclusion, failed included — a failed build is re-run from its own
-  workflow, where the operator can see why it broke.
+  workflow, where the operator can see why it broke. After dispatching, the
+  action waits for the run to become queryable, because `gh workflow run` returns
+  before that and a cut started in the gap would see the tag with no run.
 
 So the recovery for every partial failure is the same: fix whatever blocked it
 (a bump PR that would not merge, a missing branch, an expired token), then press

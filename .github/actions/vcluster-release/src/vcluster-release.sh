@@ -54,6 +54,12 @@ BUMP_WAIT_SLEEP_SECONDS="${BUMP_WAIT_SLEEP_SECONDS:-15}"
 # keeps polling, a sustained auth/repo failure aborts with the real cause
 # instead of silently waiting out the full timeout.
 BUMP_WAIT_MAX_API_FAILURES="${BUMP_WAIT_MAX_API_FAILURES:-5}"
+# After dispatching, wait for the run to become queryable. `gh workflow run`
+# returns before that, so without this barrier a cut started moments later would
+# see the tag but no run, classify it `tagged`, and dispatch a second build.
+# Overridable so the bats suite does not sleep.
+DISPATCH_VISIBLE_ATTEMPTS="${DISPATCH_VISIBLE_ATTEMPTS:-12}"
+DISPATCH_VISIBLE_SLEEP_SECONDS="${DISPATCH_VISIBLE_SLEEP_SECONDS:-5}"
 # jq filter reducing the pulls list to "<state>|<merged_at>" for the newest PR;
 # a null (no PR yet) collapses to "none|" via the // fallbacks so parsing never
 # errors. Extracted so the bats suite can validate the exact expression.
@@ -265,31 +271,33 @@ require_branch() {
   fi
 }
 
-# workflow_runs_at_ref <repo> <ref> -> 0 if this line's release.yaml has already
-# been dispatched at <ref>, 1 if it has not.
+# runs_at_ref <repo> <ref> - prints "<total> <active>": how many release.yaml runs
+# exist at <ref>, and how many of those have not completed.
+#
+# ONE request, with the active count derived from each run's own status rather
+# than from a status= filter. Two filtered requests (in_progress, then queued)
+# would both miss a run that transitioned between them, and would ignore the
+# other non-completed states the API reports (requested, waiting, pending).
 #
 # `gh workflow run --ref <tag>` records the tag name verbatim in head_branch, and
-# the runs endpoint's `branch=` filter matches on that field, so a tag ref
-# queries cleanly here (verified against real dispatched release runs in both
-# repos). This is what keeps a resume from firing a second build of a release
-# that is already building.
+# the runs endpoint's `branch=` filter matches on that field, so a tag ref queries
+# cleanly here (verified against real dispatched release runs in both repos).
 #
-# Fail-closed like api_exists: a probe that cannot answer must never read as
-# "not dispatched", because that is the one wrong answer that duplicates a build.
-workflow_runs_at_ref() {
-  local repo="$1" ref="$2" status_filter="${3:-}" out rc=0 query
-  query="repos/${repo}/actions/workflows/${WORKFLOW}/runs?branch=${ref}&per_page=1"
-  [[ -n "$status_filter" ]] && query="${query}&status=${status_filter}"
-  out="$(gh api "$query" --jq '.total_count // 0' 2>&1)" || rc=$?
+# Returns non-zero when the answer is unknown. Callers fail closed: read as
+# "nothing running", this would re-tag and re-dispatch a release already building.
+runs_at_ref() {
+  local repo="$1" ref="$2" out rc=0
+  out="$(gh api "repos/${repo}/actions/workflows/${WORKFLOW}/runs?branch=${ref}&per_page=100" \
+    --jq '"\(.total_count // 0) \([.workflow_runs[]? | select(.status != "completed")] | length)"' 2>&1)" || rc=$?
   if (( rc != 0 )); then
-    echo "::error::failed to list ${WORKFLOW} runs at ${ref} in ${repo}${status_filter:+ (status=${status_filter})} (needs actions:read on the token). Not treating as un-dispatched: $(printf '%s' "$out" | tr '\n' ' ')" >&2
-    exit 1
+    echo "::error::failed to list ${WORKFLOW} runs at ${ref} in ${repo} (needs actions:read; any token that can already dispatch workflows has it). Not treating as un-dispatched: $(printf '%s' "$out" | tr '\n' ' ')" >&2
+    return 1
   fi
-  if [[ ! "$out" =~ ^[0-9]+$ ]]; then
+  if [[ ! "$out" =~ ^[0-9]+\ [0-9]+$ ]]; then
     echo "::error::unexpected run-count response for ${ref} in ${repo}: $(printf '%s' "$out" | tr '\n' ' ')" >&2
-    exit 1
+    return 1
   fi
-  (( out > 0 ))
+  printf '%s\n' "$out"
 }
 
 # release_state <repo> <tag> -> absent | tagged | dispatched | released
@@ -308,11 +316,19 @@ workflow_runs_at_ref() {
 # an output, not a trigger: only a green build publishes one. So "released"
 # is the single state that proves the version actually shipped.
 release_state() {
-  local repo="$1" tag="$2"
+  local repo="$1" tag="$2" counts total active
   if api_exists "repos/${repo}/releases/tags/${tag}" "release ${tag} in ${repo}"; then
     printf 'released\n'
     return 0
   fi
+  # One runs query answers both questions below, so the "is anything running?"
+  # and "was anything ever dispatched?" checks can never disagree about a run
+  # that changed state between two separate requests.
+  if ! counts="$(runs_at_ref "$repo" "$tag")"; then
+    exit 1
+  fi
+  total="${counts%% *}"
+  active="${counts##* }"
   # Singular `git/ref/tags/` requires an exact match (404s otherwise). The plural
   # `git/refs/tags/` prefix-matches, so it would report `v0.35.4` as existing when
   # only `v0.35.4-rc.1` had been tagged - a false double-cut on the final release.
@@ -324,19 +340,18 @@ release_state() {
     # once. Refuse instead: an in-flight build whose ref vanished is a
     # human-caused state that automation must not guess at.
     #
-    # Deliberately scoped to runs that have not completed. Run records outlive
-    # the tag (they persist for the repo's retention window), so keying on "any
-    # run ever" would permanently block the documented re-cut path of deleting
-    # the tag and release and starting over.
-    if workflow_runs_at_ref "$repo" "$tag" "in_progress" \
-      || workflow_runs_at_ref "$repo" "$tag" "queued"; then
+    # Deliberately keyed on runs that have NOT completed. Run records outlive the
+    # tag (they persist for the repo's retention window), so keying on "any run
+    # ever" would permanently block the documented re-cut path of deleting the
+    # tag and release and starting over.
+    if [[ "$active" -gt 0 ]]; then
       printf 'dispatched-tag-missing\n'
       return 0
     fi
     printf 'absent\n'
     return 0
   fi
-  if workflow_runs_at_ref "$repo" "$tag"; then
+  if [[ "$total" -gt 0 ]]; then
     printf 'dispatched\n'
   else
     printf 'tagged\n'
@@ -434,6 +449,22 @@ dispatch() {
   fi
   gh workflow run "${WORKFLOW}" --repo "${repo}" --ref "${tag}" "${extra[@]}"
   echo "dispatched ${WORKFLOW} in ${repo} at ${tag}"
+  # Block until the run is visible to the same query release_state uses. Until it
+  # registers, a concurrent or immediately-following cut reads this tag as
+  # `tagged` and dispatches again. The workflow-level concurrency group only
+  # serializes cut runs; it ends when the cut exits, which is before the run it
+  # started is necessarily queryable. This closes that gap.
+  #
+  # A warning, not an error: the build IS running at this point, and failing the
+  # cut here would be worse than the double-dispatch window it guards.
+  local i counts
+  for (( i = 1; i <= DISPATCH_VISIBLE_ATTEMPTS; i++ )); do
+    if counts="$(runs_at_ref "$repo" "$tag")" && [[ "${counts%% *}" -gt 0 ]]; then
+      return 0
+    fi
+    sleep "${DISPATCH_VISIBLE_SLEEP_SECONDS}"
+  done
+  echo "::warning::${WORKFLOW} was dispatched in ${repo} at ${tag} but the run did not become queryable within $(( DISPATCH_VISIBLE_ATTEMPTS * DISPATCH_VISIBLE_SLEEP_SECONDS ))s. The build is running; just be aware that a cut re-run started right now could dispatch it a second time."
 }
 
 # ensure_tag <repo> <branch> <tag> <state> - create the tag only when this repo
@@ -502,7 +533,16 @@ bump_landed_at_ref() {
     return 2
   fi
   [[ -n "$body" ]] || return 2
-  required="$(printf '%s\n' "$body" | awk '$1 == "github.com/loft-sh/vcluster" { print $2; exit }')"
+  # Scoped to require directives. A bare name match would read the module out of
+  # a `replace (...)` or `exclude (...)` block as though it were the required
+  # version, and would miss the single-line `require <mod> <ver>` form entirely.
+  required="$(printf '%s\n' "$body" | awk '
+    /^[[:space:]]*require[[:space:]]*\(/ { blk = "require"; next }
+    /^[[:space:]]*(replace|exclude)[[:space:]]*\(/ { blk = "other"; next }
+    /^[[:space:]]*\)/ { blk = ""; next }
+    $1 == "require" && $2 == "github.com/loft-sh/vcluster" { print $3; exit }
+    blk == "require" && $1 == "github.com/loft-sh/vcluster" { print $2; exit }
+  ')"
   [[ -n "$required" ]] || return 2
   BUMP_FOUND_VERSION="$required"
   [[ "$required" =~ ^"${version}"(\.0\.[0-9]{14}-[0-9a-f]{12})?$ ]]
@@ -549,15 +589,21 @@ bump_pr_probe() {
 # auto-approve's merge lever.
 bump_pro_dependency() {
   local version="$1" line="$2"
-  local bump_branch="chore/${line}/bump-vcluster-${version}" tuple state merged
+  local bump_branch="chore/${line}/bump-vcluster-${version}" tuple state merged bump_rc
   tuple="$(bump_pr_probe "$bump_branch" "$line")"
   state="${tuple%%|*}"
   merged="${tuple#*|}"
 
   if [[ -n "$merged" ]]; then
     BUMP_FOUND_VERSION=""
-    bump_landed_at_ref "$line" "$version"
-    case $? in
+    # `rc=0; f || rc=$?`, never a bare call: under `set -e` a function returning
+    # non-zero exits the shell before `case` is reached, which made every message
+    # below dead code in production. The bats suite cannot catch that - `run`
+    # disables errexit for the call it wraps - so this is covered by a test that
+    # executes the script in a child bash instead.
+    bump_rc=0
+    bump_landed_at_ref "$line" "$version" || bump_rc=$?
+    case $bump_rc in
       0)
         echo "::notice::resume: bump PR ${bump_branch} was already merged into ${line} (${merged}) and go.mod requires ${BUMP_FOUND_VERSION}; skipping the bump dispatch."
         return 0
@@ -653,7 +699,7 @@ wait_for_bump_merge() {
 }
 
 cut_legacy() {
-  local version="$1" line="$2" oss_state pro_state
+  local version="$1" line="$2" oss_state pro_state bump_rc
   echo "Routing ${version} -> legacy (line ${line}); dispatch order: ${OSS_REPO} then ${PRO_REPO}"
   # Both repos must be ready before we mutate anything.
   require_branch "$OSS_REPO" "$line"
@@ -696,8 +742,11 @@ cut_legacy() {
     # OSS version it vendored. Under the old code any pre-existing pro tag was a
     # hard stop, so this inference was never load-bearing. It is now, so check it.
     BUMP_FOUND_VERSION=""
-    bump_landed_at_ref "$version" "$version"
-    case $? in
+    # See the note at the other call site: a bare call exits under set -e before
+    # `case` runs, silently swallowing the messages below.
+    bump_rc=0
+    bump_landed_at_ref "$version" "$version" || bump_rc=$?
+    case $bump_rc in
       0)
         echo "::notice::resume: ${PRO_REPO} is already at '${pro_state}' for ${version} and that tag's go.mod requires ${BUMP_FOUND_VERSION}; the dependency bump already landed, skipping it."
         ;;

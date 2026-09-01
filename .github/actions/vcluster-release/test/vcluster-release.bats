@@ -15,6 +15,8 @@ setup() {
 
   # The pro bump merge-wait polls a stubbed PR; drive it with no real sleeps.
   export BUMP_WAIT_SLEEP_SECONDS=0
+  # Same reason: never sleep waiting for a dispatched run to become visible.
+  export DISPATCH_VISIBLE_SLEEP_SECONDS=0
 }
 
 teardown() {
@@ -75,29 +77,33 @@ if [[ "$sub" == "api" ]]; then
       done
       emit_status 1 tags ;;
     repos/*/actions/workflows/*/runs*)
-      # release_state's "has this tag already been dispatched?" probe. Emulates
-      # `--jq '.total_count // 0'`. GH_STUB_DISPATCHED lists repo:ref pairs that
-      # already have a run; everything else answers 0, so tests that predate the
-      # resume logic are unaffected.
+      # release_state's single runs query. Emulates the script's
+      # --jq \'"\\(.total_count) \\(non-completed count)"\', so it must answer with
+      # TWO numbers. GH_STUB_DISPATCHED lists refs that have any run at all;
+      # GH_STUB_ACTIVE_RUNS lists refs with a run still in flight (which also
+      # counts toward the total). Everything else answers "0 0", so tests that
+      # predate the resume logic are unaffected.
       rest="${path#repos/}"; repo="${rest%%/actions/*}"
       ref="${path##*branch=}"; ref="${ref%%&*}"
       if [[ "${GH_STUB_RUNS_FAIL:-}" == "1" ]]; then exit 1; fi
-      # A status= filter is release_state asking "is a build still in flight at
-      # this ref?" - answered from GH_STUB_ACTIVE_RUNS, separately from the
-      # "any run ever" question GH_STUB_DISPATCHED answers.
-      case "$path" in
-        *status=*)
-          contains "${GH_STUB_ACTIVE_RUNS:-}" "${repo}:${ref}" && echo 1 || echo 0 ;;
-        *)
-          contains "${GH_STUB_DISPATCHED:-}" "${repo}:${ref}" && echo 1 || echo 0 ;;
-      esac
+      _active=0; _total=0
+      contains "${GH_STUB_ACTIVE_RUNS:-}" "${repo}:${ref}" && _active=1
+      contains "${GH_STUB_DISPATCHED:-}" "${repo}:${ref}" && _total=1
+      [ "$_active" -eq 1 ] && _total=1
+      echo "${_total} ${_active}"
       exit 0 ;;
     repos/*/contents/go.mod*)
       # bump_landed_on_branch reads go.mod off the release branch. The script
       # pipes .content through `base64 -d`, so emit base64 like the real API.
       # GH_STUB_GOMOD_FAIL makes the read unanswerable.
       if [[ "${GH_STUB_GOMOD_FAIL:-}" == "1" ]]; then exit 1; fi
-      printf 'require (\n\tgithub.com/loft-sh/vcluster %s\n)\n' "${GH_STUB_GOMOD_VERSION:-v0.35.4}" | base64 -w0
+      case "${GH_STUB_GOMOD_MODE:-block}" in
+        single-line) printf 'require github.com/loft-sh/vcluster %s\n' "${GH_STUB_GOMOD_VERSION:-v0.35.4}" ;;
+        # The module named ONLY in a replace block: the file requires nothing, so
+        # the check must not read the replace entry as the required version.
+        replace-only) printf 'replace (\n\tgithub.com/loft-sh/vcluster %s\n)\n' "${GH_STUB_GOMOD_VERSION:-v0.35.4}" ;;
+        *) printf 'require (\n\tgithub.com/loft-sh/vcluster %s\n)\n' "${GH_STUB_GOMOD_VERSION:-v0.35.4}" ;;
+      esac | base64 -w0
       exit 0 ;;
     repos/*/git/refs/heads/*)
       echo "deadbeefcafe"; exit 0 ;;
@@ -1083,4 +1089,104 @@ EOF
   [ "$status" -ne 0 ]
   [[ "$output" == *"could not be read"* ]]
   [[ "$output" != *"created tag v0.35.4 in loft-sh/vcluster-pro "* ]]
+}
+
+# ---- errexit fidelity: these MUST execute the script as a child process ----
+#
+# bats' `run` disables errexit for the call it wraps, so `run main` cannot
+# observe a `set -e` abort. A bare `bump_landed_at_ref; case $?` passed every
+# test above while exiting before `case` in production, making all four of its
+# diagnostics dead code. Running the script in a child bash restores real
+# errexit semantics and is the only way this class of bug is visible.
+
+@test "errexit: a reverted bump PRINTS its diagnostic in a real child process" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  export GH_STUB_TAGS="loft-sh/vcluster:v0.35.4"
+  export GH_STUB_BUMP_PR="merged"
+  export GH_STUB_GOMOD_VERSION="v0.35.3"
+  INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run bash "$SCRIPT"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"reverted or the branch was force-pushed"* ]]
+}
+
+@test "errexit: an unreadable branch go.mod PRINTS its diagnostic" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  export GH_STUB_TAGS="loft-sh/vcluster:v0.35.4"
+  export GH_STUB_BUMP_PR="merged"
+  export GH_STUB_GOMOD_FAIL="1"
+  INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run bash "$SCRIPT"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"could not be read"* ]]
+}
+
+@test "errexit: a pro tag with the wrong OSS version PRINTS its diagnostic" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  export GH_STUB_TAGS="loft-sh/vcluster:v0.35.4 loft-sh/vcluster-pro:v0.35.4"
+  export GH_STUB_GOMOD_VERSION="v0.35.3"
+  INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run bash "$SCRIPT"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"was not built against the OSS code being co-released"* ]]
+}
+
+@test "errexit: an unreadable pro-tag go.mod PRINTS its diagnostic" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  export GH_STUB_TAGS="loft-sh/vcluster:v0.35.4 loft-sh/vcluster-pro:v0.35.4"
+  export GH_STUB_GOMOD_FAIL="1"
+  INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run bash "$SCRIPT"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"could not be read"* ]]
+}
+
+@test "errexit: the happy path still exits 0 in a real child process" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  export GH_STUB_GOMOD_VERSION="v0.35.4"
+  INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"dispatched release.yaml in loft-sh/vcluster-pro "* ]]
+}
+
+# ---- go.mod parsing is scoped to require directives ----
+
+@test "go.mod: a replace block does not satisfy the require check" {
+  # A bare name match would read the module out of `replace (...)` and treat a
+  # branch that still requires the OLD version as correctly bumped.
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  export GH_STUB_TAGS="loft-sh/vcluster:v0.35.4"
+  export GH_STUB_BUMP_PR="merged"
+  export GH_STUB_GOMOD_MODE="replace-only"
+  INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run bash "$SCRIPT"
+  [ "$status" -eq 1 ]
+  [[ "$output" != *"created tag v0.35.4 in loft-sh/vcluster-pro "* ]]
+}
+
+@test "go.mod: the single-line require form is understood" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  export GH_STUB_TAGS="loft-sh/vcluster:v0.35.4"
+  export GH_STUB_BUMP_PR="merged"
+  export GH_STUB_GOMOD_MODE="single-line"
+  export GH_STUB_GOMOD_VERSION="v0.35.4"
+  INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"created tag v0.35.4 in loft-sh/vcluster-pro "* ]]
+}
+
+@test "dispatch: waits for the run to become queryable before returning" {
+  # gh workflow run returns before the run registers, so without this barrier a
+  # cut started moments later reads the tag as `tagged` and dispatches again.
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.37"
+  export DISPATCH_VISIBLE_ATTEMPTS=2
+  # The stub reports no run at the tag, so the barrier exhausts its attempts.
+  INPUT_VERSION="v0.37.2" INPUT_DRY_RUN="false" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"did not become queryable"* ]]
+}
+
+@test "dispatch: a visible run returns without warning" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.37"
+  export GH_STUB_DISPATCHED="loft-sh/vcluster-pro:v0.37.2"
+  export GH_STUB_TAGS="loft-sh/vcluster-pro:v0.37.2"
+  # Already dispatched, so ensure_dispatch skips and the barrier never runs.
+  INPUT_VERSION="v0.37.2" INPUT_DRY_RUN="false" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"did not become queryable"* ]]
 }
