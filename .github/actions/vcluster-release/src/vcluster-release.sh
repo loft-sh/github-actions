@@ -476,8 +476,9 @@ ensure_dispatch() {
 # Orchestration
 # ---------------------------------------------------------------------------
 
-# bump_landed_on_branch <line> <version> - does <line>'s go.mod actually require
-# github.com/loft-sh/vcluster at <version>?
+# bump_landed_at_ref <ref> <version> - does <ref>'s go.mod actually require
+# github.com/loft-sh/vcluster at <version>? <ref> is a branch when checking whether
+# the bump has landed, and a TAG when checking what an existing pro tag shipped.
 #
 # A merged bump PR is evidence the bump once landed, not that it is still there.
 # A revert or a force-push on the release branch leaves the PR merged while the
@@ -495,9 +496,9 @@ ensure_dispatch() {
 #
 # Returns 2 (not 1) when the lookup itself fails, so the caller can distinguish
 # "definitely not bumped" from "could not tell" and fail closed on both.
-bump_landed_on_branch() {
-  local line="$1" version="$2" body required
-  if ! body="$(gh api "repos/${PRO_REPO}/contents/go.mod?ref=${line}" --jq '.content' 2>/dev/null | base64 -d 2>/dev/null)"; then
+bump_landed_at_ref() {
+  local ref="$1" version="$2" body required
+  if ! body="$(gh api "repos/${PRO_REPO}/contents/go.mod?ref=${ref}" --jq '.content' 2>/dev/null | base64 -d 2>/dev/null)"; then
     return 2
   fi
   [[ -n "$body" ]] || return 2
@@ -555,7 +556,7 @@ bump_pro_dependency() {
 
   if [[ -n "$merged" ]]; then
     BUMP_FOUND_VERSION=""
-    bump_landed_on_branch "$line" "$version"
+    bump_landed_at_ref "$line" "$version"
     case $? in
       0)
         echo "::notice::resume: bump PR ${bump_branch} was already merged into ${line} (${merged}) and go.mod requires ${BUMP_FOUND_VERSION}; skipping the bump dispatch."
@@ -664,6 +665,17 @@ cut_legacy() {
   release_state_of "$OSS_REPO" "$version"; oss_state="$RELEASE_STATE"
   release_state_of "$PRO_REPO" "$version"; pro_state="$RELEASE_STATE"
   guard_double_cut "$version" "$oss_state" "$pro_state"
+  # The legacy fan-out always tags OSS before pro, so OSS can never legitimately
+  # be behind pro for the same version. If it is, the OSS tag was deleted after
+  # the fact, and resuming would re-create it at whatever the release branch
+  # looks like NOW - publishing an OSS half built from different source than the
+  # pro half that already shipped against the original. Two artifacts, one
+  # version, different code. Previously a hard error via the tag guard; keep it
+  # one rather than let the resume paper over it.
+  if [[ "$oss_state" == "absent" && "$pro_state" != "absent" ]]; then
+    echo "::error::${PRO_REPO} is already at '${pro_state}' for ${version} but ${OSS_REPO} has no ${version} tag. OSS is always tagged first, so the OSS tag was deleted after this cut started. Re-creating it now would point ${version} at a different commit than the pro half was built against. Restore the OSS tag at its original commit, or delete the pro tag and release and re-cut ${version} cleanly." >&2
+    exit 1
+  fi
   announce_state "$OSS_REPO" "$version" "$oss_state"
   announce_state "$PRO_REPO" "$version" "$pro_state"
   # Tag OSS first so `go get github.com/loft-sh/vcluster@${version}` resolves the
@@ -677,7 +689,27 @@ cut_legacy() {
   if [[ "$pro_state" == "absent" ]]; then
     bump_pro_dependency "$version" "$line"
   else
-    echo "::notice::resume: ${PRO_REPO} is already at '${pro_state}' for ${version}; the dependency bump already landed, skipping it."
+    # Pro is already tagged, so ensure_tag will not create one and that existing
+    # tag is what ships. Skipping the bump here therefore has to be justified by
+    # the TAG's content, not by the branch's and not by a merged PR: the tag is
+    # the artifact, and "a pro tag exists" on its own says nothing about which
+    # OSS version it vendored. Under the old code any pre-existing pro tag was a
+    # hard stop, so this inference was never load-bearing. It is now, so check it.
+    BUMP_FOUND_VERSION=""
+    bump_landed_at_ref "$version" "$version"
+    case $? in
+      0)
+        echo "::notice::resume: ${PRO_REPO} is already at '${pro_state}' for ${version} and that tag's go.mod requires ${BUMP_FOUND_VERSION}; the dependency bump already landed, skipping it."
+        ;;
+      1)
+        echo "::error::${PRO_REPO} is already tagged ${version}, but that tag's go.mod requires github.com/loft-sh/vcluster ${BUMP_FOUND_VERSION}, not ${version}. That tag was not built against the OSS code being co-released. Delete it and re-cut, or investigate how it was created - refusing to dispatch a pro build that ships the wrong OSS version." >&2
+        exit 1
+        ;;
+      *)
+        echo "::error::${PRO_REPO} is already tagged ${version}, but that tag's go.mod could not be read, so the dependency bump cannot be confirmed. Refusing to dispatch a pro build whose OSS version we cannot verify." >&2
+        exit 1
+        ;;
+    esac
   fi
   # Tag pro at the now-bumped branch head. Both tags still precede either
   # dispatch, preserving the tag-before-dispatch invariant.

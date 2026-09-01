@@ -100,9 +100,23 @@ Before touching anything the action resolves a per-repo state:
 | `released` | a GitHub Release exists | nothing for this repo |
 
 The pro dependency bump is resumed the same way: an already-merged bump PR is not
-re-dispatched, an already-open one is waited on rather than duplicated, and a pro
-repo that is past `absent` skips the bump entirely (the bump is upstream of the
-pro tag, so it must already have landed).
+re-dispatched and an already-open one is waited on rather than duplicated. Both
+shortcuts are confirmed against `go.mod` before they are taken — a merged PR only
+proves the bump *once* landed, and "a pro tag exists" says nothing about which
+OSS version it vendored. A mismatch is a hard error, never a guess, because
+tagging pro against an un-bumped `go.mod` ships a release built on the wrong
+OSS code.
+
+Two further states are refused outright rather than resumed:
+
+- **A tag deleted under a running build.** No tag, but a `release.yaml` run for
+  the version has not completed. Re-tagging would point the version at a
+  different commit than the build in flight. Scoped to in-flight runs only, so
+  the delete-the-tag-and-re-cut path still works once the run has finished.
+- **OSS behind pro.** The legacy fan-out always tags OSS first, so OSS can never
+  legitimately lag pro. If it does, the OSS tag was deleted, and re-creating it
+  now would publish an OSS half built from different source than the pro half
+  that already shipped.
 
 Two properties this preserves:
 

@@ -452,6 +452,7 @@ EOF
   export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
   export GH_STUB_RELEASES="loft-sh/vcluster:v0.35.4"
   export GH_STUB_TAGS="loft-sh/vcluster:v0.35.4"
+  export GH_STUB_GOMOD_VERSION="v0.35.4"
   INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run main
   [ "$status" -eq 0 ]
   [[ "$output" == *"loft-sh/vcluster: v0.35.4 already released; skipping this repo."* ]]
@@ -525,14 +526,61 @@ EOF
   [[ "$output" != *"created tag v0.35.4 in loft-sh/vcluster-pro "* ]]
 }
 
-@test "legacy resume: pro past tagging skips the dependency bump entirely" {
+@test "legacy resume: pro past tagging skips the bump when the TAG confirms it" {
   export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
   export GH_STUB_TAGS="loft-sh/vcluster:v0.35.4 loft-sh/vcluster-pro:v0.35.4"
+  export GH_STUB_GOMOD_VERSION="v0.35.4"
   INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run main
   [ "$status" -eq 0 ]
   [[ "$output" == *"the dependency bump already landed, skipping it"* ]]
   [[ "$output" != *"dispatching release-bump-vcluster.yaml"* ]]
   [[ "$output" == *"dispatched release.yaml in loft-sh/vcluster-pro "* ]]
+}
+
+@test "legacy resume: a pro tag that vendored the WRONG OSS version is refused" {
+  # "pro is tagged, so the bump must have landed" was an unverified inference.
+  # A pro tag from any other source ships whatever OSS version it vendored, and
+  # dispatching it would release pro built against the wrong code.
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  export GH_STUB_TAGS="loft-sh/vcluster:v0.35.4 loft-sh/vcluster-pro:v0.35.4"
+  export GH_STUB_GOMOD_VERSION="v0.35.3"
+  INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"was not built against the OSS code being co-released"* ]]
+  [[ "$output" != *"dispatched release.yaml"* ]]
+}
+
+@test "legacy resume: an unreadable pro tag go.mod fails closed" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  export GH_STUB_TAGS="loft-sh/vcluster:v0.35.4 loft-sh/vcluster-pro:v0.35.4"
+  export GH_STUB_GOMOD_FAIL="1"
+  INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"could not be read"* ]]
+  [[ "$output" != *"dispatched release.yaml"* ]]
+}
+
+@test "legacy: OSS behind pro is refused, never re-tagged at today's head" {
+  # OSS is always tagged first, so this means the OSS tag was deleted. Resuming
+  # would publish an OSS half built from different source than the pro half that
+  # already shipped.
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  export GH_STUB_RELEASES="loft-sh/vcluster-pro:v0.35.4"
+  export GH_STUB_TAGS="loft-sh/vcluster-pro:v0.35.4"
+  INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"OSS is always tagged first"* ]]
+  [[ "$output" != *"created tag v0.35.4 in loft-sh/vcluster "* ]]
+  [[ "$output" != *"dispatched release.yaml"* ]]
+}
+
+@test "legacy: OSS behind a merely-tagged pro is refused too" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  export GH_STUB_TAGS="loft-sh/vcluster-pro:v0.35.4"
+  INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"OSS is always tagged first"* ]]
+  [[ "$output" != *"created tag v0.35.4 in loft-sh/vcluster "* ]]
 }
 
 @test "resume: a transient failure on the dispatched-runs probe aborts loudly" {
