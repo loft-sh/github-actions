@@ -17,6 +17,8 @@ setup() {
   export BUMP_WAIT_SLEEP_SECONDS=0
   # Same reason: never sleep waiting for a dispatched run to become visible.
   export DISPATCH_VISIBLE_SLEEP_SECONDS=0
+  # Same reason: never sleep retrying the go.mod read.
+  export GOMOD_READ_SLEEP_SECONDS=0
 }
 
 teardown() {
@@ -145,6 +147,12 @@ if [[ "$sub" == "api" ]]; then
       # pipes .content through `base64 -d`, so emit base64 like the real API.
       # GH_STUB_GOMOD_FAIL makes the read unanswerable.
       if [[ "${GH_STUB_GOMOD_FAIL:-}" == "1" ]]; then exit 1; fi
+      # Fail the first N reads only, to exercise the retry budget.
+      if [[ -n "${GH_STUB_GOMOD_FAIL_TIMES:-}" ]]; then
+        _gf="$(dirname "$0")/gomod_calls"
+        _gn=0; [ -f "$_gf" ] && _gn="$(cat "$_gf")"; _gn=$(( _gn + 1 )); echo "$_gn" > "$_gf"
+        [ "$_gn" -le "${GH_STUB_GOMOD_FAIL_TIMES}" ] && exit 1
+      fi
       case "${GH_STUB_GOMOD_MODE:-block}" in
         single-line) printf 'require github.com/loft-sh/vcluster %s\n' "${GH_STUB_GOMOD_VERSION:-v0.35.4}" ;;
         # The module named ONLY in a replace block: the file requires nothing, so
@@ -1470,4 +1478,39 @@ JSON
   [ "$status" -eq 0 ]
   [[ "$output" == *"Not a failure in dry-run"* ]]
   [[ "$output" != *"::error::"* ]]
+}
+
+@test "go.mod read: a transient blip is retried, not treated as unreadable" {
+  # This read fires immediately after the merge poll observes the merge, so it is
+  # the read most exposed to contents-API lag, and it now gates every legacy cut.
+  # Without a budget one blip would abort a cut that has already tagged OSS and
+  # merged the bump.
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  export GH_STUB_GOMOD_FAIL_TIMES=2
+  export GH_STUB_GOMOD_VERSION="v0.35.4"
+  export GOMOD_READ_ATTEMPTS=5
+  INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"go.mod at v0.35 requires v0.35.4"* ]]
+  [[ "$output" == *"created tag v0.35.4 in loft-sh/vcluster-pro "* ]]
+}
+
+@test "go.mod read: a sustained failure still fails closed" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  export GH_STUB_GOMOD_FAIL="1"
+  export GOMOD_READ_ATTEMPTS=3
+  INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run bash "$SCRIPT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"could not be read"* ]]
+  [[ "$output" != *"created tag v0.35.4 in loft-sh/vcluster-pro "* ]]
+}
+
+@test "go.mod read: a clean read of the WRONG version is not retried into a pass" {
+  # A file that parses and names another version is an answer, not a blip.
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  export GH_STUB_GOMOD_VERSION="v0.35.3"
+  export GOMOD_READ_ATTEMPTS=5
+  INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run bash "$SCRIPT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"pro would ship the wrong OSS code"* ]]
 }

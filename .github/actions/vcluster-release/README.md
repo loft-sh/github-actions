@@ -105,7 +105,10 @@ shortcuts are confirmed against `go.mod` before they are taken — a merged PR o
 proves the bump *once* landed, and "a pro tag exists" says nothing about which
 OSS version it vendored. A mismatch is a hard error, never a guess, because
 tagging pro against an un-bumped `go.mod` ships a release built on the wrong
-OSS code.
+OSS code. That read carries the same small retry budget as the merge poll it
+follows, since it is the read most exposed to contents-API lag; a file that reads
+cleanly and names a different version is an answer, not a blip, and is never
+retried.
 
 Two further `release_state` values are conflicts rather than points on that
 line, and are refused outright rather than resumed:

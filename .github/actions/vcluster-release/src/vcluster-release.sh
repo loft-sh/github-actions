@@ -54,6 +54,14 @@ BUMP_WAIT_SLEEP_SECONDS="${BUMP_WAIT_SLEEP_SECONDS:-15}"
 # keeps polling, a sustained auth/repo failure aborts with the real cause
 # instead of silently waiting out the full timeout.
 BUMP_WAIT_MAX_API_FAILURES="${BUMP_WAIT_MAX_API_FAILURES:-5}"
+# The go.mod confirmation runs immediately after that poll observes the merge, so
+# it is the read most exposed to contents-API lag, and it now sits on every
+# legacy path rather than only a resume. Without a budget of its own a single
+# blip aborts a cut that has already tagged OSS and merged the bump. Matched to
+# the poll it follows rather than left at zero. Overridable so the suite does not
+# sleep.
+GOMOD_READ_ATTEMPTS="${GOMOD_READ_ATTEMPTS:-5}"
+GOMOD_READ_SLEEP_SECONDS="${GOMOD_READ_SLEEP_SECONDS:-3}"
 # After dispatching, wait for the run to become queryable. `gh workflow run`
 # returns before that, so without this barrier a cut started moments later would
 # see the tag but no run, classify it `tagged`, and dispatch a second build.
@@ -644,10 +652,17 @@ ensure_dispatch() {
 # Returns 2 (not 1) when the lookup itself fails, so the caller can distinguish
 # "definitely not bumped" from "could not tell" and fail closed on both.
 bump_landed_at_ref() {
-  local ref="$1" version="$2" body required
-  if ! body="$(gh api "repos/${PRO_REPO}/contents/go.mod?ref=${ref}" --jq '.content' 2>/dev/null | base64 -d 2>/dev/null)"; then
-    return 2
-  fi
+  local ref="$1" version="$2" body="" required i
+  # Retry only the fetch. A file that reads cleanly and does not name the version
+  # is an answer, not a blip, and must not be retried into a different one.
+  for (( i = 1; i <= GOMOD_READ_ATTEMPTS; i++ )); do
+    if body="$(gh api "repos/${PRO_REPO}/contents/go.mod?ref=${ref}" --jq '.content' 2>/dev/null | base64 -d 2>/dev/null)" \
+      && [[ -n "$body" ]]; then
+      break
+    fi
+    body=""
+    (( i < GOMOD_READ_ATTEMPTS )) && sleep "${GOMOD_READ_SLEEP_SECONDS}"
+  done
   [[ -n "$body" ]] || return 2
   # Scoped to require directives. A bare name match would read the module out of
   # a `replace (...)` or `exclude (...)` block as though it were the required
