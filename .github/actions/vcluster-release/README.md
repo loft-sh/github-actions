@@ -127,7 +127,8 @@ Two properties this preserves:
 - **A tag is never re-pointed.** The tag a previous run created is what its
   already-dispatched build is building; moving it would change what ships under a
   version that is already in flight.
-The run count is scoped to the commit the tag points at, not just the tag name.
+The run count is scoped to the commit the tag points at (peeling annotated tags),
+not just the tag name.
 Run records outlive tags, so an unscoped count would let a completed run from a
 previous incarnation of a re-cut tag read as "already dispatched" and silently
 suppress the build of the new commit.
