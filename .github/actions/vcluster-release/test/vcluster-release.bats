@@ -74,6 +74,16 @@ if [[ "$sub" == "api" ]]; then
         [[ "${entry%%:*}" == "$repo" && "${entry#*:}" == "${tag}"* ]] && emit_status 0 tags
       done
       emit_status 1 tags ;;
+    repos/*/actions/workflows/*/runs*)
+      # release_state's "has this tag already been dispatched?" probe. Emulates
+      # `--jq '.total_count // 0'`. GH_STUB_DISPATCHED lists repo:ref pairs that
+      # already have a run; everything else answers 0, so tests that predate the
+      # resume logic are unaffected.
+      rest="${path#repos/}"; repo="${rest%%/actions/*}"
+      ref="${path##*branch=}"; ref="${ref%%&*}"
+      if [[ "${GH_STUB_RUNS_FAIL:-}" == "1" ]]; then exit 1; fi
+      contains "${GH_STUB_DISPATCHED:-}" "${repo}:${ref}" && echo 1 || echo 0
+      exit 0 ;;
     repos/*/git/refs/heads/*)
       echo "deadbeefcafe"; exit 0 ;;
     repos/*/pulls*)
@@ -84,10 +94,20 @@ if [[ "$sub" == "api" ]]; then
       # count invocations in a per-test state file next to the stub.
       _cf="$(dirname "$0")/pulls_calls"
       _n=0; [ -f "$_cf" ] && _n="$(cat "$_cf")"; _n=$(( _n + 1 )); echo "$_n" > "$_cf"
-      case "${GH_STUB_BUMP_PR:-merged}" in
-        merged)           echo "closed|2026-01-02T03:04:05Z" ;;
+      case "${GH_STUB_BUMP_PR:-none_then_merged}" in
+        # Default = a fresh cut: bump_pro_dependency's up-front probe finds no PR
+        # (so it dispatches), and the poll that follows sees the merge. Modelling
+        # the probe and the poll as one sequence is what keeps the happy-path
+        # tests exercising the dispatch instead of the resume shortcut.
+        none_then_merged) if [ "$_n" -le 1 ]; then echo "none|"; else echo "closed|2026-01-02T03:04:05Z"; fi ;;
+        merged)           echo "closed|2026-01-02T03:04:05Z" ;;   # already merged on the first read (resume case)
         closed)           echo "closed|" ;;            # pre-existing closed, never seen open (re-run case)
         open)             echo "open|" ;;
+        none_then_open)   if [ "$_n" -le 1 ]; then echo "none|"; else echo "open|"; fi ;;
+        # Fresh cut whose PR then closes unmerged: probe sees nothing, the poll
+        # watches it open, then closed. Three phases, so the poll (not the probe)
+        # is what observes the open state.
+        none_open_closed) if [ "$_n" -le 1 ]; then echo "none|"; elif [ "$_n" -le 2 ]; then echo "open|"; else echo "closed|"; fi ;;
         open_then_closed) if [ "$_n" -le 1 ]; then echo "open|"; else echo "closed|"; fi ;;
         fail)             exit 1 ;;                     # simulate a gh api failure
         *)                echo "none|" ;;
@@ -402,20 +422,116 @@ EOF
   [[ "$output" == *"not found in loft-sh/vcluster-pro"* ]]
 }
 
-@test "legacy: existing release is a double-cut hard error" {
+@test "legacy: a release in EVERY target repo is a double-cut hard error" {
   export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
-  export GH_STUB_RELEASES="loft-sh/vcluster:v0.35.4"
+  export GH_STUB_RELEASES="loft-sh/vcluster:v0.35.4 loft-sh/vcluster-pro:v0.35.4"
+  export GH_STUB_TAGS="loft-sh/vcluster:v0.35.4 loft-sh/vcluster-pro:v0.35.4"
   INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="true" run main
   [ "$status" -ne 0 ]
-  [[ "$output" == *"already exists"* ]]
+  [[ "$output" == *"already exists in every target repo"* ]]
 }
 
-@test "legacy: existing tag is a double-cut hard error" {
+@test "legacy resume: OSS released but pro not is the partial cut, not a double cut" {
+  # The most common partial failure: the cut died between the two dispatches.
+  # Re-running must finish pro and leave the shipped OSS release alone.
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  export GH_STUB_RELEASES="loft-sh/vcluster:v0.35.4"
+  export GH_STUB_TAGS="loft-sh/vcluster:v0.35.4"
+  INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"loft-sh/vcluster: v0.35.4 already released; skipping this repo."* ]]
+  [[ "$output" == *"resume: v0.35.4 is already released in loft-sh/vcluster; not dispatching"* ]]
+  # Pro is finished off.
+  [[ "$output" == *"created tag v0.35.4 in loft-sh/vcluster-pro "* ]]
+  [[ "$output" == *"dispatched release.yaml in loft-sh/vcluster-pro "* ]]
+}
+
+@test "legacy resume: an existing tag is resumed at the dispatch, never re-tagged" {
   export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
   export GH_STUB_TAGS="loft-sh/vcluster:v0.35.4"
-  INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="true" run main
+  INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"already tagged but never dispatched; resuming at the dispatch"* ]]
+  [[ "$output" == *"resume: tag v0.35.4 already exists in loft-sh/vcluster; not re-tagging"* ]]
+  [[ "$output" != *"created tag v0.35.4 in loft-sh/vcluster "* ]]
+  # It still gets dispatched - that is the step that was missing.
+  [[ "$output" == *"dispatched release.yaml in loft-sh/vcluster "* ]]
+}
+
+@test "legacy resume: an already-dispatched tag is never dispatched twice" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  export GH_STUB_TAGS="loft-sh/vcluster:v0.35.4"
+  export GH_STUB_DISPATCHED="loft-sh/vcluster:v0.35.4"
+  INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"already tagged and dispatched; nothing left to do here"* ]]
+  [[ "$output" == *"not dispatching again"* ]]
+  [[ "$output" != *"dispatched release.yaml in loft-sh/vcluster "* ]]
+  # Pro still runs to completion.
+  [[ "$output" == *"dispatched release.yaml in loft-sh/vcluster-pro "* ]]
+}
+
+@test "legacy resume: a merged bump PR is not re-dispatched" {
+  # The v0.34.8-rc.2 shape: OSS tagged, bump PR merged by hand after the cut
+  # timed out, pro untouched. Re-running must skip straight to tagging pro.
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  export GH_STUB_TAGS="loft-sh/vcluster:v0.35.4"
+  export GH_STUB_BUMP_PR="merged"
+  INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"was already merged into v0.35"* ]]
+  [[ "$output" != *"dispatching release-bump-vcluster.yaml"* ]]
+  [[ "$output" == *"created tag v0.35.4 in loft-sh/vcluster-pro "* ]]
+  [[ "$output" == *"dispatched release.yaml in loft-sh/vcluster-pro "* ]]
+}
+
+@test "legacy resume: an already-open bump PR is waited on, not re-dispatched" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  export GH_STUB_BUMP_PR="open"
+  export BUMP_WAIT_ATTEMPTS=3
+  INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run main
   [ "$status" -ne 0 ]
-  [[ "$output" == *"tag v0.35.4 already exists"* ]]
+  [[ "$output" == *"is already open; skipping the dispatch and waiting on it"* ]]
+  [[ "$output" != *"dispatching release-bump-vcluster.yaml"* ]]
+  [[ "$output" == *"timed out"* ]]
+}
+
+@test "legacy resume: a bump PR seen open by the probe then closed aborts fast" {
+  # The probe observes "open", so the wait must inherit that and abort the moment
+  # the PR closes unmerged - not sit out the full timeout treating it as a stale
+  # closed PR from an earlier attempt.
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  export GH_STUB_BUMP_PR="open_then_closed"
+  export BUMP_WAIT_ATTEMPTS=30
+  INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"closed without merging"* ]]
+  [[ "$output" != *"timed out"* ]]
+  [[ "$output" != *"created tag v0.35.4 in loft-sh/vcluster-pro "* ]]
+}
+
+@test "legacy resume: pro past tagging skips the dependency bump entirely" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  export GH_STUB_TAGS="loft-sh/vcluster:v0.35.4 loft-sh/vcluster-pro:v0.35.4"
+  INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"the dependency bump already landed, skipping it"* ]]
+  [[ "$output" != *"dispatching release-bump-vcluster.yaml"* ]]
+  [[ "$output" == *"dispatched release.yaml in loft-sh/vcluster-pro "* ]]
+}
+
+@test "resume: a transient failure on the dispatched-runs probe aborts loudly" {
+  # workflow_runs_at_ref is fail-closed for the same reason api_exists is: read
+  # as "not dispatched", it would fire a second build of a release already
+  # building. It runs inside a command substitution, so its abort has to survive
+  # the subshell.
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.37"
+  export GH_STUB_TAGS="loft-sh/vcluster-pro:v0.37.2"
+  export GH_STUB_RUNS_FAIL="1"
+  INPUT_VERSION="v0.37.2" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Not treating as un-dispatched"* ]]
+  [[ "$output" != *"dispatched release.yaml"* ]]
 }
 
 @test "guard: a transient failure on the double-cut probe aborts loudly (not read as not-released)" {
@@ -502,12 +618,21 @@ EOF
   [[ "$output" == *"failed to reach"* ]]
 }
 
-@test "monorepo: existing release is a double-cut hard error" {
+@test "monorepo: existing release is a double-cut hard error (single target = all targets)" {
   export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.37"
   export GH_STUB_RELEASES="loft-sh/vcluster-pro:v0.37.2"
   INPUT_VERSION="v0.37.2" INPUT_DRY_RUN="true" run main
   [ "$status" -ne 0 ]
-  [[ "$output" == *"already exists"* ]]
+  [[ "$output" == *"already exists in every target repo"* ]]
+}
+
+@test "monorepo resume: a tagged-but-undispatched version is dispatched, not re-tagged" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.37"
+  export GH_STUB_TAGS="loft-sh/vcluster-pro:v0.37.2"
+  INPUT_VERSION="v0.37.2" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"resume: tag v0.37.2 already exists in loft-sh/vcluster-pro; not re-tagging"* ]]
+  [[ "$output" == *"dispatched release.yaml in loft-sh/vcluster-pro "* ]]
 }
 
 # ---- main: guards ----
@@ -531,12 +656,12 @@ EOF
   [[ "$output" == *"dispatched release.yaml in loft-sh/vcluster-pro "* ]]
   [[ "$output" != *"[dry-run]"* ]]
   # Partial-failure recovery hint fires only on the live path.
-  [[ "$output" == *"do NOT delete tags and re-run this action"* ]]
+  [[ "$output" == *"just re-run this action with the same version"* ]]
 }
 
 @test "legacy non-dry-run: bumps pro (merged) then tags pro after the merge" {
   export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
-  export GH_STUB_BUMP_PR="merged"
+  export GH_STUB_BUMP_PR="none_then_merged"
   INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run main
   [ "$status" -eq 0 ]
   [[ "$output" == *"dispatching release-bump-vcluster.yaml to bump loft-sh/vcluster-pro@v0.35 to v0.35.4"* ]]
@@ -551,11 +676,15 @@ EOF
 }
 
 @test "legacy non-dry-run: a bump PR closed after being open aborts before tagging pro" {
+  # Fresh cut: the probe sees no PR, dispatches, then the poll watches it open
+  # and close unmerged.
   export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
-  export GH_STUB_BUMP_PR="open_then_closed"
+  export GH_STUB_BUMP_PR="none_open_closed"
+  export BUMP_WAIT_ATTEMPTS=30
   INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run main
   [ "$status" -ne 0 ]
   [[ "$output" == *"closed without merging"* ]]
+  [[ "$output" != *"timed out"* ]]
   # Pro is never tagged and OSS is never dispatched against an un-bumped go.mod.
   [[ "$output" != *"created tag v0.35.4 in loft-sh/vcluster-pro "* ]]
   [[ "$output" != *"dispatched release.yaml in loft-sh/vcluster "* ]]
