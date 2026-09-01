@@ -267,3 +267,25 @@ get_summary_line() {
   summary="$(get_summary)"
   [[ "$summary" == *"⏸️ Pending:"* ]]
 }
+
+# --- Flaked specs (passed only on a retry) ---
+
+@test "a spec that passed on a retry is reported as flaked" {
+  # Ginkgo reports these as State "passed", so without their own line enabling
+  # flake-attempts would silently erase the evidence the suite is degrading.
+  REPORT_FILE="$FIXTURES/with-flakes.json" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+
+  local summary
+  summary="$(get_summary)"
+  [[ "$summary" == *"Flaked (passed on retry): 1"* ]]
+  # Still counted as passed, matching ginkgo's own accounting.
+  [[ "$summary" == *"All tests passed!"* ]]
+}
+
+@test "a clean run reports no flaked line even with retries enabled" {
+  # MaxFlakeAttempts > 1 alone is not a flake; NumAttempts must exceed 1 too.
+  REPORT_FILE="$FIXTURES/all-passed.json" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$(get_summary)" != *"Flaked"* ]]
+}

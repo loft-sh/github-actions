@@ -29,6 +29,12 @@ STATS=$(jq -r '
   {
     failed: ([.[] | (.SpecReports // [])[] | select(.State | IN("passed", "skipped", "pending") | not)] | length),
     passed: ([.[] | (.SpecReports // [])[] | select(.State == "passed")] | length),
+    # Specs that only passed on a retry. Ginkgo reports these as State "passed",
+    # so without their own count they are indistinguishable from a clean pass and
+    # enabling flake-attempts would silently erase the evidence that the suite is
+    # degrading - on a release bump PR, exactly the signal worth keeping.
+    # Same predicate ginkgo uses for CountOfFlakedSpecs.
+    flaked: ([.[] | (.SpecReports // [])[] | select(.State == "passed" and (.MaxFlakeAttempts // 0) > 1 and (.NumAttempts // 0) > 1)] | length),
     skipped: ([.[] | (.SpecReports // [])[] | select(.State == "skipped")] | length),
     pending: ([.[] | (.SpecReports // [])[] | select(.State == "pending")] | length),
     total_specs: (.[0].PreRunStats.TotalSpecs // 0),
@@ -41,6 +47,7 @@ FAILED_COUNT=$(echo "$STATS" | jq -r '.failed')
 PASSED_COUNT=$(echo "$STATS" | jq -r '.passed')
 SKIPPED_COUNT=$(echo "$STATS" | jq -r '.skipped')
 PENDING_COUNT=$(echo "$STATS" | jq -r '.pending')
+FLAKED_COUNT=$(echo "$STATS" | jq -r '.flaked')
 TOTAL_SPECS=$(echo "$STATS" | jq -r '.total_specs')
 SPECS_TO_RUN=$(echo "$STATS" | jq -r '.specs_to_run')
 RUNTIME=$(echo "$STATS" | jq -r '.runtime')
@@ -63,6 +70,9 @@ RUNTIME=$(echo "$STATS" | jq -r '.runtime')
   fi
   if [[ "$PENDING_COUNT" -gt 0 ]]; then
     echo "⏸️ Pending: ${PENDING_COUNT}"
+  fi
+  if [[ "$FLAKED_COUNT" -gt 0 ]]; then
+    echo "🔁 Flaked (passed on retry): ${FLAKED_COUNT}"
   fi
   echo "⏱️ Duration: ${RUNTIME}s"
 
