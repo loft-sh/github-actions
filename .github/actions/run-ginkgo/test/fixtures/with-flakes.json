@@ -1,0 +1,15 @@
+[
+  {
+    "SuiteDescription": "flaky suite",
+    "PreRunStats": { "TotalSpecs": 3, "SpecsThatWillRun": 3 },
+    "RunTime": 12000000000,
+    "SpecReports": [
+      { "State": "passed", "LeafNodeType": "It", "LeafNodeText": "clean pass",
+        "ContainerHierarchyTexts": ["group"], "MaxFlakeAttempts": 2, "NumAttempts": 1 },
+      { "State": "passed", "LeafNodeType": "It", "LeafNodeText": "passed on retry",
+        "ContainerHierarchyTexts": ["group"], "MaxFlakeAttempts": 2, "NumAttempts": 2 },
+      { "State": "passed", "LeafNodeType": "It", "LeafNodeText": "no retries configured",
+        "ContainerHierarchyTexts": ["group"], "MaxFlakeAttempts": 1, "NumAttempts": 1 }
+    ]
+  }
+]
