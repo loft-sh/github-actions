@@ -277,11 +277,12 @@ require_branch() {
 # Fail-closed like api_exists: a probe that cannot answer must never read as
 # "not dispatched", because that is the one wrong answer that duplicates a build.
 workflow_runs_at_ref() {
-  local repo="$1" ref="$2" out rc=0
-  out="$(gh api "repos/${repo}/actions/workflows/${WORKFLOW}/runs?branch=${ref}&per_page=1" \
-    --jq '.total_count // 0' 2>&1)" || rc=$?
+  local repo="$1" ref="$2" status_filter="${3:-}" out rc=0 query
+  query="repos/${repo}/actions/workflows/${WORKFLOW}/runs?branch=${ref}&per_page=1"
+  [[ -n "$status_filter" ]] && query="${query}&status=${status_filter}"
+  out="$(gh api "$query" --jq '.total_count // 0' 2>&1)" || rc=$?
   if (( rc != 0 )); then
-    echo "::error::failed to list ${WORKFLOW} runs at ${ref} in ${repo} (needs actions:read on the token). Not treating as un-dispatched: $(printf '%s' "$out" | tr '\n' ' ')" >&2
+    echo "::error::failed to list ${WORKFLOW} runs at ${ref} in ${repo}${status_filter:+ (status=${status_filter})} (needs actions:read on the token). Not treating as un-dispatched: $(printf '%s' "$out" | tr '\n' ' ')" >&2
     exit 1
   fi
   if [[ ! "$out" =~ ^[0-9]+$ ]]; then
@@ -316,6 +317,22 @@ release_state() {
   # `git/refs/tags/` prefix-matches, so it would report `v0.35.4` as existing when
   # only `v0.35.4-rc.1` had been tagged - a false double-cut on the final release.
   if ! api_exists "repos/${repo}/git/ref/tags/${tag}" "tag ${tag} in ${repo}"; then
+    # A missing tag usually does mean nothing has happened yet. It can also mean
+    # the tag was deleted - and if a build is STILL RUNNING against that deleted
+    # ref, treating this as `absent` would re-create the tag at whatever the
+    # branch head is now and dispatch a second build, breaking both invariants at
+    # once. Refuse instead: an in-flight build whose ref vanished is a
+    # human-caused state that automation must not guess at.
+    #
+    # Deliberately scoped to runs that have not completed. Run records outlive
+    # the tag (they persist for the repo's retention window), so keying on "any
+    # run ever" would permanently block the documented re-cut path of deleting
+    # the tag and release and starting over.
+    if workflow_runs_at_ref "$repo" "$tag" "in_progress" \
+      || workflow_runs_at_ref "$repo" "$tag" "queued"; then
+      printf 'dispatched-tag-missing\n'
+      return 0
+    fi
     printf 'absent\n'
     return 0
   fi
@@ -355,6 +372,10 @@ guard_double_cut() {
   shift
   local state all_released="true"
   for state in "$@"; do
+    if [[ "$state" == "dispatched-tag-missing" ]]; then
+      echo "::error::a ${WORKFLOW} run for ${version} is still in flight, but its tag no longer exists. Someone deleted the tag under a running build. Wait for that run to finish (or cancel it) and reconcile the tag before cutting ${version} again - re-tagging now would point ${version} at a different commit than the build that is running." >&2
+      exit 1
+    fi
     [[ "$state" == "released" ]] || all_released="false"
   done
   if [[ "$all_released" == "true" ]]; then
@@ -372,6 +393,8 @@ announce_state() {
     tagged)     echo "::notice::${repo}: ${tag} already tagged but never dispatched; resuming at the dispatch." ;;
     dispatched) echo "::notice::${repo}: ${tag} already tagged and dispatched; nothing left to do here. Inspect: gh run list --repo ${repo} --workflow ${WORKFLOW} --branch ${tag}" ;;
     released)   echo "::notice::${repo}: ${tag} already released; skipping this repo." ;;
+    dispatched-tag-missing)
+                echo "::notice::${repo}: ${tag} has a run in flight but no tag." ;;
   esac
 }
 
@@ -453,6 +476,37 @@ ensure_dispatch() {
 # Orchestration
 # ---------------------------------------------------------------------------
 
+# bump_landed_on_branch <line> <version> - does <line>'s go.mod actually require
+# github.com/loft-sh/vcluster at <version>?
+#
+# A merged bump PR is evidence the bump once landed, not that it is still there.
+# A revert or a force-push on the release branch leaves the PR merged while the
+# dependency is back where it was, and tagging pro off that branch would ship a
+# release built against the wrong OSS code - the worst outcome this action can
+# produce. So the merged-PR shortcut is confirmed against branch content before
+# it is trusted.
+#
+# Matches the exact tag or a pseudo-version derived from it. `go get` resolves to
+# a pseudo-version (<base>.0.<14-digit timestamp>-<12-hex>) when the tag is not
+# yet a resolvable release, which is a normal outcome of a legacy cut - v0.35's
+# go.mod carries v0.35.4-rc.1.0.20260827163720-103b53de2b62 for exactly that
+# reason. A plain prefix match would be wrong in the dangerous direction: it
+# would let a branch still on v0.35.4-rc.1 satisfy a cut of v0.35.4.
+#
+# Returns 2 (not 1) when the lookup itself fails, so the caller can distinguish
+# "definitely not bumped" from "could not tell" and fail closed on both.
+bump_landed_on_branch() {
+  local line="$1" version="$2" body required
+  if ! body="$(gh api "repos/${PRO_REPO}/contents/go.mod?ref=${line}" --jq '.content' 2>/dev/null | base64 -d 2>/dev/null)"; then
+    return 2
+  fi
+  [[ -n "$body" ]] || return 2
+  required="$(printf '%s\n' "$body" | awk '$1 == "github.com/loft-sh/vcluster" { print $2; exit }')"
+  [[ -n "$required" ]] || return 2
+  BUMP_FOUND_VERSION="$required"
+  [[ "$required" =~ ^"${version}"(\.0\.[0-9]{14}-[0-9a-f]{12})?$ ]]
+}
+
 # bump_pr_probe <bump_branch> <base> - one read of the bump PR, as "<state>|<merged_at>".
 # Prints "none|" when no PR exists yet. Unlike the poll below a single failed
 # read is not fatal here: the caller only uses this to decide whether the bump
@@ -500,8 +554,22 @@ bump_pro_dependency() {
   merged="${tuple#*|}"
 
   if [[ -n "$merged" ]]; then
-    echo "::notice::resume: bump PR ${bump_branch} was already merged into ${line} (${merged}); skipping the bump dispatch."
-    return 0
+    BUMP_FOUND_VERSION=""
+    bump_landed_on_branch "$line" "$version"
+    case $? in
+      0)
+        echo "::notice::resume: bump PR ${bump_branch} was already merged into ${line} (${merged}) and go.mod requires ${BUMP_FOUND_VERSION}; skipping the bump dispatch."
+        return 0
+        ;;
+      1)
+        echo "::error::bump PR ${bump_branch} is merged (${merged}) but ${PRO_REPO}@${line} go.mod requires github.com/loft-sh/vcluster ${BUMP_FOUND_VERSION}, not ${version}. The bump was reverted or the branch was force-pushed. Refusing to tag pro against an un-bumped go.mod - reconcile ${line} before re-running." >&2
+        exit 1
+        ;;
+      *)
+        echo "::error::bump PR ${bump_branch} is merged (${merged}) but ${PRO_REPO}@${line} go.mod could not be read, so the bump cannot be confirmed. Refusing to tag pro against a dependency state we cannot verify." >&2
+        exit 1
+        ;;
+    esac
   fi
 
   if [[ "$state" == "open" ]]; then
