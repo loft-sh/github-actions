@@ -82,7 +82,22 @@ if [[ "$sub" == "api" ]]; then
       rest="${path#repos/}"; repo="${rest%%/actions/*}"
       ref="${path##*branch=}"; ref="${ref%%&*}"
       if [[ "${GH_STUB_RUNS_FAIL:-}" == "1" ]]; then exit 1; fi
-      contains "${GH_STUB_DISPATCHED:-}" "${repo}:${ref}" && echo 1 || echo 0
+      # A status= filter is release_state asking "is a build still in flight at
+      # this ref?" - answered from GH_STUB_ACTIVE_RUNS, separately from the
+      # "any run ever" question GH_STUB_DISPATCHED answers.
+      case "$path" in
+        *status=*)
+          contains "${GH_STUB_ACTIVE_RUNS:-}" "${repo}:${ref}" && echo 1 || echo 0 ;;
+        *)
+          contains "${GH_STUB_DISPATCHED:-}" "${repo}:${ref}" && echo 1 || echo 0 ;;
+      esac
+      exit 0 ;;
+    repos/*/contents/go.mod*)
+      # bump_landed_on_branch reads go.mod off the release branch. The script
+      # pipes .content through `base64 -d`, so emit base64 like the real API.
+      # GH_STUB_GOMOD_FAIL makes the read unanswerable.
+      if [[ "${GH_STUB_GOMOD_FAIL:-}" == "1" ]]; then exit 1; fi
+      printf 'require (\n\tgithub.com/loft-sh/vcluster %s\n)\n' "${GH_STUB_GOMOD_VERSION:-v0.35.4}" | base64 -w0
       exit 0 ;;
     repos/*/git/refs/heads/*)
       echo "deadbeefcafe"; exit 0 ;;
@@ -920,4 +935,104 @@ EOF
   [ "$status" -eq 0 ]
   [[ "$output" == *"-> legacy (line v0.35)"* ]]
   [[ "$output" == *"gh workflow run release.yaml --repo loft-sh/vcluster --ref v0.35.4"* ]]
+}
+
+# ---- resume: a tag that was deleted out from under a running build ----
+
+@test "resume: a deleted tag with a build still in flight is refused" {
+  # Otherwise `absent` would re-create the tag at whatever the branch head is now
+  # and dispatch a second build - both invariants broken at once.
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.37"
+  export GH_STUB_ACTIVE_RUNS="loft-sh/vcluster-pro:v0.37.2"
+  INPUT_VERSION="v0.37.2" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"still in flight, but its tag no longer exists"* ]]
+  [[ "$output" != *"created tag"* ]]
+  [[ "$output" != *"dispatched release.yaml"* ]]
+}
+
+@test "resume: a deleted tag with only completed runs is a normal re-cut" {
+  # Run records outlive the tag, so keying on "any run ever" would permanently
+  # block the documented delete-the-tag-and-re-cut path.
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.37"
+  export GH_STUB_DISPATCHED="loft-sh/vcluster-pro:v0.37.2"
+  INPUT_VERSION="v0.37.2" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"created tag v0.37.2 in loft-sh/vcluster-pro "* ]]
+  [[ "$output" == *"dispatched release.yaml in loft-sh/vcluster-pro "* ]]
+}
+
+@test "resume: an in-flight run at an EXISTING tag is still just 'dispatched'" {
+  # The refusal above must not leak into the normal already-dispatched case.
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.37"
+  export GH_STUB_TAGS="loft-sh/vcluster-pro:v0.37.2"
+  export GH_STUB_DISPATCHED="loft-sh/vcluster-pro:v0.37.2"
+  export GH_STUB_ACTIVE_RUNS="loft-sh/vcluster-pro:v0.37.2"
+  INPUT_VERSION="v0.37.2" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"already tagged and dispatched"* ]]
+  [[ "$output" != *"no longer exists"* ]]
+}
+
+# ---- resume: a merged bump PR is confirmed against branch content ----
+
+@test "resume: a merged bump PR is trusted only when go.mod agrees" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  export GH_STUB_TAGS="loft-sh/vcluster:v0.35.4"
+  export GH_STUB_BUMP_PR="merged"
+  export GH_STUB_GOMOD_VERSION="v0.35.4"
+  INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"go.mod requires v0.35.4"* ]]
+  [[ "$output" == *"created tag v0.35.4 in loft-sh/vcluster-pro "* ]]
+}
+
+@test "resume: a merged bump PR that was reverted refuses to tag pro" {
+  # The worst outcome this action can produce is shipping pro built against the
+  # wrong OSS code. A merged PR proves the bump once landed, not that it is
+  # still there.
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  export GH_STUB_TAGS="loft-sh/vcluster:v0.35.4"
+  export GH_STUB_BUMP_PR="merged"
+  export GH_STUB_GOMOD_VERSION="v0.35.3"
+  INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"reverted or the branch was force-pushed"* ]]
+  [[ "$output" != *"created tag v0.35.4 in loft-sh/vcluster-pro "* ]]
+  [[ "$output" != *"dispatched release.yaml in loft-sh/vcluster "* ]]
+}
+
+@test "resume: a go.mod pseudo-version of the requested tag counts as bumped" {
+  # `go get` resolves to <base>.0.<timestamp>-<sha> when the tag is not yet a
+  # resolvable release, which is the normal outcome of a legacy cut.
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  export GH_STUB_TAGS="loft-sh/vcluster:v0.35.4-rc.1"
+  export GH_STUB_BUMP_PR="merged"
+  export GH_STUB_GOMOD_VERSION="v0.35.4-rc.1.0.20260827163720-103b53de2b62"
+  INPUT_VERSION="v0.35.4-rc.1" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"created tag v0.35.4-rc.1 in loft-sh/vcluster-pro "* ]]
+}
+
+@test "resume: a branch still on the rc does not satisfy a cut of the final" {
+  # The dangerous direction for a prefix match: v0.35.4-rc.1 must NOT read as
+  # "already bumped to v0.35.4".
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  export GH_STUB_TAGS="loft-sh/vcluster:v0.35.4"
+  export GH_STUB_BUMP_PR="merged"
+  export GH_STUB_GOMOD_VERSION="v0.35.4-rc.1"
+  INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"reverted or the branch was force-pushed"* ]]
+}
+
+@test "resume: an unreadable go.mod fails closed rather than trusting the PR" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  export GH_STUB_TAGS="loft-sh/vcluster:v0.35.4"
+  export GH_STUB_BUMP_PR="merged"
+  export GH_STUB_GOMOD_FAIL="1"
+  INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"could not be read"* ]]
+  [[ "$output" != *"created tag v0.35.4 in loft-sh/vcluster-pro "* ]]
 }
