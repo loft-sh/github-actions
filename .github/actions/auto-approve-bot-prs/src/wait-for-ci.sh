@@ -262,11 +262,28 @@ while [ "$attempt" -lt "$max_attempts" ]; do
   # shell so the comparison stays numeric — suite ids are ~11 digits and a
   # string compare would order them by prefix. `// 0` on both sides makes a
   # missing check_suite read as oldest, never as newer.
+  #
+  # The same reasoning applies to a check that FAILED. "Terminal failures will
+  # not be replaced" was only true because nothing re-arms this job: it triggers
+  # on pull_request opened/synchronize, and re-running a check is neither, so the
+  # first red poll was the last word. When a rerun IS already in flight the
+  # verdict is demonstrably not in yet, and bailing throws away the run that is
+  # about to replace it. That is what turned one flaky spec out of 190 into a
+  # two-hour release stall on vcluster-pro#2367: e2e failed at 22:47, the bot
+  # gave up at 22:47:42, the rerun went green at 00:54, and the release cut
+  # waiting on the merge had timed out long before.
+  #
+  # This holds ONLY while a newer suite is actually running, so a genuinely
+  # broken PR still bails in seconds instead of burning max_attempts.
   cr_newer_suite_pending=0
-  if [ "$poll_errored" -eq 0 ] && [ "$cr_cancelled" -gt 0 ]; then
+  if [ "$poll_errored" -eq 0 ] && { [ "$cr_cancelled" -gt 0 ] || [ "$cr_real_failed" -gt 0 ]; }; then
     # shellcheck disable=SC2016  # $w is a jq variable, not a shell one
     cr_newer_suite_pending=$(jq_or_fail '
-      ([.[] | select(.conclusion == "cancelled") | .check_suite.id // 0] | max // 0) as $w
+      def unresolved:
+        (.conclusion == "cancelled")
+        or (.conclusion != null
+            and ([.conclusion] | inside(["success","skipped","neutral"]) | not));
+      ([.[] | select(unresolved) | .check_suite.id // 0] | max // 0) as $w
       | [.[] | select(.status != "completed") | select((.check_suite.id // 0) > $w)]
       | length
     ' "$other" ) || poll_errored=1
@@ -338,12 +355,19 @@ while [ "$attempt" -lt "$max_attempts" ]; do
   real_failed=$(( cr_real_failed + st_failed ))
   echo "attempt ${attempt}/${max_attempts}: check_runs(pending=${cr_pending} failed=${cr_real_failed} cancelled=${cr_cancelled}) statuses(pending=${st_pending} failed=${st_failed})"
 
-  # Terminal failures (failure, timed_out, action_required, etc.) bail
-  # immediately — these are not transient and won't be replaced.
-  if [ "$real_failed" -gt 0 ]; then
+  # Terminal failures bail - unless a newer check suite is still running, which
+  # means the rerun that will replace them has started. Waiting on that is
+  # bounded by max_attempts, exactly as for cancelled.
+  #
+  # ::error:: rather than ::notice::. The job keeps its continue-on-error safety
+  # net so this still cannot turn a caller's CI red, but refusing to merge is a
+  # real outcome and something downstream may be blocking on it. As a notice this
+  # step read as a clean green job while the release cut it gated sat waiting for
+  # a merge that was never coming.
+  if [ "$real_failed" -gt 0 ] && [ "$cr_newer_suite_pending" -eq 0 ]; then
     # Sanitized: these carry attacker-settable check names / status contexts.
     details=$(printf '%s\n%s' "$cr_real_failed_detail" "$st_failed_detail" | awk 'NF' | paste -sd, - | sed 's/,/, /g' | sanitize_for_log 1000)
-    echo "::notice::Other CI checks failed; skipping approval. Failing: ${details:-unknown}"
+    echo "::error::Other CI checks failed and no rerun is in flight; refusing to approve. Failing: ${details:-unknown}"
     emit ci_green false
     exit 0
   fi
@@ -374,6 +398,9 @@ while [ "$attempt" -lt "$max_attempts" ]; do
   # max_attempts), the other is inside the settle floor on nothing but hope
   # (ends at min_attempts). Reading "waiting for replacement" on a poll where
   # nothing was coming is what made the vcluster-pro#2155 timeline hard to read.
+  if [ "$cr_real_failed" -gt 0 ] && [ "$cr_newer_suite_pending" -gt 0 ]; then
+    echo "  failed (superseded; newer check suite still running): $(safe "$cr_real_failed_detail")"
+  fi
   if [ "$cr_cancelled" -gt 0 ]; then
     if [ "$cr_newer_suite_pending" -gt 0 ]; then
       echo "  cancelled (superseded; newer check suite still running): $(safe "$cr_cancelled_detail")"

@@ -75,6 +75,33 @@ which is routinely minutes after the floor expires — the bail then discards a
 rerun that was still coming. That stalled the `v0.34.7` cut
 (vcluster-pro#2155): floor expired 12:49:45, replacement registered 12:51:41.
 
+### Failed checks
+
+A `failure` (or `timed_out`, `action_required`, …) normally means the verdict is
+in and approval is skipped. The one exception is the same signal the cancelled
+case uses: if a non-completed check-run exists in a **newer check suite** than
+the failed one, a rerun is in flight and the failure is held rather than bailed
+on, bounded by `wait-max-attempts`.
+
+This matters because nothing re-arms this action. It triggers on `pull_request`
+`opened`/`synchronize`, and re-running a check is neither, so the first red poll
+used to be the last word even when the rerun went green minutes later. On
+vcluster-pro#2367 one flaky spec out of 190 failed at 22:47, the bot gave up at
+22:47:42, the rerun passed at 00:54 — and the release cut waiting on that merge
+had already timed out.
+
+A genuinely broken PR still bails on the first poll: the hold only engages when a
+newer suite is actually running, so nothing burns `wait-max-attempts` waiting for
+a rerun nobody started.
+
+Commit statuses are excluded from the hold. They carry no suite id and have no
+rerun concept, so an external system reporting `failure`/`error` is final.
+
+Refusing to approve is reported as an `::error::`. The job keeps its
+`continue-on-error` safety net, so it cannot turn a caller's CI red, but a
+refusal is a real outcome and something downstream is often blocking on the merge
+that will now never happen. Reported as a notice, it read as a clean green job.
+
 ## Merging
 
 With `auto-merge: true` the action tries a **plain merge first**, and uses
