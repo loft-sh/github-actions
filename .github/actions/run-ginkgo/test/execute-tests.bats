@@ -173,3 +173,48 @@ teardown() {
   [ "$status" -eq 0 ]
   ! grep -q -- '--focus=' "$MOCK_ARGS_FILE"
 }
+
+# --- flake-attempts ---
+
+@test "flake-attempts: 2 is passed through to ginkgo" {
+  cd "$WORK_DIR"
+  export FLAKE_ATTEMPTS="2"
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  has_arg "--flake-attempts=2"
+}
+
+@test "flake-attempts: 1 adds no argument (ginkgo's own default)" {
+  cd "$WORK_DIR"
+  export FLAKE_ATTEMPTS="1"
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  ! has_arg "--flake-attempts=1"
+}
+
+@test "flake-attempts: unset adds no argument" {
+  cd "$WORK_DIR"
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$(cat "$MOCK_ARGS_FILE")" != *"--flake-attempts"* ]]
+}
+
+@test "flake-attempts: a non-numeric value warns and does not reach ginkgo" {
+  # Passing it through would fail the job minutes later, after suite setup,
+  # instead of warning now.
+  cd "$WORK_DIR"
+  export FLAKE_ATTEMPTS="two"
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"is not an integer >= 1"* ]]
+  [[ "$(cat "$MOCK_ARGS_FILE")" != *"--flake-attempts"* ]]
+}
+
+@test "flake-attempts: zero warns and does not reach ginkgo" {
+  cd "$WORK_DIR"
+  export FLAKE_ATTEMPTS="0"
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"is not an integer >= 1"* ]]
+  [[ "$(cat "$MOCK_ARGS_FILE")" != *"--flake-attempts"* ]]
+}

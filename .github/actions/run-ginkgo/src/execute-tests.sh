@@ -2,7 +2,8 @@
 set -euo pipefail
 
 # Required env vars: TEST_DIR, TIMEOUT, PROCS
-# Optional env vars: GINKGO_LABEL, ADDITIONAL_ARGS, ADDITIONAL_GINKGO_FLAGS, GINKGO_FOCUS
+# Optional env vars: GINKGO_LABEL, ADDITIONAL_ARGS, ADDITIONAL_GINKGO_FLAGS,
+#                    GINKGO_FOCUS, FLAKE_ATTEMPTS
 
 WORKSPACE_ROOT="$(pwd)"
 REPORTS_DIR="${WORKSPACE_ROOT}/test-reports"
@@ -33,6 +34,22 @@ fi
 # Set by resolve-rerun-focus.sh to restrict the run to the previous attempt's failures
 if [[ -n "${GINKGO_FOCUS:-}" ]]; then
   GINKGO_ARGS+=("--focus=${GINKGO_FOCUS}")
+fi
+
+# Retry a spec in-process before calling it failed. Ginkgo reruns only the spec
+# that failed, so a suite-wide flake budget costs one spec's runtime, not a whole
+# re-run of the job.
+#
+# Rejects anything that is not an integer >= 1 rather than passing it through:
+# ginkgo would reject it too, but only after the whole suite has been set up, so
+# a typo here would surface as a failed job minutes later instead of a warning.
+# 1 means "no retry" and is ginkgo's own default, so it is not worth an argument.
+if [[ -n "${FLAKE_ATTEMPTS:-}" ]]; then
+  if [[ "$FLAKE_ATTEMPTS" =~ ^[0-9]+$ ]] && (( FLAKE_ATTEMPTS >= 1 )); then
+    (( FLAKE_ATTEMPTS > 1 )) && GINKGO_ARGS+=("--flake-attempts=${FLAKE_ATTEMPTS}")
+  else
+    echo "::warning::flake-attempts='${FLAKE_ATTEMPTS}' is not an integer >= 1; ignoring it and running without retries"
+  fi
 fi
 
 echo "Working directory: ${TEST_DIR}"
