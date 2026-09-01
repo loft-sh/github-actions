@@ -44,9 +44,21 @@ fi
 # ginkgo would reject it too, but only after the whole suite has been set up, so
 # a typo here would surface as a failed job minutes later instead of a warning.
 # 1 means "no retry" and is ginkgo's own default, so it is not worth an argument.
+#
+# Leading zeros are stripped before any arithmetic. "08" satisfies ^[0-9]+$ but
+# is an invalid octal literal, so (( )) would print its own "value too great for
+# base" next to our warning; and forwarding "08" verbatim would fail in ginkgo
+# too, since Go's flag package auto-detects the base. Normalizing fixes both.
 if [[ -n "${FLAKE_ATTEMPTS:-}" ]]; then
-  if [[ "$FLAKE_ATTEMPTS" =~ ^[0-9]+$ ]] && (( FLAKE_ATTEMPTS >= 1 )); then
-    (( FLAKE_ATTEMPTS > 1 )) && GINKGO_ARGS+=("--flake-attempts=${FLAKE_ATTEMPTS}")
+  flake_attempts="${FLAKE_ATTEMPTS#"${FLAKE_ATTEMPTS%%[!0]*}"}"
+  [[ -n "$flake_attempts" ]] || flake_attempts=0
+  if [[ "$FLAKE_ATTEMPTS" =~ ^[0-9]+$ ]] && (( flake_attempts >= 1 )); then
+    # `if` rather than `(( … )) && …`, matching the sibling appends above: the
+    # AND-list form returns non-zero when the condition is false, which is
+    # harmless here only because statements follow it.
+    if (( flake_attempts > 1 )); then
+      GINKGO_ARGS+=("--flake-attempts=${flake_attempts}")
+    fi
   else
     echo "::warning::flake-attempts='${FLAKE_ATTEMPTS}' is not an integer >= 1; ignoring it and running without retries"
   fi

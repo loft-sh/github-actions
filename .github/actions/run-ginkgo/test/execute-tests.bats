@@ -184,11 +184,17 @@ teardown() {
   has_arg "--flake-attempts=2"
 }
 
+# Each of these pairs the absence check with a positive assertion that ginkgo was
+# invoked at all. A negative-only assertion greps a file the mock may never have
+# written, so it passes just as well when the script stopped doing anything —
+# "the flag was correctly omitted" and "the suite never ran" look identical.
+
 @test "flake-attempts: 1 adds no argument (ginkgo's own default)" {
   cd "$WORK_DIR"
   export FLAKE_ATTEMPTS="1"
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
+  has_arg "--procs=8"
   ! has_arg "--flake-attempts=1"
 }
 
@@ -196,6 +202,7 @@ teardown() {
   cd "$WORK_DIR"
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
+  has_arg "--procs=8"
   [[ "$(cat "$MOCK_ARGS_FILE")" != *"--flake-attempts"* ]]
 }
 
@@ -207,6 +214,7 @@ teardown() {
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   [[ "$output" == *"is not an integer >= 1"* ]]
+  has_arg "--procs=8"
   [[ "$(cat "$MOCK_ARGS_FILE")" != *"--flake-attempts"* ]]
 }
 
@@ -216,5 +224,30 @@ teardown() {
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   [[ "$output" == *"is not an integer >= 1"* ]]
+  has_arg "--procs=8"
+  [[ "$(cat "$MOCK_ARGS_FILE")" != *"--flake-attempts"* ]]
+}
+
+@test "flake-attempts: a leading zero is normalized, not passed to bash arithmetic" {
+  # "08" satisfies ^[0-9]+$ but is an invalid octal literal, so (( )) would print
+  # its own "value too great for base" alongside our warning; and forwarding "08"
+  # verbatim fails in ginkgo too, since Go's flag package auto-detects the base.
+  cd "$WORK_DIR"
+  export FLAKE_ATTEMPTS="08"
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"value too great for base"* ]]
+  [[ "$output" != *"is not an integer >= 1"* ]]
+  has_arg "--flake-attempts=8"
+}
+
+@test "flake-attempts: an all-zero value is rejected, not read as 0" {
+  cd "$WORK_DIR"
+  export FLAKE_ATTEMPTS="00"
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"is not an integer >= 1"* ]]
+  [[ "$output" != *"value too great for base"* ]]
+  has_arg "--procs=8"
   [[ "$(cat "$MOCK_ARGS_FILE")" != *"--flake-attempts"* ]]
 }
