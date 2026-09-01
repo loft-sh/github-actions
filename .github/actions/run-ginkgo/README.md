@@ -8,20 +8,20 @@ markdown summary generation.
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-|          INPUT          |  TYPE  | REQUIRED |         DEFAULT         |                                                                                                                         DESCRIPTION                                                                                                                         |
-|-------------------------|--------|----------|-------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-|     additional-args     | string |  false   |                         |                                                                                                  Extra arguments passed to the test <br>binary (after --)                                                                                                   |
-| additional-ginkgo-flags | string |  false   |                         |                                                                                        Extra ginkgo CLI flags (e.g. -v, --skip-package=linters, --show-node-events)                                                                                         |
-|     flake-attempts      | string |  false   |          `"1"`          | Attempts a failing spec gets before <br>the suite reports it failed. Ginkgo <br>retries only that spec. Use 2 <br>on runs where an infra flake <br>must not redden the job (a release bump PR); <br>leave at 1 wherever the signal <br>has to stay honest.  |
-|      ginkgo-label       | string |  false   |                         |                                                                                   Ginkgo label filter expression. When set, <br>adds --label-filter and -r (recursive).                                                                                     |
-|      github-token       | string |  false   | `"${{ github.token }}"` |                                                                                       GitHub token for the gh CLI <br>to fetch job details during report <br>upload.                                                                                        |
-|          procs          | string |  false   |          `"8"`          |                                                                                                             Number of parallel Ginkgo processes                                                                                                             |
-|     reports-bucket      | string |  false   |                         |                                                                                                 GCS bucket name for uploading the <br>Ginkgo JSON report.                                                                                                   |
-|    rerun-failed-only    | string |  false   |        `"false"`        |                                                                            Set to 'true' to narrow a <br>re-run to the previous attempt's failures. <br>Requires upload-report.                                                                             |
-|        test-dir         | string |  false   |      `"e2e-next"`       |                                                                                                              Directory containing test suites                                                                                                               |
-|         timeout         | string |  false   |         `"60m"`         |                                                                                                                     Ginkgo test timeout                                                                                                                     |
-|      upload-report      | string |  false   |        `"false"`        |                                                         Set to 'true' to upload the <br>Ginkgo JSON report to GCS after <br>the test run. Requires reports-bucket and <br>workflow-file to be set.                                                          |
-|      workflow-file      | string |  false   |                         |                                                                         Workflow file name (e.g. e2e-ginkgo.yaml) used as <br>the GCS path segment and report <br>metadata field.                                                                           |
+|          INPUT          |  TYPE  | REQUIRED |         DEFAULT         |                                                                 DESCRIPTION                                                                 |
+|-------------------------|--------|----------|-------------------------|---------------------------------------------------------------------------------------------------------------------------------------------|
+|     additional-args     | string |  false   |                         |                                          Extra arguments passed to the test <br>binary (after --)                                           |
+| additional-ginkgo-flags | string |  false   |                         |                                Extra ginkgo CLI flags (e.g. -v, --skip-package=linters, --show-node-events)                                 |
+|     flake-attempts      | string |  false   |          `"1"`          |                                 Attempts a failing spec gets before <br>it is reported failed. See README.                                  |
+|      ginkgo-label       | string |  false   |                         |                           Ginkgo label filter expression. When set, <br>adds --label-filter and -r (recursive).                             |
+|      github-token       | string |  false   | `"${{ github.token }}"` |                               GitHub token for the gh CLI <br>to fetch job details during report <br>upload.                                |
+|          procs          | string |  false   |          `"8"`          |                                                     Number of parallel Ginkgo processes                                                     |
+|     reports-bucket      | string |  false   |                         |                                         GCS bucket name for uploading the <br>Ginkgo JSON report.                                           |
+|    rerun-failed-only    | string |  false   |        `"false"`        |                    Set to 'true' to narrow a <br>re-run to the previous attempt's failures. <br>Requires upload-report.                     |
+|        test-dir         | string |  false   |      `"e2e-next"`       |                                                      Directory containing test suites                                                       |
+|         timeout         | string |  false   |         `"60m"`         |                                                             Ginkgo test timeout                                                             |
+|      upload-report      | string |  false   |        `"false"`        | Set to 'true' to upload the <br>Ginkgo JSON report to GCS after <br>the test run. Requires reports-bucket and <br>workflow-file to be set.  |
+|      workflow-file      | string |  false   |                         |                 Workflow file name (e.g. e2e-ginkgo.yaml) used as <br>the GCS path segment and report <br>metadata field.                   |
 
 <!-- AUTO-DOC-INPUT:END -->
 
@@ -107,6 +107,39 @@ suite, or a leg whose own attempt-1 report never uploaded — Ginkgo would exit 
 run nothing, so `generate-summary.sh` fails the job when a focused re-run matches zero
 specs. (`--fail-on-empty` is not used for this: Ginkgo applies it per suite, so it
 would fail every suite in a `-r` run that the focus legitimately does not target.)
+
+## Absorbing an infra flake
+
+`flake-attempts: 2` lets ginkgo retry a spec that failed before reporting it
+failed. Ginkgo retries **only that spec**, so the cost is one spec's runtime
+rather than a re-run of the whole job.
+
+Default is `1`, which adds no flag at all — ginkgo's own default — so the input
+is inert for every caller that does not set it.
+
+Set it to `2` where an infra flake must not redden the job and a human is not
+watching: the canonical case is the dependency-bump PR that gates a release cut,
+where one flaky spec out of ~190 has stalled a cut for two hours. Leave it at `1`
+everywhere the signal has to stay honest — on a normal PR a retry that hides a
+real intermittent failure is worse than a red run.
+
+Retried specs are not hidden. Ginkgo reports a spec that passed on a retry as
+`State: passed`, so without its own count it would be indistinguishable from a
+clean pass; the summary tracks them separately:
+
+```text
+📊 Executed: 190/190 tests
+✅ All tests passed (190/190), 1 only on a retry
+🔁 Flaked (passed on retry): 1
+```
+
+The count uses the same predicate as ginkgo's `CountOfFlakedSpecs`
+(`passed && MaxFlakeAttempts > 1 && NumAttempts > 1`), so it matches the
+`N Flaked` line ginkgo prints itself.
+
+A value that is not an integer >= 1 is rejected with a warning and the run
+proceeds without retries, rather than being forwarded to ginkgo, which would only
+reject it after the whole suite had been set up.
 
 ## Testing
 

@@ -287,7 +287,22 @@ get_summary_line() {
 
 @test "a clean run reports no flaked line even with retries enabled" {
   # MaxFlakeAttempts > 1 alone is not a flake; NumAttempts must exceed 1 too.
+  # The fixture must actually HAVE retries enabled, or the NumAttempts clause is
+  # never exercised and could be deleted with this test still green.
+  REPORT_FILE="$FIXTURES/with-retries-no-flakes.json" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  local summary
+  summary="$(get_summary)"
+  [[ "$summary" != *"Flaked"* ]]
+  # Positive half: the summary was produced at all.
+  [[ "$summary" == *"All tests passed! (2/2)"* ]]
+}
+
+@test "a report with no flake fields at all reports no flaked line" {
+  # The other direction: MaxFlakeAttempts/NumAttempts absent entirely must not
+  # trip the // 0 defaults into a false positive.
   REPORT_FILE="$FIXTURES/all-passed.json" run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   [[ "$(get_summary)" != *"Flaked"* ]]
+  [[ "$(get_summary)" == *"All tests passed!"* ]]
 }

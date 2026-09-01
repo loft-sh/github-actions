@@ -1,0 +1,13 @@
+[
+  {
+    "SuiteDescription": "retries enabled, none used",
+    "PreRunStats": { "TotalSpecs": 2, "SpecsThatWillRun": 2 },
+    "RunTime": 5000000000,
+    "SpecReports": [
+      { "State": "passed", "LeafNodeType": "It", "LeafNodeText": "first pass",
+        "ContainerHierarchyTexts": ["group"], "MaxFlakeAttempts": 2, "NumAttempts": 1 },
+      { "State": "passed", "LeafNodeType": "It", "LeafNodeText": "also first pass",
+        "ContainerHierarchyTexts": ["group"], "MaxFlakeAttempts": 2, "NumAttempts": 1 }
+    ]
+  }
+]

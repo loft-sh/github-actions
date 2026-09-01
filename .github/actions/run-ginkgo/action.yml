@@ -43,7 +43,7 @@ inputs:
     required: false
     default: "false"
   flake-attempts:
-    description: "Attempts a failing spec gets before the suite reports it failed. Ginkgo retries only that spec. Use 2 on runs where an infra flake must not redden the job (a release bump PR); leave at 1 wherever the signal has to stay honest."
+    description: "Attempts a failing spec gets before it is reported failed. See README."
     required: false
     default: "1"
   rerun-failed-only:
