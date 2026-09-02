@@ -6,13 +6,13 @@ A GitHub Action that links modern and legacy backport pull requests to the match
 
 When a merged source PR carries `backport-to-<branch>` labels, the shared workflow creates modern backports with [sorenlouv](https://github.com/sorenlouv/backport-github-action) and optional pre-monorepo backports with `backport-legacy-split`. This action runs after both producers settle and, for each backport target:
 
-1. Resolves the source PR's Linear issue (the parent) via Linear's `attachmentsForURL` reverse lookup, falling back to a `TEAM-123` identifier parsed from the branch name or body.
+1. Resolves every Linear issue attached to the source PR via `attachmentsForURL`, then selects the issue family whose children match the requested release lines. A `TEAM-123` identifier parsed from the branch name or body breaks ties and remains the fallback.
 2. Finds the sub-issue whose title carries the release-line prefix for that target, e.g. `[0.34] Copy of ENGCP-906` for a backport to `v0.34` (a leading `v`, as in `[v0.34]`, is also accepted).
 3. Verifies the release attached to the matched sub-issue agrees with the backport target line, warning on a missing or mismatched release (see below). Linking proceeds either way.
 4. Finds the modern `backport/<target>/pr-<source>` PR in the source repo and any legacy `backport/<target>/<short-sha>` PRs in the configured pro and OSS repos. A match must come from the repository being searched, so a fork cannot copy the branch name and body to receive a privileged edit.
 5. Appends `Fixes <sub-issue-id>` to every matching PR body, unless it already references the issue.
 
-The match is by title prefix, not milestone: the `[X.Y] Copy of ...` sub-issues created for a backport family do not reliably carry a patch milestone, so the title is the dependable key.
+The match is by title prefix, not milestone: the `[X.Y] Copy of ...` sub-issues created for a backport family do not reliably carry a patch milestone, so the title is the dependable key. A normal issue may itself be nested under a broader issue. In that case, the action searches its own backport children instead of treating it as a backport copy and searching its siblings.
 
 The release check exists because a title match alone cannot catch a sub-issue attached to the wrong release. After a title match, the action reads the Releases attached to the sub-issue via Linear and derives each release's `X.Y` line from its version field, falling back to the leading version in the release name (`0.33.5 - Security Only` parses to `0.33`). No release attached, or no attached release on the target's line, produces a remedy warning. A matching release stays silent. If the releases query itself fails, verification degrades to a single warning and linking continues.
 

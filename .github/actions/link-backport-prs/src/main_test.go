@@ -314,6 +314,60 @@ func TestFamilyCandidates(t *testing.T) {
 	if got, ok := matchSubIssue(cands, "0.34"); !ok || got.Identifier != "ENGCP-913" {
 		t.Fatalf("sibling match = %+v ok=%v; want ENGCP-913", got, ok)
 	}
+
+	// A normal issue may itself be nested under a broader issue. Its backport
+	// copies remain its own children, not siblings under the broader parent.
+	nested := issueFamily{
+		issueWithChildren: issueWithChildren{
+			issueRef: issueRef{Identifier: "ENGCP-1076", Title: "fix stale peers"},
+		},
+		Parent: parent,
+	}
+	nested.Children.Nodes = []issueRef{
+		{Identifier: "ENGCP-1098", Title: "[4.9] Copy of ENGCP-1076"},
+	}
+	cands = familyCandidates(nested)
+	if got, ok := matchSubIssue(cands, "4.9"); !ok || got.Identifier != "ENGCP-1098" {
+		t.Fatalf("nested issue match = %+v ok=%v; want ENGCP-1098", got, ok)
+	}
+}
+
+func TestSelectFamilyPrefersMatchingBackportLines(t *testing.T) {
+	incident := issueFamily{
+		issueWithChildren: issueWithChildren{
+			issueRef: issueRef{Identifier: "ENGCP-983", Title: "resource proxy incident"},
+		},
+	}
+	incident.Children.Nodes = []issueRef{
+		{Identifier: "ENGCP-994", Title: "[0.34] Copy of ENGCP-983"},
+	}
+
+	fix := issueFamily{
+		issueWithChildren: issueWithChildren{
+			issueRef: issueRef{Identifier: "ENGCP-1076", Title: "fix stale peers"},
+		},
+		Parent: &incident.issueWithChildren,
+	}
+	fix.Children.Nodes = []issueRef{
+		{Identifier: "ENGCP-1098", Title: "[4.9] Copy of ENGCP-1076"},
+		{Identifier: "ENGCP-1099", Title: "[4.10] Copy of ENGCP-1076"},
+	}
+
+	got, matches := selectFamily([]issueFamily{incident, fix}, []string{"4.9", "4.10"}, "ENGCP-1076")
+	if got == nil || got.Identifier != "ENGCP-1076" || matches != 2 {
+		t.Fatalf("selected family = %+v matches=%d; want ENGCP-1076 with 2 matches", got, matches)
+	}
+
+	// If attached families match equally, the issue named by the source branch
+	// or body wins instead of depending on Linear's attachment order.
+	incident.Children.Nodes = []issueRef{
+		{Identifier: "ENGCP-994", Title: "[4.9] Copy of ENGCP-983"},
+	}
+	fix.Children.Nodes = fix.Children.Nodes[:1]
+	got, matches = selectFamily([]issueFamily{incident, fix}, []string{"4.9"}, "ENGCP-1076")
+	if got == nil || got.Identifier != "ENGCP-1076" || matches != 1 {
+		t.Fatalf("tie selected family = %+v matches=%d; want preferred ENGCP-1076 with 1 match", got, matches)
+	}
 }
 
 func TestLineFromVersionString(t *testing.T) {
