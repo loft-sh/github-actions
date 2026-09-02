@@ -14,6 +14,10 @@ inputs:
     description: "Ginkgo label filter expression. When set, adds --label-filter and -r (recursive)."
     required: false
     default: ""
+  ginkgo-focus:
+    description: "Ginkgo focus regex used to narrow matching specs. A failed-only rerun focus takes precedence on rerun attempts."
+    required: false
+    default: ""
   test-dir:
     description: "Directory containing test suites"
     required: false
@@ -84,7 +88,7 @@ runs:
     - name: Execute Ginkgo tests
       shell: bash
       env:
-        GINKGO_FOCUS: ${{ steps.rerun-focus.outputs.focus }}
+        GINKGO_FOCUS: ${{ steps.rerun-focus.outputs.focus || inputs.ginkgo-focus }}
         GINKGO_LABEL: ${{ inputs.ginkgo-label }}
         TEST_DIR: ${{ inputs.test-dir }}
         TIMEOUT: ${{ inputs.timeout }}

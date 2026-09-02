@@ -18,6 +18,7 @@
 #   INPUT_PR_NUMBER           github.event.issue.number
 #   INPUT_REPO                owner/name
 #   INPUT_CHECK_NAME_PREFIX   prefix for the check-run name
+#   INPUT_PARSE_FOCUS         whether to split an optional --focus argument
 #   INPUT_RUN_ID              github.run_id, used for the details link
 #   INPUT_SERVER_URL          github.server_url
 #   GH_TOKEN                  token for gh
@@ -35,10 +36,12 @@ repo="${INPUT_REPO:?INPUT_REPO required}"
 prefix="${INPUT_CHECK_NAME_PREFIX:-e2e}"
 run_id="${INPUT_RUN_ID:-}"
 server_url="${INPUT_SERVER_URL:-https://github.com}"
+parse_focus="${INPUT_PARSE_FOCUS:-false}"
 
 matched=false
 args=""
 filter=""
+focus=""
 should_run=false
 reason=""
 head_sha=""
@@ -47,12 +50,14 @@ base_ref=""
 concurrency_key=""
 name=""
 check_run_id=""
+normalize_name=true
 
 # Emitted on every path, so a caller never reads an undefined output.
 finish_and_exit() {
   emit "matched" "$matched"
   emit "args" "$args"
   emit "filter" "$filter"
+  emit "focus" "$focus"
   emit "should-run" "$should_run"
   emit "reason" "$reason"
   emit "head-sha" "$head_sha"
@@ -90,7 +95,15 @@ if [[ -z "$pr_number" ]]; then
   finish_and_exit
 fi
 
-filter="$(normalize_filter "$args")"
+parse_request "$args" "$parse_focus"
+filter="$REQUEST_FILTER"
+focus="$REQUEST_FOCUS"
+if [[ -n "$REQUEST_ERROR" ]]; then
+  reason="$REQUEST_ERROR"
+  echo "::notice::${command_word} needs a non-empty value after --focus"
+  finish_and_exit
+fi
+
 if [[ -z "$filter" ]]; then
   reason="empty-filter"
   echo "::notice::${command_word} needs a label filter, for example \`${command_word} snapshots\`"
@@ -159,8 +172,12 @@ if [[ "$head_repo" != "$repo" ]]; then
 fi
 
 should_run=true
-name="$(check_name "$prefix" "$filter")"
-concurrency_key="$(concurrency_key "$filter")"
+request="$(request_display "$filter" "$focus")"
+if [[ -n "$focus" ]]; then
+  normalize_name=false
+fi
+name="$(check_name "$prefix" "$request" 60 "$normalize_name")"
+concurrency_key="$(concurrency_key "$(request_identity "$filter" "$focus")")"
 
 # --- 4. Open the check-run ---------------------------------------------------
 # On the resolved head SHA, never on github.sha: for issue_comment that is the
@@ -173,7 +190,7 @@ concurrency_key="$(concurrency_key "$filter")"
 # on create and on update alike. The summary is stored verbatim, so it is the
 # only link that survives. details_url stays because a real GitHub App would
 # have it honoured, and because it costs nothing.
-summary="Requested by @${comment_author} with \`${command_word} ${filter}\`."
+summary="Requested by @${comment_author} with \`${command_word} ${request}\`."
 if [[ -n "$run_id" ]]; then
   summary="${summary}"$'\n\n'"[View the run](${server_url}/${repo}/actions/runs/${run_id})"
 fi

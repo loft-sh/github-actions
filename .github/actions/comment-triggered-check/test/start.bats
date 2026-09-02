@@ -12,6 +12,7 @@ setup() {
   setup_gh_mock
   export GITHUB_OUTPUT; GITHUB_OUTPUT="$(mktemp)"
   export INPUT_COMMAND="/test-e2e"
+  export INPUT_PARSE_FOCUS="true"
   export INPUT_COMMENT_BODY="/test-e2e snapshots"
   export INPUT_COMMENT_AUTHOR="dev"
   export INPUT_AUTHOR_ASSOCIATION="MEMBER"
@@ -114,6 +115,61 @@ created() { calls_matching "POST"; }
   [ "$first" != "$(kv concurrency-key)" ]
 }
 
+@test "a focused request emits filter and focus separately" {
+  export INPUT_COMMENT_BODY='/test-e2e snapshots --focus "creates snapshots"'
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv filter)" = "snapshots" ]
+  [ "$(kv focus)" = "creates snapshots" ]
+  [ "$(kv should-run)" = "true" ]
+}
+
+@test "focus syntax remains part of the filter unless parsing is enabled" {
+  unset INPUT_PARSE_FOCUS
+  export INPUT_COMMENT_BODY='/test-e2e snapshots --focus "creates snapshots"'
+  run bash "$SCRIPT"
+  [ "$(kv filter)" = 'snapshots --focus "creates snapshots"' ]
+  [ "$(kv focus)" = "" ]
+}
+
+@test "focus is part of the check name and request summary" {
+  export INPUT_COMMENT_BODY='/test-e2e snapshots --focus "creates snapshots"'
+  run bash "$SCRIPT"
+  [ "$(kv check-name)" = 'e2e: snapshots --focus "creates snapshots"' ]
+  [ "$(calls_matching 'snapshots --focus "creates snapshots"')" -ge 1 ]
+}
+
+@test "the emitted key distinguishes focuses under the same label" {
+  export INPUT_COMMENT_BODY='/test-e2e snapshots --focus "creates snapshots"'
+  run bash "$SCRIPT"
+  first="$(kv concurrency-key)"
+
+  : > "$GITHUB_OUTPUT"
+  export INPUT_COMMENT_BODY='/test-e2e snapshots --focus "deletes snapshots"'
+  run bash "$SCRIPT"
+  [ "$first" != "$(kv concurrency-key)" ]
+}
+
+@test "check identity distinguishes focus regexes that differ only by whitespace" {
+  export INPUT_COMMENT_BODY='/test-e2e snapshots --focus "creates snapshots"'
+  run bash "$SCRIPT"
+  first_key="$(kv concurrency-key)"
+  first_name="$(kv check-name)"
+
+  : > "$GITHUB_OUTPUT"
+  export INPUT_COMMENT_BODY='/test-e2e snapshots --focus "creates  snapshots"'
+  run bash "$SCRIPT"
+  [ "$first_key" != "$(kv concurrency-key)" ]
+  [ "$first_name" != "$(kv check-name)" ]
+}
+
+@test "parentheses in focus are not validated as label syntax" {
+  export INPUT_COMMENT_BODY='/test-e2e snapshots --focus "creates snapshots (HA)"'
+  run bash "$SCRIPT"
+  [ "$(kv reason)" = "" ]
+  [ "$(kv should-run)" = "true" ]
+}
+
 # --- authorization -----------------------------------------------------------
 
 @test "a past contributor cannot run it, and no API call is made" {
@@ -213,6 +269,13 @@ created() { calls_matching "POST"; }
   export INPUT_COMMENT_BODY="/test-e2e"
   run bash "$SCRIPT"
   [ "$(kv reason)" = "empty-filter" ]
+  [ "$(call_count)" -eq 0 ]
+}
+
+@test "an empty focus is reported before any API call" {
+  export INPUT_COMMENT_BODY='/test-e2e snapshots --focus ""'
+  run bash "$SCRIPT"
+  [ "$(kv reason)" = "malformed-focus" ]
   [ "$(call_count)" -eq 0 ]
 }
 

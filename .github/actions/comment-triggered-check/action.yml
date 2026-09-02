@@ -39,9 +39,13 @@ inputs:
     required: false
     default: ${{ github.repository }}
   check-name-prefix:
-    description: 'start mode. Prefix for the check-run name; the filter is appended.'
+    description: 'start mode. Prefix for the check-run name; the filter and optional focus are appended.'
     required: false
     default: 'e2e'
+  parse-focus:
+    description: 'start mode. Set to true to split an optional trailing --focus expression from the filter. Disabled by default for existing consumers.'
+    required: false
+    default: 'false'
   run-id:
     description: 'start mode. Used to build the check-run details link. Pass the github.run_id context.'
     required: false
@@ -88,11 +92,14 @@ outputs:
   filter:
     description: 'Argument string with whitespace normalized. This is what to pass to the test runner.'
     value: ${{ steps.start.outputs.filter }}
+  focus:
+    description: 'Optional focus expression following --focus, without one matching outer quote pair.'
+    value: ${{ steps.start.outputs.focus }}
   should-run:
     description: 'The caller''s execution gate. "true" only when a check-run was actually opened, so it is false for a comment that was not a command, an empty or unbalanced filter, a fork, a closed or unreadable pull request, a rejected author_association, and a failed check-run creation. Read reason for which. Note the association test is not a permission check: MEMBER means organization membership, and COLLABORATOR does not say at what level.'
     value: ${{ steps.start.outputs.should-run }}
   reason:
-    description: 'Why the command will not run: fork, insufficient-permission, empty-filter, malformed-filter, not-a-pull-request, pull-request-closed, pull-request-unreadable, or check-run-not-created. Empty when it will.'
+    description: 'Why the command will not run: fork, insufficient-permission, empty-filter, malformed-filter, malformed-focus, not-a-pull-request, pull-request-closed, pull-request-unreadable, or check-run-not-created. Empty when it will.'
     value: ${{ steps.start.outputs.reason }}
   head-sha:
     description: 'Resolved head commit of the pull request. The event does not carry it.'
@@ -139,6 +146,7 @@ runs:
         INPUT_PR_NUMBER: ${{ inputs.pr-number }}
         INPUT_REPO: ${{ inputs.repo }}
         INPUT_CHECK_NAME_PREFIX: ${{ inputs.check-name-prefix }}
+        INPUT_PARSE_FOCUS: ${{ inputs.parse-focus }}
         INPUT_RUN_ID: ${{ inputs.run-id }}
         INPUT_SERVER_URL: ${{ inputs.server-url }}
         GH_TOKEN: ${{ inputs.github-token }}
