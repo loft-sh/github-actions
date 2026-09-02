@@ -103,7 +103,7 @@ runs:
       if: always()
       shell: bash
       env:
-        FOCUSED_RERUN: ${{ steps.rerun-focus.outputs.focused-rerun }}
+        FOCUS_ACTIVE: ${{ steps.rerun-focus.outputs.focus != '' || inputs.ginkgo-focus != '' }}
       run: ${{ github.action_path }}/src/generate-summary.sh
 
     - name: Check GCP auth for report upload
@@ -126,6 +126,6 @@ runs:
       env:
         REPORTS_BUCKET: ${{ inputs.reports-bucket }}
         WORKFLOW_FILE: ${{ inputs.workflow-file }}
-        FOCUSED_RERUN: ${{ steps.rerun-focus.outputs.focused-rerun }}
+        FOCUS_ACTIVE: ${{ steps.rerun-focus.outputs.focus != '' || inputs.ginkgo-focus != '' }}
         GH_TOKEN: ${{ inputs.github-token }}
       run: ${{ github.action_path }}/src/upload-report.sh

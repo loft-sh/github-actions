@@ -43,7 +43,7 @@ parse_command() {
 # function in a subshell and lose them.
 # shellcheck disable=SC2034 # REQUEST_* are the function's outputs for callers.
 parse_request() {
-  local args filter_part focus first last marker
+  local args filter_part focus first last marker_at marker_end i before after
   args="$(trim "${1-}")"
   filter_part="$args"
   focus=""
@@ -57,30 +57,30 @@ parse_request() {
     return 0
   fi
 
-  case "$args" in
-    --focus)
-      filter_part=""
-      focus=""
-      ;;
-    --focus\ *)
-      filter_part=""
-      focus="${args#--focus }"
-      ;;
-    *" --focus")
-      marker=" --focus"
-      filter_part="${args%"$marker"}"
-      focus=""
-      ;;
-    *" --focus "*)
-      marker=" --focus "
-      filter_part="${args%%"$marker"*}"
-      focus="${args#*"$marker"}"
-      ;;
-    *)
-      REQUEST_FILTER="$(normalize_filter "$filter_part")"
-      return 0
-      ;;
-  esac
+  marker_at=-1
+  marker_end=-1
+  for (( i = 0; i <= ${#args} - 7; i++ )); do
+    [[ "${args:i:7}" == "--focus" ]] || continue
+    before="${args:i-1:1}"
+    after="${args:i+7:1}"
+    if (( i > 0 )) && [[ "$before" != [[:space:]] ]]; then
+      continue
+    fi
+    if (( i + 7 < ${#args} )) && [[ "$after" != [[:space:]] ]]; then
+      continue
+    fi
+    marker_at=$i
+    marker_end=$((i + 7))
+    break
+  done
+
+  if (( marker_at < 0 )); then
+    REQUEST_FILTER="$(normalize_filter "$filter_part")"
+    return 0
+  fi
+
+  filter_part="${args:0:marker_at}"
+  focus="${args:marker_end}"
 
   REQUEST_FILTER="$(normalize_filter "$filter_part")"
   focus="$(trim "$focus")"
@@ -100,16 +100,15 @@ parse_request() {
   REQUEST_FOCUS="$focus"
 }
 
-# request_identity <filter> <focus> — stable input to concurrency_key. The
-# separator cannot occur in a one-line comment, so label/focus boundaries do
-# not collapse into the same digest.
+# request_identity <filter> <focus> — stable, domain-separated input to
+# concurrency_key. Label-only text cannot reproduce a focused identity because
+# each form receives its own prefix. Focus is digested before whitespace
+# normalization because whitespace is meaningful in a regular expression.
 request_identity() {
   if [[ -z "${2-}" ]]; then
-    printf '%s' "${1-}"
+    printf 'label-request %s' "${1-}"
   else
-    # normalize_filter is correct for labels but would collapse meaningful
-    # regex whitespace. Digest focus first so that distinction survives.
-    printf '%s focus-digest-%s' "${1-}" "$(short_digest "$2")"
+    printf 'focused-request %s focus-digest-%s' "${1-}" "$(short_digest "$2")"
   fi
 }
 

@@ -101,7 +101,7 @@ created() { calls_matching "POST"; }
   export INPUT_COMMENT_BODY='/test-e2e containsAny {aws, azure}'
   run bash "$SCRIPT"
   key="$(kv concurrency-key)"
-  [[ "$key" =~ ^containsany-aws-azure-[0-9a-f]{8}$ ]]
+  [[ "$key" =~ ^label-request-containsany-aws-azure-[0-9a-f]{8}$ ]]
 }
 
 @test "the emitted key distinguishes filters the slug alone would merge" {

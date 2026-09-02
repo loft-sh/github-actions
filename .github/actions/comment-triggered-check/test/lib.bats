@@ -81,6 +81,13 @@ setup() {
   [ "$REQUEST_ERROR" = "" ]
 }
 
+@test "parse_request: accepts tabs around the focus marker" {
+  parse_request $'snapshots\t--focus\tcreates snapshots' "true"
+  [ "$REQUEST_FILTER" = "snapshots" ]
+  [ "$REQUEST_FOCUS" = "creates snapshots" ]
+  [ "$REQUEST_ERROR" = "" ]
+}
+
 @test "parse_request: focus may itself contain the focus flag text" {
   parse_request 'snapshots --focus "supports --focus in commands"' "true"
   [ "$REQUEST_FILTER" = "snapshots" ]
@@ -258,6 +265,12 @@ setup() {
   a="$(request_identity 'snapshots' 'creates snapshots')"
   b="$(request_identity 'snapshots' 'creates  snapshots')"
   [ "$(concurrency_key "$a")" != "$(concurrency_key "$b")" ]
+}
+
+@test "request_identity: a typeable label cannot impersonate a focused request" {
+  focused="$(request_identity 'snapshots' 'creates snapshots')"
+  label="$(request_identity 'snapshots focus-digest-7b53924f' '')"
+  [ "$(concurrency_key "$focused")" != "$(concurrency_key "$label")" ]
 }
 
 # --- check_name --------------------------------------------------------------

@@ -198,3 +198,11 @@ MOCK
   [ "$status" -eq 0 ]
   grep -qF "workflow_file=e2e-ginkgo.yaml" "$MOCK_DIR/gcloud-args"
 }
+
+@test "metadata marks a requested-focus report as partial" {
+  export FOCUS_ACTIVE="true"
+  cd "$MOCK_DIR/workspace"
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qF "focused_rerun=true" "$MOCK_DIR/gcloud-args"
+}

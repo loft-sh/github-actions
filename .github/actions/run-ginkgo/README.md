@@ -47,6 +47,27 @@ markdown summary generation.
     additional-args: "--vcluster-image=ghcr.io/loft-sh/vcluster:latest --teardown=false"
 ```
 
+## Narrowing a run with a focus
+
+Set `ginkgo-focus` to a Go regular expression when a label identifies the suite
+but only particular specs should run. Ginkgo applies the label filter and focus
+together, so focus can only narrow the label selection. Whitespace inside the
+regular expression is significant.
+
+```yaml
+- uses: loft-sh/github-actions/.github/actions/run-ginkgo@run-ginkgo/v1
+  with:
+    test-dir: e2e-next
+    ginkgo-label: "snapshots"
+    ginkgo-focus: "creates a snapshot"
+```
+
+An invalid expression is rejected when Ginkgo starts. If a valid expression
+matches no specs, the action fails instead of reporting a green zero-spec run.
+Reports from focused runs carry `focused_rerun=true` metadata so downstream
+full-suite statistics can exclude them; the existing metadata key is retained
+for compatibility even when the focus was requested directly.
+
 ## Re-running only the failed specs
 
 With `rerun-failed-only: "true"`, hitting **Re-run failed jobs** in the GitHub UI

@@ -14,3 +14,10 @@ ACTION="$BATS_TEST_DIRNAME/../action.yml"
   run grep -F 'GINKGO_FOCUS: ${{ steps.rerun-focus.outputs.focus || inputs.ginkgo-focus }}' "$ACTION"
   [ "$status" -eq 0 ]
 }
+
+@test "summary and upload treat either focus source as a partial run" {
+  local expected="FOCUS_ACTIVE: \${{ steps.rerun-focus.outputs.focus != '' || inputs.ginkgo-focus != '' }}"
+  run grep -F "$expected" "$ACTION"
+  [ "$status" -eq 0 ]
+  [ "$(grep -Fc "$expected" "$ACTION")" -eq 2 ]
+}

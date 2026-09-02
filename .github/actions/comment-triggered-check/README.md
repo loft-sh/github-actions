@@ -141,6 +141,22 @@ The one thing lost is that a repeat cancels the running suite rather than
 replying "already running". That is the same behaviour a new push already gets
 on the main pull request gate, so it is at least consistent.
 
+## Optional focus parsing
+
+Set `parse-focus: "true"` when the command accepts a trailing focus expression:
+
+```text
+/test-e2e snapshots --focus "creates a snapshot"
+```
+
+The label filter must come first and `--focus` must be the final option; the
+whole remaining value becomes the focus. One matching pair of outer quotes is
+removed, and whitespace inside the expression remains significant. Spaces or
+tabs may separate the filter, marker and expression. The action only parses the
+two values—the caller decides how to combine them. With `run-ginkgo`, Ginkgo
+ANDs the label filter and focus, so the focus can only narrow the selected
+suite.
+
 ## Permissions
 
 The calling job needs `checks: write` to create and complete the check-run, and

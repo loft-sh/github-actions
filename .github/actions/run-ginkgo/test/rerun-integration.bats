@@ -66,9 +66,20 @@ export_resolved_focus() {
     >"$WORK_DIR/test-reports/report.json"
 
   cd "$WORK_DIR"
-  REPORT_FILE=test-reports/report.json FOCUSED_RERUN=true run bash "$SUMMARY"
+  REPORT_FILE=test-reports/report.json FOCUS_ACTIVE=true run bash "$SUMMARY"
   [ "$status" -eq 1 ]
   [[ "$output" == *"matched no specs"* ]]
+}
+
+@test "a requested focus that matched no specs fails instead of reporting success" {
+  mkdir -p "$WORK_DIR/test-reports"
+  echo '[{"PreRunStats":{"TotalSpecs":40,"SpecsThatWillRun":0},"RunTime":0,"SpecReports":[]}]' \
+    >"$WORK_DIR/test-reports/report.json"
+
+  cd "$WORK_DIR"
+  REPORT_FILE=test-reports/report.json FOCUS_ACTIVE=true run bash "$SUMMARY"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"focus matched no specs"* ]]
 }
 
 @test "an unfocused run with no specs is left alone" {
@@ -77,7 +88,7 @@ export_resolved_focus() {
     >"$WORK_DIR/test-reports/report.json"
 
   cd "$WORK_DIR"
-  REPORT_FILE=test-reports/report.json FOCUSED_RERUN=false run bash "$SUMMARY"
+  REPORT_FILE=test-reports/report.json FOCUS_ACTIVE=false run bash "$SUMMARY"
   [ "$status" -eq 0 ]
 }
 
@@ -86,6 +97,6 @@ export_resolved_focus() {
   cp "$FIXTURES/../with-failures.json" "$WORK_DIR/test-reports/report.json"
 
   cd "$WORK_DIR"
-  REPORT_FILE=test-reports/report.json FOCUSED_RERUN=true run bash "$SUMMARY"
+  REPORT_FILE=test-reports/report.json FOCUS_ACTIVE=true run bash "$SUMMARY"
   [ "$status" -eq 0 ]
 }
