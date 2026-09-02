@@ -85,6 +85,14 @@ install_fake_gh() {
 #!/usr/bin/env bash
 if [ "$1" = pr ] && [ "$2" = list ]; then
   printf '%s\n' "$@" >> "${GH_PRLIST_LOG:-/dev/null}"
+  # GH_PRLIST_SEQ gives one behaviour per call ("empty fail"), so a mixed route
+  # can fail the second half's lookup only. Consumed via a counter file.
+  if [ -n "${GH_PRLIST_SEQ:-}" ]; then
+    n=$(cat "${ROOT}/prlist-calls" 2>/dev/null || echo 0)
+    n=$((n + 1)); echo "$n" > "${ROOT}/prlist-calls"
+    GH_PRLIST="$(printf '%s\n' $GH_PRLIST_SEQ | sed -n "${n}p")"
+    [ -n "$GH_PRLIST" ] || GH_PRLIST=empty
+  fi
   case "${GH_PRLIST:-empty}" in
     fail) exit 3 ;;
     exists) echo 42 ;;
@@ -581,7 +589,10 @@ short() { git -C "$MONO" rev-parse --short HEAD; }
   [ ! -s "$GH_CREATE_LOG" ]             # no PR created
 }
 
-@test "create-pr: a failed open-PR query fails safe (skip, don't clobber)" {
+@test "create-pr: a failed open-PR query does not clobber, and does not pass as success" {
+  # The branch and PR must be left alone (the query may have failed while a PR
+  # holding a manual resolution is open), but the job must go red: a green skip
+  # let the summary claim success for the whole target.
   install_fake_gh
   export GH_PRLIST=fail
   cd "$MONO"
@@ -589,10 +600,31 @@ short() { git -C "$MONO" rev-parse --short HEAD; }
   git commit -qam "oss: change"
 
   run bash "$SCRIPT"
-  [ "$status" -eq 0 ]
+  [ "$status" -ne 0 ]
   [ "$(output_value oss-pushed)" = "false" ]
   [[ "$output" == *"could not query open PRs"* ]]
-  [ ! -s "$GH_CREATE_LOG" ]
+  [ ! -s "$GH_CREATE_LOG" ]   # nothing clobbered
+  run comment_body
+  [[ "$output" == *"failed — action required"* ]]
+}
+
+@test "create-pr: a failed lookup on one half does not let the other claim success" {
+  # Mixed route: the OSS half opens its PR, then the pro half's lookup fails.
+  # The summary must not read as a completed backport.
+  install_fake_gh
+  cd "$MONO"
+  printf 'line1\nOSS\nline3\n' > "$PFX/app.go"
+  printf 'package main\n// fix\n' > main.go
+  git commit -qam "both: oss app.go and pro main.go"
+  # Fail only the pro half's lookup: the fake gh reads GH_PRLIST at call time,
+  # and the OSS half is queried first.
+  export GH_PRLIST_SEQ="empty fail"
+
+  run bash "$SCRIPT"
+  [ "$status" -ne 0 ]
+  run comment_body
+  [[ "$output" != *"Backported to"* ]]
+  [[ "$output" == *"failed — action required"* ]]
 }
 
 @test "create-pr: a mixed commit opens two PRs, and the open-PR query is well-formed" {
@@ -722,14 +754,24 @@ short() { git -C "$MONO" rev-parse --short HEAD; }
 }
 
 @test "comment: nothing opened or found -> empty comment body" {
+  # A genuine no-op: the change is already on the legacy branch, so the side is
+  # skipped, nothing opens and there is nothing to say. Uses the already-applied
+  # path deliberately -- a FAILED open-PR lookup also opens nothing, but that is
+  # a failure and now reports as one, so it cannot stand in for success here.
   install_fake_gh
-  export GH_PRLIST=fail            # query fails -> side skipped, no PR, no url
+  git clone -q --branch v0.35 --single-branch "$OSS_REMOTE" "$ROOT/ossdup2"
+  (
+    cd "$ROOT/ossdup2"
+    printf 'line1\nALREADY\nline3\n' > app.go
+    git commit -qam "already applied" && git push -q origin v0.35
+  )
   cd "$MONO"
-  printf 'line1\nOSS\nline3\n' > "$PFX/app.go"
-  git commit -qam "oss: change"
+  printf 'line1\nALREADY\nline3\n' > "$PFX/app.go"
+  git commit -qam "oss: same change"
 
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
+  [[ "$output" == *"no changes to apply"* ]]
   [ -z "$(comment_body)" ]
 }
 

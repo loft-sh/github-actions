@@ -317,8 +317,15 @@ backport_side() {
     local existing="" rc=0
     existing="$(gh pr list --repo "$slug" --head "$BACKPORT_BRANCH" --base "$TARGET_BRANCH" --state open --json number --jq '.[0].number // empty' 2>/dev/null)" || rc=$?
     if [ "$rc" -ne 0 ]; then
-      echo "::warning::${side}: could not query open PRs (gh exit ${rc}); leaving branch and PR as-is rather than risk clobbering an open PR. Re-run to retry."
-      return 0
+      # Do not touch the branch or PR -- the query may have failed while a PR
+      # holding a manual conflict resolution is open, and clobbering that is
+      # worse than stopping. But this is a transient infrastructure failure, not
+      # an expected miss, so it must not pass as success: returning 0 here left
+      # the job green and, on a mixed route where the other half worked, posted
+      # "Backported to <target>" naming only that half. That is the DEVOPS-1438
+      # silent miss reached through a skip instead of a failure.
+      echo "::error::${side}: could not query open PRs (gh exit ${rc}); left the branch and PR untouched rather than risk clobbering an open PR. Re-run to retry."
+      exit 1
     fi
     if [ -n "$existing" ]; then
       echo "${side}: PR #${existing} already open for ${BACKPORT_BRANCH} -> ${TARGET_BRANCH}; leaving branch and PR as-is (may hold manual conflict resolution)"

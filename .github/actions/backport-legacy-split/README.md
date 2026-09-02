@@ -129,7 +129,14 @@ replaces the failure notice in place.
 The job still fails. This only makes it say so where the author will see it.
 
 Callers must gate the comment step on `!cancelled()` rather than the default
-`success()`, or the step is skipped on exactly the runs that need it.
+`success()`, or the step is skipped on exactly the runs that need it. The
+composite's `comment-body` output IS still mapped when `run.sh` exits non-zero
+(verified on a runner, not assumed), so the failure body reaches the caller.
+
+A failed `gh pr list` lookup also reports. It leaves the branch and PR untouched,
+since the query may have failed while a PR holding a manual conflict resolution
+is open, but it exits non-zero rather than returning green: a silent skip let the
+summary claim the whole target was backported when only one half had been.
 
 ## PR title and body
 
