@@ -168,6 +168,17 @@ teardown() {
   has_arg '--focus=^Suite Alpha syncs pods \(a\)$|^Suite Beta(?: |$)'
 }
 
+@test "focus shell syntax stays literal and cannot execute commands" {
+  cd "$WORK_DIR"
+  export GINKGO_LABEL="suite"
+  export GINKGO_FOCUS='$(touch focus-pwned);`touch focus-pwned-2`;*.yaml "quoted"'
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  has_arg '--focus=$(touch focus-pwned);`touch focus-pwned-2`;*.yaml "quoted"'
+  [ ! -e "$WORK_DIR/focus-pwned" ]
+  [ ! -e "$WORK_DIR/focus-pwned-2" ]
+}
+
 @test "no --focus argument when GINKGO_FOCUS is unset" {
   cd "$WORK_DIR"
   export GINKGO_LABEL="suite"

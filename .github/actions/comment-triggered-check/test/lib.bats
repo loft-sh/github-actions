@@ -95,6 +95,13 @@ setup() {
   [ "$REQUEST_ERROR" = "" ]
 }
 
+@test "parse_request: shell and workflow-command syntax stays literal" {
+  parse_request 'snapshots --focus "$(touch pwned);`id`;%0A::error::boom"' "true"
+  [ "$REQUEST_FILTER" = "snapshots" ]
+  [ "$REQUEST_FOCUS" = '$(touch pwned);`id`;%0A::error::boom' ]
+  [ "$REQUEST_ERROR" = "" ]
+}
+
 @test "parse_request: rejects a focus flag with no value" {
   parse_request 'snapshots --focus' "true"
   [ "$REQUEST_ERROR" = "malformed-focus" ]
