@@ -314,6 +314,117 @@ func TestFamilyCandidates(t *testing.T) {
 	if got, ok := matchSubIssue(cands, "0.34"); !ok || got.Identifier != "ENGCP-913" {
 		t.Fatalf("sibling match = %+v ok=%v; want ENGCP-913", got, ok)
 	}
+
+	// A normal issue may itself be nested under a broader issue. Its backport
+	// copies remain its own children, not siblings under the broader parent.
+	nested := issueFamily{
+		issueWithChildren: issueWithChildren{
+			issueRef: issueRef{Identifier: "ENGCP-1076", Title: "fix stale peers"},
+		},
+		Parent: parent,
+	}
+	nested.Children.Nodes = []issueRef{
+		{Identifier: "ENGCP-1098", Title: "[4.9] Copy of ENGCP-1076"},
+	}
+	cands = familyCandidates(nested)
+	if got, ok := matchSubIssue(cands, "4.9"); !ok || got.Identifier != "ENGCP-1098" {
+		t.Fatalf("nested issue match = %+v ok=%v; want ENGCP-1098", got, ok)
+	}
+}
+
+func TestIsBackportCopy(t *testing.T) {
+	tests := map[string]bool{
+		"[main] Copy of ENGCP-906":        true,
+		"[0.34] Copy of ENGCP-906":        true,
+		"[v0.34] copy of ENGCP-906":       true,
+		"[0.34] fix stale peers":          false,
+		"fix nested issue under incident": false,
+	}
+	for title, want := range tests {
+		if got := isBackportCopy(title); got != want {
+			t.Errorf("isBackportCopy(%q) = %v, want %v", title, got, want)
+		}
+	}
+}
+
+func TestSelectFamilyPrefersMatchingBackportLines(t *testing.T) {
+	incident := issueFamily{
+		issueWithChildren: issueWithChildren{
+			issueRef: issueRef{Identifier: "ENGCP-983", Title: "resource proxy incident"},
+		},
+	}
+	incident.Children.Nodes = []issueRef{
+		{Identifier: "ENGCP-994", Title: "[0.34] Copy of ENGCP-983"},
+	}
+
+	fix := issueFamily{
+		issueWithChildren: issueWithChildren{
+			issueRef: issueRef{Identifier: "ENGCP-1076", Title: "fix stale peers"},
+		},
+		Parent: &incident.issueWithChildren,
+	}
+	fix.Children.Nodes = []issueRef{
+		{Identifier: "ENGCP-1098", Title: "[4.9] Copy of ENGCP-1076"},
+		{Identifier: "ENGCP-1099", Title: "[4.10] Copy of ENGCP-1076"},
+	}
+
+	// The incident regression does not depend on a parsed identifier: the
+	// release-line family must win over Linear's attachment order.
+	got, matches := selectFamily([]issueFamily{incident, fix}, []string{"4.9", "4.10"}, "")
+	if got == nil || got.Identifier != "ENGCP-1076" || matches != 2 {
+		t.Fatalf("selected family = %+v matches=%d; want ENGCP-1076 with 2 matches", got, matches)
+	}
+
+	// A strictly higher match count outranks the preferred identifier.
+	got, matches = selectFamily([]issueFamily{incident, fix}, []string{"0.34"}, "ENGCP-1076")
+	if got == nil || got.Identifier != "ENGCP-983" || matches != 1 {
+		t.Fatalf("higher-match family = %+v matches=%d; want ENGCP-983 despite ENGCP-1076 being preferred", got, matches)
+	}
+
+	// If attached families match equally, the preferred family wins even when
+	// it appears first, so last-in-slice ordering cannot satisfy the assertion.
+	incident.Children.Nodes = []issueRef{
+		{Identifier: "ENGCP-994", Title: "[4.9] Copy of ENGCP-983"},
+	}
+	fix.Children.Nodes = fix.Children.Nodes[:1]
+	got, matches = selectFamily([]issueFamily{fix, incident}, []string{"4.9"}, "ENGCP-1076")
+	if got == nil || got.Identifier != "ENGCP-1076" || matches != 1 {
+		t.Fatalf("tie selected family = %+v matches=%d; want preferred ENGCP-1076 with 1 match", got, matches)
+	}
+}
+
+func TestResolveFamilySelectsMatchingURLAttachment(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "linear-token" {
+			t.Errorf("Authorization = %q, want linear-token", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"attachmentsForURL":{"nodes":[
+			{"issue":{"id":"incident","identifier":"ENGCP-983","title":"incident","children":{"nodes":[{"id":"old","identifier":"ENGCP-994","title":"[0.34] Copy of ENGCP-983"}]},"parent":null}},
+			{"issue":{"id":"fix","identifier":"ENGCP-1076","title":"fix stale peers","children":{"nodes":[{"id":"copy","identifier":"ENGCP-1098","title":"[4.9] Copy of ENGCP-1076"}]},"parent":{"id":"incident","identifier":"ENGCP-983","title":"incident","children":{"nodes":[]}}}}
+		]}}}`))
+	}))
+	defer server.Close()
+
+	previousURL := linearAPIURL
+	linearAPIURL = server.URL
+	t.Cleanup(func() { linearAPIURL = previousURL })
+
+	src := &github.PullRequest{
+		HTMLURL: github.Ptr("https://github.com/loft-sh/loft-enterprise/pull/7618"),
+		Head:    &github.PullRequestBranch{Ref: github.Ptr("engcp-1076/fix")},
+	}
+	got := resolveFamily("linear-token", src, []string{"4.9"})
+	if got == nil || got.Identifier != "ENGCP-1076" {
+		t.Fatalf("resolved family = %+v; want ENGCP-1076", got)
+	}
+
+	// With no matching release child, the attached issue named by the source
+	// reference wins instead of falling back to attachment order.
+	got = resolveFamily("linear-token", src, []string{"9.9"})
+	if got == nil || got.Identifier != "ENGCP-1076" {
+		t.Fatalf("preferred attached family = %+v; want ENGCP-1076", got)
+	}
 }
 
 func TestLineFromVersionString(t *testing.T) {

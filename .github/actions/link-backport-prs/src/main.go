@@ -2,8 +2,8 @@
 // the matching Linear sub-issue.
 //
 // On the shared backport workflow, after sorenlouv opens the backport PRs for a
-// merged source PR, this tool resolves the source PR's Linear issue (the
-// parent), finds the sub-issue for each backported release line by its title
+// merged source PR, this tool resolves the attached Linear issue family that
+// owns the requested release lines, finds each matching sub-issue by its title
 // prefix (for example "[0.34] Copy of ENGCP-906"), and appends "Fixes <id>" to
 // that backport PR's body so the sub-issue is closed when the backport merges.
 //
@@ -32,7 +32,8 @@ import (
 	"github.com/google/go-github/v88/github"
 )
 
-const linearAPIURL = "https://api.linear.app/graphql"
+// A variable so tests can exercise GraphQL response ordering locally.
+var linearAPIURL = "https://api.linear.app/graphql"
 
 // issueRef is a minimal Linear issue.
 type issueRef struct {
@@ -131,7 +132,13 @@ func run() error {
 		return nil
 	}
 
-	family := resolveFamily(linearToken, src)
+	versions := make([]string, 0, len(targets))
+	for _, target := range targets {
+		if version := versionFromBranch(target); version != "" {
+			versions = append(versions, version)
+		}
+	}
+	family := resolveFamily(linearToken, src, versions)
 	if family == nil {
 		remedyWarning{
 			problem: fmt.Sprintf("could not resolve a Linear issue for source PR #%d (no attachment, and no TEAM-123 identifier in its branch or body), so its %d backport target(s) were not linked", *sourcePR, len(targets)),
@@ -248,16 +255,56 @@ func matchSubIssue(candidates []issueRef, version string) (issueRef, bool) {
 }
 
 // familyCandidates flattens an issue family into the set of issues that may
-// carry a release-line prefix: the family root plus its direct children. When
-// the attached issue has a parent, the root is that parent and the children are
-// the attached issue's siblings (which is where the [X.Y] copies live).
+// carry a release-line prefix. A normal nested issue owns its backport children.
+// An attached backport copy instead uses its parent and siblings.
 func familyCandidates(f issueFamily) []issueRef {
-	if f.Parent != nil {
+	if f.Parent != nil && isBackportCopy(f.Title) {
 		out := []issueRef{f.Parent.issueRef}
 		return append(out, f.Parent.Children.Nodes...)
 	}
 	out := []issueRef{f.issueRef}
 	return append(out, f.Children.Nodes...)
+}
+
+var backportCopyTitleRe = regexp.MustCompile(`(?i)^\s*\[(?:main|v?\d+\.\d+)\]\s+copy of\b`)
+
+func isBackportCopy(title string) bool {
+	return backportCopyTitleRe.MatchString(title)
+}
+
+// selectFamily chooses the URL-linked issue whose family contains the most
+// requested release lines. The identifier from the branch or body breaks ties.
+func selectFamily(families []issueFamily, versions []string, preferredID string) (*issueFamily, int) {
+	best := -1
+	bestMatches := -1
+	for i := range families {
+		matches := 0
+		candidates := familyCandidates(families[i])
+		for _, version := range versions {
+			if _, ok := matchSubIssue(candidates, version); ok {
+				matches++
+			}
+		}
+		preferred := strings.EqualFold(families[i].Identifier, preferredID)
+		bestPreferred := best >= 0 && strings.EqualFold(families[best].Identifier, preferredID)
+		if matches > bestMatches || matches == bestMatches && preferred && !bestPreferred {
+			best = i
+			bestMatches = matches
+		}
+	}
+	if best < 0 {
+		return nil, 0
+	}
+	return &families[best], bestMatches
+}
+
+func familyByIdentifier(families []issueFamily, identifier string) *issueFamily {
+	for i := range families {
+		if strings.EqualFold(families[i].Identifier, identifier) {
+			return &families[i]
+		}
+	}
+	return nil
 }
 
 var leadingVersionRe = regexp.MustCompile(`^\s*v?(\d+)\.(\d+)`)
@@ -494,31 +541,41 @@ func extractIdentifier(strs ...string) string {
 	return ""
 }
 
-// resolveFamily finds the Linear issue family for a source PR: first via
-// Linear's reverse attachment lookup on the PR URL, then by parsing an
-// identifier from the branch name or body as a fallback.
-func resolveFamily(token string, src *github.PullRequest) *issueFamily {
+// resolveFamily finds the Linear issue family whose children match the target
+// release lines. An identifier from the branch or body breaks attachment ties
+// and remains the fallback when Linear has no useful URL attachment.
+func resolveFamily(token string, src *github.PullRequest, versions []string) *issueFamily {
+	preferredID := extractIdentifier(src.GetHead().GetRef(), src.GetBody())
+	var attached []issueFamily
 	if url := src.GetHTMLURL(); url != "" {
-		if f, err := getFamilyByURL(token, url); err != nil {
+		if families, err := getFamiliesByURL(token, url); err != nil {
 			warnf("attachmentsForURL lookup failed: %v", err)
-		} else if f != nil {
-			return f
+		} else {
+			attached = families
+			if family, matches := selectFamily(families, versions, preferredID); family != nil && matches > 0 {
+				return family
+			}
 		}
 	}
-	id := extractIdentifier(src.GetHead().GetRef(), src.GetBody())
-	if id == "" {
-		return nil
+	if preferredID != "" {
+		if family := familyByIdentifier(attached, preferredID); family != nil {
+			return family
+		}
+		noticef("falling back to identifier %s parsed from branch/body", preferredID)
+		family, err := getFamilyByID(token, preferredID)
+		if err != nil {
+			warnf("issue lookup for %s failed: %v", preferredID, err)
+		} else if family != nil {
+			return family
+		}
 	}
-	noticef("falling back to identifier %s parsed from branch/body", id)
-	f, err := getFamilyByID(token, id)
-	if err != nil {
-		warnf("issue lookup for %s failed: %v", id, err)
-		return nil
+	if len(attached) > 0 {
+		return &attached[0]
 	}
-	return f
+	return nil
 }
 
-func getFamilyByURL(token, url string) (*issueFamily, error) {
+func getFamiliesByURL(token, url string) ([]issueFamily, error) {
 	const q = `query($url: String!) {
   attachmentsForURL(url: $url) {
     nodes { issue {
@@ -546,13 +603,13 @@ func getFamilyByURL(token, url string) (*issueFamily, error) {
 	if len(resp.Errors) > 0 {
 		return nil, fmt.Errorf("linear: %s", resp.Errors[0].Message)
 	}
+	families := make([]issueFamily, 0, len(resp.Data.AttachmentsForURL.Nodes))
 	for _, n := range resp.Data.AttachmentsForURL.Nodes {
 		if n.Issue.Identifier != "" {
-			f := n.Issue
-			return &f, nil
+			families = append(families, n.Issue)
 		}
 	}
-	return nil, nil
+	return families, nil
 }
 
 func getFamilyByID(token, id string) (*issueFamily, error) {
