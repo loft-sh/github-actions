@@ -32,7 +32,8 @@ import (
 	"github.com/google/go-github/v88/github"
 )
 
-const linearAPIURL = "https://api.linear.app/graphql"
+// A variable so tests can exercise GraphQL response ordering locally.
+var linearAPIURL = "https://api.linear.app/graphql"
 
 // issueRef is a minimal Linear issue.
 type issueRef struct {
@@ -297,6 +298,15 @@ func selectFamily(families []issueFamily, versions []string, preferredID string)
 	return &families[best], bestMatches
 }
 
+func familyByIdentifier(families []issueFamily, identifier string) *issueFamily {
+	for i := range families {
+		if strings.EqualFold(families[i].Identifier, identifier) {
+			return &families[i]
+		}
+	}
+	return nil
+}
+
 var leadingVersionRe = regexp.MustCompile(`^\s*v?(\d+)\.(\d+)`)
 
 // lineFromVersionString extracts the X.Y release line from the leading version
@@ -548,7 +558,7 @@ func resolveFamily(token string, src *github.PullRequest, versions []string) *is
 		}
 	}
 	if preferredID != "" {
-		if family, _ := selectFamily(attached, nil, preferredID); family != nil && strings.EqualFold(family.Identifier, preferredID) {
+		if family := familyByIdentifier(attached, preferredID); family != nil {
 			return family
 		}
 		noticef("falling back to identifier %s parsed from branch/body", preferredID)
@@ -559,8 +569,10 @@ func resolveFamily(token string, src *github.PullRequest, versions []string) *is
 			return family
 		}
 	}
-	family, _ := selectFamily(attached, nil, "")
-	return family
+	if len(attached) > 0 {
+		return &attached[0]
+	}
+	return nil
 }
 
 func getFamiliesByURL(token, url string) ([]issueFamily, error) {
