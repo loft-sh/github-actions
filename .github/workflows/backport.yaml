@@ -29,6 +29,15 @@ on:
         type: string
         required: false
         default: ''
+      docs-url:
+        description: >-
+          Optional link to this repo's backport documentation. Added to the
+          failure comment so whoever hits it knows where the process is written
+          down. Omitted when empty. An input rather than a constant because this
+          workflow is shared with public repositories.
+        type: string
+        required: false
+        default: ''
     secrets:
       gh-access-token:
         description: 'GitHub PAT for creating backport PRs'
@@ -176,15 +185,24 @@ jobs:
           # rebase-merged PR, not just the merge tip.
           pr-number: ${{ github.event.pull_request.number }}
           create-pr: 'true'
+          docs-url: ${{ inputs.docs-url }}
 
       # sorenlouv posts a "backport PRs opened" comment on the source PR for the
       # monorepo era; the legacy path opens its PRs itself, so restore the
       # equivalent here. The action emits a ready-to-post body per target; upsert
       # it as a sticky comment (one marker per target) so re-runs update in place
       # instead of stacking duplicates.
+      #
+      # !cancelled() rather than the default success(): the action emits a body on
+      # FAILURE too, and that is the case that matters most. A failed backport
+      # otherwise shows up only as a red check on an already-merged PR, so a target
+      # that never got a PR looks exactly like one that did not need a backport
+      # (DEVOPS-1438). The job still fails; this only makes it say so where the
+      # author will see it. Same marker as the success body, so a re-run that
+      # succeeds replaces the failure notice in place.
       - name: Resolve PAT login for the sticky-comment author match
         id: pat
-        if: ${{ steps.backport.outputs.comment-body != '' }}
+        if: ${{ !cancelled() && steps.backport.outputs.comment-body != '' }}
         env:
           # The comment is posted with the PAT (parity with sorenlouv/link-backport-prs;
           # the caller only grants contents: read), so its author is the PAT's
@@ -193,8 +211,8 @@ jobs:
           GH_TOKEN: ${{ secrets.gh-access-token }}
         run: echo "login=$(gh api user --jq '.login')" >> "$GITHUB_OUTPUT"
 
-      - name: Comment backport links on the source PR
-        if: ${{ steps.backport.outputs.comment-body != '' }}
+      - name: Comment backport status on the source PR
+        if: ${{ !cancelled() && steps.backport.outputs.comment-body != '' }}
         uses: loft-sh/github-actions/.github/actions/sticky-pr-comment@sticky-pr-comment/v1 # zizmor: ignore[unpinned-uses] -- internal loft-sh/github-actions ref; reusable workflows check out the CALLER repo, so a local ./.github/actions path is not present here. sticky-pr-comment is a general-purpose action carrying its own independent @sticky-pr-comment/v1 tag (not part of the backport coordination set).
         with:
           marker: "<!-- legacy-backport-${{ matrix.target }} -->"

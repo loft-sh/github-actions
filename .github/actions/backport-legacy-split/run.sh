@@ -91,6 +91,74 @@ MONO_OBJECTS="$(git -C "$MONOREPO_DIR" rev-parse --absolute-git-dir)/objects"
 
 emit() { echo "$1=$2" >> "$GITHUB_OUTPUT"; }
 
+# comment-body is multi-line, so it cannot go through emit's key=value form. A
+# fixed heredoc delimiter is safe: the body is bot-generated Markdown that never
+# contains this token.
+COMMENT_EMITTED=false
+emit_comment_body() {
+  {
+    printf 'comment-body<<__BACKPORT_BODY_EOF__\n'
+    printf '%s\n' "$1"
+    printf '__BACKPORT_BODY_EOF__\n'
+  } >> "$GITHUB_OUTPUT"
+  COMMENT_EMITTED=true
+}
+
+# Announce a failed backport on the source PR. Without this a failure is visible
+# only as a red check on an already-merged PR, so a target that never got a PR
+# looks the same as one that did not need one (DEVOPS-1438). Deliberately
+# generic: it must read the same whatever failed -- a path missing on the legacy
+# branch, a conflict, a clone or push failure -- so the run log stays the single
+# place detail lives, and the message never goes stale against a new failure mode.
+#
+# It does NOT try to construct a partial backport. Applying only the files that
+# fit produces an incomplete PR that reads as a complete one, so the automation
+# stops and hands over instead.
+build_failure_comment() {
+  local where="the workflow run logs"
+  if [ -n "${GITHUB_SERVER_URL:-}" ] && [ -n "${GITHUB_REPOSITORY:-}" ] && [ -n "${GITHUB_RUN_ID:-}" ]; then
+    where="the [failed run](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})"
+  fi
+  # "action required", not "manual PR needed": a clone, push or auth failure
+  # wants a retry, not a hand-written backport, and the run is the only thing
+  # that can tell them apart.
+  # shellcheck disable=SC2016  # the backticks are literal Markdown, not a subshell
+  printf '## :warning: Backport to `%s` failed — action required\n\n' "$TARGET_BRANCH"
+  # shellcheck disable=SC2016
+  printf 'The automation did not complete for `%s`. See %s to decide whether to retry or backport manually.\n' \
+    "$TARGET_BRANCH" "$where"
+
+  # A mixed backport opens the OSS PR before the pro half runs, so a failure here
+  # does NOT mean nothing was created. Saying so would send someone to duplicate a
+  # PR that already exists -- and that half-done state is the DEVOPS-1438 report.
+  local -a opened=() list
+  [ -n "$PRO_PR_URL" ] && opened+=("$PRO_PR_URL")
+  [ -n "$OSS_PR_URL" ] && opened+=("$OSS_PR_URL")
+  if [ "${#opened[@]}" -gt 0 ]; then
+    list="$(printf '%s, ' "${opened[@]}")"
+    printf '\nAlready opened for this target: %s\n' "${list%, }"
+  fi
+
+  # Caller-supplied so an internal link never lands on a public repo's PR.
+  if [ -n "${DOCS_URL:-}" ]; then
+    printf '\n[How backporting works](%s)\n' "$DOCS_URL"
+  fi
+}
+
+# Any non-zero exit past this point means the backport did not complete for this
+# target, so say so on the source PR. Not the same as "no PR was opened": the OSS
+# half may already have opened one before the pro half failed, which is why
+# build_failure_comment names whatever exists. Guarded on COMMENT_EMITTED because
+# the success path writes its own body at the end; guarded on the status because
+# a clean run must not post a failure.
+on_exit() {
+  local rc=$?
+  [ "$rc" -ne 0 ] || return 0
+  [ "$COMMENT_EMITTED" = false ] || return 0
+  emit_comment_body "$(build_failure_comment)"
+}
+trap on_exit EXIT
+
 # Run git with the PAT supplied via http.extraheader in the ENVIRONMENT (never
 # argv), so token-bearing clone/fetch/push never leak the credential into `ps` or
 # a persisted .git/config. Remotes are token-less URLs (see action.yml). No-op
@@ -453,15 +521,9 @@ build_comment_body() {
   printf '%s\n' "${bullets[@]}"
 }
 
-# GITHUB_OUTPUT can't carry newlines as key=value, so use the heredoc form. A
-# fixed delimiter is safe: the body is bot-generated Markdown that never contains
-# this token. Always emitted (even empty) so the caller reads it unconditionally.
-COMMENT_BODY="$(build_comment_body)"
-{
-  printf 'comment-body<<__BACKPORT_BODY_EOF__\n'
-  printf '%s\n' "$COMMENT_BODY"
-  printf '__BACKPORT_BODY_EOF__\n'
-} >> "$GITHUB_OUTPUT"
+# Always emitted (even empty) so the caller reads it unconditionally, and so the
+# EXIT trap knows the body is already written.
+emit_comment_body "$(build_comment_body)"
 
 # Final per-side URLs (override the empty defaults emitted up front).
 emit oss-pr-url "$OSS_PR_URL"

@@ -62,6 +62,13 @@ setup() {
   export WORKDIR="$ROOT/work"
   export GITHUB_OUTPUT="$ROOT/output"
   : > "$GITHUB_OUTPUT"
+
+  # The suite itself runs inside Actions, so these are set in CI and absent
+  # locally. run.sh reads them to build the failed-run link, so leaving them
+  # inherited makes the failure-comment tests environment-dependent: they pass
+  # locally and fail in CI. Start every test from "not in Actions" and let the
+  # one test that wants a run URL export them itself.
+  unset GITHUB_SERVER_URL GITHUB_REPOSITORY GITHUB_RUN_ID DOCS_URL
 }
 
 teardown() {
@@ -727,6 +734,150 @@ short() { git -C "$MONO" rev-parse --short HEAD; }
 }
 
 # --- guards ----------------------------------------------------------------
+
+# --- failure is announced ---------------------------------------------------
+
+@test "failure: a half that cannot apply emits a failure comment body" {
+  # The DEVOPS-1438 shape: the legacy branch lacks a file the patch modifies, so
+  # the half cannot apply and no PR is created. The run must still emit a body,
+  # or the only trace is a red check on an already-merged PR.
+  git clone -q --branch v0.35 --single-branch "$OSS_REMOTE" "$ROOT/ossdel"
+  (
+    cd "$ROOT/ossdel"
+    git rm -q app.go && git commit -qm "drop app.go" && git push -q origin v0.35
+  )
+  cd "$MONO"
+  printf 'line1\nMOD\nline3\n' > "$PFX/app.go"
+  git commit -qam "oss: modify app.go"
+
+  run bash "$SCRIPT"
+  [ "$status" -ne 0 ]                      # still fails loudly
+  [ "$(output_value oss-pushed)" = "false" ]
+  run comment_body
+  [[ "$output" == *"Backport to \`v0.35\` failed — action required"* ]]
+  [[ "$output" == *"did not complete"* ]]
+  [[ "$output" == *"retry or backport manually"* ]]
+}
+
+@test "failure: the message is generic across different failure causes" {
+  # A clone failure has nothing in common with an unappliable patch, but the
+  # comment must read the same -- the run log is the single place detail lives,
+  # so the message can never go stale against a new failure mode.
+  cd "$MONO"
+  printf 'line1\nMOD\nline3\n' > "$PFX/app.go"
+  git commit -qam "oss: modify app.go"
+  export OSS_REMOTE="$ROOT/does-not-exist.git"
+
+  run bash "$SCRIPT"
+  [ "$status" -ne 0 ]
+  run comment_body
+  [[ "$output" == *"Backport to \`v0.35\` failed — action required"* ]]
+  [[ "$output" == *"did not complete"* ]]
+  # Nothing opened, so nothing is claimed to exist.
+  [[ "$output" != *"Already opened"* ]]
+}
+
+@test "failure: the run URL is used when the Actions env is present" {
+  git clone -q --branch v0.35 --single-branch "$OSS_REMOTE" "$ROOT/ossdel2"
+  (
+    cd "$ROOT/ossdel2"
+    git rm -q app.go && git commit -qm "drop app.go" && git push -q origin v0.35
+  )
+  cd "$MONO"
+  printf 'line1\nMOD\nline3\n' > "$PFX/app.go"
+  git commit -qam "oss: modify app.go"
+  export GITHUB_SERVER_URL=https://github.com GITHUB_REPOSITORY=loft-sh/vcluster-pro GITHUB_RUN_ID=42
+
+  run bash "$SCRIPT"
+  [ "$status" -ne 0 ]
+  run comment_body
+  [[ "$output" == *"https://github.com/loft-sh/vcluster-pro/actions/runs/42"* ]]
+}
+
+@test "failure: falls back to plain wording with no Actions env" {
+  # Outside CI there is no run to link, so the sentence must still parse.
+  git clone -q --branch v0.35 --single-branch "$OSS_REMOTE" "$ROOT/ossdel3"
+  (
+    cd "$ROOT/ossdel3"
+    git rm -q app.go && git commit -qm "drop app.go" && git push -q origin v0.35
+  )
+  cd "$MONO"
+  printf 'line1\nMOD\nline3\n' > "$PFX/app.go"
+  git commit -qam "oss: modify app.go"
+
+  run bash "$SCRIPT"
+  [ "$status" -ne 0 ]
+  run comment_body
+  [[ "$output" == *"See the workflow run logs to decide"* ]]
+  [[ "$output" != *"](https://"* ]]
+}
+
+@test "failure: a successful run posts its normal body, never the failure one" {
+  cd "$MONO"
+  printf 'line1\nOK\nline3\n' > "$PFX/app.go"
+  git commit -qam "oss: modify app.go"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  run comment_body
+  [[ "$output" != *"failed"* ]]
+  [[ "$output" != *"manual PR needed"* ]]
+}
+
+@test "failure: a PR opened before the failure is named, not denied" {
+  # The DEVOPS-1438 shape exactly: the OSS half opens a PR, then the pro half
+  # fails. The comment must not claim nothing was created -- that sends someone
+  # to duplicate the PR that already exists.
+  install_fake_gh
+  cd "$MONO"
+  mkdir -p e2e && printf 'package e2e\n' > e2e/suite.go
+  git add -A && git commit -qm "pro: add an e2e suite (never on the legacy branch)"
+  printf 'line1\nOSS\nline3\n' > "$PFX/app.go"
+  printf 'package e2e\n// changed\n' > e2e/suite.go
+  git commit -qam "both: oss app.go and the pro e2e suite"
+
+  run bash "$SCRIPT"
+  [ "$status" -ne 0 ]
+  [ "$(output_value oss-pushed)" = "true" ]
+  run comment_body
+  [[ "$output" == *"Already opened for this target: https://github.com/x/y/pull/99"* ]]
+  [[ "$output" != *"no PR was created"* ]]
+}
+
+@test "failure: the docs link is included when the caller supplies one" {
+  git clone -q --branch v0.35 --single-branch "$OSS_REMOTE" "$ROOT/ossdoc"
+  (
+    cd "$ROOT/ossdoc"
+    git rm -q app.go && git commit -qm "drop app.go" && git push -q origin v0.35
+  )
+  cd "$MONO"
+  printf 'line1\nMOD\nline3\n' > "$PFX/app.go"
+  git commit -qam "oss: modify app.go"
+  export DOCS_URL="https://example.invalid/backports"
+
+  run bash "$SCRIPT"
+  [ "$status" -ne 0 ]
+  run comment_body
+  [[ "$output" == *"[How backporting works](https://example.invalid/backports)"* ]]
+}
+
+@test "failure: no docs link when the caller supplies none" {
+  # An internal link must never be assumed: the action is shared with public
+  # repos, so the line is present only when a caller opts in.
+  git clone -q --branch v0.35 --single-branch "$OSS_REMOTE" "$ROOT/ossnodoc"
+  (
+    cd "$ROOT/ossnodoc"
+    git rm -q app.go && git commit -qm "drop app.go" && git push -q origin v0.35
+  )
+  cd "$MONO"
+  printf 'line1\nMOD\nline3\n' > "$PFX/app.go"
+  git commit -qam "oss: modify app.go"
+
+  run bash "$SCRIPT"
+  [ "$status" -ne 0 ]
+  run comment_body
+  [[ "$output" != *"How backporting works"* ]]
+}
 
 @test "missing required env fails" {
   cd "$MONO"

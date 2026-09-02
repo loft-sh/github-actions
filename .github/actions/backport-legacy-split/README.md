@@ -85,6 +85,52 @@ or renamed on the legacy branch, so its preimage isn't in the target index),
 nothing is staged and the run **fails loudly** with an actionable error rather
 than pushing an empty backport.
 
+Applying only the files that do fit is deliberately not done: a partial backport
+risks a regression on the release branch. An incomplete PR reads as a complete
+one, so a green partial can be merged as though nothing were missing. The
+automation stops and hands over instead.
+
+## Announcing a failure
+
+A failure is posted to the **source PR** as a sticky comment, not left as a red
+check on a PR that is usually already merged by then. Without it a target that
+never got a backport looks exactly like one that never needed a backport, which
+is how a security fix reached `v0.35` and `v0.36` while silently missing `v0.33`
+and `v0.34` (DEVOPS-1438).
+
+The message is deliberately generic:
+
+> ## :warning: Backport to `v0.34` failed — action required
+>
+> The automation did not complete for `v0.34`. See the failed run to decide
+> whether to retry or backport manually.
+>
+> Already opened for this target: https://github.com/loft-sh/vcluster/pull/4146
+>
+> [How backporting works](https://app.notion.com/p/loftsh/Managing-Patch-Releases-35710940806980a2b080de7f3adb0d27)
+
+It reads the same whatever went wrong — a path missing on the legacy branch, a
+conflict, a clone or push failure — so the run log stays the single place detail
+lives and the comment can never go stale against a new failure mode. It says
+"action required" rather than naming a remedy because only the run can tell a
+retryable clone or push failure from one needing a hand-written backport.
+
+The last line appears only when a PR exists. A mixed backport opens the OSS PR
+before the pro half runs, so a failure does **not** imply nothing was created,
+and claiming otherwise would send someone to duplicate it.
+
+The docs link comes from the caller's `docs-url` input and is omitted when unset.
+It is an input rather than a constant because this action is shared with public
+repositories, and an internal link must never be assumed.
+
+It uses the same sticky marker as the success body, so a re-run that succeeds
+replaces the failure notice in place.
+
+The job still fails. This only makes it say so where the author will see it.
+
+Callers must gate the comment step on `!cancelled()` rather than the default
+`success()`, or the step is skipped on exactly the runs that need it.
+
 ## PR title and body
 
 The opened PR reads like its source rather than a bare SHA:
@@ -116,6 +162,7 @@ below.
 |----------------|--------|----------|----------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 |     commit     | string |  false   |          |                                                                                       Monorepo merge commit to backport (the tip). <br>Names the backport branch; also the <br>diff HEAD in the fallback path. <br>Defaults to HEAD.                                                                                        |
 |   create-pr    | string |  false   | `"true"` |                                                                                                                  true = open a PR per <br>pushed backport branch via gh. false <br>= push branches only.                                                                                                                    |
+|    docs-url    | string |  false   |          |       Optional link to the caller's backport <br>documentation, added to the failure comment <br>so whoever hits it knows where <br>the process is written down. Omitted <br>from the comment when empty. Kept <br>as an input rather than hardcoded <br>because this action is shared with <br>public repositories.        |
 |  github-token  | string |   true   |          |                                                                                             Token with write access to both <br>repos and permission to open PRs. <br>Used to build push remotes and <br>by gh; never logged.                                                                                               |
 |    oss-repo    | string |   true   |          |                                                                                                                                    OSS repository as owner/repo, e.g. loft-sh/vcluster.                                                                                                                                     |
 |   pr-number    | string |  false   |          | Source PR number. When set, the <br>PR head is fetched from refs/pull/<n>/head <br>(via github-token) and the diff is merge-base(commit^1, pr-head)..pr-head <br>-- GitHub's 'Files changed', correct for <br>any merge strategy (squash, rebase, or merge commit). Omit (e.g. tests) <br>to fall back to commit^..commit.  |
@@ -129,17 +176,17 @@ below.
 
 <!-- AUTO-DOC-OUTPUT:START - Do not remove or modify this section -->
 
-|     OUTPUT      |  TYPE  |                                                                               DESCRIPTION                                                                                |
-|-----------------|--------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| backport-branch | string |                                                       The backport branch name pushed to <br>the target repo(s).                                                         |
-|  comment-body   | string | Ready-to-post Markdown summarizing the backport PR <br>link(s) for this target; empty when <br>none were opened/found. Upsert as a <br>sticky comment on the source PR.  |
-|  oss-conflicts  | string |                                                        true when the OSS half applied <br>with merge conflicts.                                                          |
-|   oss-pr-url    | string |                                      URL of the OSS backport PR <br>opened this run (or the one already open); empty if <br>none.                                        |
-|   oss-pushed    | string |                                                            true when an OSS backport branch <br>was pushed.                                                              |
-|  pro-conflicts  | string |                                                        true when the pro half applied <br>with merge conflicts.                                                          |
-|   pro-pr-url    | string |                                      URL of the pro backport PR <br>opened this run (or the one already open); empty if <br>none.                                        |
-|   pro-pushed    | string |                                               true when a pro backport branch <br>was pushed (pro-only or mixed commits).                                                |
-|      route      | string |                                                     Classification of the commit: pro-only | <br>oss-only | mixed.                                                       |
+|     OUTPUT      |  TYPE  |                                                                                                                                                                                                                    DESCRIPTION                                                                                                                                                                                                                     |
+|-----------------|--------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| backport-branch | string |                                                                                                                                                                                            The backport branch name pushed to <br>the target repo(s).                                                                                                                                                                                              |
+|  comment-body   | string | Ready-to-post Markdown status for this target, <br>upserted as a sticky comment on <br>the source PR. On success it <br>summarizes the backport PR link(s); on <br>failure it reports that the backport <br>did not complete, naming any PR <br>already opened for the target. Empty <br>only when a successful run opened <br>or found nothing. Callers must gate <br>the comment step on !cancelled(), or <br>the failure body is never posted.  |
+|  oss-conflicts  | string |                                                                                                                                                                                             true when the OSS half applied <br>with merge conflicts.                                                                                                                                                                                               |
+|   oss-pr-url    | string |                                                                                                                                                                           URL of the OSS backport PR <br>opened this run (or the one already open); empty if <br>none.                                                                                                                                                                             |
+|   oss-pushed    | string |                                                                                                                                                                                                 true when an OSS backport branch <br>was pushed.                                                                                                                                                                                                   |
+|  pro-conflicts  | string |                                                                                                                                                                                             true when the pro half applied <br>with merge conflicts.                                                                                                                                                                                               |
+|   pro-pr-url    | string |                                                                                                                                                                           URL of the pro backport PR <br>opened this run (or the one already open); empty if <br>none.                                                                                                                                                                             |
+|   pro-pushed    | string |                                                                                                                                                                                    true when a pro backport branch <br>was pushed (pro-only or mixed commits).                                                                                                                                                                                     |
+|      route      | string |                                                                                                                                                                                          Classification of the commit: pro-only | <br>oss-only | mixed.                                                                                                                                                                                            |
 
 <!-- AUTO-DOC-OUTPUT:END -->
 
