@@ -1,0 +1,181 @@
+name: Secret broker request
+description: Authorize and claim short-lived encrypted secret requests
+inputs:
+  operation:
+    description: Request lifecycle operation, authorize or preflight
+    required: false
+    default: authorize
+  app-client-id:
+    description: GitHub App client ID, required for authorize
+    required: false
+  app-private-key:
+    description: GitHub App private key, required for authorize
+    required: false
+  authorization-org:
+    description: Organization whose team membership grants access
+    required: false
+  authorization-team:
+    description: Team whose active members may request the allowed aliases
+    required: false
+  request-repository:
+    description: Repository containing the request commit
+    required: true
+  request-commit:
+    description: Immutable commit containing the request envelope
+    required: true
+  request-branch:
+    description: Branch that triggered the unprivileged request workflow
+    required: true
+  request-branch-prefix:
+    description: Trusted prefix before the timestamped request ID
+    required: false
+    default: secret-broker-request/
+  request-path:
+    description: Fixed path to the request envelope in the request commit
+    required: false
+    default: .secret-broker-request.json
+  actor:
+    description: GitHub-authenticated actor from the source workflow run
+    required: false
+  actor-id:
+    description: Stable numeric ID for the GitHub-authenticated actor
+    required: false
+  source-run-id:
+    description: ID of the unprivileged source workflow run
+    required: false
+  source-run-attempt:
+    description: Attempt number of the unprivileged source workflow run
+    required: false
+  broker-run-attempt:
+    description: Attempt number of the privileged broker workflow run
+    required: false
+  allowed-secret-aliases:
+    description: Comma-separated or newline-separated allowlist of secret aliases
+    required: true
+  repository-token:
+    description: GitHub token with contents read, plus contents write for preflight
+    required: true
+  github-api-url:
+    description: GitHub REST API base URL
+    required: false
+    default: https://api.github.com
+  trusted-commit:
+    description: Trusted commit used as the processed tag target for preflight
+    required: false
+  processed-ref-prefix:
+    description: Durable tag prefix used to reject replayed requests
+    required: false
+    default: refs/tags/secret-broker-processed/
+  expected-request-id:
+    description: Authorized request ID to revalidate during preflight
+    required: false
+  expected-request-sha256:
+    description: Authorized request digest to revalidate during preflight
+    required: false
+  expected-public-key-fingerprint:
+    description: Authorized public key fingerprint to revalidate during preflight
+    required: false
+  expected-secret-alias:
+    description: Authorized secret alias to revalidate during preflight
+    required: false
+  expected-created-at:
+    description: Authorized creation time to revalidate during preflight
+    required: false
+  expected-expires-at:
+    description: Authorized expiry time to revalidate during preflight
+    required: false
+  expected-nonce:
+    description: Authorized nonce to revalidate during preflight
+    required: false
+  request-output-file:
+    description: Private runner path for the validated request during preflight
+    required: false
+  public-key-output-file:
+    description: Private runner path for the validated public key during preflight
+    required: false
+outputs:
+  request-id:
+    description: Validated request ID
+    value: ${{ steps.request.outputs.request-id }}
+  requested-secret-alias:
+    description: Validated secret alias
+    value: ${{ steps.request.outputs.requested-secret-alias }}
+  request-sha256:
+    description: SHA-256 digest of the exact request envelope
+    value: ${{ steps.request.outputs.request-sha256 }}
+  public-key-fingerprint:
+    description: SHA-256 fingerprint of the request public key
+    value: ${{ steps.request.outputs.public-key-fingerprint }}
+  created-at:
+    description: Validated request creation time
+    value: ${{ steps.request.outputs.created-at }}
+  expires-at:
+    description: Validated request expiry time
+    value: ${{ steps.request.outputs.expires-at }}
+  nonce:
+    description: Validated request nonce
+    value: ${{ steps.request.outputs.nonce }}
+  actor:
+    description: Authorized GitHub actor
+    value: ${{ steps.request.outputs.actor }}
+  actor-id:
+    description: Stable numeric ID for the authorized actor
+    value: ${{ steps.request.outputs.actor-id }}
+  source-run-id:
+    description: Source workflow run bound to the authorization
+    value: ${{ steps.request.outputs.source-run-id }}
+  request-file:
+    description: Validated request file path from preflight
+    value: ${{ steps.request.outputs.request-file }}
+  public-key-file:
+    description: Validated public key file path from preflight
+    value: ${{ steps.request.outputs.public-key-file }}
+runs:
+  using: composite
+  steps:
+    - name: Create authorization token
+      id: app-token
+      if: ${{ inputs.operation == 'authorize' }}
+      uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+      with:
+        client-id: ${{ inputs.app-client-id }}
+        private-key: ${{ inputs.app-private-key }}
+        owner: ${{ inputs.authorization-org }}
+        permission-members: read
+
+    - name: Process secret request
+      id: request
+      shell: bash
+      run: python3 "${{ github.action_path }}/src/action.py"
+      env:
+        INPUT_OPERATION: ${{ inputs.operation }}
+        INPUT_AUTHORIZATION_ORG: ${{ inputs.authorization-org }}
+        INPUT_AUTHORIZATION_TEAM: ${{ inputs.authorization-team }}
+        INPUT_REQUEST_REPOSITORY: ${{ inputs.request-repository }}
+        INPUT_REQUEST_COMMIT: ${{ inputs.request-commit }}
+        INPUT_REQUEST_BRANCH: ${{ inputs.request-branch }}
+        INPUT_REQUEST_BRANCH_PREFIX: ${{ inputs.request-branch-prefix }}
+        INPUT_REQUEST_PATH: ${{ inputs.request-path }}
+        INPUT_ACTOR: ${{ inputs.actor }}
+        INPUT_ACTOR_ID: ${{ inputs.actor-id }}
+        INPUT_SOURCE_RUN_ID: ${{ inputs.source-run-id }}
+        INPUT_SOURCE_RUN_ATTEMPT: ${{ inputs.source-run-attempt }}
+        INPUT_BROKER_RUN_ATTEMPT: ${{ inputs.broker-run-attempt }}
+        INPUT_ALLOWED_SECRET_ALIASES: ${{ inputs.allowed-secret-aliases }}
+        INPUT_REPOSITORY_TOKEN: ${{ inputs.repository-token }}
+        INPUT_GITHUB_API_URL: ${{ inputs.github-api-url }}
+        SECRET_BROKER_AUTH_TOKEN: ${{ steps.app-token.outputs.token }}
+        INPUT_TRUSTED_COMMIT: ${{ inputs.trusted-commit }}
+        INPUT_PROCESSED_REF_PREFIX: ${{ inputs.processed-ref-prefix }}
+        INPUT_EXPECTED_REQUEST_ID: ${{ inputs.expected-request-id }}
+        INPUT_EXPECTED_REQUEST_SHA256: ${{ inputs.expected-request-sha256 }}
+        INPUT_EXPECTED_PUBLIC_KEY_FINGERPRINT: ${{ inputs.expected-public-key-fingerprint }}
+        INPUT_EXPECTED_SECRET_ALIAS: ${{ inputs.expected-secret-alias }}
+        INPUT_EXPECTED_CREATED_AT: ${{ inputs.expected-created-at }}
+        INPUT_EXPECTED_EXPIRES_AT: ${{ inputs.expected-expires-at }}
+        INPUT_EXPECTED_NONCE: ${{ inputs.expected-nonce }}
+        INPUT_REQUEST_OUTPUT_FILE: ${{ inputs.request-output-file }}
+        INPUT_PUBLIC_KEY_OUTPUT_FILE: ${{ inputs.public-key-output-file }}
+branding:
+  icon: lock
+  color: gray-dark

@@ -7,6 +7,18 @@ are written, tested, and structured.
 
 ## Available Actions
 
+### Secret Broker Request Action
+
+Validates a short-lived secret request from an immutable commit, authorizes the
+GitHub actor against an active organization team membership, and durably claims
+the request before the caller loads a secret-store credential. It treats the
+request as untrusted data and never checks out requester-controlled code.
+
+Location: `.github/actions/secret-broker-request`
+
+See [secret-broker-request README](./.github/actions/secret-broker-request/README.md)
+for the request schema, two-job integration, permissions, and replay policy.
+
 ### Semver Validation Action
 
 Reports on a version string: validity, its parts, its release channel, and how it
