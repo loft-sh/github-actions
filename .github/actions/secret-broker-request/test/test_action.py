@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 ACTION = Path(__file__).parents[1] / "src" / "action.py"
+ACTION_METADATA = Path(__file__).parents[1] / "action.yml"
 
 
 def timestamp(value):
@@ -128,41 +129,50 @@ class ApiServer:
         self.thread.join()
 
 
-def run_action(tmp_path, server, request, **changes):
+def workflow_run(request, **changes):
+    event = {
+        "id": 12345,
+        "run_attempt": 1,
+        "event": "push",
+        "conclusion": "success",
+        "head_repository": {
+            "full_name": "example-org/secret-broker-consumer",
+        },
+        "head_sha": "a" * 40,
+        "head_branch": f"secret-broker-request/{request['request_id']}",
+        "actor": {"login": "requester", "id": 123456},
+    }
+    event.update(changes)
+    return event
+
+
+def run_action(tmp_path, server, request, workflow_run_changes=None, **changes):
     output = tmp_path / "github-output"
-    request_file = tmp_path / "validated-request.json"
-    public_key_file = tmp_path / "public.pem"
+    runner_temp = tmp_path / "runner-temp"
+    request_file = runner_temp / "secret-broker" / "request.json"
+    public_key_file = runner_temp / "secret-broker" / "public.pem"
     env = {
         **os.environ,
         "GITHUB_OUTPUT": str(output),
-        "INPUT_OPERATION": "authorize",
-        "INPUT_AUTHORIZATION_ORG": "example-org",
-        "INPUT_AUTHORIZATION_TEAM": "secret-users",
-        "INPUT_REQUEST_REPOSITORY": "example-org/secret-broker-consumer",
-        "INPUT_REQUEST_COMMIT": "a" * 40,
-        "INPUT_REQUEST_BRANCH": f"secret-broker-request/{request['request_id']}",
-        "INPUT_REQUEST_BRANCH_PREFIX": "secret-broker-request/",
-        "INPUT_REQUEST_PATH": ".secret-broker-request.json",
-        "INPUT_ACTOR": "requester",
-        "INPUT_ACTOR_ID": "123456",
-        "INPUT_SOURCE_RUN_ID": "12345",
-        "INPUT_SOURCE_RUN_ATTEMPT": "1",
-        "INPUT_BROKER_RUN_ATTEMPT": "1",
+        "GITHUB_REPOSITORY": "example-org/secret-broker-consumer",
+        "GITHUB_RUN_ID": "67890",
+        "GITHUB_RUN_ATTEMPT": "1",
+        "GITHUB_SHA": "b" * 40,
+        "GITHUB_WORKFLOW_REF": (
+            "example-org/secret-broker-consumer/"
+            ".github/workflows/broker.yaml@refs/heads/main"
+        ),
+        "GITHUB_TOKEN": "repository-token",
+        "GITHUB_API_URL": server.url,
+        "RUNNER_TEMP": str(runner_temp),
+        "SECRET_BROKER_WORKFLOW_RUN": json.dumps(
+            workflow_run(request, **(workflow_run_changes or {}))
+        ),
+        "INPUT_ORGANIZATION": "example-org",
+        "INPUT_TEAM": "secret-users",
         "INPUT_ALLOWED_SECRET_ALIASES": "test-secret\nteam/secondary",
-        "INPUT_REPOSITORY_TOKEN": "repository-token",
-        "INPUT_GITHUB_API_URL": server.url,
         "SECRET_BROKER_AUTH_TOKEN": "installation-token",
-        "INPUT_TRUSTED_COMMIT": "b" * 40,
-        "INPUT_PROCESSED_REF_PREFIX": "refs/tags/secret-broker-processed/",
-        "INPUT_EXPECTED_REQUEST_ID": "",
-        "INPUT_EXPECTED_REQUEST_SHA256": "",
-        "INPUT_EXPECTED_PUBLIC_KEY_FINGERPRINT": "",
-        "INPUT_EXPECTED_SECRET_ALIAS": "",
-        "INPUT_EXPECTED_CREATED_AT": "",
-        "INPUT_EXPECTED_EXPIRES_AT": "",
-        "INPUT_EXPECTED_NONCE": "",
-        "INPUT_REQUEST_OUTPUT_FILE": str(request_file),
-        "INPUT_PUBLIC_KEY_OUTPUT_FILE": str(public_key_file),
+        "INPUT_AUTHORIZATION": "",
         **changes,
     }
     result = subprocess.run(
@@ -185,17 +195,59 @@ def test_authorize_accepts_active_team_member(tmp_path, request_fixture):
         result, outputs, _, _ = run_action(tmp_path, server, request_fixture)
 
     assert result.returncode == 0, result.stderr
-    assert outputs["request-id"] == request_fixture["request_id"]
-    assert outputs["requested-secret-alias"] == "test-secret"
-    assert outputs["actor"] == "requester"
-    assert outputs["actor-id"] == "123456"
-    assert outputs["public-key-fingerprint"].startswith("sha256:")
+    authorization = json.loads(outputs["authorization"])
+    assert authorization["source"]["head_branch"].endswith(
+        request_fixture["request_id"]
+    )
+    assert authorization["authorization"]["secret_alias"] == "test-secret"
+    assert authorization["source"]["actor_login"] == "requester"
+    assert authorization["source"]["actor_id"] == 123456
     assert server.calls[0] == (
         "GET",
         "/repos/example-org/secret-broker-consumer/contents/"
         ".secret-broker-request.json?ref=" + "a" * 40,
         None,
     )
+
+
+def test_authorize_exposes_one_opaque_handoff(tmp_path, request_fixture):
+    with ApiServer(request_fixture) as server:
+        result, outputs, _, _ = run_action(tmp_path, server, request_fixture)
+
+    assert result.returncode == 0, result.stderr
+    assert set(outputs) == {"authorization"}
+    authorization = json.loads(outputs["authorization"])
+    assert authorization["request_sha256"]
+    assert authorization["source"]["head_branch"].endswith(
+        request_fixture["request_id"]
+    )
+    assert authorization["source"]["actor_login"] == "requester"
+    assert authorization["source"]["actor_id"] == 123456
+
+
+def test_action_metadata_keeps_the_public_contract_small():
+    metadata = ACTION_METADATA.read_text()
+
+    def names(section):
+        lines = metadata.splitlines()
+        start = lines.index(f"{section}:") + 1
+        result = []
+        for line in lines[start:]:
+            if line and not line.startswith(" "):
+                break
+            if line.startswith("  ") and not line.startswith("    "):
+                result.append(line.strip().removesuffix(":"))
+        return result
+
+    assert names("inputs") == [
+        "app-client-id",
+        "app-private-key",
+        "organization",
+        "team",
+        "allowed-secret-aliases",
+        "authorization",
+    ]
+    assert names("outputs") == ["authorization", "bundle"]
 
 
 @pytest.mark.parametrize(
@@ -241,10 +293,13 @@ def test_authorize_rejects_actor_id_mismatch(tmp_path, request_fixture):
 def test_authorize_rejects_source_and_broker_reruns(tmp_path, request_fixture, attempt):
     with ApiServer(request_fixture) as server:
         source, _, _, _ = run_action(
-            tmp_path, server, request_fixture, INPUT_SOURCE_RUN_ATTEMPT=attempt
+            tmp_path,
+            server,
+            request_fixture,
+            workflow_run_changes={"run_attempt": int(attempt)},
         )
         broker, _, _, _ = run_action(
-            tmp_path, server, request_fixture, INPUT_BROKER_RUN_ATTEMPT=attempt
+            tmp_path, server, request_fixture, GITHUB_RUN_ATTEMPT=attempt
         )
 
     assert source.returncode != 0
@@ -308,26 +363,31 @@ def test_preflight_revalidates_and_claims_before_writing_files(
             tmp_path,
             server,
             request_fixture,
-            INPUT_OPERATION="preflight",
-            INPUT_EXPECTED_REQUEST_ID=outputs["request-id"],
-            INPUT_EXPECTED_REQUEST_SHA256=outputs["request-sha256"],
-            INPUT_EXPECTED_PUBLIC_KEY_FINGERPRINT=outputs["public-key-fingerprint"],
-            INPUT_EXPECTED_SECRET_ALIAS=outputs["requested-secret-alias"],
-            INPUT_EXPECTED_CREATED_AT=outputs["created-at"],
-            INPUT_EXPECTED_EXPIRES_AT=outputs["expires-at"],
-            INPUT_EXPECTED_NONCE=outputs["nonce"],
+            INPUT_AUTHORIZATION=outputs["authorization"],
         )
 
     assert result.returncode == 0, result.stderr
     assert json.loads(request_file.read_text()) == request_fixture
     assert "BEGIN CERTIFICATE" in public_key_file.read_text()
+    bundle = request_file.parent
+    authorization_file = bundle / "authorization.json"
+    assert json.loads(authorization_file.read_text()) == json.loads(
+        outputs["authorization"]
+    )
+    assert bundle.stat().st_mode & 0o777 == 0o700
+    assert request_file.stat().st_mode & 0o777 == 0o600
+    assert public_key_file.stat().st_mode & 0o777 == 0o600
+    assert authorization_file.stat().st_mode & 0o777 == 0o600
     claim = [call for call in server.calls if call[0] == "POST"]
     assert claim == [
         (
             "POST",
             "/repos/example-org/secret-broker-consumer/git/refs",
             {
-                "ref": f"refs/tags/secret-broker-processed/{request_fixture['request_id']}",
+                "ref": (
+                    "refs/tags/secret-broker-processed/"
+                    + json.loads(outputs["authorization"])["request_sha256"]
+                ),
                 "sha": "b" * 40,
             },
         )
@@ -343,14 +403,7 @@ def test_preflight_rejects_duplicate_claim(tmp_path, request_fixture):
             tmp_path,
             server,
             request_fixture,
-            INPUT_OPERATION="preflight",
-            INPUT_EXPECTED_REQUEST_ID=outputs["request-id"],
-            INPUT_EXPECTED_REQUEST_SHA256=outputs["request-sha256"],
-            INPUT_EXPECTED_PUBLIC_KEY_FINGERPRINT=outputs["public-key-fingerprint"],
-            INPUT_EXPECTED_SECRET_ALIAS=outputs["requested-secret-alias"],
-            INPUT_EXPECTED_CREATED_AT=outputs["created-at"],
-            INPUT_EXPECTED_EXPIRES_AT=outputs["expires-at"],
-            INPUT_EXPECTED_NONCE=outputs["nonce"],
+            INPUT_AUTHORIZATION=outputs["authorization"],
         )
 
     assert result.returncode != 0
@@ -369,14 +422,7 @@ def test_preflight_rejects_request_changed_after_authorization(
             tmp_path,
             server,
             request_fixture,
-            INPUT_OPERATION="preflight",
-            INPUT_EXPECTED_REQUEST_ID=outputs["request-id"],
-            INPUT_EXPECTED_REQUEST_SHA256=outputs["request-sha256"],
-            INPUT_EXPECTED_PUBLIC_KEY_FINGERPRINT=outputs["public-key-fingerprint"],
-            INPUT_EXPECTED_SECRET_ALIAS=outputs["requested-secret-alias"],
-            INPUT_EXPECTED_CREATED_AT=outputs["created-at"],
-            INPUT_EXPECTED_EXPIRES_AT=outputs["expires-at"],
-            INPUT_EXPECTED_NONCE=outputs["nonce"],
+            INPUT_AUTHORIZATION=outputs["authorization"],
         )
 
     assert result.returncode != 0
@@ -386,7 +432,28 @@ def test_preflight_rejects_request_changed_after_authorization(
     assert not [call for call in server.calls if call[0] == "POST"]
 
 
-def test_preflight_rejects_changed_branch(tmp_path, request_fixture):
+@pytest.mark.parametrize(
+    ("workflow_run_changes", "environment_changes"),
+    [
+        (
+            {
+                "head_branch": (
+                    "secret-broker-request/1788429600-deadbeefdeadbeefdeadbeef"
+                )
+            },
+            {},
+        ),
+        ({"head_sha": "c" * 40}, {}),
+        ({"id": 54321}, {}),
+        ({"actor": {"login": "another-user", "id": 999999}}, {}),
+        ({}, {"GITHUB_RUN_ID": "98765"}),
+        ({}, {"GITHUB_WORKFLOW_REF": "example-org/other/.github/workflows/x@main"}),
+        ({}, {"GITHUB_SHA": "c" * 40}),
+    ],
+)
+def test_preflight_rejects_changed_workflow_context(
+    tmp_path, request_fixture, workflow_run_changes, environment_changes
+):
     with ApiServer(request_fixture) as server:
         authorized, outputs, _, _ = run_action(tmp_path, server, request_fixture)
         assert authorized.returncode == 0, authorized.stderr
@@ -394,26 +461,29 @@ def test_preflight_rejects_changed_branch(tmp_path, request_fixture):
             tmp_path,
             server,
             request_fixture,
-            INPUT_OPERATION="preflight",
-            INPUT_REQUEST_BRANCH="secret-broker-request/1788429600-deadbeefdeadbeefdeadbeef",
-            INPUT_EXPECTED_REQUEST_ID=outputs["request-id"],
-            INPUT_EXPECTED_REQUEST_SHA256=outputs["request-sha256"],
-            INPUT_EXPECTED_PUBLIC_KEY_FINGERPRINT=outputs["public-key-fingerprint"],
-            INPUT_EXPECTED_SECRET_ALIAS=outputs["requested-secret-alias"],
-            INPUT_EXPECTED_CREATED_AT=outputs["created-at"],
-            INPUT_EXPECTED_EXPIRES_AT=outputs["expires-at"],
-            INPUT_EXPECTED_NONCE=outputs["nonce"],
+            workflow_run_changes=workflow_run_changes,
+            INPUT_AUTHORIZATION=outputs["authorization"],
+            **environment_changes,
         )
 
     assert result.returncode != 0
-    assert "request branch changed" in result.stderr
+    assert "workflow run changed" in result.stderr
     assert not request_file.exists()
 
 
-@pytest.mark.parametrize(
-    "attempt_input", ["INPUT_SOURCE_RUN_ATTEMPT", "INPUT_BROKER_RUN_ATTEMPT"]
-)
-def test_preflight_rejects_reruns(tmp_path, request_fixture, attempt_input):
+@pytest.mark.parametrize("field", ["GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"])
+def test_rejects_invalid_broker_run_numbers(tmp_path, request_fixture, field):
+    with ApiServer(request_fixture) as server:
+        result, _, _, _ = run_action(
+            tmp_path, server, request_fixture, **{field: "not-a-number"}
+        )
+
+    assert result.returncode != 0
+    assert f"{field} must be a positive integer" in result.stderr
+
+
+@pytest.mark.parametrize("rerun", ["source", "broker"])
+def test_preflight_rejects_reruns(tmp_path, request_fixture, rerun):
     with ApiServer(request_fixture) as server:
         authorized, outputs, _, _ = run_action(tmp_path, server, request_fixture)
         assert authorized.returncode == 0, authorized.stderr
@@ -421,15 +491,9 @@ def test_preflight_rejects_reruns(tmp_path, request_fixture, attempt_input):
             tmp_path,
             server,
             request_fixture,
-            INPUT_OPERATION="preflight",
-            INPUT_EXPECTED_REQUEST_ID=outputs["request-id"],
-            INPUT_EXPECTED_REQUEST_SHA256=outputs["request-sha256"],
-            INPUT_EXPECTED_PUBLIC_KEY_FINGERPRINT=outputs["public-key-fingerprint"],
-            INPUT_EXPECTED_SECRET_ALIAS=outputs["requested-secret-alias"],
-            INPUT_EXPECTED_CREATED_AT=outputs["created-at"],
-            INPUT_EXPECTED_EXPIRES_AT=outputs["expires-at"],
-            INPUT_EXPECTED_NONCE=outputs["nonce"],
-            **{attempt_input: "2"},
+            workflow_run_changes={"run_attempt": 2} if rerun == "source" else None,
+            INPUT_AUTHORIZATION=outputs["authorization"],
+            **({"GITHUB_RUN_ATTEMPT": "2"} if rerun == "broker" else {}),
         )
 
     assert result.returncode != 0

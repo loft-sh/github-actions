@@ -31,6 +31,11 @@ SHA_RE = re.compile(r"^[a-f0-9]{40}$")
 LOGIN_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")
 SLUG_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,98}[A-Za-z0-9])?$")
 ALIAS_RE = re.compile(r"^[a-z0-9](?:[a-z0-9._/-]{0,126}[a-z0-9])?$")
+SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
+REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+REQUEST_BRANCH_PREFIX = "secret-broker-request/"
+REQUEST_PATH = ".secret-broker-request.json"
+PROCESSED_REF_PREFIX = "refs/tags/secret-broker-processed/"
 
 
 class BrokerError(Exception):
@@ -53,11 +58,29 @@ class ValidatedRequest(NamedTuple):
     nonce: str
 
 
+class WorkflowRun(NamedTuple):
+    repository: str
+    commit: str
+    branch: str
+    request_id: str
+    actor: str
+    actor_id: int
+    source_run_id: int
+    source_run_attempt: int
+
+
 def required(name):
     value = os.environ.get(name, "")
     if not value:
         raise BrokerError(f"{name} is required")
     return value
+
+
+def positive_int(name):
+    value = required(name)
+    if not value.isdigit() or int(value) <= 0:
+        raise BrokerError(f"{name} must be a positive integer")
+    return int(value)
 
 
 def utc_now():
@@ -77,6 +100,10 @@ def parse_timestamp(value, field):
 
 def serialize_json(value):
     return (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+
+
+def compact_json(value):
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
 def load_request(raw):
@@ -273,25 +300,68 @@ def api_json(method, url, token, payload=None):
         raise ApiError(0, "GitHub API returned invalid JSON") from error
 
 
-def repository_and_request_id():
-    repository = required("INPUT_REQUEST_REPOSITORY")
-    if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository) is None:
+def load_workflow_run():
+    try:
+        workflow_run = json.loads(required("SECRET_BROKER_WORKFLOW_RUN"))
+    except json.JSONDecodeError as error:
+        raise BrokerError("workflow_run event is not valid JSON") from error
+    if not isinstance(workflow_run, dict):
+        raise BrokerError("workflow_run event is invalid")
+
+    repository = required("GITHUB_REPOSITORY")
+    if REPOSITORY_RE.fullmatch(repository) is None:
         raise BrokerError("request repository is invalid")
-    commit = required("INPUT_REQUEST_COMMIT")
-    if SHA_RE.fullmatch(commit) is None:
+    source_repository = workflow_run.get("head_repository")
+    actor = workflow_run.get("actor")
+    if not isinstance(source_repository, dict) or not isinstance(actor, dict):
+        raise BrokerError("workflow_run event is invalid")
+    if source_repository.get("full_name") != repository:
+        raise BrokerError("request must originate in the broker repository")
+    if (
+        workflow_run.get("event") != "push"
+        or workflow_run.get("conclusion") != "success"
+    ):
+        raise BrokerError("source workflow run is not a successful push")
+
+    commit = workflow_run.get("head_sha")
+    branch = workflow_run.get("head_branch")
+    if not isinstance(commit, str) or SHA_RE.fullmatch(commit) is None:
         raise BrokerError("request commit is invalid")
-    prefix = required("INPUT_REQUEST_BRANCH_PREFIX")
-    branch = required("INPUT_REQUEST_BRANCH")
-    if not branch.startswith(prefix):
-        raise BrokerError("request branch prefix does not match")
-    request_id = branch[len(prefix) :]
+    if not isinstance(branch, str) or not branch.startswith(REQUEST_BRANCH_PREFIX):
+        raise BrokerError("request branch is invalid")
+    request_id = branch[len(REQUEST_BRANCH_PREFIX) :]
     if REQUEST_ID_RE.fullmatch(request_id) is None:
         raise BrokerError("request branch is invalid")
-    return repository, commit, request_id
+
+    actor_login = actor.get("login")
+    actor_id = actor.get("id")
+    source_run_id = workflow_run.get("id")
+    source_run_attempt = workflow_run.get("run_attempt")
+    if not isinstance(actor_login, str) or LOGIN_RE.fullmatch(actor_login) is None:
+        raise BrokerError("GitHub actor is invalid")
+    if type(actor_id) is not int or actor_id <= 0:
+        raise BrokerError("GitHub actor ID is invalid")
+    if type(source_run_id) is not int or source_run_id <= 0:
+        raise BrokerError("source workflow run ID is invalid")
+    if type(source_run_attempt) is not int or source_run_attempt != 1:
+        raise BrokerError("workflow re-runs cannot issue secrets")
+    if positive_int("GITHUB_RUN_ATTEMPT") != 1:
+        raise BrokerError("workflow re-runs cannot issue secrets")
+
+    return WorkflowRun(
+        repository=repository,
+        commit=commit,
+        branch=branch,
+        request_id=request_id,
+        actor=actor_login,
+        actor_id=actor_id,
+        source_run_id=source_run_id,
+        source_run_attempt=source_run_attempt,
+    )
 
 
 def fetch_request(repository, commit, token, api_url):
-    path = urllib.parse.quote(required("INPUT_REQUEST_PATH"), safe="")
+    path = urllib.parse.quote(REQUEST_PATH, safe="")
     query = urllib.parse.urlencode({"ref": commit})
     url = f"{api_url}/repos/{repository}/contents/{path}?{query}"
     try:
@@ -309,31 +379,9 @@ def fetch_request(repository, commit, token, api_url):
     return raw
 
 
-def validate_run_attempts():
-    if (
-        required("INPUT_SOURCE_RUN_ATTEMPT") != "1"
-        or required("INPUT_BROKER_RUN_ATTEMPT") != "1"
-    ):
-        raise BrokerError("workflow re-runs cannot issue secrets")
-
-
-def validate_actor_inputs():
-    actor = required("INPUT_ACTOR")
-    actor_id = required("INPUT_ACTOR_ID")
-    source_run_id = required("INPUT_SOURCE_RUN_ID")
-    if LOGIN_RE.fullmatch(actor) is None:
-        raise BrokerError("GitHub actor is invalid")
-    if not actor_id.isdigit() or int(actor_id) <= 0:
-        raise BrokerError("GitHub actor ID is invalid")
-    if not source_run_id.isdigit() or int(source_run_id) <= 0:
-        raise BrokerError("source workflow run ID is invalid")
-    validate_run_attempts()
-    return actor, actor_id, source_run_id
-
-
 def authorize(api_url, auth_token, actor, actor_id):
-    org = required("INPUT_AUTHORIZATION_ORG")
-    team = required("INPUT_AUTHORIZATION_TEAM")
+    org = required("INPUT_ORGANIZATION")
+    team = required("INPUT_TEAM")
     if LOGIN_RE.fullmatch(org) is None or SLUG_RE.fullmatch(team) is None:
         raise BrokerError("authorization organization or team is invalid")
 
@@ -342,7 +390,7 @@ def authorize(api_url, auth_token, actor, actor_id):
         user = api_json("GET", user_url, auth_token)
     except ApiError as error:
         raise BrokerError(f"GitHub actor identity check failed: {error}") from error
-    if not isinstance(user, dict) or str(user.get("id", "")) != actor_id:
+    if not isinstance(user, dict) or user.get("id") != actor_id:
         raise BrokerError(
             f"GitHub actor {actor} no longer matches stable ID {actor_id}"
         )
@@ -375,84 +423,215 @@ def write_outputs(values):
 
 
 def authorize_request():
-    api_url = validate_api_url(required("INPUT_GITHUB_API_URL"))
-    repository, commit, request_id = repository_and_request_id()
-    actor, actor_id, source_run_id = validate_actor_inputs()
-    raw = fetch_request(repository, commit, required("INPUT_REPOSITORY_TOKEN"), api_url)
-    request = validate_request(load_request(raw), request_id, allowed_aliases())
-    org, team, role = authorize(
-        api_url, required("SECRET_BROKER_AUTH_TOKEN"), actor, actor_id
+    workflow_run = load_workflow_run()
+    api_url = validate_api_url(required("GITHUB_API_URL"))
+    raw = fetch_request(
+        workflow_run.repository,
+        workflow_run.commit,
+        required("GITHUB_TOKEN"),
+        api_url,
     )
-    outputs = {
-        "request-id": request.request_id,
-        "requested-secret-alias": request.requested_secret_alias,
-        "request-sha256": hashlib.sha256(raw).hexdigest(),
-        "public-key-fingerprint": request.public_key_fingerprint,
-        "created-at": request.created_at,
-        "expires-at": request.expires_at,
-        "nonce": request.nonce,
-        "actor": actor,
-        "actor-id": actor_id,
-        "source-run-id": source_run_id,
+    request = validate_request(
+        load_request(raw), workflow_run.request_id, allowed_aliases()
+    )
+    org, team, role = authorize(
+        api_url,
+        required("SECRET_BROKER_AUTH_TOKEN"),
+        workflow_run.actor,
+        workflow_run.actor_id,
+    )
+    authorization = {
+        "version": 1,
+        "broker": {
+            "repository": workflow_run.repository,
+            "run_id": positive_int("GITHUB_RUN_ID"),
+            "run_attempt": positive_int("GITHUB_RUN_ATTEMPT"),
+            "workflow_ref": required("GITHUB_WORKFLOW_REF"),
+            "sha": required("GITHUB_SHA"),
+        },
+        "source": {
+            "repository": workflow_run.repository,
+            "run_id": workflow_run.source_run_id,
+            "run_attempt": workflow_run.source_run_attempt,
+            "head_sha": workflow_run.commit,
+            "head_branch": workflow_run.branch,
+            "actor_login": workflow_run.actor,
+            "actor_id": workflow_run.actor_id,
+        },
+        "authorization": {
+            "organization": org,
+            "team": team,
+            "secret_alias": request.requested_secret_alias,
+        },
+        "request_sha256": hashlib.sha256(raw).hexdigest(),
     }
-    write_outputs(outputs)
+    write_outputs({"authorization": compact_json(authorization)})
     print(
         "authorized request "
         + json.dumps(
             {
-                **outputs,
-                "repository": repository,
+                "actor": workflow_run.actor,
+                "actor_id": workflow_run.actor_id,
+                "request_id": workflow_run.request_id,
+                "secret_alias": request.requested_secret_alias,
                 "team": f"{org}/{team}",
-                "membership-role": role,
+                "membership_role": role,
             },
             sort_keys=True,
         )
     )
 
 
-def validate_expected(raw):
-    expected_id = required("INPUT_EXPECTED_REQUEST_ID")
-    validated = validate_request(load_request(raw), expected_id, allowed_aliases())
-    comparisons = {
-        "request digest": (
-            hashlib.sha256(raw).hexdigest(),
-            required("INPUT_EXPECTED_REQUEST_SHA256"),
-        ),
-        "public key fingerprint": (
-            validated.public_key_fingerprint,
-            required("INPUT_EXPECTED_PUBLIC_KEY_FINGERPRINT"),
-        ),
-        "secret alias": (
-            validated.requested_secret_alias,
-            required("INPUT_EXPECTED_SECRET_ALIAS"),
-        ),
-        "created_at": (validated.created_at, required("INPUT_EXPECTED_CREATED_AT")),
-        "expires_at": (validated.expires_at, required("INPUT_EXPECTED_EXPIRES_AT")),
-        "nonce": (validated.nonce, required("INPUT_EXPECTED_NONCE")),
-    }
-    for label, (actual, expected) in comparisons.items():
-        if actual != expected:
-            raise BrokerError(f"authorized request {label} does not match")
+def load_authorization():
+    raw = required("INPUT_AUTHORIZATION")
+    if len(raw.encode()) > 8192:
+        raise BrokerError("authorization is too large")
+
+    def reject_duplicates(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise BrokerError(f"authorization contains duplicate field {key}")
+            result[key] = value
+        return result
+
+    try:
+        authorization = json.loads(raw, object_pairs_hook=reject_duplicates)
+    except json.JSONDecodeError as error:
+        raise BrokerError("authorization is not valid JSON") from error
+    if not isinstance(authorization, dict) or set(authorization) != {
+        "version",
+        "broker",
+        "source",
+        "authorization",
+        "request_sha256",
+    }:
+        raise BrokerError("authorization is invalid")
+    broker = authorization.get("broker")
+    source = authorization.get("source")
+    policy = authorization.get("authorization")
+    if (
+        type(authorization.get("version")) is not int
+        or authorization["version"] != 1
+        or not isinstance(broker, dict)
+        or not isinstance(source, dict)
+        or not isinstance(policy, dict)
+        or set(broker)
+        != {
+            "repository",
+            "run_id",
+            "run_attempt",
+            "workflow_ref",
+            "sha",
+        }
+        or set(source)
+        != {
+            "repository",
+            "run_id",
+            "run_attempt",
+            "head_sha",
+            "head_branch",
+            "actor_login",
+            "actor_id",
+        }
+        or set(policy) != {"organization", "team", "secret_alias"}
+    ):
+        raise BrokerError("authorization is invalid")
+    if (
+        not isinstance(broker["repository"], str)
+        or REPOSITORY_RE.fullmatch(broker["repository"]) is None
+        or type(broker["run_id"]) is not int
+        or broker["run_id"] <= 0
+        or type(broker["run_attempt"]) is not int
+        or broker["run_attempt"] != 1
+        or not isinstance(broker["workflow_ref"], str)
+        or not 1 <= len(broker["workflow_ref"]) <= 512
+        or not isinstance(broker["sha"], str)
+        or SHA_RE.fullmatch(broker["sha"]) is None
+        or not isinstance(source["repository"], str)
+        or REPOSITORY_RE.fullmatch(source["repository"]) is None
+        or type(source["run_id"]) is not int
+        or source["run_id"] <= 0
+        or type(source["run_attempt"]) is not int
+        or source["run_attempt"] != 1
+        or not isinstance(source["head_sha"], str)
+        or SHA_RE.fullmatch(source["head_sha"]) is None
+        or not isinstance(source["head_branch"], str)
+        or not source["head_branch"].startswith(REQUEST_BRANCH_PREFIX)
+        or REQUEST_ID_RE.fullmatch(source["head_branch"][len(REQUEST_BRANCH_PREFIX) :])
+        is None
+        or not isinstance(source["actor_login"], str)
+        or LOGIN_RE.fullmatch(source["actor_login"]) is None
+        or type(source["actor_id"]) is not int
+        or source["actor_id"] <= 0
+        or not isinstance(policy["organization"], str)
+        or LOGIN_RE.fullmatch(policy["organization"]) is None
+        or not isinstance(policy["team"], str)
+        or SLUG_RE.fullmatch(policy["team"]) is None
+        or not isinstance(policy["secret_alias"], str)
+        or ALIAS_RE.fullmatch(policy["secret_alias"]) is None
+        or not isinstance(authorization["request_sha256"], str)
+        or SHA256_RE.fullmatch(authorization["request_sha256"]) is None
+    ):
+        raise BrokerError("authorization is invalid")
+    return authorization
+
+
+def validate_workflow_binding(authorization, workflow_run):
+    broker = authorization["broker"]
+    source = authorization["source"]
+    expected = (
+        broker["repository"],
+        broker["run_id"],
+        broker["run_attempt"],
+        broker["workflow_ref"],
+        broker["sha"],
+        source["repository"],
+        source["head_sha"],
+        source["head_branch"],
+        source["actor_login"],
+        source["actor_id"],
+        source["run_id"],
+        source["run_attempt"],
+    )
+    actual = (
+        required("GITHUB_REPOSITORY"),
+        positive_int("GITHUB_RUN_ID"),
+        positive_int("GITHUB_RUN_ATTEMPT"),
+        required("GITHUB_WORKFLOW_REF"),
+        required("GITHUB_SHA"),
+        workflow_run.repository,
+        workflow_run.commit,
+        workflow_run.branch,
+        workflow_run.actor,
+        workflow_run.actor_id,
+        workflow_run.source_run_id,
+        workflow_run.source_run_attempt,
+    )
+    if actual != expected:
+        raise BrokerError("workflow run changed after authorization")
+
+
+def validate_authorized_request(raw, authorization):
+    policy = authorization["authorization"]
+    if hashlib.sha256(raw).hexdigest() != authorization["request_sha256"]:
+        raise BrokerError("authorized request digest does not match")
+    validated = validate_request(
+        load_request(raw),
+        authorization["source"]["head_branch"][len(REQUEST_BRANCH_PREFIX) :],
+        {policy["secret_alias"]},
+    )
     return validated
 
 
-def claim(api_url, repository, request_id):
-    trusted_commit = required("INPUT_TRUSTED_COMMIT")
+def claim(api_url, repository, claim_key):
+    trusted_commit = required("GITHUB_SHA")
     if SHA_RE.fullmatch(trusted_commit) is None:
         raise BrokerError("trusted commit is invalid")
-    prefix = required("INPUT_PROCESSED_REF_PREFIX")
-    if (
-        not prefix.startswith("refs/tags/")
-        or not prefix.endswith("/")
-        or ".." in prefix
-        or "//" in prefix
-        or re.fullmatch(r"refs/tags/[A-Za-z0-9._/-]+/", prefix) is None
-    ):
-        raise BrokerError("processed ref prefix is invalid")
     url = f"{api_url}/repos/{repository}/git/refs"
-    payload = {"ref": prefix + request_id, "sha": trusted_commit}
+    payload = {"ref": PROCESSED_REF_PREFIX + claim_key, "sha": trusted_commit}
     try:
-        api_json("POST", url, required("INPUT_REPOSITORY_TOKEN"), payload)
+        api_json("POST", url, required("GITHUB_TOKEN"), payload)
     except ApiError as error:
         if error.status == 422:
             raise BrokerError("request was already processed") from error
@@ -470,31 +649,37 @@ def write_private_file(path, content, binary=False):
 
 
 def preflight_request():
-    validate_run_attempts()
-    api_url = validate_api_url(required("INPUT_GITHUB_API_URL"))
-    repository, commit, request_id = repository_and_request_id()
-    if request_id != required("INPUT_EXPECTED_REQUEST_ID"):
-        raise BrokerError("request branch changed after authorization")
-    raw = fetch_request(repository, commit, required("INPUT_REPOSITORY_TOKEN"), api_url)
-    request = validate_expected(raw)
-    claim(api_url, repository, request_id)
-    request_file = required("INPUT_REQUEST_OUTPUT_FILE")
-    public_key_file = required("INPUT_PUBLIC_KEY_OUTPUT_FILE")
-    write_private_file(request_file, raw, binary=True)
-    write_private_file(public_key_file, request.ephemeral_public_key)
-    write_outputs({"request-file": request_file, "public-key-file": public_key_file})
-    print(f"claimed request {request_id} for one issuance")
+    workflow_run = load_workflow_run()
+    authorization = load_authorization()
+    validate_workflow_binding(authorization, workflow_run)
+    api_url = validate_api_url(required("GITHUB_API_URL"))
+    raw = fetch_request(
+        workflow_run.repository,
+        workflow_run.commit,
+        required("GITHUB_TOKEN"),
+        api_url,
+    )
+    request = validate_authorized_request(raw, authorization)
+    claim(api_url, workflow_run.repository, authorization["request_sha256"])
+
+    bundle = Path(required("RUNNER_TEMP")) / "secret-broker"
+    bundle.mkdir(mode=0o700, parents=True, exist_ok=True)
+    bundle.chmod(0o700)
+    write_private_file(bundle / "request.json", raw, binary=True)
+    write_private_file(bundle / "public.pem", request.ephemeral_public_key)
+    write_private_file(
+        bundle / "authorization.json", compact_json(authorization) + "\n"
+    )
+    write_outputs({"bundle": str(bundle)})
+    print(f"claimed request {workflow_run.request_id} for one issuance")
 
 
 def main():
     try:
-        operation = required("INPUT_OPERATION")
-        if operation == "authorize":
-            authorize_request()
-        elif operation == "preflight":
+        if os.environ.get("INPUT_AUTHORIZATION", ""):
             preflight_request()
         else:
-            raise BrokerError("operation must be authorize or preflight")
+            authorize_request()
     except BrokerError as error:
         print(f"secret broker: {error}", file=sys.stderr)
         return 1
