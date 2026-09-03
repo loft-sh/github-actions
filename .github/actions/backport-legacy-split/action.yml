@@ -25,6 +25,10 @@ inputs:
     description: "Source PR number. When set, the PR head is fetched from refs/pull/<n>/head (via github-token) and the diff is merge-base(commit^1, pr-head)..pr-head -- GitHub's 'Files changed', correct for any merge strategy (squash, rebase, or merge commit). Omit (e.g. tests) to fall back to commit^..commit."
     required: false
     default: ""
+  docs-url:
+    description: "Optional link to the caller's backport documentation, added to the failure comment so whoever hits it knows where the process is written down. Omitted from the comment when empty. Kept as an input rather than hardcoded because this action is shared with public repositories."
+    required: false
+    default: ""
   create-pr:
     description: "true = open a PR per pushed backport branch via gh. false = push branches only."
     required: false
@@ -56,7 +60,7 @@ outputs:
     description: "URL of the pro backport PR opened this run (or the one already open); empty if none."
     value: ${{ steps.backport.outputs.pro-pr-url }}
   comment-body:
-    description: "Ready-to-post Markdown summarizing the backport PR link(s) for this target; empty when none were opened/found. Upsert as a sticky comment on the source PR."
+    description: "Ready-to-post Markdown status for this target, upserted as a sticky comment on the source PR. On success it summarizes the backport PR link(s); on failure it reports that the backport did not complete, naming any PR already opened for the target. Empty only when a successful run opened or found nothing. Callers must gate the comment step on !cancelled(), or the failure body is never posted."
     value: ${{ steps.backport.outputs.comment-body }}
 
 runs:
@@ -71,6 +75,7 @@ runs:
         COMMIT: ${{ inputs.commit }}
         PR_NUMBER: ${{ inputs.pr-number }}
         CREATE_PR: ${{ inputs.create-pr }}
+        DOCS_URL: ${{ inputs.docs-url }}
         OSS_REPO: ${{ inputs.oss-repo }}
         PRO_REPO: ${{ inputs.pro-repo }}
         # Token-less remotes: run.sh authenticates via http.extraheader in the
