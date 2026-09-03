@@ -408,3 +408,32 @@ def test_preflight_rejects_changed_branch(tmp_path, request_fixture):
     assert result.returncode != 0
     assert "request branch changed" in result.stderr
     assert not request_file.exists()
+
+
+@pytest.mark.parametrize(
+    "attempt_input", ["INPUT_SOURCE_RUN_ATTEMPT", "INPUT_BROKER_RUN_ATTEMPT"]
+)
+def test_preflight_rejects_reruns(tmp_path, request_fixture, attempt_input):
+    with ApiServer(request_fixture) as server:
+        authorized, outputs, _, _ = run_action(tmp_path, server, request_fixture)
+        assert authorized.returncode == 0, authorized.stderr
+        result, _, request_file, public_key_file = run_action(
+            tmp_path,
+            server,
+            request_fixture,
+            INPUT_OPERATION="preflight",
+            INPUT_EXPECTED_REQUEST_ID=outputs["request-id"],
+            INPUT_EXPECTED_REQUEST_SHA256=outputs["request-sha256"],
+            INPUT_EXPECTED_PUBLIC_KEY_FINGERPRINT=outputs["public-key-fingerprint"],
+            INPUT_EXPECTED_SECRET_ALIAS=outputs["requested-secret-alias"],
+            INPUT_EXPECTED_CREATED_AT=outputs["created-at"],
+            INPUT_EXPECTED_EXPIRES_AT=outputs["expires-at"],
+            INPUT_EXPECTED_NONCE=outputs["nonce"],
+            **{attempt_input: "2"},
+        )
+
+    assert result.returncode != 0
+    assert "re-runs" in result.stderr
+    assert not request_file.exists()
+    assert not public_key_file.exists()
+    assert not [call for call in server.calls if call[0] == "POST"]

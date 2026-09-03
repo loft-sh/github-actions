@@ -309,6 +309,14 @@ def fetch_request(repository, commit, token, api_url):
     return raw
 
 
+def validate_run_attempts():
+    if (
+        required("INPUT_SOURCE_RUN_ATTEMPT") != "1"
+        or required("INPUT_BROKER_RUN_ATTEMPT") != "1"
+    ):
+        raise BrokerError("workflow re-runs cannot issue secrets")
+
+
 def validate_actor_inputs():
     actor = required("INPUT_ACTOR")
     actor_id = required("INPUT_ACTOR_ID")
@@ -319,11 +327,7 @@ def validate_actor_inputs():
         raise BrokerError("GitHub actor ID is invalid")
     if not source_run_id.isdigit() or int(source_run_id) <= 0:
         raise BrokerError("source workflow run ID is invalid")
-    if (
-        required("INPUT_SOURCE_RUN_ATTEMPT") != "1"
-        or required("INPUT_BROKER_RUN_ATTEMPT") != "1"
-    ):
-        raise BrokerError("workflow re-runs cannot issue secrets")
+    validate_run_attempts()
     return actor, actor_id, source_run_id
 
 
@@ -466,6 +470,7 @@ def write_private_file(path, content, binary=False):
 
 
 def preflight_request():
+    validate_run_attempts()
     api_url = validate_api_url(required("INPUT_GITHUB_API_URL"))
     repository, commit, request_id = repository_and_request_id()
     if request_id != required("INPUT_EXPECTED_REQUEST_ID"):
