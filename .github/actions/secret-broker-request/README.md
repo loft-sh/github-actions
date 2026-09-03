@@ -93,6 +93,8 @@ from the authorization job and trusted workflow values. The caller needs
           allowed-secret-aliases: test-secret
           repository-token: ${{ github.token }}
           trusted-commit: ${{ github.sha }}
+          source-run-attempt: ${{ github.event.workflow_run.run_attempt }}
+          broker-run-attempt: ${{ github.run_attempt }}
           expected-request-id: ${{ needs.authorize.outputs.request-id }}
           expected-request-sha256: ${{ needs.authorize.outputs.request-sha256 }}
           expected-public-key-fingerprint: ${{ needs.authorize.outputs.public-key-fingerprint }}
