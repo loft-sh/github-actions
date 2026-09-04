@@ -98,6 +98,26 @@ jobs:
           [[ "$REASON" == "empty-filter" ]]
           [[ "$SHOULD_RUN" == "false" ]]
 
+      - name: A malformed focus is parsed through the composite input
+        id: malformed-focus
+        uses: ./.github/actions/comment-triggered-check
+        with:
+          mode: start
+          comment-body: '/test-e2e snapshots --focus'
+          parse-focus: 'true'
+          pr-number: '1'
+
+      - name: Verify the malformed-focus reason
+        env:
+          MATCHED: ${{ steps.malformed-focus.outputs.matched }}
+          REASON: ${{ steps.malformed-focus.outputs.reason }}
+          SHOULD_RUN: ${{ steps.malformed-focus.outputs.should-run }}
+        run: |
+          echo "matched=$MATCHED reason=$REASON should-run=$SHOULD_RUN"
+          [[ "$MATCHED" == "true" ]]
+          [[ "$REASON" == "malformed-focus" ]]
+          [[ "$SHOULD_RUN" == "false" ]]
+
       - name: An outsider cannot run the command
         id: outsider
         uses: ./.github/actions/comment-triggered-check

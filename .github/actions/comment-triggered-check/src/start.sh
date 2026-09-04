@@ -50,7 +50,6 @@ base_ref=""
 concurrency_key=""
 name=""
 check_run_id=""
-normalize_name=true
 
 # Emitted on every path, so a caller never reads an undefined output.
 finish_and_exit() {
@@ -173,10 +172,7 @@ fi
 
 should_run=true
 request="$(request_display "$filter" "$focus")"
-if [[ -n "$focus" ]]; then
-  normalize_name=false
-fi
-name="$(check_name "$prefix" "$request" 60 "$normalize_name")"
+name="$(check_name "$prefix" "$request" 60)"
 concurrency_key="$(concurrency_key "$(request_identity "$filter" "$focus")")"
 
 # --- 4. Open the check-run ---------------------------------------------------

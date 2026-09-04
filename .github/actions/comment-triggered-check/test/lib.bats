@@ -280,8 +280,8 @@ setup() {
   [ "$output" = "e2e: snapshots" ]
 }
 
-@test "check_name: exact mode preserves meaningful focus whitespace" {
-  run check_name "e2e" 'snapshots --focus "creates  snapshots"' 60 false
+@test "check_name: preserves meaningful focus whitespace" {
+  run check_name "e2e" 'snapshots --focus "creates  snapshots"' 60
   [ "$output" = 'e2e: snapshots --focus "creates  snapshots"' ]
 }
 

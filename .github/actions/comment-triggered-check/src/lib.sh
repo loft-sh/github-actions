@@ -181,19 +181,15 @@ concurrency_key() {
   printf '%s-%s' "${slug:-filter}" "$(short_digest "$normalized")"
 }
 
-# check_name <prefix> <filter> [max-length] [normalize-whitespace]
+# check_name <prefix> <request> [max-length]
 # The display name of the check-run, derived from user input, so it is
-# sanitized and bounded. When the filter is too long to show in full the name
-# carries a digest of the whole filter, because this name is also the dedupe
-# key: two different long filters that truncated to the same text would
+# sanitized and bounded. When the request is too long to show in full the name
+# carries a digest of the whole request, because this name is also the dedupe
+# key: two different long requests that truncated to the same text would
 # otherwise be treated as the same in-flight run.
 check_name() {
-  local prefix="${1-}" filter="${2-}" max="${3:-60}" normalize="${4:-true}" cleaned
-  if [[ "$normalize" == "true" ]]; then
-    cleaned="$(normalize_filter "$filter")"
-  else
-    cleaned="$filter"
-  fi
+  local prefix="${1-}" request="${2-}" max="${3:-60}" cleaned
+  cleaned="$request"
   cleaned="$(printf '%s' "$cleaned" | LC_ALL=C tr -cd '\040-\176')"
 
   if [[ "${#cleaned}" -le "$max" ]]; then

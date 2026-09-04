@@ -60,18 +60,7 @@ export_resolved_focus() {
 
 # --- the zero-match guard ---
 
-@test "a focused rerun that matched no specs fails instead of reporting success" {
-  mkdir -p "$WORK_DIR/test-reports"
-  echo '[{"PreRunStats":{"TotalSpecs":40,"SpecsThatWillRun":0},"RunTime":0,"SpecReports":[]}]' \
-    >"$WORK_DIR/test-reports/report.json"
-
-  cd "$WORK_DIR"
-  REPORT_FILE=test-reports/report.json FOCUS_ACTIVE=true run bash "$SUMMARY"
-  [ "$status" -eq 1 ]
-  [[ "$output" == *"matched no specs"* ]]
-}
-
-@test "a requested focus that matched no specs fails instead of reporting success" {
+@test "an active focus that matched no specs fails instead of reporting success" {
   mkdir -p "$WORK_DIR/test-reports"
   echo '[{"PreRunStats":{"TotalSpecs":40,"SpecsThatWillRun":0},"RunTime":0,"SpecReports":[]}]' \
     >"$WORK_DIR/test-reports/report.json"
