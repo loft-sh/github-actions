@@ -60,13 +60,8 @@ def request_fixture(tmp_path_factory):
 
 
 class ApiServer:
-    def __init__(self, request, membership=None, user=None, failures=None):
+    def __init__(self, request, user=None, failures=None):
         self.request = request
-        self.membership = (
-            membership
-            if membership is not None
-            else {"state": "active", "role": "member"}
-        )
         self.user = user if user is not None else {"login": "requester", "id": 123456}
         self.failures = failures or {}
         self.calls = []
@@ -87,8 +82,6 @@ class ApiServer:
                     }
                 elif self.path.startswith("/users/"):
                     payload = parent.user
-                elif "/memberships/" in self.path:
-                    payload = parent.membership
                 else:
                     status = 404
                     payload = {"message": "not found"}
@@ -168,10 +161,7 @@ def run_action(tmp_path, server, request, workflow_run_changes=None, **changes):
         "SECRET_BROKER_WORKFLOW_RUN": json.dumps(
             workflow_run(request, **(workflow_run_changes or {}))
         ),
-        "INPUT_ORGANIZATION": "example-org",
-        "INPUT_TEAM": "secret-users",
         "INPUT_ALLOWED_SECRET_ALIASES": "test-secret\nteam/secondary",
-        "SECRET_BROKER_AUTH_TOKEN": "installation-token",
         "INPUT_AUTHORIZATION": "",
         **changes,
     }
@@ -190,7 +180,9 @@ def run_action(tmp_path, server, request, workflow_run_changes=None, **changes):
     return result, outputs, request_file, public_key_file
 
 
-def test_authorize_accepts_active_team_member(tmp_path, request_fixture):
+def test_authorize_accepts_authenticated_actor_without_team_check(
+    tmp_path, request_fixture
+):
     with ApiServer(request_fixture) as server:
         result, outputs, _, _ = run_action(tmp_path, server, request_fixture)
 
@@ -208,6 +200,7 @@ def test_authorize_accepts_active_team_member(tmp_path, request_fixture):
         ".secret-broker-request.json?ref=" + "a" * 40,
         None,
     )
+    assert not any("/teams/" in call[1] for call in server.calls)
 
 
 def test_authorize_exposes_one_opaque_handoff(tmp_path, request_fixture):
@@ -240,46 +233,10 @@ def test_action_metadata_keeps_the_public_contract_small():
         return result
 
     assert names("inputs") == [
-        "app-client-id",
-        "app-private-key",
-        "organization",
-        "team",
         "allowed-secret-aliases",
         "authorization",
     ]
     assert names("outputs") == ["authorization", "bundle"]
-
-
-@pytest.mark.parametrize(
-    ("membership", "failures", "message"),
-    [
-        ({"state": "pending", "role": "member"}, {}, "not active"),
-        (
-            {},
-            {"/orgs/example-org/teams/secret-users/memberships/requester": 404},
-            "not a member",
-        ),
-        (
-            {},
-            {"/orgs/example-org/teams/secret-users/memberships/requester": 403},
-            "check failed",
-        ),
-        (
-            {},
-            {"/orgs/example-org/teams/secret-users/memberships/requester": 500},
-            "check failed",
-        ),
-    ],
-)
-def test_authorize_fails_closed_on_membership_errors(
-    tmp_path, request_fixture, membership, failures, message
-):
-    with ApiServer(request_fixture, membership=membership, failures=failures) as server:
-        result, _, _, _ = run_action(tmp_path, server, request_fixture)
-
-    assert result.returncode != 0
-    assert message in result.stderr
-
 
 def test_authorize_rejects_actor_id_mismatch(tmp_path, request_fixture):
     with ApiServer(request_fixture, user={"login": "requester", "id": 999}) as server:
