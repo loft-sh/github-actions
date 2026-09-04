@@ -29,7 +29,6 @@ REQUEST_ID_RE = re.compile(r"^([0-9]{10})-([a-f0-9]{24})$")
 NONCE_RE = re.compile(r"^[a-f0-9]{32}$")
 SHA_RE = re.compile(r"^[a-f0-9]{40}$")
 LOGIN_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")
-SLUG_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,98}[A-Za-z0-9])?$")
 ALIAS_RE = re.compile(r"^[a-z0-9](?:[a-z0-9._/-]{0,126}[a-z0-9])?$")
 SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
 REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -379,7 +378,11 @@ def fetch_request(repository, commit, token, api_url):
     return raw
 
 
-def verify_actor_identity(api_url, auth_token, actor, actor_id):
+def authorize_organization_member(api_url, auth_token, actor, actor_id):
+    organization = required("INPUT_ORGANIZATION")
+    if LOGIN_RE.fullmatch(organization) is None:
+        raise BrokerError("authorization organization is invalid")
+
     user_url = f"{api_url}/users/{urllib.parse.quote(actor, safe='')}"
     try:
         user = api_json("GET", user_url, auth_token)
@@ -389,6 +392,26 @@ def verify_actor_identity(api_url, auth_token, actor, actor_id):
         raise BrokerError(
             f"GitHub actor {actor} no longer matches stable ID {actor_id}"
         )
+
+    membership_url = (
+        f"{api_url}/orgs/{urllib.parse.quote(organization, safe='')}/memberships/"
+        f"{urllib.parse.quote(actor, safe='')}"
+    )
+    try:
+        membership = api_json("GET", membership_url, auth_token)
+    except ApiError as error:
+        if error.status == 404:
+            raise BrokerError(
+                f"GitHub actor {actor} is not a member of {organization}"
+            ) from error
+        raise BrokerError(
+            f"organization membership check failed: {error}"
+        ) from error
+    if not isinstance(membership, dict) or membership.get("state") != "active":
+        raise BrokerError(
+            f"GitHub actor {actor} has organization membership that is not active"
+        )
+    return organization, membership.get("role", "unknown")
 
 
 def write_outputs(values):
@@ -412,9 +435,9 @@ def authorize_request():
     request = validate_request(
         load_request(raw), workflow_run.request_id, allowed_aliases()
     )
-    verify_actor_identity(
+    organization, role = authorize_organization_member(
         api_url,
-        required("GITHUB_TOKEN"),
+        required("SECRET_BROKER_AUTH_TOKEN"),
         workflow_run.actor,
         workflow_run.actor_id,
     )
@@ -437,6 +460,7 @@ def authorize_request():
             "actor_id": workflow_run.actor_id,
         },
         "authorization": {
+            "organization": organization,
             "secret_alias": request.requested_secret_alias,
         },
         "request_sha256": hashlib.sha256(raw).hexdigest(),
@@ -450,6 +474,8 @@ def authorize_request():
                 "actor_id": workflow_run.actor_id,
                 "request_id": workflow_run.request_id,
                 "secret_alias": request.requested_secret_alias,
+                "organization": organization,
+                "membership_role": role,
             },
             sort_keys=True,
         )
@@ -508,7 +534,7 @@ def load_authorization():
             "actor_login",
             "actor_id",
         }
-        or set(policy) != {"secret_alias"}
+        or set(policy) != {"organization", "secret_alias"}
     ):
         raise BrokerError("authorization is invalid")
     if (
@@ -538,6 +564,8 @@ def load_authorization():
         or LOGIN_RE.fullmatch(source["actor_login"]) is None
         or type(source["actor_id"]) is not int
         or source["actor_id"] <= 0
+        or not isinstance(policy["organization"], str)
+        or LOGIN_RE.fullmatch(policy["organization"]) is None
         or not isinstance(policy["secret_alias"], str)
         or ALIAS_RE.fullmatch(policy["secret_alias"]) is None
         or not isinstance(authorization["request_sha256"], str)

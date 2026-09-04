@@ -1,8 +1,8 @@
 # Secret broker request
 
-Validate a short-lived secret request from an authenticated repository user.
+Authorize a short-lived secret request for an active GitHub organization member.
 Revalidate and claim the same request before a privileged job loads any broker
-credential.
+credential. The action never checks GitHub team membership.
 
 The action treats request commits as hostile data. It fetches one fixed JSON
 file by commit SHA. It never checks out or runs code from the request branch.
@@ -57,6 +57,8 @@ jobs:
       - id: broker
         uses: loft-sh/github-actions/.github/actions/secret-broker-request@secret-broker-request/v1
         with:
+          app-client-id: ${{ vars.AUTH_APP_CLIENT_ID }}
+          app-private-key: ${{ secrets.AUTH_APP_PRIVATE_KEY }}
           allowed-secret-aliases: test-secret
 
   issue:
@@ -76,6 +78,10 @@ jobs:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
         run: ./scripts/publish-secret-response.sh
 ```
+
+The organization defaults to the repository owner. Set `organization` only
+when the membership authority differs. The GitHub App installation needs only
+the organization permission `Members: read`.
 
 Authorization returns one opaque value. Pass it directly through the job
 output. Do not parse or persist it. Preflight binds it to the same broker run,
@@ -101,6 +107,7 @@ transport.
 
 - Authorize job: `contents: read`
 - Issue job: `contents: write`
+- GitHub App installation: organization `Members: read`
 
 ## Inputs
 
@@ -109,7 +116,10 @@ transport.
 |         INPUT          |  TYPE  | REQUIRED | DEFAULT |                              DESCRIPTION                              |
 |------------------------|--------|----------|---------|-----------------------------------------------------------------------|
 | allowed-secret-aliases | string |  false   |         | Comma-separated or newline-separated allowlist of secret <br>aliases  |
+|     app-client-id      | string |  false   |         |   GitHub App client ID, used to <br>verify organization membership    |
+|    app-private-key     | string |  false   |         |  GitHub App private key, used to <br>verify organization membership   |
 |     authorization      | string |  false   |         |      Opaque authorization returned by the authorization <br>job       |
+|      organization      | string |  false   |         |  Organization whose active members may request <br>allowed aliases    |
 
 <!-- AUTO-DOC-INPUT:END -->
 
