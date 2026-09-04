@@ -1,12 +1,10 @@
 name: Auto-approve bot PRs
 description: |
   Approves PRs from trusted bot authors whose title/branch matches a known
-  safe pattern, after all other CI checks pass. Once running, no API, parse or
-  permission failure exits non-zero: each degrades to an annotated skip and exit
-  0, and an out-of-range wait input is coerced to its default with a warning.
-  (Missing required env is the one deliberate exception and does exit non-zero.)
-  Outcomes that need a human and raise no other red signal are annotated at error
-  level; that raises an annotation only, never a non-zero exit.
+  safe pattern, after all other CI checks pass. Approval-only failures degrade to
+  annotated skips. When auto-merge is requested, an invalid merge request or
+  exhaustion of every merge path exits non-zero. The opt-in ruleset-bypass path
+  also fails unless the approval was recorded.
 inputs:
   trusted-authors:
     description: 'Comma-separated list of trusted bot logins'
@@ -20,11 +18,15 @@ inputs:
     description: 'Merge the PR after approving it, directly where possible. See README "Merging".'
     required: false
     default: 'false'
+  merge-when-blocked:
+    description: 'Allow the merge token''s configured ruleset bypass to be evaluated by retrying a refused merge through the API. Generic opt-in: callers must restrict eligible authors, branches and PRs. Also requires a recorded approval. See README "Merging".'
+    required: false
+    default: 'false'
   github-token:
     description: 'PAT used to read PR state and approve. Must NOT match the PR author. Also used to merge when merge-token is omitted.'
     required: true
   merge-token:
-    description: 'Optional token used only to merge when auto-merge is true. Defaults to github-token. It may match the PR author, but needs a merge path on the base branch.'
+    description: 'Optional token used only to merge when auto-merge is true. Defaults to github-token. It may match the PR author, but needs a merge path on the base branch — and with merge-when-blocked, that path is its ruleset bypass.'
     required: false
   ci-read-token:
     description: 'Token for the read-only CI poll only; defaults to the caller GITHUB_TOKEN, which needs `checks: read` and `statuses: read`. Never the approving PAT. See README "Tokens by purpose".'
@@ -96,6 +98,7 @@ runs:
       run: ${{ github.action_path }}/src/check-pr-after-ci.sh
 
     - name: Approve PR
+      id: approve
       if: steps.recheck.outputs.proceed == 'true'
       continue-on-error: true
       uses: hmarr/auto-approve-action@f0939ea97e9205ef24d872e76833fa908a770363 # v4.0.0
@@ -106,6 +109,10 @@ runs:
 
           For more information, see https://github.com/loft-sh/github-actions?tab=readme-ov-file#auto-approve-bot-prs.
 
+    # Existing callers keep best-effort approval semantics; the opt-in bypass
+    # path requires a recorded approval. The script enforces that rather than
+    # this `if`, so a refusal is annotated instead of silently skipped.
+    # `outcome`, not `conclusion`: continue-on-error rewrites the latter.
     - name: Merge PR
       if: steps.recheck.outputs.proceed == 'true' && inputs.auto-merge == 'true'
       shell: bash
@@ -114,4 +121,6 @@ runs:
         PR_NUMBER: ${{ github.event.pull_request.number }}
         PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         MERGE_METHOD: ${{ inputs.merge-method }}
+        MERGE_WHEN_BLOCKED: ${{ inputs.merge-when-blocked }}
+        APPROVAL_OUTCOME: ${{ steps.approve.outcome }}
       run: ${{ github.action_path }}/src/enable-auto-merge.sh

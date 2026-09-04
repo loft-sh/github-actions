@@ -15,6 +15,10 @@ on:
         description: 'Merge the PR after approving it, directly where possible.'
         type: boolean
         default: false
+      merge-when-blocked:
+        description: 'Allow the merge token''s configured ruleset bypass to be evaluated by retrying a refused merge through the API. Generic opt-in: callers must restrict eligible authors, branches and PRs. Also requires a recorded approval.'
+        type: boolean
+        default: false
       wait-max-attempts:
         description: 'Max polling attempts waiting for other CI checks (raise this when a slow required check, e.g. e2e, gates the PR).'
         type: string
@@ -32,7 +36,7 @@ on:
         description: 'GitHub PAT for approving PRs (must be different identity from PR author). Also used for merging when merge-token is omitted.'
         required: true
       merge-token:
-        description: 'Optional token used only for merging when auto-merge is true. Defaults to gh-access-token and needs a merge path on the base branch.'
+        description: 'Optional token used only for merging when auto-merge is true. Defaults to gh-access-token and needs a merge path on the base branch — with merge-when-blocked, that path is its ruleset bypass.'
         required: false
       ci-read-token:
         description: 'Optional escape hatch for the read-only CI poll when the caller cannot grant `checks: read` / `statuses: read`. Classic PAT with `repo` scope, or an App token. Never gh-access-token.'
@@ -55,10 +59,10 @@ jobs:
       contents: read
       checks: read
       statuses: read
-    # Safety net — internal steps already guard every failure mode, but if
-    # anything unforeseen slips through this still prevents the job from
-    # reporting a hard red check on caller CI.
-    continue-on-error: true
+    # Approval-only callers retain the historical best-effort green check.
+    # A caller requesting a merge must see a red check when no merge path is
+    # accepted; otherwise the PR can stall while this workflow reports success.
+    continue-on-error: ${{ !inputs.auto-merge }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -71,6 +75,7 @@ jobs:
           trusted-authors: ${{ inputs.trusted-authors }}
           merge-method: ${{ inputs.merge-method }}
           auto-merge: ${{ inputs.auto-merge }}
+          merge-when-blocked: ${{ inputs.merge-when-blocked }}
           wait-max-attempts: ${{ inputs.wait-max-attempts }}
           wait-min-attempts: ${{ inputs.wait-min-attempts }}
           wait-sleep-seconds: ${{ inputs.wait-sleep-seconds }}

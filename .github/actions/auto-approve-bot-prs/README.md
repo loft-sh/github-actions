@@ -1,9 +1,9 @@
 # Auto-approve bot PRs
 
 Approves PRs from trusted bot authors whose title or branch matches a known
-safe pattern, after all other CI checks pass. No API, parse, permission or
-input-validation failure exits non-zero: each degrades to an annotated skip and
-exit 0.
+safe pattern, after all other CI checks pass. Approval-only failures degrade to
+annotated skips and exit 0. When `auto-merge: true`, failure to perform or queue
+the requested merge exits non-zero.
 
 Refusing to approve is annotated at **error** level, because it is a real
 outcome that something downstream may be blocking on (a release cut waiting for
@@ -113,6 +113,33 @@ that will now never happen. Reported as a notice, it read as a clean green job.
 With `auto-merge: true` the action tries a **plain merge first**, and uses
 GitHub's auto-merge queue (`--auto`) only as a fallback.
 
+`gh pr merge` decides mergeability **client-side**: it reads `mergeStateStatus`
+and refuses with "the base branch policy prohibits the merge" without calling
+the merge API. That verdict describes the pull request, not the caller, so it
+ignores the merge token's ruleset bypass — a token GitHub would let merge is
+turned away before it can try. `merge-when-blocked: true` retries through
+`PUT /pulls/{n}/merge` instead, which has no such gate. It passes `sha`, the
+equivalent of `--match-head-commit`.
+
+The setting grants no privilege, since every rule is still enforced server-side
+and a token without a bypass is refused there too. It is opt-in because for a
+token that *does* carry one, it decides whether the action merges only what CI
+approved or merges past whatever that bypass covers.
+
+This is a generic shared capability, not a `loft-enterprise` or Renovate policy.
+The action validates its trusted-author patterns, CI result, recorded approval
+and tested head. The caller must additionally restrict the eligible authors,
+branches and PRs and must configure the merge token's bypass no more broadly
+than intended. Enabling this input asks GitHub to evaluate all bypass authority
+already carried by that token; it does not narrow that authority itself.
+
+It also makes approval load-bearing. Approving is best-effort everywhere else —
+the step is `continue-on-error` — but merging past a review requirement with no
+review recorded would defeat the audit trail, so with `merge-when-blocked: true`
+a failed approval refuses the merge and says so at `::error::` level. Callers
+that leave the setting off keep the previous behavior, approval failure
+included.
+
 The action carries the pull request head SHA from the triggering event through
 the run. It checks that SHA once before polling CI and again after CI passes. If
 Renovate or another actor updates the branch while an older run is still
@@ -174,24 +201,28 @@ A PR that is approved but ends up merged by neither path is annotated at
 **error** level, carrying both underlying `gh` errors, since this is the only
 place that cause is knowable. Those two reasons are the diagnosis; the
 branch-protection checklist that follows them applies only if they point at
-policy rather than a transient API error. Re-runs stay quiet: an already-merged
-PR is benign, and a PR closed unmerged is a human decision.
+policy rather than a transient API error. The merge step exits non-zero, and the
+reusable workflow reports a failed job for `auto-merge: true`; approval-only
+callers keep the historical best-effort green check. A successfully accepted
+auto-merge queue counts as success. Re-runs stay quiet: an already-merged PR is
+benign, and a PR closed unmerged is a human decision.
 
 ## Inputs
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-|       INPUT        |  TYPE  | REQUIRED |                    DEFAULT                     |                                                                                              DESCRIPTION                                                                                              |
-|--------------------|--------|----------|------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-|     auto-merge     | string |  false   |                   `"false"`                    |                                                         Merge the PR after approving it, <br>directly where possible. See README "Merging".                                                           |
-|   ci-read-token    | string |  false   |                                                | Token for the read-only CI poll <br>only; defaults to the caller GITHUB_TOKEN, <br>which needs `checks: read` and `statuses: read`. Never <br>the approving PAT. See README "Tokens <br>by purpose".  |
-|    github-token    | string |   true   |                                                |                                   PAT used to read PR state <br>and approve. Must NOT match the <br>PR author. Also used to merge <br>when merge-token is omitted.                                    |
-|    merge-method    | string |  false   |                   `"squash"`                   |                                                                                  Merge method (squash|merge|rebase)                                                                                   |
-|    merge-token     | string |  false   |                                                |             Optional token used only to merge <br>when auto-merge is true. Defaults to <br>github-token. It may match the PR <br>author, but needs a merge path <br>on the base branch.               |
-|  trusted-authors   | string |  false   | `"renovate[bot],loft-bot,github-actions[bot]"` |                                                                              Comma-separated list of trusted bot logins                                                                               |
-| wait-max-attempts  | string |  false   |                     `"90"`                     |                                                                         Max polling attempts waiting for other <br>CI checks                                                                          |
-| wait-min-attempts  | string |  false   |                     `"12"`                     |                          Minimum polls before ci_green=true is allowed. <br>Prevents early approval while slow external <br>checks (e.g. Netlify) have not yet registered.                            |
-| wait-sleep-seconds | string |  false   |                     `"10"`                     |                                                                                   Seconds between polling attempts                                                                                    |
+|       INPUT        |  TYPE  | REQUIRED |                    DEFAULT                     |                                                                                                                              DESCRIPTION                                                                                                                               |
+|--------------------|--------|----------|------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|     auto-merge     | string |  false   |                   `"false"`                    |                                                                                          Merge the PR after approving it, <br>directly where possible. See README "Merging".                                                                                           |
+|   ci-read-token    | string |  false   |                                                |                                 Token for the read-only CI poll <br>only; defaults to the caller GITHUB_TOKEN, <br>which needs `checks: read` and `statuses: read`. Never <br>the approving PAT. See README "Tokens <br>by purpose".                                   |
+|    github-token    | string |   true   |                                                |                                                                   PAT used to read PR state <br>and approve. Must NOT match the <br>PR author. Also used to merge <br>when merge-token is omitted.                                                                     |
+|    merge-method    | string |  false   |                   `"squash"`                   |                                                                                                                   Merge method (squash|merge|rebase)                                                                                                                   |
+|    merge-token     | string |  false   |                                                |          Optional token used only to merge <br>when auto-merge is true. Defaults to <br>github-token. It may match the PR <br>author, but needs a merge path <br>on the base branch — and <br>with merge-when-blocked, that path is its <br>ruleset bypass.            |
+| merge-when-blocked | string |  false   |                   `"false"`                    | Allow the merge token's configured ruleset <br>bypass to be evaluated by retrying <br>a refused merge through the API. <br>Generic opt-in: callers must restrict eligible <br>authors, branches and PRs. Also requires <br>a recorded approval. See README "Merging".  |
+|  trusted-authors   | string |  false   | `"renovate[bot],loft-bot,github-actions[bot]"` |                                                                                                               Comma-separated list of trusted bot logins                                                                                                               |
+| wait-max-attempts  | string |  false   |                     `"90"`                     |                                                                                                         Max polling attempts waiting for other <br>CI checks                                                                                                           |
+| wait-min-attempts  | string |  false   |                     `"12"`                     |                                                           Minimum polls before ci_green=true is allowed. <br>Prevents early approval while slow external <br>checks (e.g. Netlify) have not yet registered.                                                            |
+| wait-sleep-seconds | string |  false   |                     `"10"`                     |                                                                                                                    Seconds between polling attempts                                                                                                                    |
 
 <!-- AUTO-DOC-INPUT:END -->
 

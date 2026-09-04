@@ -39,6 +39,8 @@ set -o pipefail
 #                              GH_MOCK_PR_MERGE_EXIT so tests that don't care
 #                              about the distinction keep working
 # GH_MOCK_PR_MERGE_AUTO_OUT  → stdout for `gh pr merge --auto`
+# GH_MOCK_API_MERGE_EXIT     → exit code for `gh api ... /pulls/N/merge`
+# GH_MOCK_API_MERGE_OUT      → stderr for a failing `gh api ... /pulls/N/merge`
 # GH_MOCK_PR_STATE           → state for `gh pr view --json state` (OPEN|MERGED|CLOSED)
 # GH_MOCK_CALLS              → path; each invocation appends one line of args
 
@@ -70,6 +72,14 @@ emit_api_response() {
   case "$path" in
     user)
       printf '{"login":"%s"}\n' "${GH_MOCK_APPROVER:-}"
+      ;;
+    *"/pulls/"*"/merge")
+      # Must precede the /pulls/ arm, which would otherwise swallow this path.
+      if [ "${GH_MOCK_API_MERGE_EXIT:-0}" != "0" ]; then
+        emit_err "${GH_MOCK_API_MERGE_OUT:-mock: merge API refused}"
+        exit "${GH_MOCK_API_MERGE_EXIT}"
+      fi
+      printf '{"merged":true,"sha":"%s"}\n' "${GH_MOCK_HEAD_SHA:-tested-head-sha}"
       ;;
     *"/pulls/"*)
       if [ "${GH_MOCK_PULL_FAIL:-}" = "always" ]; then
@@ -129,13 +139,17 @@ apply_filter() {
 case "${1:-}" in
   api)
     shift
-    path="${1:-}"; shift || true
+    # Endpoint is the first non-flag arg: gh takes it either side of the flags.
+    path=""
     jq_filter=""
     while [ $# -gt 0 ]; do
       case "$1" in
         --jq) jq_filter="$2"; shift 2 ;;
-        --paginate|--method|--header|-H|-X) shift 2>/dev/null || true ;;
-        *) shift ;;
+        # Two shifts, not `shift 2`: a failed `shift 2` on a trailing flag would
+        # leave $# unchanged and spin this loop forever.
+        --method|--header|-H|-X|-f|-F) shift; shift 2>/dev/null || true ;;
+        --paginate) shift ;;
+        *) [ -z "$path" ] && path="$1"; shift ;;
       esac
     done
     emit_api_response "$path" | apply_filter "$jq_filter"

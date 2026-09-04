@@ -24,6 +24,39 @@ WORKFLOW="$BATS_TEST_DIRNAME/../../../workflows/auto-approve-bot-prs.yaml"
   [ "$status" -eq 0 ]
 }
 
+@test "a failed approval blocks only the opt-in bypass merge" {
+  # The bypass path must not merge a PR carrying no approval at all. Existing
+  # callers leave merge-when-blocked off and retain their best-effort approval
+  # behavior, including release orchestration that already depends on it.
+  run grep -F "      id: approve" "$ACTION"
+  [ "$status" -eq 0 ]
+  run grep -F 'APPROVAL_OUTCOME: ${{ steps.approve.outcome }}' "$ACTION"
+  [ "$status" -eq 0 ]
+  # outcome, not conclusion — continue-on-error rewrites conclusion to success.
+  run grep -F "steps.approve.conclusion" "$ACTION"
+  [ "$status" -ne 0 ]
+}
+
+@test "merge-when-blocked reaches the merge script and the composite" {
+  # The feature's only activation conduit: a typo here leaves it inert with the
+  # whole suite green, since every script test sets the env var directly.
+  run grep -F 'MERGE_WHEN_BLOCKED: ${{ inputs.merge-when-blocked }}' "$ACTION"
+  [ "$status" -eq 0 ]
+  run grep -F "  merge-when-blocked:" "$ACTION"
+  [ "$status" -eq 0 ]
+  run grep -F 'merge-when-blocked: ${{ inputs.merge-when-blocked }}' "$WORKFLOW"
+  [ "$status" -eq 0 ]
+  run grep -F "      merge-when-blocked:" "$WORKFLOW"
+  [ "$status" -eq 0 ]
+}
+
+@test "the reusable job fails only when a requested merge cannot be performed" {
+  # Approval-only callers keep the historical best-effort job. Callers asking
+  # for a merge must see a red check when every merge path is refused.
+  run grep -F 'continue-on-error: ${{ !inputs.auto-merge }}' "$WORKFLOW"
+  [ "$status" -eq 0 ]
+}
+
 @test "the tested head is rechecked after CI and passed to every merge request" {
   [ "$(grep -Fc 'EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}' "$ACTION")" -eq 2 ]
   run grep -F "id: recheck" "$ACTION"
