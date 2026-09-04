@@ -58,6 +58,81 @@ setup() {
   [ "$status" -ne 0 ]
 }
 
+# --- parse_request -----------------------------------------------------------
+
+@test "parse_request: a label-only request stays unchanged" {
+  parse_request "  snapshots   &&  aws  " "true"
+  [ "$REQUEST_FILTER" = "snapshots && aws" ]
+  [ "$REQUEST_FOCUS" = "" ]
+  [ "$REQUEST_ERROR" = "" ]
+}
+
+@test "parse_request: strips one matching quote pair from focus" {
+  parse_request 'snapshots --focus "creates snapshots"' "true"
+  [ "$REQUEST_FILTER" = "snapshots" ]
+  [ "$REQUEST_FOCUS" = "creates snapshots" ]
+  [ "$REQUEST_ERROR" = "" ]
+}
+
+@test "parse_request: accepts the unquoted remainder as focus" {
+  parse_request 'snapshots --focus creates snapshots' "true"
+  [ "$REQUEST_FILTER" = "snapshots" ]
+  [ "$REQUEST_FOCUS" = "creates snapshots" ]
+  [ "$REQUEST_ERROR" = "" ]
+}
+
+@test "parse_request: accepts tabs around the focus marker" {
+  parse_request $'snapshots\t--focus\tcreates snapshots' "true"
+  [ "$REQUEST_FILTER" = "snapshots" ]
+  [ "$REQUEST_FOCUS" = "creates snapshots" ]
+  [ "$REQUEST_ERROR" = "" ]
+}
+
+@test "parse_request: focus may itself contain the focus flag text" {
+  parse_request 'snapshots --focus "supports --focus in commands"' "true"
+  [ "$REQUEST_FILTER" = "snapshots" ]
+  [ "$REQUEST_FOCUS" = "supports --focus in commands" ]
+  [ "$REQUEST_ERROR" = "" ]
+}
+
+@test "parse_request: preserves regex whitespace and parentheses in focus" {
+  parse_request 'snapshots --focus "^creates  snapshots \\(HA\\)$"' "true"
+  [ "$REQUEST_FILTER" = "snapshots" ]
+  [ "$REQUEST_FOCUS" = '^creates  snapshots \\(HA\\)$' ]
+  [ "$REQUEST_ERROR" = "" ]
+}
+
+@test "parse_request: shell and workflow-command syntax stays literal" {
+  parse_request 'snapshots --focus "$(touch pwned);`id`;%0A::error::boom"' "true"
+  [ "$REQUEST_FILTER" = "snapshots" ]
+  [ "$REQUEST_FOCUS" = '$(touch pwned);`id`;%0A::error::boom' ]
+  [ "$REQUEST_ERROR" = "" ]
+}
+
+@test "parse_request: rejects a focus flag with no value" {
+  parse_request 'snapshots --focus' "true"
+  [ "$REQUEST_ERROR" = "malformed-focus" ]
+}
+
+@test "parse_request: rejects an empty quoted focus" {
+  parse_request 'snapshots --focus ""' "true"
+  [ "$REQUEST_ERROR" = "malformed-focus" ]
+}
+
+@test "parse_request: a focus without a label still reports an empty filter" {
+  parse_request '--focus "creates snapshots"' "true"
+  [ "$REQUEST_FILTER" = "" ]
+  [ "$REQUEST_FOCUS" = "creates snapshots" ]
+  [ "$REQUEST_ERROR" = "" ]
+}
+
+@test "parse_request: focus parsing is opt-in for existing consumers" {
+  parse_request 'snapshots --focus "creates snapshots"' ""
+  [ "$REQUEST_FILTER" = 'snapshots --focus "creates snapshots"' ]
+  [ "$REQUEST_FOCUS" = "" ]
+  [ "$REQUEST_ERROR" = "" ]
+}
+
 # --- normalize_filter --------------------------------------------------------
 
 @test "normalize_filter: collapses whitespace runs and trims" {
@@ -180,11 +255,34 @@ setup() {
   [ "$a" = "$b" ]
 }
 
+@test "request_identity: two focuses under one label do not collide" {
+  a="$(request_identity 'snapshots' 'creates snapshots')"
+  b="$(request_identity 'snapshots' 'deletes snapshots')"
+  [ "$(concurrency_key "$a")" != "$(concurrency_key "$b")" ]
+}
+
+@test "request_identity: focus whitespace remains significant" {
+  a="$(request_identity 'snapshots' 'creates snapshots')"
+  b="$(request_identity 'snapshots' 'creates  snapshots')"
+  [ "$(concurrency_key "$a")" != "$(concurrency_key "$b")" ]
+}
+
+@test "request_identity: a typeable label cannot impersonate a focused request" {
+  focused="$(request_identity 'snapshots' 'creates snapshots')"
+  label="$(request_identity 'snapshots focus-digest-7b53924f' '')"
+  [ "$(concurrency_key "$focused")" != "$(concurrency_key "$label")" ]
+}
+
 # --- check_name --------------------------------------------------------------
 
 @test "check_name: short filter is shown in full" {
   run check_name "e2e" "snapshots"
   [ "$output" = "e2e: snapshots" ]
+}
+
+@test "check_name: preserves meaningful focus whitespace" {
+  run check_name "e2e" 'snapshots --focus "creates  snapshots"' 60
+  [ "$output" = 'e2e: snapshots --focus "creates  snapshots"' ]
 }
 
 @test "check_name: control characters are stripped" {

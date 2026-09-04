@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Required env vars: REPORTS_BUCKET, WORKFLOW_FILE
-# Optional env vars: FOCUSED_RERUN - marks a report that only covers the specs a focused
-#                    rerun selected, so downstream flakiness stats can exclude it
+# Optional env vars: FOCUS_ACTIVE - marks a report narrowed by either a requested focus
+#                    or a failed-only rerun, so downstream stats can exclude it
 # Required tools:    gh (with GH_TOKEN), gcloud (authenticated), jq
 # GitHub-provided:   GITHUB_REPOSITORY, GITHUB_RUN_ID, GITHUB_RUN_ATTEMPT,
 #                    RUNNER_NAME, GITHUB_HEAD_REF, GITHUB_REF_NAME,
@@ -41,8 +41,9 @@ fi
 FINISHED_AT=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
 BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
 RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/attempts/${GITHUB_RUN_ATTEMPT}"
+focus_active="${FOCUS_ACTIVE:-false}"
 # Write path for the layout resolve-rerun-focus.sh reads - keep the two in sync.
 DEST="gs://${REPORTS_BUCKET}/${GITHUB_REPOSITORY}/${WORKFLOW_FILE}/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/${JOB_ID}.json"
 
 gcloud storage cp test-reports/report.json "$DEST" \
-  --custom-metadata="run_url=${RUN_URL},repository=${GITHUB_REPOSITORY},branch=${BRANCH},workflow_file=${WORKFLOW_FILE},workflow_name=${GITHUB_WORKFLOW},job_id=${JOB_ID},job_name=${GITHUB_JOB},run_attempt=${GITHUB_RUN_ATTEMPT},focused_rerun=${FOCUSED_RERUN:-false},started_at=${STARTED_AT},finished_at=${FINISHED_AT}"
+  --custom-metadata="run_url=${RUN_URL},repository=${GITHUB_REPOSITORY},branch=${BRANCH},workflow_file=${WORKFLOW_FILE},workflow_name=${GITHUB_WORKFLOW},job_id=${JOB_ID},job_name=${GITHUB_JOB},run_attempt=${GITHUB_RUN_ATTEMPT},focused_rerun=${focus_active},started_at=${STARTED_AT},finished_at=${FINISHED_AT}"

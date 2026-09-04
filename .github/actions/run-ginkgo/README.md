@@ -13,6 +13,7 @@ markdown summary generation.
 |     additional-args     | string |  false   |                         |                                          Extra arguments passed to the test <br>binary (after --)                                           |
 | additional-ginkgo-flags | string |  false   |                         |                                Extra ginkgo CLI flags (e.g. -v, --skip-package=linters, --show-node-events)                                 |
 |     flake-attempts      | string |  false   |          `"1"`          |    Attempts a failing spec gets before <br>it is reported failed. Use 2 <br>only where a flake must not <br>redden the job. See README.     |
+|      ginkgo-focus       | string |  false   |                         |          Ginkgo focus regex used to narrow <br>matching specs. A failed-only rerun focus <br>takes precedence on rerun attempts.            |
 |      ginkgo-label       | string |  false   |                         |                           Ginkgo label filter expression. When set, <br>adds --label-filter and -r (recursive).                             |
 |      github-token       | string |  false   | `"${{ github.token }}"` |                               GitHub token for the gh CLI <br>to fetch job details during report <br>upload.                                |
 |          procs          | string |  false   |          `"8"`          |                                                     Number of parallel Ginkgo processes                                                     |
@@ -45,6 +46,27 @@ markdown summary generation.
     ginkgo-label: "networking"
     additional-args: "--vcluster-image=ghcr.io/loft-sh/vcluster:latest --teardown=false"
 ```
+
+## Narrowing a run with a focus
+
+Set `ginkgo-focus` to a Go regular expression when a label identifies the suite
+but only particular specs should run. Ginkgo applies the label filter and focus
+together, so focus can only narrow the label selection. Whitespace inside the
+regular expression is significant.
+
+```yaml
+- uses: loft-sh/github-actions/.github/actions/run-ginkgo@run-ginkgo/v1
+  with:
+    test-dir: e2e-next
+    ginkgo-label: "snapshots"
+    ginkgo-focus: "creates a snapshot"
+```
+
+An invalid expression is rejected when Ginkgo starts. If a valid expression
+matches no specs, the action fails instead of reporting a green zero-spec run.
+Reports from focused runs carry `focused_rerun=true` metadata so downstream
+full-suite statistics can exclude them; the existing metadata key is retained
+for compatibility even when the focus was requested directly.
 
 ## Re-running only the failed specs
 

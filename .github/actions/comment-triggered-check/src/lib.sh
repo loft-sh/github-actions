@@ -35,6 +35,92 @@ parse_command() {
   trim "${first#"$command"}"
 }
 
+# parse_request <arguments> <parse-focus>
+# Splits an optional trailing `--focus <regex>` from the required label filter.
+# The focus is the whole remainder: it is never evaluated as shell syntax, and
+# one matching outer quote pair is removed only for comment readability.
+# Results are returned in globals because command substitution would run this
+# function in a subshell and lose them.
+# shellcheck disable=SC2034 # REQUEST_* are the function's outputs for callers.
+parse_request() {
+  local args filter_part focus first last marker_at marker_end i before after
+  args="$(trim "${1-}")"
+  filter_part="$args"
+  focus=""
+
+  REQUEST_FILTER=""
+  REQUEST_FOCUS=""
+  REQUEST_ERROR=""
+
+  if [[ "${2-}" != "true" ]]; then
+    REQUEST_FILTER="$(normalize_filter "$filter_part")"
+    return 0
+  fi
+
+  marker_at=-1
+  marker_end=-1
+  for (( i = 0; i <= ${#args} - 7; i++ )); do
+    [[ "${args:i:7}" == "--focus" ]] || continue
+    before="${args:i-1:1}"
+    after="${args:i+7:1}"
+    if (( i > 0 )) && [[ "$before" != [[:space:]] ]]; then
+      continue
+    fi
+    if (( i + 7 < ${#args} )) && [[ "$after" != [[:space:]] ]]; then
+      continue
+    fi
+    marker_at=$i
+    marker_end=$((i + 7))
+    break
+  done
+
+  if (( marker_at < 0 )); then
+    REQUEST_FILTER="$(normalize_filter "$filter_part")"
+    return 0
+  fi
+
+  filter_part="${args:0:marker_at}"
+  focus="${args:marker_end}"
+
+  REQUEST_FILTER="$(normalize_filter "$filter_part")"
+  focus="$(trim "$focus")"
+  if (( ${#focus} >= 2 )); then
+    first="${focus:0:1}"
+    last="${focus: -1}"
+    if [[ ( "$first" == '"' && "$last" == '"' ) || ( "$first" == "'" && "$last" == "'" ) ]]; then
+      focus="${focus:1:${#focus}-2}"
+    fi
+  fi
+
+  if [[ -z "$focus" ]]; then
+    REQUEST_ERROR="malformed-focus"
+    return 0
+  fi
+
+  REQUEST_FOCUS="$focus"
+}
+
+# request_identity <filter> <focus> — stable, domain-separated input to
+# concurrency_key. Label-only text cannot reproduce a focused identity because
+# each form receives its own prefix. Focus is digested before whitespace
+# normalization because whitespace is meaningful in a regular expression.
+request_identity() {
+  if [[ -z "${2-}" ]]; then
+    printf 'label-request %s' "${1-}"
+  else
+    printf 'focused-request %s focus-digest-%s' "${1-}" "$(short_digest "$2")"
+  fi
+}
+
+# request_display <filter> <focus> — human-readable command suffix for checks.
+request_display() {
+  if [[ -z "${2-}" ]]; then
+    printf '%s' "${1-}"
+  else
+    printf '%s --focus "%s"' "${1-}" "$2"
+  fi
+}
+
 # filter_is_balanced <string> — true when no ")" precedes its "(" and none is
 # left open. Callers wrap the filter and append guards, `(<filter>) && !x`. An
 # unmatched ")" ends that wrapper early, and Ginkgo binds && tighter than ||, so
@@ -95,15 +181,16 @@ concurrency_key() {
   printf '%s-%s' "${slug:-filter}" "$(short_digest "$normalized")"
 }
 
-# check_name <prefix> <filter> [max-length]
+# check_name <prefix> <request> [max-length]
 # The display name of the check-run, derived from user input, so it is
-# sanitized and bounded. When the filter is too long to show in full the name
-# carries a digest of the whole filter, because this name is also the dedupe
-# key: two different long filters that truncated to the same text would
+# sanitized and bounded. When the request is too long to show in full the name
+# carries a digest of the whole request, because this name is also the dedupe
+# key: two different long requests that truncated to the same text would
 # otherwise be treated as the same in-flight run.
 check_name() {
-  local prefix="${1-}" filter="${2-}" max="${3:-60}" cleaned
-  cleaned="$(printf '%s' "$(normalize_filter "$filter")" | LC_ALL=C tr -cd '\040-\176')"
+  local prefix="${1-}" request="${2-}" max="${3:-60}" cleaned
+  cleaned="$request"
+  cleaned="$(printf '%s' "$cleaned" | LC_ALL=C tr -cd '\040-\176')"
 
   if [[ "${#cleaned}" -le "$max" ]]; then
     printf '%s: %s' "$prefix" "$cleaned"
