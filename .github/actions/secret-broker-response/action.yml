@@ -1,0 +1,35 @@
+name: Secret broker response
+description: Stream an approved 1Password secret into CMS encryption
+inputs:
+  bundle:
+    description: Private bundle returned by secret-broker-request preflight
+    required: true
+  secret-references:
+    description: JSON object mapping approved aliases to 1Password references
+    required: true
+  op-service-account-token:
+    description: 1Password service account token used only while reading the secret
+    required: true
+outputs:
+  ciphertext:
+    description: Path to the CMS DER ciphertext
+    value: ${{ steps.encrypt.outputs.ciphertext }}
+runs:
+  using: composite
+  steps:
+    - name: Install 1Password CLI
+      uses: 1password/install-cli-action@1a3160d5e9de1ae0803eaa08a88746f5ae3daa50 # v4.1.0
+      with:
+        version: 2.39.0
+
+    - name: Encrypt approved secret
+      id: encrypt
+      shell: bash
+      run: python3 "${{ github.action_path }}/src/action.py"
+      env:
+        INPUT_BUNDLE: ${{ inputs.bundle }}
+        INPUT_SECRET_REFERENCES: ${{ inputs.secret-references }}
+        INPUT_OP_SERVICE_ACCOUNT_TOKEN: ${{ inputs.op-service-account-token }}
+branding:
+  icon: lock
+  color: gray-dark
