@@ -1,18 +1,6 @@
 name: Secret broker request
-description: Authorize and claim short-lived encrypted secret requests
+description: Validate and claim short-lived encrypted secret requests
 inputs:
-  app-client-id:
-    description: GitHub App client ID, used during authorization
-    required: false
-  app-private-key:
-    description: GitHub App private key, used during authorization
-    required: false
-  organization:
-    description: Organization whose team membership grants access
-    required: false
-  team:
-    description: Team whose active members may request the allowed aliases
-    required: false
   allowed-secret-aliases:
     description: Comma-separated or newline-separated allowlist of secret aliases
     required: false
@@ -29,27 +17,14 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: Create authorization token
-      id: app-token
-      if: ${{ inputs.authorization == '' }}
-      uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
-      with:
-        client-id: ${{ inputs.app-client-id }}
-        private-key: ${{ inputs.app-private-key }}
-        owner: ${{ inputs.organization || github.repository_owner }}
-        permission-members: read
-
     - name: Process secret request
       id: request
       shell: bash
       run: python3 "${{ github.action_path }}/src/action.py"
       env:
-        INPUT_ORGANIZATION: ${{ inputs.organization || github.repository_owner }}
-        INPUT_TEAM: ${{ inputs.team }}
         INPUT_ALLOWED_SECRET_ALIASES: ${{ inputs.allowed-secret-aliases }}
         INPUT_AUTHORIZATION: ${{ inputs.authorization }}
         GITHUB_TOKEN: ${{ github.token }}
-        SECRET_BROKER_AUTH_TOKEN: ${{ steps.app-token.outputs.token }}
         SECRET_BROKER_WORKFLOW_RUN: ${{ toJSON(github.event.workflow_run) }}
 branding:
   icon: lock
