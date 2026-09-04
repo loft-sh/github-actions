@@ -19,6 +19,18 @@ Location: `.github/actions/secret-broker-request`
 See [secret-broker-request README](./.github/actions/secret-broker-request/README.md)
 for the request schema, two-job integration, permissions, and replay policy.
 
+### Secret Broker Response Action
+
+Resolves an approved alias against a caller-owned 1Password reference map and
+streams the secret directly into CMS encryption. It returns only a ciphertext
+path and never writes the plaintext secret to an environment file, action
+output, or temporary file.
+
+Location: `.github/actions/secret-broker-response`
+
+See [secret-broker-response README](./.github/actions/secret-broker-response/README.md)
+for the generic alias map, encryption boundary, and usage.
+
 ### Semver Validation Action
 
 Reports on a version string: validity, its parts, its release channel, and how it

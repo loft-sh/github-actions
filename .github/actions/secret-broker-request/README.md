@@ -72,10 +72,19 @@ jobs:
         with:
           authorization: ${{ needs.authorize.outputs.authorization }}
 
-      - name: Read, encrypt, and publish the secret
+      - name: Encrypt approved secret
+        id: response
+        uses: loft-sh/github-actions/.github/actions/secret-broker-response@secret-broker-response/v1
+        with:
+          bundle: ${{ steps.preflight.outputs.bundle }}
+          secret-references: |
+            {"test-secret":"op://Automation/test-secret/value"}
+          op-service-account-token: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+
+      - name: Publish ciphertext
         env:
           BROKER_BUNDLE: ${{ steps.preflight.outputs.bundle }}
-          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          BROKER_CIPHERTEXT: ${{ steps.response.outputs.ciphertext }}
         run: ./scripts/publish-secret-response.sh
 ```
 
@@ -99,9 +108,10 @@ The private bundle directory contains:
 - `public.pem`, the validated request certificate
 - `authorization.json`, the bound authorization metadata
 
-Read the secret-store credential only in a later step after preflight succeeds.
-The caller owns the fixed alias-to-secret mapping, encryption, and ciphertext
-transport.
+Invoke `secret-broker-response` only after preflight succeeds. The caller owns
+the fixed alias-to-secret mapping and ciphertext transport. The response action
+owns 1Password retrieval and encryption, so plaintext secret bytes stay in the
+pipe between `op` and OpenSSL.
 
 ## Required permissions
 
