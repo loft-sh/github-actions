@@ -1,0 +1,109 @@
+name: Backport link sweep
+
+on:
+  workflow_call:
+    inputs:
+      enabled:
+        description: 'Run the sweep. Set false through a caller repository variable to disable it without a rollback.'
+        type: boolean
+        required: false
+        default: true
+      source-pr:
+        description: 'Optional source PR number. When set, check only this family and bypass the lookback search.'
+        type: string
+        required: false
+        default: ''
+      lookback-days:
+        description: 'Number of days to search back for merged source PRs when source-pr is empty'
+        type: number
+        required: false
+        default: 30
+      dry-run:
+        description: 'Report intended Fixes lines without editing backport PR bodies'
+        type: boolean
+        required: false
+        default: false
+      legacy-split:
+        description: 'Search the configured OSS and pro repositories for legacy split backport PRs'
+        type: boolean
+        required: false
+        default: false
+      oss-repo:
+        description: 'OSS repo as owner/repo for legacy OSS-side backport PRs. Required when legacy-split is true.'
+        type: string
+        required: false
+        default: ''
+      pro-repo:
+        description: 'Pro repo as owner/repo for the pro half of mixed legacy backports. Required when legacy-split is true.'
+        type: string
+        required: false
+        default: ''
+    secrets:
+      gh-access-token:
+        description: 'GitHub PAT used by the backport pipeline, with permission to search and edit pull requests'
+        required: true
+      linear-token:
+        description: 'Linear API token for resolving the issue family and verifying release attachments'
+        required: false
+
+concurrency:
+  group: backport-link-sweep-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  select:
+    name: Select source PRs
+    if: inputs.enabled
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      source-prs: ${{ steps.select.outputs.source-prs }}
+      selected-count: ${{ steps.select.outputs.selected-count }}
+    steps:
+      - name: Select source PRs
+        id: select
+        uses: loft-sh/github-actions/.github/actions/select-backport-source-prs@select-backport-source-prs/v1 # zizmor: ignore[unpinned-uses] -- internal loft-sh/github-actions action; its floating tag is kept aligned with backport/v1
+        with:
+          repository: ${{ github.repository }}
+          source-pr: ${{ inputs.source-pr }}
+          lookback-days: ${{ inputs.lookback-days }}
+          github-token: ${{ secrets.gh-access-token }} # zizmor: ignore[secrets-outside-env] -- PAT passed through workflow_call for private-repo search
+
+  link:
+    name: 'Link source PR #${{ matrix.source-pr }}'
+    needs: [select]
+    if: needs.select.outputs.selected-count != '0'
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        source-pr: ${{ fromJSON(needs.select.outputs.source-prs) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Start source PR report
+        env:
+          SOURCE_PR: ${{ matrix.source-pr }}
+        run: 'echo "## Source PR #$SOURCE_PR" >> "$GITHUB_STEP_SUMMARY"'
+
+      - name: Link backport PRs to Linear sub-issues
+        id: link
+        uses: loft-sh/github-actions/.github/actions/link-backport-prs@link-backport-prs/v1 # zizmor: ignore[unpinned-uses] -- internal loft-sh/github-actions tag kept aligned with backport/v1
+        with:
+          source-pr: ${{ matrix.source-pr }}
+          repo-owner: ${{ github.repository_owner }}
+          repo-name: ${{ github.event.repository.name }}
+          additional-repos: ${{ inputs.legacy-split && format('{0},{1}', inputs.oss-repo, inputs.pro-repo) || '' }}
+          github-token: ${{ secrets.gh-access-token }} # zizmor: ignore[secrets-outside-env] -- same PAT that created the backport PRs
+          linear-token: ${{ secrets.linear-token }} # zizmor: ignore[secrets-outside-env] -- optional token passed through workflow_call
+          dry-run: ${{ inputs.dry-run }}
+
+      - name: Finish source PR report
+        if: always()
+        env:
+          LINKED_COUNT: ${{ steps.link.outputs.linked-count || '0' }}
+        run: 'echo "Linked count: $LINKED_COUNT" >> "$GITHUB_STEP_SUMMARY"'

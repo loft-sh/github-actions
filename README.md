@@ -138,7 +138,7 @@ See [linear-release-sync README](./.github/actions/linear-release-sync/README.md
 
 ### Link Backport PRs Action
 
-Links modern and legacy backport PRs to the matching Linear sub-issue (`[X.Y] Copy of ...`) by adding `Fixes <id>` to every matching PR body, so the per-release-line issue closes when the backport merges. Wired into the [`backport.yaml`](./docs/workflows/backport.md) reusable workflow and runs after both producer paths settle; advisory and skipped when no `linear-token` is configured.
+Links modern and legacy backport PRs to the matching Linear sub-issue (`[X.Y] Copy of ...`) by adding `Fixes <id>` to every matching PR body, so the per-release-line issue closes when the backport merges. Wired into the [`backport.yaml`](./docs/workflows/backport.md) and [`backport-link-sweep.yaml`](./docs/workflows/backport-link-sweep.md) reusable workflows; advisory and skipped when no `linear-token` is configured.
 
 **Location:** `.github/actions/link-backport-prs`
 
@@ -156,6 +156,16 @@ Links modern and legacy backport PRs to the matching Linear sub-issue (`[X.Y] Co
 ```
 
 See [link-backport-prs README](./.github/actions/link-backport-prs/README.md) for detailed documentation.
+
+### Select Backport Source PRs Action
+
+Selects one explicit source PR or merged source PRs inside a lookback window
+that carry `backport-to-*` labels. It emits a JSON array for the reusable
+backport link sweep and performs no mutation.
+
+**Location:** `.github/actions/select-backport-source-prs`
+
+See [select-backport-source-prs README](./.github/actions/select-backport-source-prs/README.md) for inputs, outputs, and tests.
 
 ### Run Ginkgo Tests
 
