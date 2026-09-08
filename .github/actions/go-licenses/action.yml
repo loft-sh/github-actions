@@ -12,7 +12,7 @@ inputs:
     description: "Version of go-licenses to install (e.g. v1.6.0, v1.0.0). v1.0.0 does not support `--ignore` — set `package-mode: go-work` when using it."
     required: false
     # renovate: datasource=go depName=github.com/google/go-licenses
-    default: v1.6.0
+    default: v2.0.1
   go-version-file:
     description: "Path to go.mod or go.work for setup-go."
     required: false
