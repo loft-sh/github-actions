@@ -1,0 +1,48 @@
+name: 'Select backport source PRs'
+description: 'Select one explicit source PR or merged source PRs inside a lookback window that carry a backport label'
+
+inputs:
+  repository:
+    description: 'Repository to search, in owner/repo form'
+    required: true
+  source-pr:
+    description: 'Optional source PR number. When set, return only this PR and skip the lookback search.'
+    required: false
+    default: ''
+  lookback-days:
+    description: 'Number of days to search back for merged source PRs when source-pr is empty'
+    required: false
+    default: '30'
+  label-prefix:
+    description: 'Prefix of the labels that mark a source PR for backporting'
+    required: false
+    default: 'backport-to-'
+  github-token:
+    description: 'GitHub token with permission to search pull requests in the repository'
+    required: true
+
+outputs:
+  source-prs:
+    description: 'JSON array of selected source PR numbers'
+    value: ${{ steps.select.outputs.source-prs }}
+  selected-count:
+    description: 'Number of selected source PRs'
+    value: ${{ steps.select.outputs.selected-count }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Select source PRs
+      id: select
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        INPUT_REPOSITORY: ${{ inputs.repository }}
+        INPUT_SOURCE_PR: ${{ inputs.source-pr }}
+        INPUT_LOOKBACK_DAYS: ${{ inputs.lookback-days }}
+        INPUT_LABEL_PREFIX: ${{ inputs.label-prefix }}
+      run: ${{ github.action_path }}/run.sh
+
+branding:
+  icon: 'search'
+  color: 'orange'

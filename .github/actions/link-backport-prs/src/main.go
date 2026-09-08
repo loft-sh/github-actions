@@ -400,6 +400,7 @@ func linkPullRequests(bps []locatedPullRequest, identifier string, dryRun bool, 
 	for _, bp := range bps {
 		if bodyReferencesIssue(bp.PullRequest.GetBody(), identifier) {
 			noticef("backport PR %s#%d already references %s, skipping", bp.Repository, bp.PullRequest.GetNumber(), identifier)
+			summaryf("- ⏭️ Backport PR `%s#%d` already references `%s`; linked-count unchanged", bp.Repository, bp.PullRequest.GetNumber(), identifier)
 			continue
 		}
 
@@ -407,6 +408,7 @@ func linkPullRequests(bps []locatedPullRequest, identifier string, dryRun bool, 
 		target := bp.PullRequest.GetBase().GetRef()
 		if dryRun {
 			noticef("[dry-run] would add 'Fixes %s' to backport PR %s#%d (%s)", identifier, bp.Repository, bp.PullRequest.GetNumber(), target)
+			summaryf("- 🧪 Would add `Fixes %s` to backport PR `%s#%d` targeting `%s`", identifier, bp.Repository, bp.PullRequest.GetNumber(), target)
 			linked++
 			continue
 		}
@@ -416,6 +418,7 @@ func linkPullRequests(bps []locatedPullRequest, identifier string, dryRun bool, 
 			continue
 		}
 		noticef("linked backport PR %s#%d (%s) to %s via 'Fixes %s'", bp.Repository, bp.PullRequest.GetNumber(), target, identifier, identifier)
+		summaryf("- ✅ Added `Fixes %s` to backport PR `%s#%d` targeting `%s`", identifier, bp.Repository, bp.PullRequest.GetNumber(), target)
 		linked++
 	}
 	return linked

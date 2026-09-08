@@ -166,6 +166,12 @@ func TestLinkPullRequestsAcrossRepositories(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			summaryPath := filepath.Join(t.TempDir(), "summary")
+			if err := os.WriteFile(summaryPath, nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("GITHUB_STEP_SUMMARY", summaryPath)
+
 			var edits []string
 			linked := linkPullRequests(tt.bps, "ENGCP-1335", false, func(repo repository, number int, body string) error {
 				edits = append(edits, repo.String()+"#"+github.Stringify(number))
@@ -180,7 +186,47 @@ func TestLinkPullRequestsAcrossRepositories(t *testing.T) {
 			if strings.Join(edits, ",") != strings.Join(tt.wantEdits, ",") {
 				t.Errorf("edits = %v, want %v", edits, tt.wantEdits)
 			}
+
+			summary := readFile(t, summaryPath)
+			for _, edit := range tt.wantEdits {
+				if !strings.Contains(summary, "Added `Fixes ENGCP-1335` to backport PR `"+edit+"`") {
+					t.Errorf("summary %q does not report linked PR %s", summary, edit)
+				}
+			}
+			if tt.name == "already linked PR does not skip the next repo" && !strings.Contains(summary, "already references `ENGCP-1335`") {
+				t.Errorf("summary %q does not report the already-linked PR", summary)
+			}
 		})
+	}
+}
+
+func TestLinkPullRequestsDryRunSummarizesWithoutEditing(t *testing.T) {
+	repo := repository{Owner: "loft-sh", Name: "vcluster"}
+	summaryPath := filepath.Join(t.TempDir(), "summary")
+	if err := os.WriteFile(summaryPath, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GITHUB_STEP_SUMMARY", summaryPath)
+
+	edited := false
+	linked := linkPullRequests(
+		[]locatedPullRequest{{Repository: repo, PullRequest: testPullRequest(4149, repo.String(), "backport/v0.33/4e5f9884e", "v0.33", "body")}},
+		"ENGCP-1333",
+		true,
+		func(repository, int, string) error {
+			edited = true
+			return nil
+		},
+	)
+
+	if edited {
+		t.Fatal("dry-run called the edit function")
+	}
+	if linked != 1 {
+		t.Fatalf("linked = %d, want 1 would-link", linked)
+	}
+	if summary := readFile(t, summaryPath); !strings.Contains(summary, "Would add `Fixes ENGCP-1333` to backport PR `loft-sh/vcluster#4149`") {
+		t.Errorf("summary %q does not report the intended dry-run edit", summary)
 	}
 }
 

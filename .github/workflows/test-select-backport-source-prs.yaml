@@ -1,0 +1,38 @@
+name: Test select-backport-source-prs
+
+on:
+  pull_request:
+    paths:
+      - '.github/actions/select-backport-source-prs/**'
+      - '.github/workflows/backport-link-sweep.yaml'
+      - '.github/workflows/test-select-backport-source-prs.yaml'
+
+permissions: {}
+
+jobs:
+  bats:
+    name: Run bats tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: bats-core/bats-action@77d6fb60505b4d0d1d73e48bd035b55074bbfb43 # 4.0.0
+        with:
+          support-install: false
+          assert-install: false
+          detik-install: false
+          file-install: false
+      - name: Run select-backport-source-prs tests
+        run: bats .github/actions/select-backport-source-prs/test/*.bats
+
+  reusable-workflow:
+    name: Check disabled reusable workflow
+    permissions:
+      contents: read
+    uses: ./.github/workflows/backport-link-sweep.yaml
+    with:
+      enabled: false
+      dry-run: true
+    secrets:
+      gh-access-token: ${{ secrets.GITHUB_TOKEN }}

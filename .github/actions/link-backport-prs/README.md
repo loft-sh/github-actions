@@ -18,11 +18,13 @@ The release check exists because a title match alone cannot catch a sub-issue at
 
 It is advisory and idempotent: it never fails the backport job (every problem is a warning and it exits 0) and re-runs do not add duplicate `Fixes` lines. A lookup failure in one repository is reported without discarding matches found in another repository.
 
-Every skip that a human can fix is loud. When a source PR carries backport labels but linking hits a dead end, the action emits a GitHub `::warning::` annotation and a job-summary line naming the remedy. This covers an empty `linear-token` (fix the repository secret), an unresolved parent Linear issue (attach the PR to its issue), a release line with no matching `[X.Y]` sub-issue (create or rename the sub-issue), a matched sub-issue with no release attached (attach the line's In Progress release), a matched sub-issue whose release is on a different line (fix the release attachment or the sub-issue title), and a target whose producer opened no PR (backport it manually after the conflict). A source PR with no backport labels stays a plain notice, since there is nothing to fix. The step always publishes a `linked-count` output, 0 when it skips.
+Every skip that a human can fix is loud. When a source PR carries backport labels but linking hits a dead end, the action emits a GitHub `::warning::` annotation and a job-summary line naming the remedy. This covers an empty `linear-token` (fix the repository secret), an unresolved parent Linear issue (attach the PR to its issue), a release line with no matching `[X.Y]` sub-issue (create or rename the sub-issue), a matched sub-issue with no release attached (attach the line's In Progress release), a matched sub-issue whose release is on a different line (fix the release attachment or the sub-issue title), and a target whose producer opened no PR (backport it manually after the conflict). A source PR with no backport labels stays a plain notice, since there is nothing to fix.
+
+The job summary also names every backport PR that was linked, would be linked in dry-run mode, or already carried the expected closing reference. The step always publishes a `linked-count` output, 0 when it skips or every target is already linked.
 
 ## Usage
 
-This action is wired into the shared [`backport.yaml`](../../workflows/backport.yaml) reusable workflow. A caller enables linking by passing a Linear token:
+This action is wired into the shared [`backport.yaml`](../../workflows/backport.yaml) and [`backport-link-sweep.yaml`](../../workflows/backport-link-sweep.yaml) reusable workflows. A caller enables linking by passing a Linear token:
 
 ```yaml
 jobs:
