@@ -508,7 +508,7 @@ func matchingBackportPRs(prs []*github.PullRequest, target string, sourcePR int,
 	modernHead := backportHeadBranch(target, sourcePR)
 	legacyPrefix := "backport/" + target + "/"
 	sourceRef := regexp.MustCompile(regexp.QuoteMeta(fmt.Sprintf("%s#%d", sourceRepo, sourcePR)) + `\b`)
-	sourceMarker := fmt.Sprintf("<!-- legacy-backport-source: %s; required by link-backport-prs, do not remove -->", mergeSHA)
+	sourceMarker := regexp.MustCompile(`<!--\s*legacy-backport-source:\s*` + regexp.QuoteMeta(mergeSHA) + `\b`)
 	var matches []*github.PullRequest
 	for _, pr := range prs {
 		if pr.GetHead().GetRepo().GetFullName() != expectedRepo {
@@ -527,7 +527,7 @@ func matchingBackportPRs(prs []*github.PullRequest, target string, sourcePR int,
 			continue
 		}
 		body := pr.GetBody()
-		if sourceRef.MatchString(body) || (expectedRepo != sourceRepo && strings.Contains(body, sourceMarker)) {
+		if sourceRef.MatchString(body) || (expectedRepo != sourceRepo && sourceMarker.MatchString(body)) {
 			matches = append(matches, pr)
 		}
 	}

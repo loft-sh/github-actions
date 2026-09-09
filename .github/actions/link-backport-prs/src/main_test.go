@@ -57,6 +57,9 @@ func TestMatchingBackportPRs(t *testing.T) {
 	wrongMarkerCommit := testPullRequest(53, "loft-sh/vcluster", "backport/v0.35/deadbeef", "v0.35", "<!-- legacy-backport-source: "+mergeSHA+"; required by link-backport-prs, do not remove -->")
 	wrongMarkerBase := testPullRequest(54, "loft-sh/vcluster", "backport/v0.35/4e5f9884e", "v0.36", "<!-- legacy-backport-source: "+mergeSHA+"; required by link-backport-prs, do not remove -->")
 	sourceRepoMarkerOnly := testPullRequest(55, "loft-sh/vcluster-pro", "backport/v0.35/4e5f9884e", "v0.35", "<!-- legacy-backport-source: "+mergeSHA+"; required by link-backport-prs, do not remove -->")
+	markerWithoutNote := testPullRequest(56, "loft-sh/vcluster", "backport/v0.35/4e5f9884e", "v0.35", "<!-- legacy-backport-source: "+mergeSHA+" -->")
+	markerWithEditedNote := testPullRequest(57, "loft-sh/vcluster", "backport/v0.35/4e5f9884e", "v0.35", "<!-- legacy-backport-source: "+mergeSHA+"; preserve this marker -->")
+	markerWithCompactSpacing := testPullRequest(58, "loft-sh/vcluster", "backport/v0.35/4e5f9884e", "v0.35", "<!--legacy-backport-source:  "+mergeSHA+"-->")
 
 	cases := []struct {
 		name         string
@@ -77,6 +80,7 @@ func TestMatchingBackportPRs(t *testing.T) {
 		{name: "marker alone does not match in the source repo", prs: []*github.PullRequest{sourceRepoMarkerOnly}, expectedRepo: "loft-sh/vcluster-pro", allowModern: true, want: nil},
 		{name: "marker still requires expected repository", prs: []*github.PullRequest{foreignMarker}, expectedRepo: "loft-sh/vcluster", allowModern: false, want: nil},
 		{name: "marker still requires matching branch and base", prs: []*github.PullRequest{wrongMarkerCommit, wrongMarkerBase}, expectedRepo: "loft-sh/vcluster", allowModern: false, want: nil},
+		{name: "marker note and spacing are advisory", prs: []*github.PullRequest{markerWithoutNote, markerWithEditedNote, markerWithCompactSpacing}, expectedRepo: "loft-sh/vcluster", allowModern: false, want: []int{56, 57, 58}},
 	}
 
 	for _, c := range cases {
