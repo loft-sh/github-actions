@@ -56,6 +56,7 @@ func TestMatchingBackportPRs(t *testing.T) {
 	foreignMarker := testPullRequest(52, "outside-contributor/vcluster", "backport/v0.35/4e5f9884e", "v0.35", "<!-- legacy-backport-source: "+mergeSHA+"; required by link-backport-prs, do not remove -->")
 	wrongMarkerCommit := testPullRequest(53, "loft-sh/vcluster", "backport/v0.35/deadbeef", "v0.35", "<!-- legacy-backport-source: "+mergeSHA+"; required by link-backport-prs, do not remove -->")
 	wrongMarkerBase := testPullRequest(54, "loft-sh/vcluster", "backport/v0.35/4e5f9884e", "v0.36", "<!-- legacy-backport-source: "+mergeSHA+"; required by link-backport-prs, do not remove -->")
+	sourceRepoMarkerOnly := testPullRequest(55, "loft-sh/vcluster-pro", "backport/v0.35/4e5f9884e", "v0.35", "<!-- legacy-backport-source: "+mergeSHA+"; required by link-backport-prs, do not remove -->")
 
 	cases := []struct {
 		name         string
@@ -73,6 +74,7 @@ func TestMatchingBackportPRs(t *testing.T) {
 		{name: "modern branch rejected in additional repo", prs: []*github.PullRequest{modern}, expectedRepo: "loft-sh/vcluster-pro", allowModern: false, want: nil},
 		{name: "reject unrelated legacy PRs", prs: []*github.PullRequest{wrongSource, wrongCommit, wrongBase, prefixSource}, expectedRepo: "loft-sh/vcluster-pro", allowModern: true, want: nil},
 		{name: "reject wrong source marker", prs: []*github.PullRequest{wrongMarker}, expectedRepo: "loft-sh/vcluster", allowModern: false, want: nil},
+		{name: "marker alone does not match in the source repo", prs: []*github.PullRequest{sourceRepoMarkerOnly}, expectedRepo: "loft-sh/vcluster-pro", allowModern: true, want: nil},
 		{name: "marker still requires expected repository", prs: []*github.PullRequest{foreignMarker}, expectedRepo: "loft-sh/vcluster", allowModern: false, want: nil},
 		{name: "marker still requires matching branch and base", prs: []*github.PullRequest{wrongMarkerCommit, wrongMarkerBase}, expectedRepo: "loft-sh/vcluster", allowModern: false, want: nil},
 	}
