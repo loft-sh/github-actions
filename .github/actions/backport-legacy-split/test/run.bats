@@ -542,7 +542,7 @@ short() { git -C "$MONO" rev-parse --short HEAD; }
   [ "$(git --git-dir="$OSS_REMOTE" log -1 --format=%s "$br")" = "Update the deps (backport v0.35 oss)" ]
 }
 
-@test "create-pr: PR reference is fully-qualified as owner/repo#N from origin" {
+@test "create-pr: OSS metadata drops the private PR reference and carries a source marker" {
   install_fake_gh
   cd "$MONO"
   # A PR head fetched via PR_NUMBER, plus a real GitHub-style origin so the
@@ -553,7 +553,7 @@ short() { git -C "$MONO" rev-parse --short HEAD; }
   printf 'line1\nOSS\nline3\n' > "$PFX/app.go"; git commit -qam c1
   local prhead; prhead="$(git rev-parse HEAD)"
   git checkout -q main
-  printf 'line1\nOSS\nline3\n' > "$PFX/app.go"; git commit -qam "squash (#1)"
+  printf 'line1\nOSS\nline3\n' > "$PFX/app.go"; git commit -qam "fix: the thing (#4037) (#1)"
   local mergec; mergec="$(git rev-parse HEAD)"
 
   local origin="$ROOT/origin-src.git"
@@ -567,12 +567,48 @@ short() { git -C "$MONO" rev-parse --short HEAD; }
   [ "$status" -eq 0 ]
   [ "$(output_value oss-pushed)" = "true" ]
 
-  # Body references the source PR fully-qualified (owner/repo#N), so it links
-  # from the OSS repo too -- not a bare "#1" (which would resolve wrongly there)
-  # nor the local origin path.
+  # Every public reuse of the source subject drops only the private source PR
+  # suffix. The legitimate OSS reference before it remains, and title/commit
+  # parity stays intact for COMMIT_OR_PR_TITLE squash merging.
+  [ "$(create_arg --title)" = "fix: the thing (#4037) (backport v0.35 oss)" ]
+  local br; br="$(output_value backport-branch)"
+  [ "$(git --git-dir="$OSS_REMOTE" log -1 --format=%s "$br")" = "$(create_arg --title)" ]
+
+  # The public body uses the immutable source commit plus a machine-readable
+  # marker instead of naming the private repository or PR.
   local body; body="$(create_body)"
-  [[ "$body" == *"Backport of loft-sh/vcluster-pro#1 to \`v0.35\` (oss half)."* ]]
-  [[ "$body" != *"Backport of #1 "* ]]
+  [[ "$body" == *"Backport of commit \`$mergec\` to \`v0.35\` (oss half)."* ]]
+  [[ "$body" == *"<!-- legacy-backport-source: $mergec -->"* ]]
+  [[ "$body" == *"- $(git rev-parse --short "$mergec") fix: the thing (#4037)"* ]]
+  [[ "$body" != *"loft-sh/vcluster-pro#1"* ]]
+  [[ "$body" != *"(#1)"* ]]
+}
+
+@test "create-pr: pro metadata retains the private source PR reference" {
+  install_fake_gh
+  cd "$MONO"
+  git checkout -q -b prhead
+  printf 'pro change\n' > pro.go; git add pro.go; git commit -qm c1
+  local prhead; prhead="$(git rev-parse HEAD)"
+  git checkout -q main
+  printf 'pro change\n' > pro.go; git add pro.go; git commit -qm "feat: pro thing (#1)"
+  local mergec; mergec="$(git rev-parse HEAD)"
+
+  local origin="$ROOT/origin-src.git"
+  git init -q --bare "$origin"
+  git push -q "$origin" main
+  git push -q "$origin" "$prhead:refs/pull/1/head"
+  git remote add origin "https://github.com/loft-sh/vcluster-pro.git"
+  git config "url.$origin.insteadOf" "https://github.com/loft-sh/vcluster-pro.git"
+
+  COMMIT="$mergec" PR_NUMBER=1 run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value pro-pushed)" = "true" ]
+  [ "$(create_arg --title)" = "feat: pro thing (#1) (backport v0.35 pro)" ]
+
+  local body; body="$(create_body)"
+  [[ "$body" == *"Backport of loft-sh/vcluster-pro#1 to \`v0.35\` (pro half)."* ]]
+  [[ "$body" != *"<!-- legacy-backport-source:"* ]]
 }
 
 @test "create-pr: an existing open PR is detected and the side is skipped" {

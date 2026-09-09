@@ -499,14 +499,16 @@ func findBackportPRs(ctx context.Context, gh *github.Client, repos []repository,
 }
 
 // matchingBackportPRs accepts sorenlouv's deterministic branch or the legacy
-// split branch. The legacy match checks both the merge SHA prefix and the
-// fully-qualified source PR reference from the producer's body. It also
-// requires the PR head repository to match the repository being searched, so a
-// fork cannot copy those public values and receive a privileged edit.
+// split branch. The legacy match checks the merge SHA prefix plus either the
+// fully-qualified source PR reference used by private and older PRs, or the
+// full-SHA marker used by new public OSS PRs. It also requires the PR head
+// repository to match the repository being searched, so a fork cannot copy
+// those values and receive a privileged edit.
 func matchingBackportPRs(prs []*github.PullRequest, target string, sourcePR int, mergeSHA, sourceRepo, expectedRepo string, allowModern bool) []*github.PullRequest {
 	modernHead := backportHeadBranch(target, sourcePR)
 	legacyPrefix := "backport/" + target + "/"
 	sourceRef := regexp.MustCompile(regexp.QuoteMeta(fmt.Sprintf("%s#%d", sourceRepo, sourcePR)) + `\b`)
+	sourceMarker := fmt.Sprintf("<!-- legacy-backport-source: %s -->", mergeSHA)
 	var matches []*github.PullRequest
 	for _, pr := range prs {
 		if pr.GetHead().GetRepo().GetFullName() != expectedRepo {
@@ -524,7 +526,8 @@ func matchingBackportPRs(prs []*github.PullRequest, target string, sourcePR int,
 		if shortSHA == head || shortSHA == "" || mergeSHA == "" || !strings.HasPrefix(mergeSHA, shortSHA) {
 			continue
 		}
-		if sourceRef.MatchString(pr.GetBody()) {
+		body := pr.GetBody()
+		if sourceRef.MatchString(body) || (expectedRepo != sourceRepo && strings.Contains(body, sourceMarker)) {
 			matches = append(matches, pr)
 		}
 	}

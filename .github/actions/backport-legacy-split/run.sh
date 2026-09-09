@@ -198,15 +198,17 @@ BACKPORT_BRANCH="backport/${TARGET_BRANCH}/${SHORT}"
 emit backport-branch "$BACKPORT_BRANCH"
 
 # Human-readable PR metadata, sourced from the monorepo commit itself (CWD is a
-# full-history monorepo checkout). Computed once -- side-independent.
+# full-history monorepo checkout).
 #   SUBJECT    The merge/squash commit subject, reused verbatim and FIRST in the PR
 #              title so a legacy backport reads like its source
 #              ("fix: ... (#1234) (backport v0.36 pro)") instead of a bare SHA,
 #              and stays a valid conventional commit once squash-merged.
+#   OSS_SUBJECT The public-safe variant. GitHub appends the private source PR as
+#              a trailing " (#N)" on the squash subject, so remove exactly that
+#              suffix while preserving any earlier public OSS references.
 #   SOURCE_REPO owner/repo of the monorepo (the repo the source PR lives in), parsed
-#              from origin. Used to fully-qualify the PR reference (owner/repo#N) so
-#              it links correctly even on the OSS half, whose target repo differs
-#              from the monorepo. Empty (e.g. tests, no origin) -> bare "#N".
+#              from origin. Used to fully-qualify the PR reference (owner/repo#N)
+#              on the private pro half. Empty (e.g. tests, no origin) -> bare "#N".
 #
 # Linear linking is deliberately NOT done here: the reusable workflow runs
 # link-backport-prs after this matrix settles, resolves the source PR's parent
@@ -214,6 +216,10 @@ emit backport-branch "$BACKPORT_BRANCH"
 # "Fixes <sub-issue>" to every matching pro and OSS PR. A
 # "resolves <PARENT-KEY>" here would close the wrong issue.
 SUBJECT="$(git log -1 --format=%s "$SHA")"
+OSS_SUBJECT="$SUBJECT"
+if [ -n "${PR_NUMBER:-}" ]; then
+  OSS_SUBJECT="${OSS_SUBJECT% (#"${PR_NUMBER}")}"
+fi
 SOURCE_REPO="$( { git config --get remote.origin.url 2>/dev/null || true; } \
   | sed -E 's#^git@[^:]+:##; s#^https?://[^/]+/##; s#\.git$##' )"
 SRC_PR_REF=""
@@ -298,6 +304,8 @@ echo "route=${route} (oss=${oss} pro=${pro}) commit=${SHA} target=${TARGET_BRANC
 backport_side() {
   local side="$1" remote="$2" slug="$3" patch="$4"
   local checkout="${WORKDIR}/${side}"
+  local side_subject="$SUBJECT"
+  [ "$side" = "oss" ] && side_subject="$OSS_SUBJECT"
 
   if [ ! -s "$patch" ]; then
     echo "::warning::${side}: empty patch for ${route}; skipping"
@@ -370,9 +378,9 @@ backport_side() {
   # conventional commit -- "backport" is not a valid type -- and it also defeated
   # the goreleaser changelog filters, which match subjects like ^docs:/^test:.
   # Keep the sha and the half in the body, where they cost nothing.
-  local msg="${SUBJECT} (backport ${TARGET_BRANCH} ${side})
+  local msg="${side_subject} (backport ${TARGET_BRANCH} ${side})
 
-Backport of monorepo commit ${SHA} (${side} half) onto ${TARGET_BRANCH}."
+Backport of source commit ${SHA} (${side} half) onto ${TARGET_BRANCH}."
   if [ "$conflicts" = true ]; then
     msg="${msg}
 
@@ -435,18 +443,25 @@ Applied with merge conflicts that need manual resolution."
     # These land on a public release branch directly (the OSS half is opened
     # against oss-repo, not mirrored: sync-to-oss only covers >= v0.37) and feed
     # GitHub's auto-generated release notes, which list PR titles.
-    title="${SUBJECT} (backport ${TARGET_BRANCH} ${side})"
-    # Reference the source by PR when known (fully-qualified so it links from the
-    # OSS repo too), else by the immutable monorepo commit.
-    if [ -n "$SRC_PR_REF" ]; then
+    title="${side_subject} (backport ${TARGET_BRANCH} ${side})"
+    # The private pro half keeps the source PR link. The public OSS half uses
+    # only the immutable commit plus an invisible marker consumed by
+    # link-backport-prs, so no private repository reference is published.
+    if [ "$side" = "pro" ] && [ -n "$SRC_PR_REF" ]; then
       origin="${SRC_PR_REF}"
     else
       origin="commit \`${SHA}\`"
     fi
-    body="Backport of ${origin} to \`${TARGET_BRANCH}\` (${side} half).
+    body="Backport of ${origin} to \`${TARGET_BRANCH}\` (${side} half)."
+    if [ "$side" = "oss" ]; then
+      body="${body}
+
+<!-- legacy-backport-source: ${SHA} -->"
+    fi
+    body="${body}
 
 ### Backported Commits:
-- ${SHORT} ${SUBJECT}"
+- ${SHORT} ${side_subject}"
     local -a create_args=(--repo "$slug" --head "$BACKPORT_BRANCH" --base "$TARGET_BRANCH" --title "$title")
     if [ "$conflicts" = true ]; then
       # Open as a DRAFT so it cannot be auto-merged: the committed conflict

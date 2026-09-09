@@ -41,15 +41,21 @@ func TestBackportHeadBranch(t *testing.T) {
 }
 
 func TestMatchingBackportPRs(t *testing.T) {
+	const mergeSHA = "4e5f9884e43439736405e2d7ab6de0b8d03e6460"
 	modern := testPullRequest(41, "loft-sh/vcluster-pro", "backport/v0.35/pr-2285", "v0.35", "")
 	legacyPro := testPullRequest(42, "loft-sh/vcluster-pro", "backport/v0.35/4e5f9884e", "v0.35", "Backport of loft-sh/vcluster-pro#2285 to `v0.35` (pro half).")
-	legacyOSS := testPullRequest(43, "loft-sh/vcluster", "backport/v0.35/4e5f9884e", "v0.35", "Backport of loft-sh/vcluster-pro#2285 to `v0.35` (oss half).")
+	legacyOSS := testPullRequest(43, "loft-sh/vcluster", "backport/v0.35/4e5f9884e", "v0.35", "Backport of commit `"+mergeSHA+"` to `v0.35` (oss half).\n\n<!-- legacy-backport-source: "+mergeSHA+" -->")
+	legacyOSSOldBody := testPullRequest(50, "loft-sh/vcluster", "backport/v0.35/4e5f9884e", "v0.35", "Backport of loft-sh/vcluster-pro#2285 to `v0.35` (oss half).")
 	foreignHead := testPullRequest(44, "outside-contributor/vcluster", "backport/v0.35/4e5f9884e", "v0.35", "Backport of loft-sh/vcluster-pro#2285 to `v0.35` (copied body).")
 	foreignModern := testPullRequest(49, "outside-contributor/vcluster-pro", "backport/v0.35/pr-2285", "v0.35", "")
 	wrongSource := testPullRequest(45, "loft-sh/vcluster-pro", "backport/v0.35/4e5f9884e", "v0.35", "Backport of loft-sh/vcluster-pro#9999 to `v0.35`.")
 	wrongCommit := testPullRequest(46, "loft-sh/vcluster-pro", "backport/v0.35/deadbeef", "v0.35", "Backport of loft-sh/vcluster-pro#2285 to `v0.35`.")
 	wrongBase := testPullRequest(47, "loft-sh/vcluster-pro", "backport/v0.35/4e5f9884e", "v0.36", "Backport of loft-sh/vcluster-pro#2285 to `v0.36`.")
 	prefixSource := testPullRequest(48, "loft-sh/vcluster-pro", "backport/v0.35/4e5f9884e", "v0.35", "Backport of loft-sh/vcluster-pro#22850 to `v0.35`.")
+	wrongMarker := testPullRequest(51, "loft-sh/vcluster", "backport/v0.35/4e5f9884e", "v0.35", "<!-- legacy-backport-source: deadbeefdeadbeefdeadbeefdeadbeefdeadbeef -->")
+	foreignMarker := testPullRequest(52, "outside-contributor/vcluster", "backport/v0.35/4e5f9884e", "v0.35", "<!-- legacy-backport-source: "+mergeSHA+" -->")
+	wrongMarkerCommit := testPullRequest(53, "loft-sh/vcluster", "backport/v0.35/deadbeef", "v0.35", "<!-- legacy-backport-source: "+mergeSHA+" -->")
+	wrongMarkerBase := testPullRequest(54, "loft-sh/vcluster", "backport/v0.35/4e5f9884e", "v0.36", "<!-- legacy-backport-source: "+mergeSHA+" -->")
 
 	cases := []struct {
 		name         string
@@ -60,15 +66,19 @@ func TestMatchingBackportPRs(t *testing.T) {
 	}{
 		{name: "modern branch in source repo", prs: []*github.PullRequest{modern}, expectedRepo: "loft-sh/vcluster-pro", allowModern: true, want: []int{41}},
 		{name: "legacy pro", prs: []*github.PullRequest{legacyPro}, expectedRepo: "loft-sh/vcluster-pro", allowModern: true, want: []int{42}},
-		{name: "legacy oss", prs: []*github.PullRequest{legacyOSS}, expectedRepo: "loft-sh/vcluster", allowModern: false, want: []int{43}},
+		{name: "legacy oss marker", prs: []*github.PullRequest{legacyOSS}, expectedRepo: "loft-sh/vcluster", allowModern: false, want: []int{43}},
+		{name: "legacy oss old body remains compatible", prs: []*github.PullRequest{legacyOSSOldBody}, expectedRepo: "loft-sh/vcluster", allowModern: false, want: []int{50}},
 		{name: "foreign head repo rejected", prs: []*github.PullRequest{foreignHead}, expectedRepo: "loft-sh/vcluster", allowModern: false, want: nil},
 		{name: "foreign modern head repo rejected", prs: []*github.PullRequest{foreignModern}, expectedRepo: "loft-sh/vcluster-pro", allowModern: true, want: nil},
 		{name: "modern branch rejected in additional repo", prs: []*github.PullRequest{modern}, expectedRepo: "loft-sh/vcluster-pro", allowModern: false, want: nil},
 		{name: "reject unrelated legacy PRs", prs: []*github.PullRequest{wrongSource, wrongCommit, wrongBase, prefixSource}, expectedRepo: "loft-sh/vcluster-pro", allowModern: true, want: nil},
+		{name: "reject wrong source marker", prs: []*github.PullRequest{wrongMarker}, expectedRepo: "loft-sh/vcluster", allowModern: false, want: nil},
+		{name: "marker still requires expected repository", prs: []*github.PullRequest{foreignMarker}, expectedRepo: "loft-sh/vcluster", allowModern: false, want: nil},
+		{name: "marker still requires matching branch and base", prs: []*github.PullRequest{wrongMarkerCommit, wrongMarkerBase}, expectedRepo: "loft-sh/vcluster", allowModern: false, want: nil},
 	}
 
 	for _, c := range cases {
-		got := matchingBackportPRs(c.prs, "v0.35", 2285, "4e5f9884e43439736405e2d7ab6de0b8d03e6460", "loft-sh/vcluster-pro", c.expectedRepo, c.allowModern)
+		got := matchingBackportPRs(c.prs, "v0.35", 2285, mergeSHA, "loft-sh/vcluster-pro", c.expectedRepo, c.allowModern)
 		if len(got) != len(c.want) {
 			t.Fatalf("%s: got %d PRs, want %d", c.name, len(got), len(c.want))
 		}

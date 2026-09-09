@@ -143,9 +143,11 @@ summary claim the whole target was backported when only one half had been.
 The opened PR reads like its source rather than a bare SHA:
 
 - **Title** — `<commit subject> (backport <target> <side>)`, e.g.
-  `fix: CRD sync race (#3993) (backport v0.36 pro)`. The subject is the monorepo
-  merge/squash commit subject, taken verbatim, and it leads so the result is a
-  valid conventional commit.
+  `fix: CRD sync race (#3993) (backport v0.36 pro)`. The private pro half keeps
+  the monorepo merge/squash subject verbatim. The public OSS half removes only
+  the trailing ` (#<source-pr>)` suffix that GitHub added for the private source
+  PR; an earlier public OSS reference remains intact. The subject leads so the
+  result is a valid conventional commit.
 - **Commit subject** — the same string as the title. This matters because the
   target repos set `squash_merge_commit_title=COMMIT_OR_PR_TITLE`, so GitHub
   takes the **commit** subject whenever the PR has a single commit, which is the
@@ -153,13 +155,16 @@ The opened PR reads like its source rather than a bare SHA:
   commit exists, e.g. a pushed conflict resolution. Both are kept identical so
   either path lands a conventional subject on the release branch, which also
   keeps the goreleaser changelog filters (`^docs:`, `^test:`, …) working.
-- **Body** — references the source (the PR when `pr-number` is set,
-  fully-qualified as `owner/repo#N` so the reference links from the OSS repo too;
-  otherwise the monorepo commit SHA) and lists the backported commit under a
-  `### Backported Commits:` heading.
+- **Body** — the private pro half references the fully-qualified source PR when
+  `pr-number` is set. The public OSS half references only the immutable source
+  commit and includes an invisible `legacy-backport-source` marker with its full
+  SHA for `link-backport-prs`; it never names the private repository or PR. The
+  `### Backported Commits:` entry uses the same side-specific subject as the
+  title and generated commit.
 
-Linear linking is intentionally **not** put in the body — see the Linear note
-below.
+The producer intentionally does **not** add Linear linking to the body. The
+separate linking action adds it after resolving the matching backport issue —
+see the Linear note below.
 
 ## Inputs
 
