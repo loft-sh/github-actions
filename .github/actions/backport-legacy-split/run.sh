@@ -456,7 +456,7 @@ Applied with merge conflicts that need manual resolution."
     if [ "$side" = "oss" ]; then
       body="${body}
 
-<!-- legacy-backport-source: ${SHA}; required by link-backport-prs, do not remove -->"
+<!-- legacy-backport-source: ${SHA}; required for backport linking, do not remove -->"
     fi
     body="${body}
 

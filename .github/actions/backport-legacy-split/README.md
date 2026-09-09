@@ -158,10 +158,21 @@ The opened PR reads like its source rather than a bare SHA:
 - **Body** — the private pro half references the fully-qualified source PR when
   `pr-number` is set. The public OSS half references only the immutable source
   commit and includes an invisible `legacy-backport-source` marker with its full
-  SHA for `link-backport-prs`; it never names the private repository or PR. The
+  SHA for backport linking; it never names the private repository or PR. The
   `### Backported Commits:` entry uses the same side-specific subject as the
   title and generated commit. The marker is required for Linear linking and
   must remain when editing the PR body.
+
+This producer owns the marker contract:
+
+```markdown
+<!-- legacy-backport-source: <full-source-merge-sha>; required for backport linking, do not remove -->
+```
+
+Consumers parse the HTML comment opener, the `legacy-backport-source` key, and
+the full SHA. Whitespace and trailing human guidance are advisory. Changing the
+comment framing or key requires coordinated changes in `link-backport-prs` and
+`loft-sh/linear-webhook-service`.
 
 The producer intentionally does **not** add Linear linking to the body. The
 separate linking action adds it after resolving the matching backport issue —

@@ -503,7 +503,8 @@ func findBackportPRs(ctx context.Context, gh *github.Client, repos []repository,
 // fully-qualified source PR reference used by private and older PRs, or the
 // full-SHA marker used by new public OSS PRs. It also requires the PR head
 // repository to match the repository being searched, so a fork cannot copy
-// those values and receive a privileged edit.
+// those values and receive a privileged edit. The marker format contract is
+// owned by .github/actions/backport-legacy-split/README.md.
 func matchingBackportPRs(prs []*github.PullRequest, target string, sourcePR int, mergeSHA, sourceRepo, expectedRepo string, allowModern bool) []*github.PullRequest {
 	modernHead := backportHeadBranch(target, sourcePR)
 	legacyPrefix := "backport/" + target + "/"
