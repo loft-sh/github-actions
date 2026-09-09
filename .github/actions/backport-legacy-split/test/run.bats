@@ -578,7 +578,7 @@ short() { git -C "$MONO" rev-parse --short HEAD; }
   # marker instead of naming the private repository or PR.
   local body; body="$(create_body)"
   [[ "$body" == *"Backport of commit \`$mergec\` to \`v0.35\` (oss half)."* ]]
-  [[ "$body" == *"<!-- legacy-backport-source: $mergec -->"* ]]
+  [[ "$body" == *"<!-- legacy-backport-source: $mergec; required by link-backport-prs, do not remove -->"* ]]
   [[ "$body" == *"- $(git rev-parse --short "$mergec") fix: the thing (#4037)"* ]]
   [[ "$body" != *"loft-sh/vcluster-pro#1"* ]]
   [[ "$body" != *"(#1)"* ]]

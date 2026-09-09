@@ -44,7 +44,7 @@ func TestMatchingBackportPRs(t *testing.T) {
 	const mergeSHA = "4e5f9884e43439736405e2d7ab6de0b8d03e6460"
 	modern := testPullRequest(41, "loft-sh/vcluster-pro", "backport/v0.35/pr-2285", "v0.35", "")
 	legacyPro := testPullRequest(42, "loft-sh/vcluster-pro", "backport/v0.35/4e5f9884e", "v0.35", "Backport of loft-sh/vcluster-pro#2285 to `v0.35` (pro half).")
-	legacyOSS := testPullRequest(43, "loft-sh/vcluster", "backport/v0.35/4e5f9884e", "v0.35", "Backport of commit `"+mergeSHA+"` to `v0.35` (oss half).\n\n<!-- legacy-backport-source: "+mergeSHA+" -->")
+	legacyOSS := testPullRequest(43, "loft-sh/vcluster", "backport/v0.35/4e5f9884e", "v0.35", "Backport of commit `"+mergeSHA+"` to `v0.35` (oss half).\n\n<!-- legacy-backport-source: "+mergeSHA+"; required by link-backport-prs, do not remove -->")
 	legacyOSSOldBody := testPullRequest(50, "loft-sh/vcluster", "backport/v0.35/4e5f9884e", "v0.35", "Backport of loft-sh/vcluster-pro#2285 to `v0.35` (oss half).")
 	foreignHead := testPullRequest(44, "outside-contributor/vcluster", "backport/v0.35/4e5f9884e", "v0.35", "Backport of loft-sh/vcluster-pro#2285 to `v0.35` (copied body).")
 	foreignModern := testPullRequest(49, "outside-contributor/vcluster-pro", "backport/v0.35/pr-2285", "v0.35", "")
@@ -52,10 +52,10 @@ func TestMatchingBackportPRs(t *testing.T) {
 	wrongCommit := testPullRequest(46, "loft-sh/vcluster-pro", "backport/v0.35/deadbeef", "v0.35", "Backport of loft-sh/vcluster-pro#2285 to `v0.35`.")
 	wrongBase := testPullRequest(47, "loft-sh/vcluster-pro", "backport/v0.35/4e5f9884e", "v0.36", "Backport of loft-sh/vcluster-pro#2285 to `v0.36`.")
 	prefixSource := testPullRequest(48, "loft-sh/vcluster-pro", "backport/v0.35/4e5f9884e", "v0.35", "Backport of loft-sh/vcluster-pro#22850 to `v0.35`.")
-	wrongMarker := testPullRequest(51, "loft-sh/vcluster", "backport/v0.35/4e5f9884e", "v0.35", "<!-- legacy-backport-source: deadbeefdeadbeefdeadbeefdeadbeefdeadbeef -->")
-	foreignMarker := testPullRequest(52, "outside-contributor/vcluster", "backport/v0.35/4e5f9884e", "v0.35", "<!-- legacy-backport-source: "+mergeSHA+" -->")
-	wrongMarkerCommit := testPullRequest(53, "loft-sh/vcluster", "backport/v0.35/deadbeef", "v0.35", "<!-- legacy-backport-source: "+mergeSHA+" -->")
-	wrongMarkerBase := testPullRequest(54, "loft-sh/vcluster", "backport/v0.35/4e5f9884e", "v0.36", "<!-- legacy-backport-source: "+mergeSHA+" -->")
+	wrongMarker := testPullRequest(51, "loft-sh/vcluster", "backport/v0.35/4e5f9884e", "v0.35", "<!-- legacy-backport-source: deadbeefdeadbeefdeadbeefdeadbeefdeadbeef; required by link-backport-prs, do not remove -->")
+	foreignMarker := testPullRequest(52, "outside-contributor/vcluster", "backport/v0.35/4e5f9884e", "v0.35", "<!-- legacy-backport-source: "+mergeSHA+"; required by link-backport-prs, do not remove -->")
+	wrongMarkerCommit := testPullRequest(53, "loft-sh/vcluster", "backport/v0.35/deadbeef", "v0.35", "<!-- legacy-backport-source: "+mergeSHA+"; required by link-backport-prs, do not remove -->")
+	wrongMarkerBase := testPullRequest(54, "loft-sh/vcluster", "backport/v0.35/4e5f9884e", "v0.36", "<!-- legacy-backport-source: "+mergeSHA+"; required by link-backport-prs, do not remove -->")
 
 	cases := []struct {
 		name         string
@@ -112,8 +112,12 @@ func TestFindBackportPRsKeepsMatchesWhenAnotherRepoFails(t *testing.T) {
 						return
 					}
 					w.Header().Set("Content-Type", "application/json")
+					body := "Backport of loft-sh/vcluster-pro#2285 to `v0.35`."
+					if repoName == "loft-sh/vcluster" {
+						body = "Backport of commit `4e5f9884e43439736405e2d7ab6de0b8d03e6460` to `v0.35` (oss half).\n\n<!-- legacy-backport-source: 4e5f9884e43439736405e2d7ab6de0b8d03e6460; required by link-backport-prs, do not remove -->"
+					}
 					if err := json.NewEncoder(w).Encode([]*github.PullRequest{
-						testPullRequest(tt.number, tt.successRepo, "backport/v0.35/4e5f9884e", "v0.35", "Backport of loft-sh/vcluster-pro#2285 to `v0.35`."),
+						testPullRequest(tt.number, tt.successRepo, "backport/v0.35/4e5f9884e", "v0.35", body),
 					}); err != nil {
 						t.Fatal(err)
 					}

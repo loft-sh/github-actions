@@ -160,7 +160,8 @@ The opened PR reads like its source rather than a bare SHA:
   commit and includes an invisible `legacy-backport-source` marker with its full
   SHA for `link-backport-prs`; it never names the private repository or PR. The
   `### Backported Commits:` entry uses the same side-specific subject as the
-  title and generated commit.
+  title and generated commit. The marker is required for Linear linking and
+  must remain when editing the PR body.
 
 The producer intentionally does **not** add Linear linking to the body. The
 separate linking action adds it after resolving the matching backport issue —
