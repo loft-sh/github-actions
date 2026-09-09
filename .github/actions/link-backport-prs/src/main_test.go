@@ -44,7 +44,7 @@ func TestMatchingBackportPRs(t *testing.T) {
 	const mergeSHA = "4e5f9884e43439736405e2d7ab6de0b8d03e6460"
 	modern := testPullRequest(41, "loft-sh/vcluster-pro", "backport/v0.35/pr-2285", "v0.35", "")
 	legacyPro := testPullRequest(42, "loft-sh/vcluster-pro", "backport/v0.35/4e5f9884e", "v0.35", "Backport of loft-sh/vcluster-pro#2285 to `v0.35` (pro half).")
-	legacyOSS := testPullRequest(43, "loft-sh/vcluster", "backport/v0.35/4e5f9884e", "v0.35", "Backport of commit `"+mergeSHA+"` to `v0.35` (oss half).\n\n<!-- legacy-backport-source: "+mergeSHA+"; required by link-backport-prs, do not remove -->")
+	legacyOSS := testPullRequest(43, "loft-sh/vcluster", "backport/v0.35/4e5f9884e", "v0.35", "Backport of commit `"+mergeSHA+"` to `v0.35` (oss half).\n\n<!-- legacy-backport-source: "+mergeSHA+"; required for backport linking, do not remove -->")
 	legacyOSSOldBody := testPullRequest(50, "loft-sh/vcluster", "backport/v0.35/4e5f9884e", "v0.35", "Backport of loft-sh/vcluster-pro#2285 to `v0.35` (oss half).")
 	foreignHead := testPullRequest(44, "outside-contributor/vcluster", "backport/v0.35/4e5f9884e", "v0.35", "Backport of loft-sh/vcluster-pro#2285 to `v0.35` (copied body).")
 	foreignModern := testPullRequest(49, "outside-contributor/vcluster-pro", "backport/v0.35/pr-2285", "v0.35", "")
