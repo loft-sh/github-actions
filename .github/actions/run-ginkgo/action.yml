@@ -55,9 +55,9 @@ inputs:
     required: false
     default: "false"
   empty-selection-conclusion:
-    description: "Conclusion to expose when no specs match: neutral or failure."
+    description: "Opt in to report-derived check outputs and choose the conclusion when no specs match: neutral or failure."
     required: false
-    default: "neutral"
+    default: ""
 
 outputs:
   failure-summary:
@@ -118,7 +118,7 @@ runs:
 
     - name: Derive check conclusion
       id: derive-conclusion
-      if: always()
+      if: always() && inputs.empty-selection-conclusion != ''
       shell: bash
       env:
         INPUT_EMPTY_SELECTION_CONCLUSION: ${{ inputs.empty-selection-conclusion }}
