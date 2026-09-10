@@ -2,6 +2,11 @@
 # Contract tests for the composite-action seam that shell unit tests cannot run.
 
 ACTION="$BATS_TEST_DIRNAME/../action.yml"
+CONCLUSION_SCRIPT="$BATS_TEST_DIRNAME/../src/derive-conclusion.sh"
+
+@test "conclusion script is executable" {
+  [ -x "$CONCLUSION_SCRIPT" ]
+}
 
 @test "declares an optional ginkgo-focus input" {
   run grep -A4 '^  ginkgo-focus:' "$ACTION"
