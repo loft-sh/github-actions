@@ -39,8 +39,14 @@ outputs:
     description: "Classification of the commit: pro-only | oss-only | mixed."
     value: ${{ steps.backport.outputs.route }}
   backport-branch:
-    description: "The backport branch name pushed to the target repo(s)."
+    description: "The deterministic full-SHA branch name used for newly created PRs. During migration, a reused short-SHA PR may use a different per-side branch output."
     value: ${{ steps.backport.outputs.backport-branch }}
+  oss-backport-branch:
+    description: "The actual OSS branch pushed or reused; empty when no OSS branch was used."
+    value: ${{ steps.backport.outputs.oss-backport-branch }}
+  pro-backport-branch:
+    description: "The actual pro branch pushed or reused; empty when no pro branch was used."
+    value: ${{ steps.backport.outputs.pro-backport-branch }}
   oss-pushed:
     description: "true when an OSS backport branch was pushed."
     value: ${{ steps.backport.outputs.oss-pushed }}

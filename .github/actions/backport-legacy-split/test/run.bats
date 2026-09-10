@@ -77,7 +77,7 @@ teardown() {
 
 # Install a fake `gh` on PATH so the CREATE_PR=true paths can be exercised
 # hermetically (no network). Controlled by env:
-#   GH_PRLIST=empty|exists|fail  -- what `gh pr list` returns (default empty)
+#   GH_PRLIST=empty|exists|legacy|fail -- what `gh pr list` returns (default empty)
 #   GH_CREATE_LOG=<file>         -- `gh pr create` appends its argv here (one/line)
 install_fake_gh() {
   mkdir -p "$ROOT/bin"
@@ -85,6 +85,12 @@ install_fake_gh() {
 #!/usr/bin/env bash
 if [ "$1" = pr ] && [ "$2" = list ]; then
   printf '%s\n' "$@" >> "${GH_PRLIST_LOG:-/dev/null}"
+  jq_filter=""
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = --jq ]; then jq_filter="$2"; break; fi
+    shift
+  done
+  [ -n "$jq_filter" ] || { echo "stub: --jq missing" >&2; exit 1; }
   # GH_PRLIST_SEQ gives one behaviour per call ("empty fail"), so a mixed route
   # can fail the second half's lookup only. Consumed via a counter file.
   if [ -n "${GH_PRLIST_SEQ:-}" ]; then
@@ -95,9 +101,23 @@ if [ "$1" = pr ] && [ "$2" = list ]; then
   fi
   case "${GH_PRLIST:-empty}" in
     fail) exit 3 ;;
-    exists) echo 42 ;;
-    *) : ;;
+    exists)
+      fixture="$(jq -n --arg head "$BACKPORT_BRANCH" --arg repo "$EXPECTED_REPO" '
+        [{number: 42, headRefName: $head, headRepository: {nameWithOwner: $repo}, body: "", url: "https://github.com/x/y/pull/42"}]')"
+      ;;
+    legacy)
+      fixture="$(jq -n --arg full "$BACKPORT_BRANCH" --arg old "$GH_LEGACY_HEAD" \
+        --arg repo "$EXPECTED_REPO" --arg source "$SOURCE_PR_REF" '
+        [
+          {number: 39, headRefName: $full, headRepository: {nameWithOwner: "fork/example"}, body: $source, url: "https://github.com/fork/example/pull/39"},
+          {number: 40, headRefName: ($full | sub("[^/]+$"; "deadbeef")), headRepository: {nameWithOwner: $repo}, body: $source, url: "https://github.com/x/y/pull/40"},
+          {number: 41, headRefName: $old, headRepository: {nameWithOwner: $repo}, body: "", url: "https://github.com/x/y/pull/41"},
+          {number: 42, headRefName: $old, headRepository: {nameWithOwner: $repo}, body: ("Backport of " + $source), url: "https://github.com/x/y/pull/42"}
+        ]')"
+      ;;
+    *) fixture='[]' ;;
   esac
+  printf '%s\n' "$fixture" | jq -r "$jq_filter"
   exit 0
 fi
 if [ "$1" = pr ] && [ "$2" = create ]; then
@@ -143,6 +163,15 @@ remote_file() { git -C "$1" show "$2:$3"; }
 remote_paths() { git -C "$1" ls-tree -r --name-only "$2"; }
 
 short() { git -C "$MONO" rev-parse --short HEAD; }
+full()  { git -C "$MONO" rev-parse HEAD; }
+
+install_source_pr_ref() {
+  local origin="$ROOT/source-pr.git"
+  git init -q --bare "$origin"
+  git push -q "$origin" "HEAD:refs/pull/1/head"
+  git remote add origin "https://github.com/loft-sh/vcluster-pro.git"
+  git config "url.$origin.insteadOf" "https://github.com/loft-sh/vcluster-pro.git"
+}
 
 # --- classification --------------------------------------------------------
 
@@ -150,7 +179,7 @@ short() { git -C "$MONO" rev-parse --short HEAD; }
   cd "$MONO"
   printf 'package main // v2\n' > main.go
   git commit -qam "pro: change"
-  local br="backport/v0.35/$(short)"
+  local br="backport/v0.35/$(full)"
 
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
@@ -189,7 +218,7 @@ short() { git -C "$MONO" rev-parse --short HEAD; }
   cd "$MONO"
   printf 'line1\nCHANGED\nline3\n' > "$PFX/app.go"
   git commit -qam "oss: change"
-  local br="backport/v0.35/$(short)"
+  local br="backport/v0.35/$(full)"
 
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
@@ -214,7 +243,7 @@ short() { git -C "$MONO" rev-parse --short HEAD; }
   git checkout -q main
   printf 'line1-c1\nline2\nline3-c2\n' > "$PFX/app.go"; git commit -qam "squash (#1)"
   local mergec; mergec="$(git rev-parse HEAD)"
-  local br="backport/v0.35/$(git rev-parse --short "$mergec")"
+  local br="backport/v0.35/$mergec"
 
   # Expose the PR head as refs/pull/1/head on an origin the action can fetch.
   local origin="$ROOT/origin.git"
@@ -245,7 +274,7 @@ short() { git -C "$MONO" rev-parse --short HEAD; }
   printf 'x\n' > basefile.txt; git add -A; git commit -qm "base drift"
   git merge -q --no-ff -m "merge PR (#2)" "$prhead"
   local mergec; mergec="$(git rev-parse HEAD)"
-  local br="backport/v0.35/$(git rev-parse --short "$mergec")"
+  local br="backport/v0.35/$mergec"
 
   local origin="$ROOT/origin2.git"
   git init -q --bare "$origin"
@@ -285,7 +314,7 @@ short() { git -C "$MONO" rev-parse --short HEAD; }
   mkdir -p "${PFX}-pro"
   printf 'pkg sib\n' > "${PFX}-pro/sib.go"
   git add -A && git commit -qm "oss + sibling"
-  local br="backport/v0.35/$(short)"
+  local br="backport/v0.35/$(full)"
 
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
@@ -302,7 +331,7 @@ short() { git -C "$MONO" rev-parse --short HEAD; }
   cd "$MONO"
   printf '\x00\x01\x02\x03BIN\n' > "$PFX/blob.bin"
   git add -A && git commit -qm "oss: add binary"
-  local br="backport/v0.35/$(short)"
+  local br="backport/v0.35/$(full)"
 
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
@@ -385,7 +414,7 @@ short() { git -C "$MONO" rev-parse --short HEAD; }
   cd "$MONO"
   printf 'line1\nCHANGED\nline3\n' > "$PFX/app.go"
   git commit -qam "oss: change"
-  local br="backport/v0.35/$(short)"
+  local br="backport/v0.35/$(full)"
 
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
@@ -411,7 +440,7 @@ short() { git -C "$MONO" rev-parse --short HEAD; }
   cd "$MONO"
   printf 'package main // v2\n' > main.go
   git commit -qam "pro: change"
-  local br="backport/v0.35/$(short)"
+  local br="backport/v0.35/$(full)"
 
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
@@ -431,7 +460,7 @@ short() { git -C "$MONO" rev-parse --short HEAD; }
   printf 'package main // pro change\n' > main.go
   printf 'module github.com/loft-sh/vcluster-pro\n\nrequire github.com/loft-sh/vcluster v0.36.0\nrequire example.com/dep v1.2.3\n' > go.mod
   git commit -qam "mixed: oss + pro + go.mod"
-  local br="backport/v0.35/$(short)"
+  local br="backport/v0.35/$(full)"
 
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
@@ -542,7 +571,7 @@ short() { git -C "$MONO" rev-parse --short HEAD; }
   [ "$(git --git-dir="$OSS_REMOTE" log -1 --format=%s "$br")" = "Update the deps (backport v0.35 oss)" ]
 }
 
-@test "create-pr: PR reference is fully-qualified as owner/repo#N from origin" {
+@test "create-pr: OSS metadata drops the private PR reference and uses a full-SHA branch" {
   install_fake_gh
   cd "$MONO"
   # A PR head fetched via PR_NUMBER, plus a real GitHub-style origin so the
@@ -553,7 +582,7 @@ short() { git -C "$MONO" rev-parse --short HEAD; }
   printf 'line1\nOSS\nline3\n' > "$PFX/app.go"; git commit -qam c1
   local prhead; prhead="$(git rev-parse HEAD)"
   git checkout -q main
-  printf 'line1\nOSS\nline3\n' > "$PFX/app.go"; git commit -qam "squash (#1)"
+  printf 'line1\nOSS\nline3\n' > "$PFX/app.go"; git commit -qam "fix: the thing (#4037) (#1)"
   local mergec; mergec="$(git rev-parse HEAD)"
 
   local origin="$ROOT/origin-src.git"
@@ -567,12 +596,48 @@ short() { git -C "$MONO" rev-parse --short HEAD; }
   [ "$status" -eq 0 ]
   [ "$(output_value oss-pushed)" = "true" ]
 
-  # Body references the source PR fully-qualified (owner/repo#N), so it links
-  # from the OSS repo too -- not a bare "#1" (which would resolve wrongly there)
-  # nor the local origin path.
+  # Every public reuse of the source subject drops only the private source PR
+  # suffix. The legitimate OSS reference before it remains, and title/commit
+  # parity stays intact for COMMIT_OR_PR_TITLE squash merging.
+  [ "$(create_arg --title)" = "fix: the thing (#4037) (backport v0.35 oss)" ]
+  local br; br="$(output_value backport-branch)"
+  [ "$(git --git-dir="$OSS_REMOTE" log -1 --format=%s "$br")" = "$(create_arg --title)" ]
+
+  # The public body names only the immutable source commit. Source identity is
+  # carried by the full-SHA branch, so body edits cannot break discovery.
   local body; body="$(create_body)"
-  [[ "$body" == *"Backport of loft-sh/vcluster-pro#1 to \`v0.35\` (oss half)."* ]]
-  [[ "$body" != *"Backport of #1 "* ]]
+  [[ "$body" == *"Backport of commit \`$mergec\` to \`v0.35\` (oss half)."* ]]
+  [[ "$body" != *"<!-- legacy-backport-source:"* ]]
+  [[ "$body" == *"- $(git rev-parse --short "$mergec") fix: the thing (#4037)"* ]]
+  [[ "$body" != *"loft-sh/vcluster-pro#1"* ]]
+  [[ "$body" != *"(#1)"* ]]
+}
+
+@test "create-pr: pro metadata retains the private source PR reference" {
+  install_fake_gh
+  cd "$MONO"
+  git checkout -q -b prhead
+  printf 'pro change\n' > pro.go; git add pro.go; git commit -qm c1
+  local prhead; prhead="$(git rev-parse HEAD)"
+  git checkout -q main
+  printf 'pro change\n' > pro.go; git add pro.go; git commit -qm "feat: pro thing (#1)"
+  local mergec; mergec="$(git rev-parse HEAD)"
+
+  local origin="$ROOT/origin-src.git"
+  git init -q --bare "$origin"
+  git push -q "$origin" main
+  git push -q "$origin" "$prhead:refs/pull/1/head"
+  git remote add origin "https://github.com/loft-sh/vcluster-pro.git"
+  git config "url.$origin.insteadOf" "https://github.com/loft-sh/vcluster-pro.git"
+
+  COMMIT="$mergec" PR_NUMBER=1 run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value pro-pushed)" = "true" ]
+  [ "$(create_arg --title)" = "feat: pro thing (#1) (backport v0.35 pro)" ]
+
+  local body; body="$(create_body)"
+  [[ "$body" == *"Backport of loft-sh/vcluster-pro#1 to \`v0.35\` (pro half)."* ]]
+  [[ "$body" != *"<!-- legacy-backport-source:"* ]]
 }
 
 @test "create-pr: an existing open PR is detected and the side is skipped" {
@@ -586,7 +651,51 @@ short() { git -C "$MONO" rev-parse --short HEAD; }
   [ "$status" -eq 0 ]
   [ "$(output_value oss-pushed)" = "false" ]
   [[ "$output" == *"already open"* ]]
+  [ "$(output_value oss-pr-url)" = "https://github.com/x/y/pull/42" ]
+  [ "$(output_value oss-backport-branch)" = "backport/v0.35/$(full)" ]
   [ ! -s "$GH_CREATE_LOG" ]             # no PR created
+}
+
+@test "create-pr: an existing short-SHA PR is reused during branch migration" {
+  install_fake_gh
+  export GH_PRLIST=legacy
+  cd "$MONO"
+  printf 'line1\nOSS\nline3\n' > "$PFX/app.go"
+  git commit -qam "oss: change"
+  local full_branch="backport/v0.35/$(full)"
+  local legacy_branch="backport/v0.35/$(full | cut -c1-12)"
+  export GH_LEGACY_HEAD="$legacy_branch"
+  install_source_pr_ref
+
+  PR_NUMBER=1 run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value oss-pushed)" = "false" ]
+  [[ "$output" == *"PR #42 already open for $legacy_branch"* ]]
+  [ "$(output_value backport-branch)" = "$full_branch" ]
+  [ "$(output_value oss-backport-branch)" = "$legacy_branch" ]
+  [ "$(output_value oss-pr-url)" = "https://github.com/x/y/pull/42" ]
+  [ ! -s "$GH_CREATE_LOG" ]
+}
+
+@test "create-pr: mixed retry reports an old OSS head and a new pro head" {
+  install_fake_gh
+  export GH_PRLIST_SEQ="legacy exists"
+  cd "$MONO"
+  printf 'line1\nOSS\nline3\n' > "$PFX/app.go"
+  printf 'package main // pro\n' > main.go
+  git commit -qam "mixed: oss + pro"
+  local full_branch="backport/v0.35/$(full)"
+  export GH_LEGACY_HEAD="backport/v0.35/$(full | cut -c1-11)"
+  install_source_pr_ref
+
+  PR_NUMBER=1 run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value backport-branch)" = "$full_branch" ]
+  [ "$(output_value oss-backport-branch)" = "$GH_LEGACY_HEAD" ]
+  [ "$(output_value pro-backport-branch)" = "$full_branch" ]
+  [ "$(output_value oss-pr-url)" = "https://github.com/x/y/pull/42" ]
+  [ "$(output_value pro-pr-url)" = "https://github.com/x/y/pull/42" ]
+  [ ! -s "$GH_CREATE_LOG" ]
 }
 
 @test "create-pr: a failed open-PR query does not clobber, and does not pass as success" {
@@ -657,7 +766,11 @@ short() { git -C "$MONO" rev-parse --short HEAD; }
   # a regression to that filter would skip forever or clobber.
   grep -Fxq -- --state "$GH_PRLIST_LOG"
   grep -Fxq -- open "$GH_PRLIST_LOG"
-  grep -q "backport/v0.35/" "$GH_PRLIST_LOG"
+  grep -Fxq -- --base "$GH_PRLIST_LOG"
+  grep -Fxq -- v0.35 "$GH_PRLIST_LOG"
+  grep -Fxq -- --limit "$GH_PRLIST_LOG"
+  grep -Fxq -- 100 "$GH_PRLIST_LOG"
+  grep -Fxq -- number,headRefName,headRepository,body,url "$GH_PRLIST_LOG"
 }
 
 @test "create-pr: a conflicted backport opens a DRAFT PR" {
@@ -957,7 +1070,7 @@ short() { git -C "$MONO" rev-parse --short HEAD; }
   cd "$MONO"
   printf 'line1\nCHANGED\nline3\n' > "$PFX/app.go"
   git commit -qam "oss: change"
-  local br="backport/v0.35/$(short)"
+  local br="backport/v0.35/$(full)"
 
   run env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL \
           -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL \

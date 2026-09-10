@@ -176,6 +176,8 @@ git_auth() {
 # Defaults so callers can read every output unconditionally.
 emit route ""
 emit backport-branch ""
+emit oss-backport-branch ""
+emit pro-backport-branch ""
 emit oss-pushed false
 emit pro-pushed false
 emit oss-conflicts false
@@ -188,25 +190,30 @@ emit pro-pr-url ""
 # records into these as it goes; a plain key=value output can't carry the
 # multi-line comment body, so it's written with the heredoc form below.
 OSS_PR_URL=""; PRO_PR_URL=""
+OSS_BACKPORT_BRANCH=""; PRO_BACKPORT_BRANCH=""
 OSS_CONFLICTS=false; PRO_CONFLICTS=false
 set_url()       { case "$1" in oss) OSS_PR_URL="$2" ;; pro) PRO_PR_URL="$2" ;; esac; }
+set_branch()    { case "$1" in oss) OSS_BACKPORT_BRANCH="$2" ;; pro) PRO_BACKPORT_BRANCH="$2" ;; esac; }
 set_conflicts() { case "$1" in oss) OSS_CONFLICTS="$2" ;; pro) PRO_CONFLICTS="$2" ;; esac; }
 
 SHA="$(git rev-parse "$COMMIT")"
 SHORT="$(git rev-parse --short "$COMMIT")"
-BACKPORT_BRANCH="backport/${TARGET_BRANCH}/${SHORT}"
+BACKPORT_BRANCH="backport/${TARGET_BRANCH}/${SHA}"
+LEGACY_BRANCH_PREFIX="backport/${TARGET_BRANCH}/"
 emit backport-branch "$BACKPORT_BRANCH"
 
 # Human-readable PR metadata, sourced from the monorepo commit itself (CWD is a
-# full-history monorepo checkout). Computed once -- side-independent.
+# full-history monorepo checkout).
 #   SUBJECT    The merge/squash commit subject, reused verbatim and FIRST in the PR
 #              title so a legacy backport reads like its source
 #              ("fix: ... (#1234) (backport v0.36 pro)") instead of a bare SHA,
 #              and stays a valid conventional commit once squash-merged.
+#   OSS_SUBJECT The public-safe variant. GitHub appends the private source PR as
+#              a trailing " (#N)" on the squash subject, so remove exactly that
+#              suffix while preserving any earlier public OSS references.
 #   SOURCE_REPO owner/repo of the monorepo (the repo the source PR lives in), parsed
-#              from origin. Used to fully-qualify the PR reference (owner/repo#N) so
-#              it links correctly even on the OSS half, whose target repo differs
-#              from the monorepo. Empty (e.g. tests, no origin) -> bare "#N".
+#              from origin. Used to fully-qualify the PR reference (owner/repo#N)
+#              on the private pro half. Empty (e.g. tests, no origin) -> bare "#N".
 #
 # Linear linking is deliberately NOT done here: the reusable workflow runs
 # link-backport-prs after this matrix settles, resolves the source PR's parent
@@ -214,6 +221,10 @@ emit backport-branch "$BACKPORT_BRANCH"
 # "Fixes <sub-issue>" to every matching pro and OSS PR. A
 # "resolves <PARENT-KEY>" here would close the wrong issue.
 SUBJECT="$(git log -1 --format=%s "$SHA")"
+OSS_SUBJECT="$SUBJECT"
+if [ -n "${PR_NUMBER:-}" ]; then
+  OSS_SUBJECT="${OSS_SUBJECT% (#"${PR_NUMBER}")}"
+fi
 SOURCE_REPO="$( { git config --get remote.origin.url 2>/dev/null || true; } \
   | sed -E 's#^git@[^:]+:##; s#^https?://[^/]+/##; s#\.git$##' )"
 SRC_PR_REF=""
@@ -298,6 +309,8 @@ echo "route=${route} (oss=${oss} pro=${pro}) commit=${SHA} target=${TARGET_BRANC
 backport_side() {
   local side="$1" remote="$2" slug="$3" patch="$4"
   local checkout="${WORKDIR}/${side}"
+  local side_subject="$SUBJECT"
+  [ "$side" = "oss" ] && side_subject="$OSS_SUBJECT"
 
   if [ ! -s "$patch" ]; then
     echo "::warning::${side}: empty patch for ${route}; skipping"
@@ -314,24 +327,55 @@ backport_side() {
   if [ "$CREATE_PR" = "true" ]; then
     : "${slug:?repo slug (OSS_REPO/PRO_REPO) is required when CREATE_PR=true}"
     : "${GH_TOKEN:?GH_TOKEN is required when CREATE_PR=true}"
-    local existing="" rc=0
-    existing="$(gh pr list --repo "$slug" --head "$BACKPORT_BRANCH" --base "$TARGET_BRANCH" --state open --json number --jq '.[0].number // empty' 2>/dev/null)" || rc=$?
+    local existing="" existing_branch="" existing_url="" existing_record="" rc=0
+    # Search once before any writes. Prefer the new exact full-SHA head, then
+    # accept an older head whose nonempty suffix is any prefix of the source SHA
+    # and whose body still identifies the source PR. Checking headRepository,
+    # base, and source prevents a fork or unrelated PR from being reused.
+    # shellcheck disable=SC2016 # $pr is a jq binding, not a shell variable.
+    existing_record="$(
+      EXPECTED_REPO="$slug" BACKPORT_BRANCH="$BACKPORT_BRANCH" \
+        LEGACY_PREFIX="$LEGACY_BRANCH_PREFIX" SOURCE_SHA="$SHA" \
+        SOURCE_PR_REF="$SRC_PR_REF" \
+        gh pr list --repo "$slug" --base "$TARGET_BRANCH" --state open --limit 100 \
+          --json number,headRefName,headRepository,body,url --jq '
+            map(
+              . as $pr |
+              select($pr.headRepository.nameWithOwner == env.EXPECTED_REPO) |
+              select(
+                $pr.headRefName == env.BACKPORT_BRANCH or
+                (
+                  env.SOURCE_PR_REF != "" and
+                  ($pr.headRefName | startswith(env.LEGACY_PREFIX)) and
+                  (($pr.headRefName | ltrimstr(env.LEGACY_PREFIX)) != "") and
+                  (env.SOURCE_SHA | startswith($pr.headRefName | ltrimstr(env.LEGACY_PREFIX))) and
+                  (($pr.body // "") | contains(env.SOURCE_PR_REF))
+                )
+              )
+            ) |
+            sort_by(if .headRefName == env.BACKPORT_BRANCH then 0 else 1 end) |
+            .[0] // empty |
+            if . == "" then empty else [.number, .headRefName, .url] | @tsv end
+          ' 2>/dev/null
+    )" || rc=$?
     if [ "$rc" -ne 0 ]; then
       # Do not touch the branch or PR -- the query may have failed while a PR
       # holding a manual conflict resolution is open, and clobbering that is
-      # worse than stopping. But this is a transient infrastructure failure, not
-      # an expected miss, so it must not pass as success: returning 0 here left
-      # the job green and, on a mixed route where the other half worked, posted
-      # "Backported to <target>" naming only that half. That is the DEVOPS-1438
-      # silent miss reached through a skip instead of a failure.
+      # worse than stopping. But this is a transient infrastructure failure,
+      # not an expected miss, so it must not pass as success: returning 0 here
+      # left the job green and, on a mixed route where the other half worked,
+      # posted "Backported to <target>" naming only that half. That is the
+      # DEVOPS-1438 silent miss reached through a skip instead of a failure.
       echo "::error::${side}: could not query open PRs (gh exit ${rc}); left the branch and PR untouched rather than risk clobbering an open PR. Re-run to retry."
       exit 1
     fi
+    if [ -n "$existing_record" ]; then
+      IFS=$'\t' read -r existing existing_branch existing_url <<< "$existing_record"
+    fi
     if [ -n "$existing" ]; then
-      echo "${side}: PR #${existing} already open for ${BACKPORT_BRANCH} -> ${TARGET_BRANCH}; leaving branch and PR as-is (may hold manual conflict resolution)"
-      # Still surface the open PR's URL so a re-run's summary comment keeps
-      # listing it (advisory: a failed lookup just omits the link, never errors).
-      set_url "$side" "$(gh pr view "$existing" --repo "$slug" --json url --jq '.url' 2>/dev/null || true)"
+      echo "${side}: PR #${existing} already open for ${existing_branch} -> ${TARGET_BRANCH}; leaving branch and PR as-is (may hold manual conflict resolution)"
+      set_branch "$side" "$existing_branch"
+      set_url "$side" "$existing_url"
       return 0
     fi
   fi
@@ -370,9 +414,9 @@ backport_side() {
   # conventional commit -- "backport" is not a valid type -- and it also defeated
   # the goreleaser changelog filters, which match subjects like ^docs:/^test:.
   # Keep the sha and the half in the body, where they cost nothing.
-  local msg="${SUBJECT} (backport ${TARGET_BRANCH} ${side})
+  local msg="${side_subject} (backport ${TARGET_BRANCH} ${side})
 
-Backport of monorepo commit ${SHA} (${side} half) onto ${TARGET_BRANCH}."
+Backport of source commit ${SHA} (${side} half) onto ${TARGET_BRANCH}."
   if [ "$conflicts" = true ]; then
     msg="${msg}
 
@@ -414,7 +458,7 @@ Applied with merge conflicts that need manual resolution."
   # branch. Force keeps a re-run before the PR exists idempotent -- e.g. a
   # leftover branch from a prior run whose PR creation failed -- instead of
   # failing on a non-fast-forward. The branch name is deterministic
-  # (backport/<target>/<short-sha>). Capture output and scrub $remote (which may
+  # (backport/<target>/<full-source-sha>). Capture output and scrub $remote (which may
   # carry a token in its URL) so a push failure can't leak it to the log; git
   # prints the remote URL on its "To <remote>" / error lines.
   local push_err
@@ -424,6 +468,7 @@ Applied with merge conflicts that need manual resolution."
     exit 1
   fi
   emit "${side}-pushed" true
+  set_branch "$side" "$BACKPORT_BRANCH"
   echo "${side}: pushed ${BACKPORT_BRANCH} -> ${slug:-the target repo}"
 
   if [ "$CREATE_PR" = "true" ]; then
@@ -435,18 +480,20 @@ Applied with merge conflicts that need manual resolution."
     # These land on a public release branch directly (the OSS half is opened
     # against oss-repo, not mirrored: sync-to-oss only covers >= v0.37) and feed
     # GitHub's auto-generated release notes, which list PR titles.
-    title="${SUBJECT} (backport ${TARGET_BRANCH} ${side})"
-    # Reference the source by PR when known (fully-qualified so it links from the
-    # OSS repo too), else by the immutable monorepo commit.
-    if [ -n "$SRC_PR_REF" ]; then
+    title="${side_subject} (backport ${TARGET_BRANCH} ${side})"
+    # The private pro half keeps the source PR link. The public OSS half names
+    # only the immutable commit; its full-SHA branch carries source identity, so
+    # no private repository reference is published.
+    if [ "$side" = "pro" ] && [ -n "$SRC_PR_REF" ]; then
       origin="${SRC_PR_REF}"
     else
       origin="commit \`${SHA}\`"
     fi
-    body="Backport of ${origin} to \`${TARGET_BRANCH}\` (${side} half).
+    body="Backport of ${origin} to \`${TARGET_BRANCH}\` (${side} half)."
+    body="${body}
 
 ### Backported Commits:
-- ${SHORT} ${SUBJECT}"
+- ${SHORT} ${side_subject}"
     local -a create_args=(--repo "$slug" --head "$BACKPORT_BRANCH" --base "$TARGET_BRANCH" --title "$title")
     if [ "$conflicts" = true ]; then
       # Open as a DRAFT so it cannot be auto-merged: the committed conflict
@@ -535,3 +582,5 @@ emit_comment_body "$(build_comment_body)"
 # Final per-side URLs (override the empty defaults emitted up front).
 emit oss-pr-url "$OSS_PR_URL"
 emit pro-pr-url "$PRO_PR_URL"
+emit oss-backport-branch "$OSS_BACKPORT_BRANCH"
+emit pro-backport-branch "$PRO_BACKPORT_BRANCH"
