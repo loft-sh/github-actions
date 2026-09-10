@@ -337,7 +337,7 @@ backport_side() {
       EXPECTED_REPO="$slug" BACKPORT_BRANCH="$BACKPORT_BRANCH" \
         LEGACY_PREFIX="$LEGACY_BRANCH_PREFIX" SOURCE_SHA="$SHA" \
         SOURCE_PR_REF="$SRC_PR_REF" \
-        gh pr list --repo "$slug" --base "$TARGET_BRANCH" --state open \
+        gh pr list --repo "$slug" --base "$TARGET_BRANCH" --state open --limit 100 \
           --json number,headRefName,headRepository,body,url --jq '
             map(
               . as $pr |

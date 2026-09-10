@@ -57,7 +57,6 @@ func TestMatchingBackportPRs(t *testing.T) {
 	wrongFullSHA := testPullRequest(52, "loft-sh/vcluster", "backport/v0.35/deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", "v0.35", "")
 	wrongFullBase := testPullRequest(53, "loft-sh/vcluster", "backport/v0.35/"+mergeSHA, "v0.36", "")
 	bodylessFullSHAPro := testPullRequest(55, "loft-sh/vcluster-pro", "backport/v0.35/"+mergeSHA, "v0.35", "")
-	legacyMarker := testPullRequest(56, "loft-sh/vcluster", "backport/v0.35/4e5f9884e", "v0.35", "<!-- legacy-backport-source: "+mergeSHA+" -->")
 
 	cases := []struct {
 		name          string
@@ -79,7 +78,6 @@ func TestMatchingBackportPRs(t *testing.T) {
 		{name: "short branch still requires source body", prs: []*github.PullRequest{shortWithoutSource}, expectedRepo: "loft-sh/vcluster", allowModern: false, want: nil},
 		{name: "full SHA still requires matching SHA and base", prs: []*github.PullRequest{wrongFullSHA, wrongFullBase}, expectedRepo: "loft-sh/vcluster", allowModern: false, want: nil},
 		{name: "bodyless full SHA is rejected in source repo", prs: []*github.PullRequest{bodylessFullSHAPro}, expectedRepo: "loft-sh/vcluster-pro", allowModern: true, want: nil},
-		{name: "legacy marker remains compatible cross repo", prs: []*github.PullRequest{legacyMarker}, expectedRepo: "loft-sh/vcluster", allowModern: false, want: []int{56}},
 		{name: "empty source SHA rejects full SHA branch", prs: []*github.PullRequest{fullSHAOSS}, expectedRepo: "loft-sh/vcluster", allowModern: false, emptyMergeSHA: true, want: nil},
 	}
 

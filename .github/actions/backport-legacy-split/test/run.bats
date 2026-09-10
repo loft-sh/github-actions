@@ -85,6 +85,11 @@ install_fake_gh() {
 #!/usr/bin/env bash
 if [ "$1" = pr ] && [ "$2" = list ]; then
   printf '%s\n' "$@" >> "${GH_PRLIST_LOG:-/dev/null}"
+  jq_filter=""
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = --jq ]; then jq_filter="$2"; break; fi
+    shift
+  done
   # GH_PRLIST_SEQ gives one behaviour per call ("empty fail"), so a mixed route
   # can fail the second half's lookup only. Consumed via a counter file.
   if [ -n "${GH_PRLIST_SEQ:-}" ]; then
@@ -95,10 +100,23 @@ if [ "$1" = pr ] && [ "$2" = list ]; then
   fi
   case "${GH_PRLIST:-empty}" in
     fail) exit 3 ;;
-    exists) printf '42\t%s\thttps://github.com/x/y/pull/42\n' "$BACKPORT_BRANCH" ;;
-    legacy) printf '42\t%s\thttps://github.com/x/y/pull/42\n' "$GH_LEGACY_HEAD" ;;
-    *) : ;;
+    exists)
+      fixture="$(jq -n --arg head "$BACKPORT_BRANCH" --arg repo "$EXPECTED_REPO" '
+        [{number: 42, headRefName: $head, headRepository: {nameWithOwner: $repo}, body: "", url: "https://github.com/x/y/pull/42"}]')"
+      ;;
+    legacy)
+      fixture="$(jq -n --arg full "$BACKPORT_BRANCH" --arg old "$GH_LEGACY_HEAD" \
+        --arg repo "$EXPECTED_REPO" --arg source "$SOURCE_PR_REF" '
+        [
+          {number: 39, headRefName: $full, headRepository: {nameWithOwner: "fork/example"}, body: $source, url: "https://github.com/fork/example/pull/39"},
+          {number: 40, headRefName: ($full | sub("[^/]+$"; "deadbeef")), headRepository: {nameWithOwner: $repo}, body: $source, url: "https://github.com/x/y/pull/40"},
+          {number: 41, headRefName: $old, headRepository: {nameWithOwner: $repo}, body: "", url: "https://github.com/x/y/pull/41"},
+          {number: 42, headRefName: $old, headRepository: {nameWithOwner: $repo}, body: ("Backport of " + $source), url: "https://github.com/x/y/pull/42"}
+        ]')"
+      ;;
+    *) fixture='[]' ;;
   esac
+  printf '%s\n' "$fixture" | jq -r "$jq_filter"
   exit 0
 fi
 if [ "$1" = pr ] && [ "$2" = create ]; then
@@ -145,6 +163,14 @@ remote_paths() { git -C "$1" ls-tree -r --name-only "$2"; }
 
 short() { git -C "$MONO" rev-parse --short HEAD; }
 full()  { git -C "$MONO" rev-parse HEAD; }
+
+install_source_pr_ref() {
+  local origin="$ROOT/source-pr.git"
+  git init -q --bare "$origin"
+  git push -q "$origin" "HEAD:refs/pull/1/head"
+  git remote add origin "https://github.com/loft-sh/vcluster-pro.git"
+  git config "url.$origin.insteadOf" "https://github.com/loft-sh/vcluster-pro.git"
+}
 
 # --- classification --------------------------------------------------------
 
@@ -638,8 +664,9 @@ full()  { git -C "$MONO" rev-parse HEAD; }
   local full_branch="backport/v0.35/$(full)"
   local legacy_branch="backport/v0.35/$(full | cut -c1-12)"
   export GH_LEGACY_HEAD="$legacy_branch"
+  install_source_pr_ref
 
-  run bash "$SCRIPT"
+  PR_NUMBER=1 run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   [ "$(output_value oss-pushed)" = "false" ]
   [[ "$output" == *"PR #42 already open for $legacy_branch"* ]]
@@ -658,8 +685,9 @@ full()  { git -C "$MONO" rev-parse HEAD; }
   git commit -qam "mixed: oss + pro"
   local full_branch="backport/v0.35/$(full)"
   export GH_LEGACY_HEAD="backport/v0.35/$(full | cut -c1-11)"
+  install_source_pr_ref
 
-  run bash "$SCRIPT"
+  PR_NUMBER=1 run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   [ "$(output_value backport-branch)" = "$full_branch" ]
   [ "$(output_value oss-backport-branch)" = "$GH_LEGACY_HEAD" ]
@@ -739,6 +767,8 @@ full()  { git -C "$MONO" rev-parse HEAD; }
   grep -Fxq -- open "$GH_PRLIST_LOG"
   grep -Fxq -- --base "$GH_PRLIST_LOG"
   grep -Fxq -- v0.35 "$GH_PRLIST_LOG"
+  grep -Fxq -- --limit "$GH_PRLIST_LOG"
+  grep -Fxq -- 100 "$GH_PRLIST_LOG"
   grep -Fxq -- number,headRefName,headRepository,body,url "$GH_PRLIST_LOG"
 }
 

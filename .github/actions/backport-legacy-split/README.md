@@ -162,7 +162,8 @@ The opened PR reads like its source rather than a bare SHA:
   previous `backport/<target>/<sha-prefix>` names and reuse an existing PR so
   the format migration cannot create duplicates. `backport-branch` is always
   the deterministic name for a new PR; `oss-backport-branch` and
-  `pro-backport-branch` report the actual per-side branch pushed or reused.
+  `pro-backport-branch` report the actual per-side branch pushed or reused. Old
+  branch reuse requires `pr-number`, which the reusable workflow always passes.
 - **Body** — the private pro half references the fully-qualified source PR when
   `pr-number` is set. The public OSS half references only the immutable source
   commit; it never names the private repository or PR. The
