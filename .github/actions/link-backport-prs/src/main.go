@@ -499,12 +499,11 @@ func findBackportPRs(ctx context.Context, gh *github.Client, repos []repository,
 }
 
 // matchingBackportPRs accepts sorenlouv's deterministic branch or the legacy
-// split branch. The legacy match checks the merge SHA prefix plus either the
-// fully-qualified source PR reference used by private and older PRs, or the
-// full-SHA marker used by new public OSS PRs. It also requires the PR head
-// repository to match the repository being searched, so a fork cannot copy
-// those values and receive a privileged edit. The marker format contract is
-// owned by .github/actions/backport-legacy-split/README.md.
+// split branch. New cross-repository split PRs carry the full source merge SHA
+// in the branch. Source-repository PRs and older SHA-prefix branches require
+// the fully-qualified source PR reference; the transitional public marker also
+// remains compatible. The PR head repository must match the repository being
+// searched, so a fork cannot copy those values and receive a privileged edit.
 func matchingBackportPRs(prs []*github.PullRequest, target string, sourcePR int, mergeSHA, sourceRepo, expectedRepo string, allowModern bool) []*github.PullRequest {
 	modernHead := backportHeadBranch(target, sourcePR)
 	legacyPrefix := "backport/" + target + "/"
@@ -523,12 +522,16 @@ func matchingBackportPRs(prs []*github.PullRequest, target string, sourcePR int,
 			matches = append(matches, pr)
 			continue
 		}
-		shortSHA := strings.TrimPrefix(head, legacyPrefix)
-		if shortSHA == head || shortSHA == "" || mergeSHA == "" || !strings.HasPrefix(mergeSHA, shortSHA) {
+		branchSHA := strings.TrimPrefix(head, legacyPrefix)
+		if branchSHA == head || branchSHA == "" || mergeSHA == "" {
+			continue
+		}
+		if !strings.HasPrefix(mergeSHA, branchSHA) {
 			continue
 		}
 		body := pr.GetBody()
-		if sourceRef.MatchString(body) || (expectedRepo != sourceRepo && sourceMarker.MatchString(body)) {
+		if sourceRef.MatchString(body) ||
+			(expectedRepo != sourceRepo && (branchSHA == mergeSHA || sourceMarker.MatchString(body))) {
 			matches = append(matches, pr)
 		}
 	}
