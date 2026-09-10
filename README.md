@@ -1090,12 +1090,12 @@ See [cve-scan README](./.github/actions/cve-scan/README.md) for suppressing find
 
 ### Linear CVE Summary
 
-Posts an aggregate of `cve-scan` markdown reports to the matching
-release-checklist subissue in Linear. It selects the vCluster or Platform
-checklist convention from the calling repository and only requires the caller
-to declare its expected image inventory. The action validates titles, team
-bindings, parent relationship, and exact version before commenting. It is
-advisory and updates one marked comment per RC on reruns.
+Posts aggregated structured `cve-scan` results to the matching release-checklist
+subissue in Linear. It identifies the vCluster or Platform checklist from the
+release line and only requires the caller to declare its expected image
+inventory. The action validates title fingerprints, parent relationship, and
+exact version before commenting. It is advisory and updates one marked comment
+per RC on reruns.
 
 **Location:** `.github/actions/linear-cve-summary`
 
