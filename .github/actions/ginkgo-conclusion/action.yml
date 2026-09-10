@@ -1,0 +1,50 @@
+name: Derive Ginkgo check conclusion
+description: >-
+  Turn a Ginkgo JSON report into a check-run conclusion. Job status cannot
+  express two of the outcomes we publish: it has no value for "the filter
+  matched nothing", and Ginkgo exits 0 on an empty selection, so a job that
+  succeeded is not evidence that anything ran. Emits nothing when there is no
+  readable report, which lets the consumer fall back to job results.
+
+inputs:
+  report:
+    description: Path to the Ginkgo JSON report.
+    required: false
+    default: test-reports/report.json
+  empty-selection-conclusion:
+    description: >-
+      What to report when the filter matched no specs. Defaults to neutral, which
+      is what the gate wants: its filter always ORs in the mandatory suite, so an
+      empty selection there means something odd rather than a mistake. A caller
+      whose filter is typed by hand should pass failure, because GitHub renders
+      neutral as a grey non-blocking check and "nothing ran" then reads as fine.
+      Only neutral and failure are accepted.
+    required: false
+    default: neutral
+  focus:
+    description: >-
+      Optional focus expression used for the run. When set, an empty-selection
+      summary explains that the combined label and focus selection was empty.
+    required: false
+    default: ""
+
+outputs:
+  check-conclusion:
+    description: One of success, failure, neutral or timed_out. Empty when no readable report was found.
+    value: ${{ steps.derive.outputs.check-conclusion }}
+  check-summary:
+    description: Why the check failed, for a caller publishing a check-run. Set only for an empty selection; empty otherwise, so the caller's own default stands.
+    value: ${{ steps.derive.outputs.check-summary }}
+
+runs:
+  using: composite
+  steps:
+    - name: Derive check conclusion
+      id: derive
+      shell: bash
+      run: bash "${{ github.action_path }}/src/derive-conclusion.sh"
+      env:
+        INPUT_REPORT: ${{ inputs.report }}
+        INPUT_EMPTY_SELECTION_CONCLUSION: ${{ inputs.empty-selection-conclusion }}
+        INPUT_FOCUS: ${{ inputs.focus }}
+
