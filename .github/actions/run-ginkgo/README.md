@@ -12,7 +12,7 @@ markdown summary generation.
 |----------------------------|--------|----------|-------------------------|---------------------------------------------------------------------------------------------------------------------------------------------|
 |      additional-args       | string |  false   |                         |                                          Extra arguments passed to the test <br>binary (after --)                                           |
 |  additional-ginkgo-flags   | string |  false   |                         |                                Extra ginkgo CLI flags (e.g. -v, --skip-package=linters, --show-node-events)                                 |
-| empty-selection-conclusion | string |  false   |                         |             Opt in to report-derived check outputs <br>and choose the conclusion when no <br>specs match: neutral or failure.               |
+| empty-selection-conclusion | string |  false   |                         |             Opt in to report-derived outputs. Label-filter <br>misses use neutral or failure; focused <br>misses always fail.               |
 |       flake-attempts       | string |  false   |          `"1"`          |    Attempts a failing spec gets before <br>it is reported failed. Use 2 <br>only where a flake must not <br>redden the job. See README.     |
 |        ginkgo-focus        | string |  false   |                         |          Ginkgo focus regex used to narrow <br>matching specs. A failed-only rerun focus <br>takes precedence on rerun attempts.            |
 |        ginkgo-label        | string |  false   |                         |                           Ginkgo label filter expression. When set, <br>adds --label-filter and -r (recursive).                             |
@@ -80,7 +80,9 @@ output stays empty so the caller can fall back to the job result.
 Conclusion derivation is opt-in so existing callers keep exactly the same
 execution path. Set `empty-selection-conclusion` to `neutral` or `failure` to
 enable it. For hand-written filters, use `failure` so Ginkgo selecting no specs
-cannot look successful. `check-summary` then explains the empty selection.
+cannot look successful. A focused empty selection always reports `failure`,
+matching the action's existing behavior. `check-summary` explains the empty
+selection.
 
 ```yaml
 - name: Run Ginkgo tests

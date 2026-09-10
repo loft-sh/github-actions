@@ -105,6 +105,12 @@ spec() { printf '{"LeafNodeType":"%s","State":"%s"}' "$1" "$2"; }
   [ "$output" = "neutral" ]
 }
 
+@test "multiple suites: selected specs are summed across suites" {
+  json='[{"SuiteSucceeded":true,"PreRunStats":{"SpecsThatWillRun":0},"SpecReports":[]},{"SuiteSucceeded":true,"PreRunStats":{"SpecsThatWillRun":2},"SpecReports":[]}]'
+  run derive_conclusion "$json"
+  [ "$output" = "success" ]
+}
+
 # An earlier version of this test only asserted "not success", which passed while
 # the code returned neutral. neutral is an acceptable verdict downstream, so that
 # was the bug rather than the assertion being merely loose.
@@ -186,6 +192,11 @@ spec() { printf '{"LeafNodeType":"%s","State":"%s"}' "$1" "$2"; }
   [ "$output" = "failure" ]
 }
 
+@test "a non-object SpecReports element is a failure" {
+  run derive_conclusion '[{"SuiteSucceeded":true,"PreRunStats":{"SpecsThatWillRun":1},"SpecReports":["passed"]}]'
+  [ "$output" = "failure" ]
+}
+
 # Ordering: a suite that failed before selecting anything must not be absorbed by
 # the zero-selection branch.
 @test "a failed suite with zero selected specs is failure, not neutral" {
@@ -246,6 +257,16 @@ spec() { printf '{"LeafNodeType":"%s","State":"%s"}' "$1" "$2"; }
 @test "an empty selection reports failure when the caller asks for it" {
   export INPUT_REPORT="$BATS_TEST_TMPDIR/report.json"
   export INPUT_EMPTY_SELECTION_CONCLUSION=failure
+  report 0 true > "$INPUT_REPORT"
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -q "check-conclusion=failure" "$GITHUB_OUTPUT"
+}
+
+@test "a focused empty selection remains a failure under the neutral policy" {
+  export INPUT_REPORT="$BATS_TEST_TMPDIR/report.json"
+  export INPUT_EMPTY_SELECTION_CONCLUSION=neutral
+  export INPUT_FOCUS="creates a snapshot"
   report 0 true > "$INPUT_REPORT"
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
@@ -327,5 +348,3 @@ spec() { printf '{"LeafNodeType":"%s","State":"%s"}' "$1" "$2"; }
   grep -q "check-conclusion=failure" "$GITHUB_OUTPUT"
   ! grep -q "check-summary" "$GITHUB_OUTPUT"
 }
-
-

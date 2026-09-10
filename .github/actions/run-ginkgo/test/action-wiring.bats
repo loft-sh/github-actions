@@ -40,6 +40,7 @@ CONCLUSION_SCRIPT="$BATS_TEST_DIRNAME/../src/derive-conclusion.sh"
 @test "derives a conclusion after the test command regardless of its result" {
   run grep -A8 '^    - name: Derive check conclusion' "$ACTION"
   [ "$status" -eq 0 ]
+  [[ "$output" == *'id: derive-conclusion'* ]]
   [[ "$output" == *"if: always() && inputs.empty-selection-conclusion != ''"* ]]
   [[ "$output" == *'INPUT_EMPTY_SELECTION_CONCLUSION: ${{ inputs.empty-selection-conclusion }}'* ]]
   [[ "$output" == *'INPUT_FOCUS: ${{ steps.rerun-focus.outputs.focus || inputs.ginkgo-focus }}'* ]]

@@ -55,7 +55,7 @@ inputs:
     required: false
     default: "false"
   empty-selection-conclusion:
-    description: "Opt in to report-derived check outputs and choose the conclusion when no specs match: neutral or failure."
+    description: "Opt in to report-derived outputs. Label-filter misses use neutral or failure; focused misses always fail."
     required: false
     default: ""
 
