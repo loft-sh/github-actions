@@ -8,21 +8,22 @@ markdown summary generation.
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-|          INPUT          |  TYPE  | REQUIRED |         DEFAULT         |                                                                 DESCRIPTION                                                                 |
-|-------------------------|--------|----------|-------------------------|---------------------------------------------------------------------------------------------------------------------------------------------|
-|     additional-args     | string |  false   |                         |                                          Extra arguments passed to the test <br>binary (after --)                                           |
-| additional-ginkgo-flags | string |  false   |                         |                                Extra ginkgo CLI flags (e.g. -v, --skip-package=linters, --show-node-events)                                 |
-|     flake-attempts      | string |  false   |          `"1"`          |    Attempts a failing spec gets before <br>it is reported failed. Use 2 <br>only where a flake must not <br>redden the job. See README.     |
-|      ginkgo-focus       | string |  false   |                         |          Ginkgo focus regex used to narrow <br>matching specs. A failed-only rerun focus <br>takes precedence on rerun attempts.            |
-|      ginkgo-label       | string |  false   |                         |                           Ginkgo label filter expression. When set, <br>adds --label-filter and -r (recursive).                             |
-|      github-token       | string |  false   | `"${{ github.token }}"` |                               GitHub token for the gh CLI <br>to fetch job details during report <br>upload.                                |
-|          procs          | string |  false   |          `"8"`          |                                                     Number of parallel Ginkgo processes                                                     |
-|     reports-bucket      | string |  false   |                         |                                         GCS bucket name for uploading the <br>Ginkgo JSON report.                                           |
-|    rerun-failed-only    | string |  false   |        `"false"`        |                    Set to 'true' to narrow a <br>re-run to the previous attempt's failures. <br>Requires upload-report.                     |
-|        test-dir         | string |  false   |      `"e2e-next"`       |                                                      Directory containing test suites                                                       |
-|         timeout         | string |  false   |         `"60m"`         |                                                             Ginkgo test timeout                                                             |
-|      upload-report      | string |  false   |        `"false"`        | Set to 'true' to upload the <br>Ginkgo JSON report to GCS after <br>the test run. Requires reports-bucket and <br>workflow-file to be set.  |
-|      workflow-file      | string |  false   |                         |                 Workflow file name (e.g. e2e-ginkgo.yaml) used as <br>the GCS path segment and report <br>metadata field.                   |
+|           INPUT            |  TYPE  | REQUIRED |         DEFAULT         |                                                                 DESCRIPTION                                                                 |
+|----------------------------|--------|----------|-------------------------|---------------------------------------------------------------------------------------------------------------------------------------------|
+|      additional-args       | string |  false   |                         |                                          Extra arguments passed to the test <br>binary (after --)                                           |
+|  additional-ginkgo-flags   | string |  false   |                         |                                Extra ginkgo CLI flags (e.g. -v, --skip-package=linters, --show-node-events)                                 |
+| empty-selection-conclusion | string |  false   |       `"neutral"`       |                                     Conclusion to expose when no specs <br>match: neutral or failure.                                       |
+|       flake-attempts       | string |  false   |          `"1"`          |    Attempts a failing spec gets before <br>it is reported failed. Use 2 <br>only where a flake must not <br>redden the job. See README.     |
+|        ginkgo-focus        | string |  false   |                         |          Ginkgo focus regex used to narrow <br>matching specs. A failed-only rerun focus <br>takes precedence on rerun attempts.            |
+|        ginkgo-label        | string |  false   |                         |                           Ginkgo label filter expression. When set, <br>adds --label-filter and -r (recursive).                             |
+|        github-token        | string |  false   | `"${{ github.token }}"` |                               GitHub token for the gh CLI <br>to fetch job details during report <br>upload.                                |
+|           procs            | string |  false   |          `"8"`          |                                                     Number of parallel Ginkgo processes                                                     |
+|       reports-bucket       | string |  false   |                         |                                         GCS bucket name for uploading the <br>Ginkgo JSON report.                                           |
+|     rerun-failed-only      | string |  false   |        `"false"`        |                    Set to 'true' to narrow a <br>re-run to the previous attempt's failures. <br>Requires upload-report.                     |
+|          test-dir          | string |  false   |      `"e2e-next"`       |                                                      Directory containing test suites                                                       |
+|          timeout           | string |  false   |         `"60m"`         |                                                             Ginkgo test timeout                                                             |
+|       upload-report        | string |  false   |        `"false"`        | Set to 'true' to upload the <br>Ginkgo JSON report to GCS after <br>the test run. Requires reports-bucket and <br>workflow-file to be set.  |
+|       workflow-file        | string |  false   |                         |                 Workflow file name (e.g. e2e-ginkgo.yaml) used as <br>the GCS path segment and report <br>metadata field.                   |
 
 <!-- AUTO-DOC-INPUT:END -->
 
@@ -30,10 +31,12 @@ markdown summary generation.
 
 <!-- AUTO-DOC-OUTPUT:START - Do not remove or modify this section -->
 
-|     OUTPUT      |  TYPE  |                                  DESCRIPTION                                  |
-|-----------------|--------|-------------------------------------------------------------------------------|
-| failure-summary | string |                    Markdown-formatted test results summary                    |
-|  focused-rerun  | string | 'true' when this run was narrowed <br>to the previous attempt's failed specs  |
+|      OUTPUT      |  TYPE  |                                                            DESCRIPTION                                                             |
+|------------------|--------|------------------------------------------------------------------------------------------------------------------------------------|
+| check-conclusion | string | Conclusion derived from the Ginkgo report: <br>success, failure, neutral, or timed_out. Empty <br>when no readable report exists.  |
+|  check-summary   | string |                                 Explanation for an empty selection; empty <br>for other outcomes.                                  |
+| failure-summary  | string |                                              Markdown-formatted test results summary                                               |
+|  focused-rerun   | string |                           'true' when this run was narrowed <br>to the previous attempt's failed specs                             |
 
 <!-- AUTO-DOC-OUTPUT:END -->
 
@@ -67,6 +70,29 @@ matches no specs, the action fails instead of reporting a green zero-spec run.
 Reports from focused runs carry `focused_rerun=true` metadata so downstream
 full-suite statistics can exclude them; the existing metadata key is retained
 for compatibility even when the focus was requested directly.
+
+## Publishing a check result
+
+`check-conclusion` maps the generated Ginkgo report to `success`, `failure`,
+`neutral`, or `timed_out`. When the report is missing or unreadable, the
+output stays empty so the caller can fall back to the job result.
+
+Ginkgo exits successfully when a label filter matches no specs. Set
+`empty-selection-conclusion: failure` for hand-written filters so that an empty
+selection cannot look successful. The default is `neutral`. In either case,
+`check-summary` explains the empty selection.
+
+```yaml
+- name: Run Ginkgo tests
+  id: ginkgo
+  uses: loft-sh/github-actions/.github/actions/run-ginkgo@run-ginkgo/v1
+  with:
+    ginkgo-label: "snapshots"
+    empty-selection-conclusion: failure
+
+- name: Publish result
+  run: echo "${{ steps.ginkgo.outputs.check-conclusion }}"
+```
 
 ## Re-running only the failed specs
 

@@ -21,3 +21,21 @@ ACTION="$BATS_TEST_DIRNAME/../action.yml"
   [ "$status" -eq 0 ]
   [ "$(grep -Fc "$expected" "$ACTION")" -eq 2 ]
 }
+
+@test "declares the empty-selection policy and conclusion outputs" {
+  run grep -A4 '^  empty-selection-conclusion:' "$ACTION"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'required: false'* ]]
+  [[ "$output" == *'default: "neutral"'* ]]
+
+  grep -Fq 'value: ${{ steps.derive-conclusion.outputs.check-conclusion }}' "$ACTION"
+  grep -Fq 'value: ${{ steps.derive-conclusion.outputs.check-summary }}' "$ACTION"
+}
+
+@test "derives a conclusion after the test command regardless of its result" {
+  run grep -A8 '^    - name: Derive check conclusion' "$ACTION"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'if: always()'* ]]
+  [[ "$output" == *'INPUT_EMPTY_SELECTION_CONCLUSION: ${{ inputs.empty-selection-conclusion }}'* ]]
+  [[ "$output" == *'INPUT_FOCUS: ${{ steps.rerun-focus.outputs.focus || inputs.ginkgo-focus }}'* ]]
+}
