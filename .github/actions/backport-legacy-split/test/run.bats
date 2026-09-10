@@ -90,6 +90,7 @@ if [ "$1" = pr ] && [ "$2" = list ]; then
     if [ "$1" = --jq ]; then jq_filter="$2"; break; fi
     shift
   done
+  [ -n "$jq_filter" ] || { echo "stub: --jq missing" >&2; exit 1; }
   # GH_PRLIST_SEQ gives one behaviour per call ("empty fail"), so a mixed route
   # can fail the second half's lookup only. Consumed via a counter file.
   if [ -n "${GH_PRLIST_SEQ:-}" ]; then
