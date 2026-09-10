@@ -1082,7 +1082,7 @@ jobs:
 
 **Outputs:**
 
-- `has-vulnerabilities`, `critical-count`, `high-count`, `medium-count`, `low-count`
+- `has-vulnerabilities`, `critical-count`, `high-count`, `medium-count`, `low-count`, `result-json`
 - `scanner-error`: `true` if the scan couldn't complete — distinct both from finding CVEs and from a setup error, which fails the job
 - `report-path`, `sarif-path` (written by the scanner), `summary` (Slack-ready text)
 
