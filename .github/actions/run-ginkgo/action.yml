@@ -54,6 +54,10 @@ inputs:
     description: "Set to 'true' to narrow a re-run to the previous attempt's failures. Requires upload-report."
     required: false
     default: "false"
+  empty-selection-conclusion:
+    description: "Opt in to report-derived outputs. Label-filter misses use neutral or failure; focused misses always fail."
+    required: false
+    default: ""
 
 outputs:
   failure-summary:
@@ -62,6 +66,12 @@ outputs:
   focused-rerun:
     description: "'true' when this run was narrowed to the previous attempt's failed specs"
     value: ${{ steps.rerun-focus.outputs.focused-rerun }}
+  check-conclusion:
+    description: "Conclusion derived from the Ginkgo report: success, failure, neutral, or timed_out. Empty when no readable report exists."
+    value: ${{ steps.derive-conclusion.outputs.check-conclusion }}
+  check-summary:
+    description: "Explanation for an empty selection; empty for other outcomes."
+    value: ${{ steps.derive-conclusion.outputs.check-summary }}
 
 runs:
   using: "composite"
@@ -105,6 +115,15 @@ runs:
       env:
         FOCUS_ACTIVE: ${{ steps.rerun-focus.outputs.focus != '' || inputs.ginkgo-focus != '' }}
       run: ${{ github.action_path }}/src/generate-summary.sh
+
+    - name: Derive check conclusion
+      id: derive-conclusion
+      if: always() && inputs.empty-selection-conclusion != ''
+      shell: bash
+      env:
+        INPUT_EMPTY_SELECTION_CONCLUSION: ${{ inputs.empty-selection-conclusion }}
+        INPUT_FOCUS: ${{ steps.rerun-focus.outputs.focus || inputs.ginkgo-focus }}
+      run: ${{ github.action_path }}/src/derive-conclusion.sh
 
     - name: Check GCP auth for report upload
       id: gcp-auth-check
