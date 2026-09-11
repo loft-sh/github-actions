@@ -55,7 +55,7 @@ inputs:
     required: false
     default: "false"
   empty-selection-conclusion:
-    description: "Opt in to report-derived outputs. Label-filter misses use neutral or failure; focused misses always fail."
+    description: "Opt in to report-derived outputs and choose the conclusion when the test selection matches no specs: neutral or failure."
     required: false
     default: ""
 
@@ -114,6 +114,7 @@ runs:
       shell: bash
       env:
         FOCUS_ACTIVE: ${{ steps.rerun-focus.outputs.focus != '' || inputs.ginkgo-focus != '' }}
+        EMPTY_SELECTION_CONCLUSION: ${{ inputs.empty-selection-conclusion }}
       run: ${{ github.action_path }}/src/generate-summary.sh
 
     - name: Derive check conclusion

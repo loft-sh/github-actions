@@ -71,6 +71,30 @@ export_resolved_focus() {
   [[ "$output" == *"focus matched no specs"* ]]
 }
 
+@test "an explicit failure policy still fails an empty focused selection" {
+  mkdir -p "$WORK_DIR/test-reports"
+  echo '[{"PreRunStats":{"TotalSpecs":40,"SpecsThatWillRun":0},"RunTime":0,"SpecReports":[]}]' \
+    >"$WORK_DIR/test-reports/report.json"
+
+  cd "$WORK_DIR"
+  REPORT_FILE=test-reports/report.json FOCUS_ACTIVE=true \
+    EMPTY_SELECTION_CONCLUSION=failure run bash "$SUMMARY"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"focus matched no specs"* ]]
+}
+
+@test "a neutral policy allows an empty focused selection" {
+  mkdir -p "$WORK_DIR/test-reports"
+  echo '[{"PreRunStats":{"TotalSpecs":40,"SpecsThatWillRun":0},"RunTime":0,"SpecReports":[]}]' \
+    >"$WORK_DIR/test-reports/report.json"
+
+  cd "$WORK_DIR"
+  REPORT_FILE=test-reports/report.json FOCUS_ACTIVE=true \
+    EMPTY_SELECTION_CONCLUSION=neutral run bash "$SUMMARY"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"focus matched no specs"* ]]
+}
+
 @test "an unfocused run with no specs is left alone" {
   mkdir -p "$WORK_DIR/test-reports"
   echo '[{"PreRunStats":{"TotalSpecs":40,"SpecsThatWillRun":0},"RunTime":0,"SpecReports":[]}]' \
