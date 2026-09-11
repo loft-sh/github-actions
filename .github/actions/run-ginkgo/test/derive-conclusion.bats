@@ -263,14 +263,14 @@ spec() { printf '{"LeafNodeType":"%s","State":"%s"}' "$1" "$2"; }
   grep -q "check-conclusion=failure" "$GITHUB_OUTPUT"
 }
 
-@test "a focused empty selection remains a failure under the neutral policy" {
+@test "a focused empty selection honors the neutral policy" {
   export INPUT_REPORT="$BATS_TEST_TMPDIR/report.json"
   export INPUT_EMPTY_SELECTION_CONCLUSION=neutral
   export INPUT_FOCUS="creates a snapshot"
   report 0 true > "$INPUT_REPORT"
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
-  grep -q "check-conclusion=failure" "$GITHUB_OUTPUT"
+  grep -q "check-conclusion=neutral" "$GITHUB_OUTPUT"
 }
 
 @test "the input only affects the empty selection, never a real result" {

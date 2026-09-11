@@ -2,7 +2,8 @@
 set -euo pipefail
 
 # Required env vars: GITHUB_OUTPUT
-# Optional env vars: REPORT_FILE (defaults to test-reports/report.json), FOCUS_ACTIVE
+# Optional env vars: REPORT_FILE (defaults to test-reports/report.json),
+# FOCUS_ACTIVE, EMPTY_SELECTION_CONCLUSION
 
 REPORT_FILE="${REPORT_FILE:-test-reports/report.json}"
 
@@ -102,6 +103,10 @@ echo "Summary generated (Failed: ${FAILED_COUNT}, Passed: ${PASSED_COUNT})"
 # Ginkgo exits 0 when a focus matches nothing. A focused run must not become green
 # without executing a spec, whether the focus came from a caller or a failed-only rerun.
 if [[ "${FOCUS_ACTIVE:-false}" == "true" && "$((PASSED_COUNT + FAILED_COUNT))" -eq 0 ]]; then
-  echo "::error::This focus matched no specs"
-  exit 1
+  if [[ "${EMPTY_SELECTION_CONCLUSION:-failure}" == "neutral" ]]; then
+    echo "::warning::This focus matched no specs; reporting a neutral empty selection"
+  else
+    echo "::error::This focus matched no specs"
+    exit 1
+  fi
 fi

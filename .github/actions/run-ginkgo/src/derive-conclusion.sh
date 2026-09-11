@@ -15,8 +15,8 @@
 #   INPUT_REPORT                       path to the Ginkgo JSON report
 #   INPUT_EMPTY_SELECTION_CONCLUSION   what an empty selection reports; neutral
 #                                      or failure, defaulting to neutral
-#   INPUT_FOCUS                        optional focus expression; an empty
-#                                      focused selection always fails
+#   INPUT_FOCUS                        optional focus expression, used to explain
+#                                      an empty combined selection
 #
 # Writes to $GITHUB_OUTPUT:
 #   check-conclusion=success|failure|neutral|timed_out, or nothing at all when
@@ -155,12 +155,8 @@ main() {
     local summary="$EMPTY_SELECTION_SUMMARY"
     if [[ -n "${INPUT_FOCUS:-}" ]]; then
       summary="$FOCUSED_EMPTY_SELECTION_SUMMARY"
-      # generate-summary.sh already fails this case. Keep the published check in
-      # agreement with that established run-ginkgo contract.
-      conclusion="failure"
-    else
-      conclusion="$empty_conclusion"
     fi
+    conclusion="$empty_conclusion"
     echo "::warning::the test selection matched no specs; reporting ${conclusion} rather than success"
     emit_summary "$summary"
   fi

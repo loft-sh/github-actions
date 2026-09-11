@@ -45,3 +45,9 @@ CONCLUSION_SCRIPT="$BATS_TEST_DIRNAME/../src/derive-conclusion.sh"
   [[ "$output" == *'INPUT_EMPTY_SELECTION_CONCLUSION: ${{ inputs.empty-selection-conclusion }}'* ]]
   [[ "$output" == *'INPUT_FOCUS: ${{ steps.rerun-focus.outputs.focus || inputs.ginkgo-focus }}'* ]]
 }
+
+@test "the summary and conclusion steps share the empty-selection policy" {
+  run grep -A8 '^    - name: Generate failure summary' "$ACTION"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'EMPTY_SELECTION_CONCLUSION: ${{ inputs.empty-selection-conclusion }}'* ]]
+}
