@@ -1082,11 +1082,25 @@ jobs:
 
 **Outputs:**
 
-- `has-vulnerabilities`, `critical-count`, `high-count`, `medium-count`, `low-count`
+- `has-vulnerabilities`, `critical-count`, `high-count`, `medium-count`, `low-count`, `result-json`
 - `scanner-error`: `true` if the scan couldn't complete — distinct both from finding CVEs and from a setup error, which fails the job
 - `report-path`, `sarif-path` (written by the scanner), `summary` (Slack-ready text)
 
 See [cve-scan README](./.github/actions/cve-scan/README.md) for suppressing findings via `.snyk`, the scanner-adapter exit-code contract, how to resolve the image tag per repo, and the SARIF upload example.
+
+### Linear CVE Summary
+
+Posts aggregated structured `cve-scan` results to the matching release-checklist
+subissue in Linear. It identifies the vCluster or Platform checklist from the
+release line and only requires the caller to declare its expected image
+inventory. The action validates title fingerprints, parent relationship, and
+exact version before commenting. It is advisory and updates one marked comment
+per RC on reruns.
+
+**Location:** `.github/actions/linear-cve-summary`
+
+See [linear-cve-summary README](./.github/actions/linear-cve-summary/README.md)
+for its inputs, lookup contract, and non-blocking failure behavior.
 
 ### Checkov
 
@@ -1149,6 +1163,7 @@ Run tests for a specific action:
 make test-semver-validation
 make test-linear-pr-commenter
 make test-linear-release-sync
+make test-linear-cve-summary
 ```
 
 Run linters (actionlint + zizmor):
@@ -1173,6 +1188,7 @@ the action's files change:
 - `test-linear-pr-commenter.yaml` - triggers on `.github/actions/linear-pr-commenter/**`
 - `test-link-backport-prs.yaml` - triggers on `.github/actions/link-backport-prs/**`
 - `test-linear-release-sync.yaml` - triggers on `.github/actions/linear-release-sync/**`
+- `test-linear-cve-summary.yaml` - triggers on `.github/actions/linear-cve-summary/**`
 - `test-sticky-pr-comment.yaml` - triggers on `.github/actions/sticky-pr-comment/**`
 - `test-comment-triggered-check.yaml` - triggers on `.github/actions/comment-triggered-check/**`
 - `release-linear-release-sync.yaml` - builds and publishes the binary on tag push or `workflow_dispatch`
