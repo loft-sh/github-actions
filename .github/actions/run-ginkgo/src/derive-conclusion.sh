@@ -15,6 +15,8 @@
 #   INPUT_REPORT                       path to the Ginkgo JSON report
 #   INPUT_EMPTY_SELECTION_CONCLUSION   what an empty selection reports; neutral
 #                                      or failure, defaulting to neutral
+#   INPUT_FAIL_ON_DERIVED_FAILURE      when true, exit non-zero for failure or
+#                                      timed_out; defaults to false
 #   INPUT_FOCUS                        optional focus expression, used to explain
 #                                      an empty combined selection
 #
@@ -161,6 +163,11 @@ main() {
     emit_summary "$summary"
   fi
   emit "$conclusion"
+
+  if [[ "${INPUT_FAIL_ON_DERIVED_FAILURE:-false}" == "true" ]] &&
+    [[ "$conclusion" == "failure" || "$conclusion" == "timed_out" ]]; then
+    return 1
+  fi
 }
 
 # Only auto-run when executed directly; sourcing (e.g. from bats) must not.

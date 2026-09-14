@@ -37,6 +37,17 @@ CONCLUSION_SCRIPT="$BATS_TEST_DIRNAME/../src/derive-conclusion.sh"
   grep -Fq 'value: ${{ steps.derive-conclusion.outputs.check-summary }}' "$ACTION"
 }
 
+@test "derived-failure enforcement is optional and disabled by default" {
+  run grep -A4 '^  fail-on-derived-failure:' "$ACTION"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'required: false'* ]]
+  [[ "$output" == *'default: "false"'* ]]
+
+  run grep -A10 '^    - name: Derive check conclusion' "$ACTION"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'INPUT_FAIL_ON_DERIVED_FAILURE: ${{ inputs.fail-on-derived-failure }}'* ]]
+}
+
 @test "derives a conclusion after the test command regardless of its result" {
   run grep -A8 '^    - name: Derive check conclusion' "$ACTION"
   [ "$status" -eq 0 ]

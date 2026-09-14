@@ -241,6 +241,41 @@ spec() { printf '{"LeafNodeType":"%s","State":"%s"}' "$1" "$2"; }
   grep -q "check-conclusion=success" "$GITHUB_OUTPUT"
 }
 
+@test "a derived failure does not fail the action by default" {
+  export INPUT_REPORT="$BATS_TEST_TMPDIR/report.json"
+  report 1 false "$(spec It failed)" > "$INPUT_REPORT"
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -q "check-conclusion=failure" "$GITHUB_OUTPUT"
+}
+
+@test "a derived failure fails the action when enforcement is enabled" {
+  export INPUT_REPORT="$BATS_TEST_TMPDIR/report.json"
+  export INPUT_FAIL_ON_DERIVED_FAILURE=true
+  report 1 false "$(spec It failed)" > "$INPUT_REPORT"
+  run bash "$SCRIPT"
+  [ "$status" -eq 1 ]
+  grep -q "check-conclusion=failure" "$GITHUB_OUTPUT"
+}
+
+@test "a derived timeout fails the action when enforcement is enabled" {
+  export INPUT_REPORT="$BATS_TEST_TMPDIR/report.json"
+  export INPUT_FAIL_ON_DERIVED_FAILURE=true
+  report 1 false "$(spec It timedout)" > "$INPUT_REPORT"
+  run bash "$SCRIPT"
+  [ "$status" -eq 1 ]
+  grep -q "check-conclusion=timed_out" "$GITHUB_OUTPUT"
+}
+
+@test "a neutral empty selection remains successful when enforcement is enabled" {
+  export INPUT_REPORT="$BATS_TEST_TMPDIR/report.json"
+  export INPUT_FAIL_ON_DERIVED_FAILURE=true
+  report 0 true > "$INPUT_REPORT"
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -q "check-conclusion=neutral" "$GITHUB_OUTPUT"
+}
+
 @test "the zero-selection path warns rather than passing silently" {
   export INPUT_REPORT="$BATS_TEST_TMPDIR/report.json"
   report 0 true > "$INPUT_REPORT"
