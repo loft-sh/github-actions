@@ -715,12 +715,79 @@ EOF
   [[ "$output" != *"failed to reach"* ]]
 }
 
-@test "monorepo rc: an omitted source-branch defaults to main" {
+@test "monorepo rc: an omitted source-branch takes main before the line branches" {
   export GH_STUB_BRANCHES="loft-sh/vcluster-pro:main"
   INPUT_VERSION="v0.40.0-rc.1" INPUT_DRY_RUN="true" run main
   [ "$status" -eq 0 ]
+  [[ "$output" == *"v0.40 does not exist yet"* ]]
   [[ "$output" == *"target main"* ]]
   [[ "$output" == *"[dry-run] gh workflow run release.yaml --repo loft-sh/vcluster-pro --ref v0.40.0-rc.1"* ]]
+}
+
+@test "monorepo rc: an omitted source-branch takes the line branch once it exists" {
+  # The regression this guards: main carries the NEXT line's development once
+  # v0.40 is cut, so an unconditional main default would tag an rc from the wrong
+  # line and omit the backports that only land on v0.40.
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:main loft-sh/vcluster-pro:v0.40"
+  INPUT_VERSION="v0.40.1-rc.1" INPUT_DRY_RUN="true" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"v0.40 exists"* ]]
+  [[ "$output" == *"target v0.40"* ]]
+  [[ "$output" == *"-f sha=<v0.40 head>"* ]]
+  [[ "$output" != *"target main"* ]]
+}
+
+@test "monorepo rc: an explicit main is REFUSED once the line branch exists" {
+  # The operator mistake this catches: main is a legal rc source early in a
+  # line's life, so picking it out of habit after the branch is cut looks
+  # ordinary and nothing downstream objects.
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:main loft-sh/vcluster-pro:v0.40"
+  INPUT_VERSION="v0.40.1-rc.1" INPUT_SOURCE_BRANCH="main" INPUT_DRY_RUN="true" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"an rc on this line is cut from v0.40, not from main"* ]]
+  # Refused before anything is tagged or dispatched, dry-run print included.
+  [[ "$output" != *"[dry-run]"* ]]
+  [[ "$output" != *"target"* ]]
+}
+
+@test "monorepo rc: an explicit main is accepted while the line has not branched" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:main"
+  INPUT_VERSION="v0.40.0-rc.1" INPUT_SOURCE_BRANCH="main" INPUT_DRY_RUN="true" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"target main"* ]]
+  [[ "$output" == *"-f sha=<main head>"* ]]
+}
+
+@test "monorepo rc: an explicit line branch is accepted once it exists" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:main loft-sh/vcluster-pro:v0.40"
+  INPUT_VERSION="v0.40.1-rc.1" INPUT_SOURCE_BRANCH="v0.40" INPUT_DRY_RUN="true" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"target v0.40"* ]]
+  # Already unambiguous, so no default notice.
+  [[ "$output" != *"no source-branch given"* ]]
+}
+
+@test "monorepo rc: a transient failure on the probe aborts (never falls back to main)" {
+  # branch_exists exits from inside a command substitution, which only kills the
+  # subshell - main has to re-raise it. Reading the failure as "no line branch"
+  # would silently cut the rc from main, the exact bug the probe exists to fix.
+  export GH_STUB_TRANSIENT="1"
+  INPUT_VERSION="v0.40.1-rc.1" INPUT_DRY_RUN="true" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"failed to reach"* ]]
+  [[ "$output" != *"target main"* ]]
+  [[ "$output" != *"[dry-run]"* ]]
+}
+
+@test "monorepo rc: an explicit main aborts on a transient probe failure, is not waved through" {
+  # The probe is now load-bearing for the refusal, not just for the default: if
+  # an unreachable API let an explicit main past, the cut it is meant to stop
+  # would proceed exactly when the guard could not run.
+  export GH_STUB_TRANSIENT="1"
+  INPUT_VERSION="v0.40.1-rc.1" INPUT_SOURCE_BRANCH="main" INPUT_DRY_RUN="true" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"failed to reach"* ]]
+  [[ "$output" != *"[dry-run]"* ]]
 }
 
 @test "monorepo rc: an explicit vX.Y source-branch targets the release branch" {
@@ -944,6 +1011,47 @@ EOF
   run is_feature_branch "v0.40"; [ "$status" -ne 0 ]
 }
 
+# ---- resolve_rc_source ----
+
+@test "resolve_rc_source: the full decision table" {
+  # stdout only: the notices go to stderr and mention both branch names, so a
+  # merged capture would pass whichever branch the probe actually chose.
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.40 loft-sh/vcluster-pro:main"
+  answer="$(resolve_rc_source "loft-sh/vcluster-pro" "v0.40" "" 2>/dev/null)"
+  [ "$answer" = "v0.40" ]
+  answer="$(resolve_rc_source "loft-sh/vcluster-pro" "v0.40" "v0.40" 2>/dev/null)"
+  [ "$answer" = "v0.40" ]
+  # A foreign branch is passed through for resolve_target to reject, so that
+  # error keeps a single home.
+  answer="$(resolve_rc_source "loft-sh/vcluster-pro" "v0.40" "my-feature" 2>/dev/null)"
+  [ "$answer" = "my-feature" ]
+  rc=0
+  answer="$(resolve_rc_source "loft-sh/vcluster-pro" "v0.40" "main" 2>/dev/null)" || rc=$?
+  [ "$rc" -ne 0 ]
+  [ -z "$answer" ]
+
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:main"
+  answer="$(resolve_rc_source "loft-sh/vcluster-pro" "v0.40" "" 2>/dev/null)"
+  [ "$answer" = "main" ]
+  answer="$(resolve_rc_source "loft-sh/vcluster-pro" "v0.40" "main" 2>/dev/null)"
+  [ "$answer" = "main" ]
+}
+
+@test "resolve_rc_source: a transient API failure is not read as a missing branch" {
+  export GH_STUB_TRANSIENT="1"
+  run resolve_rc_source "loft-sh/vcluster-pro" "v0.40" ""
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"failed to reach"* ]]
+  # Nothing on stdout, and a non-zero status: an aborted probe must not hand back
+  # a branch at all. The `||` sits on the assignment, not inside the command
+  # substitution - api_exists aborts with `exit`, which terminates the subshell
+  # outright rather than letting a `|| true` inside it run.
+  rc=0
+  answer="$(resolve_rc_source "loft-sh/vcluster-pro" "v0.40" "" 2>/dev/null)" || rc=$?
+  [ "$rc" -ne 0 ]
+  [ -z "$answer" ]
+}
+
 # ---- resolve_target (pure) ----
 
 @test "resolve_target: stable requires the line branch; a foreign source is rejected" {
@@ -952,7 +1060,9 @@ EOF
   run resolve_target "stable" "main" "v0.40";    [ "$status" -ne 0 ]
 }
 
-@test "resolve_target: rc defaults to main, accepts main or the line branch, rejects a foreign source" {
+@test "resolve_target: rc accepts main or the line branch, rejects a foreign source" {
+  # The empty case is the network-free fallback; main() has already narrowed an
+  # rc through resolve_rc_source, which refuses main once vX.Y exists.
   run resolve_target "rc" "" "v0.40";          [ "$output" = "main" ]
   run resolve_target "rc" "main" "v0.40";      [ "$output" = "main" ]
   run resolve_target "rc" "v0.40" "v0.40";     [ "$output" = "v0.40" ]
@@ -1048,6 +1158,22 @@ EOF
   INPUT_VERSION="v0.35.4" INPUT_SOURCE_BRANCH="my-feature" INPUT_DRY_RUN="true" run main
   [ "$status" -ne 0 ]
   [[ "$output" == *"legacy v0.35 releases are cut from the v0.35 branch, not 'my-feature'"* ]]
+}
+
+@test "legacy rc: an omitted source-branch cuts from the line branch, never main" {
+  # The pre-monorepo analogue of the monorepo rc default: legacy never consults
+  # resolve_target, so the line branch is unconditional here and no probe is
+  # needed. main is stubbed as EXISTING on purpose - a regression that fell back
+  # to it would otherwise 404 and pass this test for the wrong reason.
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.36 loft-sh/vcluster-pro:v0.36 loft-sh/vcluster:main loft-sh/vcluster-pro:main"
+  INPUT_VERSION="v0.36.4-rc.1" INPUT_DRY_RUN="true" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"-> legacy (line v0.36)"* ]]
+  [[ "$output" == *"repos/loft-sh/vcluster/git/refs -f ref=refs/tags/v0.36.4-rc.1 -f sha=<v0.36 head>"* ]]
+  [[ "$output" == *"repos/loft-sh/vcluster-pro/git/refs -f ref=refs/tags/v0.36.4-rc.1 -f sha=<v0.36 head>"* ]]
+  [[ "$output" != *"<main head>"* ]]
+  # The monorepo-only probe must not leak onto this path.
+  [[ "$output" != *"no source-branch given"* ]]
 }
 
 @test "legacy: an explicit source-branch equal to the line branch is accepted" {
