@@ -15,7 +15,9 @@
 # (fail-closed - an unroutable suffix like -devpod.alpha is rejected, never
 # guessed):
 #   -alpha / -beta      -> main only
-#   -rc                 -> main or the vX.Y release branch (default main)
+#   -rc                 -> the vX.Y release branch once it exists, main until it
+#                         does; an explicit main is REFUSED once vX.Y exists.
+#                         A legacy line is always the vX.Y branch.
 #   stable (vX.Y.Z)     -> the vX.Y release branch only
 #   -next / -next.internal -> a short-lived feature branch (source-branch input
 #                         required); always builds pro only.
@@ -208,7 +210,8 @@ is_feature_branch() {
 # error if <source-branch> violates the matrix. Handles the non-feature suffixes
 # only (alpha/beta/rc/stable); next/next.internal are routed by cut_feature_prerelease.
 #   alpha|beta -> main only
-#   rc         -> main or the line branch vX.Y (empty source-branch defaults to main)
+#   rc         -> main or the line branch vX.Y (main() has already narrowed this
+#                 through resolve_rc_source, which refuses main once vX.Y exists)
 #   stable     -> the line branch vX.Y only
 resolve_target() {
   local suffix="$1" src="$2" line="$3"
@@ -220,6 +223,10 @@ resolve_target() {
       fi
       printf 'main\n' ;;
     rc)
+      # An empty src reaches here only if main() skipped the probe (it does not
+      # on any live path); main arrives only once resolve_rc_source has confirmed
+      # the line has not branched yet. Kept so this helper stays total and
+      # network-free.
       if [[ -z "$src" || "$src" == "main" ]]; then
         printf 'main\n'
       elif [[ "$src" == "$line" ]]; then
@@ -286,6 +293,52 @@ require_branch() {
     echo "::error::release branch '${branch}' not found in ${repo}. Create it (and its workflow_dispatch-enabled release.yaml) before cutting this line - refusing to guess." >&2
     exit 1
   fi
+}
+
+# resolve_rc_source <repo> <line> <src> -> the branch an rc is cut from, or a
+# hard error when <src> contradicts the line's actual state.
+#
+# rc is the one suffix legal from either branch, and which of the two is right is
+# not a preference - it is decided by whether the line has branched yet:
+#
+#   vX.Y exists      the rc MUST come from vX.Y. main now carries the NEXT line's
+#                    development and is missing the backports that only land on
+#                    vX.Y, so an rc cut from it validates the wrong code. An
+#                    empty source-branch takes vX.Y; an explicit main is refused
+#                    rather than honoured, because at this point it is a mistake
+#                    and nothing downstream would catch it.
+#   vX.Y absent      the rc IS main; that is where the line lives until it
+#                    branches.
+#
+# So the probe is not just a default-filler: it runs on every monorepo rc,
+# including one that named a source branch, because the refusal above depends on
+# it. branch_exists is fail-closed (a transient API error aborts rather than
+# reading as absent), so an unreachable API can neither silently pick main nor
+# silently skip the refusal.
+#
+# A source branch that is neither main nor vX.Y is passed through untouched for
+# resolve_target to reject, keeping that error in one place.
+resolve_rc_source() {
+  local repo="$1" line="$2" src="$3"
+  if branch_exists "$repo" "$line"; then
+    if [[ -z "$src" ]]; then
+      echo "::notice::no source-branch given for an rc and ${line} exists in ${repo}; cutting from ${line}." >&2
+      printf '%s\n' "$line"
+      return 0
+    fi
+    if [[ "$src" == "main" ]]; then
+      echo "::error::${line} exists in ${repo}, so an rc on this line is cut from ${line}, not from main. main carries the next line's development and lacks the fixes backported to ${line}, so this rc would validate the wrong code. Pass source-branch: ${line}, or leave source-branch empty to take it automatically." >&2
+      return 1
+    fi
+    printf '%s\n' "$src"
+    return 0
+  fi
+  if [[ -z "$src" ]]; then
+    echo "::notice::no source-branch given for an rc and ${line} does not exist yet in ${repo}; cutting from main." >&2
+    printf 'main\n'
+    return 0
+  fi
+  printf '%s\n' "$src"
 }
 
 # runs_at_ref <repo> <ref> [head-sha] [quiet] - prints "<total> <active>".
@@ -1000,6 +1053,19 @@ main() {
 
   case "$era" in
     monorepo)
+      # Every rc is resolved against the repo before the matrix sees it, whether
+      # or not a source-branch was given: the branch state both fills the default
+      # AND decides whether an explicit main is legal. Done here rather than
+      # inside resolve_target to keep that helper pure. The release_state_of
+      # hazard applies twice over: branch_exists aborts via `exit` on a transient
+      # failure and resolve_rc_source returns non-zero on a refused main, and
+      # neither can escape a command substitution on its own, so both are
+      # re-raised here.
+      if [[ "$suffix" == "rc" ]]; then
+        if ! source_branch="$(resolve_rc_source "$PRO_REPO" "$line" "$source_branch")"; then
+          exit 1
+        fi
+      fi
       target="$(resolve_target "$suffix" "$source_branch" "$line")" || exit 1
       cut_monorepo "$version" "$target" ;;
     legacy)
