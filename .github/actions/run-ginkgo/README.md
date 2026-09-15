@@ -83,10 +83,13 @@ execution path. Set `empty-selection-conclusion` to `neutral` or `failure` to
 enable it. For hand-written filters, use `failure` so Ginkgo selecting no specs
 cannot look successful. Use `neutral` when an empty selection is expected, such
 as one leg of a multi-tree focused run. `check-summary` explains the empty
-selection. The outputs do not by themselves determine whether the action fails;
-Ginkgo's exit status and the existing focused-empty guard still apply. Set
-`fail-on-derived-failure` to `true` when any report-derived `failure` or
-`timed_out` conclusion should also fail the action.
+selection. By default, the outputs do not by themselves determine whether the
+action fails; Ginkgo's exit status and the existing focused-empty guard still
+apply. Set `fail-on-derived-failure` to `true` when any report-derived `failure`
+or `timed_out` conclusion should also fail the action. It accepts exactly `true`
+or `false`; any other value warns and is treated as `true` to fail closed.
+Setting it without `empty-selection-conclusion` warns and leaves enforcement
+disabled.
 
 ```yaml
 - name: Run Ginkgo tests
@@ -98,8 +101,13 @@ Ginkgo's exit status and the existing focused-empty guard still apply. Set
     fail-on-derived-failure: "true"
 
 - name: Publish result
+  if: always()
   run: echo "${{ steps.ginkgo.outputs.check-conclusion }}"
 ```
+
+When enforcement is enabled, downstream steps that consume the outputs need
+`if: always()` or the caller must handle the action failure with
+`continue-on-error: true`.
 
 ## Re-running only the failed specs
 

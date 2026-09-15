@@ -126,6 +126,12 @@ derive_conclusion() {
 }
 
 main() {
+  if [[ -z "${INPUT_EMPTY_SELECTION_CONCLUSION:-}" ]] &&
+    [[ "${INPUT_FAIL_ON_DERIVED_FAILURE:-false}" != "false" ]]; then
+    echo "::warning::fail-on-derived-failure requires empty-selection-conclusion; enforcement is disabled"
+    return 0
+  fi
+
   # An unrecognised value becomes failure, not the neutral default. The only
   # reason to set this input is to be stricter than neutral, so a typo must not
   # silently restore the behaviour the caller was opting out of.
@@ -177,6 +183,7 @@ main() {
 
   if [[ "$fail_on_derived_failure" == "true" ]] &&
     [[ "$conclusion" == "failure" || "$conclusion" == "timed_out" ]]; then
+    echo "::error::report-derived conclusion is ${conclusion}; failing because fail-on-derived-failure is true"
     return 1
   fi
 }

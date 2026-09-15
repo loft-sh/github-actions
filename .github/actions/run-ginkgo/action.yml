@@ -123,7 +123,7 @@ runs:
 
     - name: Derive check conclusion
       id: derive-conclusion
-      if: always() && inputs.empty-selection-conclusion != ''
+      if: always() && (inputs.empty-selection-conclusion != '' || inputs.fail-on-derived-failure != 'false')
       shell: bash
       env:
         INPUT_EMPTY_SELECTION_CONCLUSION: ${{ inputs.empty-selection-conclusion }}

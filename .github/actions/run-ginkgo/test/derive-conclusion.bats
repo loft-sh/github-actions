@@ -251,15 +251,28 @@ spec() { printf '{"LeafNodeType":"%s","State":"%s"}' "$1" "$2"; }
 
 @test "a derived failure fails the action when enforcement is enabled" {
   export INPUT_REPORT="$BATS_TEST_TMPDIR/report.json"
+  export INPUT_EMPTY_SELECTION_CONCLUSION=neutral
   export INPUT_FAIL_ON_DERIVED_FAILURE=true
   report 1 false "$(spec It failed)" > "$INPUT_REPORT"
   run bash "$SCRIPT"
   [ "$status" -eq 1 ]
+  [[ "$output" == *"::error::report-derived conclusion is failure"* ]]
   grep -q "check-conclusion=failure" "$GITHUB_OUTPUT"
+}
+
+@test "enforcement without a conclusion policy warns and remains disabled" {
+  export INPUT_REPORT="$BATS_TEST_TMPDIR/report.json"
+  export INPUT_FAIL_ON_DERIVED_FAILURE=true
+  report 1 false "$(spec It failed)" > "$INPUT_REPORT"
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"::warning::fail-on-derived-failure requires empty-selection-conclusion"* ]]
+  [ ! -s "$GITHUB_OUTPUT" ]
 }
 
 @test "an invalid enforcement value fails closed for a derived failure" {
   export INPUT_REPORT="$BATS_TEST_TMPDIR/report.json"
+  export INPUT_EMPTY_SELECTION_CONCLUSION=neutral
   export INPUT_FAIL_ON_DERIVED_FAILURE=True
   report 1 false "$(spec It failed)" > "$INPUT_REPORT"
   run bash "$SCRIPT"
@@ -270,6 +283,7 @@ spec() { printf '{"LeafNodeType":"%s","State":"%s"}' "$1" "$2"; }
 
 @test "a derived timeout fails the action when enforcement is enabled" {
   export INPUT_REPORT="$BATS_TEST_TMPDIR/report.json"
+  export INPUT_EMPTY_SELECTION_CONCLUSION=neutral
   export INPUT_FAIL_ON_DERIVED_FAILURE=true
   report 1 false "$(spec It timedout)" > "$INPUT_REPORT"
   run bash "$SCRIPT"
@@ -279,6 +293,7 @@ spec() { printf '{"LeafNodeType":"%s","State":"%s"}' "$1" "$2"; }
 
 @test "a neutral empty selection remains successful when enforcement is enabled" {
   export INPUT_REPORT="$BATS_TEST_TMPDIR/report.json"
+  export INPUT_EMPTY_SELECTION_CONCLUSION=neutral
   export INPUT_FAIL_ON_DERIVED_FAILURE=true
   report 0 true > "$INPUT_REPORT"
   run bash "$SCRIPT"
