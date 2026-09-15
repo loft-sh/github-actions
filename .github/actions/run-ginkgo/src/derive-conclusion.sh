@@ -138,6 +138,17 @@ main() {
       ;;
   esac
 
+  # Only an explicit false disables enforcement. This input is meant to make
+  # report-derived failures stricter, so a typo must not silently fail open.
+  local fail_on_derived_failure="${INPUT_FAIL_ON_DERIVED_FAILURE:-false}"
+  case "$fail_on_derived_failure" in
+    true | false) ;;
+    *)
+      echo "::warning::fail-on-derived-failure must be true or false, got '${fail_on_derived_failure}'; using true"
+      fail_on_derived_failure="true"
+      ;;
+  esac
+
   if [[ ! -s "$report" ]]; then
     echo "no ginkgo report at ${report}; leaving the conclusion to the caller"
     return 0
@@ -164,7 +175,7 @@ main() {
   fi
   emit "$conclusion"
 
-  if [[ "${INPUT_FAIL_ON_DERIVED_FAILURE:-false}" == "true" ]] &&
+  if [[ "$fail_on_derived_failure" == "true" ]] &&
     [[ "$conclusion" == "failure" || "$conclusion" == "timed_out" ]]; then
     return 1
   fi

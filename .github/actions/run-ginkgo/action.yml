@@ -59,7 +59,7 @@ inputs:
     required: false
     default: ""
   fail-on-derived-failure:
-    description: "Set to 'true' to fail the action when the report-derived conclusion is failure or timed_out."
+    description: "Set to 'true' to fail the action when the report-derived conclusion is failure or timed_out. Requires empty-selection-conclusion."
     required: false
     default: "false"
 
