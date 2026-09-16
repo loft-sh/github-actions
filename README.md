@@ -602,6 +602,42 @@ Successor to Subtree Mirror. Bidirectional per-commit sync between a monorepo su
 
 See [oss-commit-sync README](./.github/actions/oss-commit-sync/README.md) for the full contract, safety mechanisms, and migration steps.
 
+### OSS Mirror Staleness Action
+
+Companion to OSS Commit Sync, answering the question a run-status alert cannot: is the code on the public mirror the code we have? The export fails closed and stops, which is correct but invisible: a red push-triggered run sits in the Actions tab where nobody looks while the mirror quietly stops advancing (`loft-sh/vcluster` went 18 days and 20 commits behind that way, DEVOPS-1529). Because it compares refs rather than reading run history, it also catches a workflow that stopped triggering at all, which no failure notification can see.
+
+Advisory by construction: it never exits non-zero, and when it cannot answer it reports `degraded` rather than a clean bill of health. **Alert on `stale` OR `degraded`**, because a check that could not answer is not a check that passed.
+
+**Location:** `.github/actions/oss-mirror-staleness`
+
+**Usage:**
+
+```yaml
+- uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+  with:
+    fetch-depth: 0
+    persist-credentials: false
+
+- id: staleness
+  uses: loft-sh/github-actions/.github/actions/oss-mirror-staleness@oss-mirror-staleness/v1
+  with:
+    subtree-prefix: staging/github.com/loft-sh/vcluster
+    oss-repo: loft-sh/vcluster
+    branch: ${{ matrix.branch }}
+    github-token: ${{ secrets.GITHUB_TOKEN }}
+    max-age-hours: '24'
+    # The same list the export is given. Without it the content comparison never
+    # matches and the commits the export skips without a record turn into
+    # backlog that cannot drain.
+    exclude-paths: |
+      .github/workflows/release.yaml
+      .github/workflows/push-head-images.yaml
+```
+
+**Key inputs:** `subtree-prefix`, `oss-repo`, `branch`, `github-token` (read-only is enough); `exclude-paths` (must match the list given to `oss-commit-sync`), `max-age-hours` (grace before a backlog counts as stale, measured on the oldest waiting commit), `scan-limit`.
+
+**Key outputs:** `stale`, `degraded`, `export-unconfirmed`, `backlog-count`, `frontier`, `oldest-unmirrored`, `oldest-unmirrored-age-hours`, `oss-tip`.
+
 ### Wait For Release Action
 
 Blocks until a GitHub Release for a version exists in another repository, for pipelines where one repo's build uploads assets into a release that another repo's build creates. Presence polling alone cannot tell "the producer is still building" apart from "the producer already failed", so the optional `workflow` input makes the wait status-aware: a producer run that has already concluded unsuccessfully fails the wait immediately, with that run's URL and the recovery order, instead of spending the whole timeout on a precondition that can never be met.
