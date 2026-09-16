@@ -19,6 +19,9 @@
 #   INPUT_REPO                owner/name
 #   INPUT_CHECK_NAME_PREFIX   prefix for the check-run name
 #   INPUT_PARSE_FOCUS         whether to split an optional --focus argument
+#   INPUT_ALLOWED_TARGETS     whitespace-separated accepted target values
+#   INPUT_TARGET_NAME         target represented by this action invocation;
+#                             setting it enables --target parsing
 #   INPUT_RUN_ID              github.run_id, used for the details link
 #   INPUT_SERVER_URL          github.server_url
 #   GH_TOKEN                  token for gh
@@ -37,13 +40,22 @@ prefix="${INPUT_CHECK_NAME_PREFIX:-e2e}"
 run_id="${INPUT_RUN_ID:-}"
 server_url="${INPUT_SERVER_URL:-https://github.com}"
 parse_focus="${INPUT_PARSE_FOCUS:-false}"
+allowed_targets="$(normalize_filter "${INPUT_ALLOWED_TARGETS-}")"
+target_name="${INPUT_TARGET_NAME:-}"
+parse_target=false
+if [[ -n "$target_name" ]]; then
+  parse_target=true
+fi
 
 matched=false
 args=""
 filter=""
 focus=""
+target=""
 should_run=false
 reason=""
+reason_title=""
+reason_guidance=""
 head_sha=""
 head_ref=""
 base_ref=""
@@ -53,12 +65,18 @@ check_run_id=""
 
 # Emitted on every path, so a caller never reads an undefined output.
 finish_and_exit() {
+  refusal_details "$reason" "$command_word" "$allowed_targets"
+  reason_title="$REFUSAL_TITLE"
+  reason_guidance="$REFUSAL_GUIDANCE"
   emit "matched" "$matched"
   emit "args" "$args"
   emit "filter" "$filter"
   emit "focus" "$focus"
+  emit "target" "$target"
   emit "should-run" "$should_run"
   emit "reason" "$reason"
+  emit "reason-title" "$reason_title"
+  emit "reason-guidance" "$reason_guidance"
   emit "head-sha" "$head_sha"
   emit "head-ref" "$head_ref"
   emit "base-ref" "$base_ref"
@@ -94,12 +112,33 @@ if [[ -z "$pr_number" ]]; then
   finish_and_exit
 fi
 
-parse_request "$args" "$parse_focus"
+parse_request "$args" "$parse_focus" "$parse_target" "$allowed_targets"
 filter="$REQUEST_FILTER"
 focus="$REQUEST_FOCUS"
+target="$REQUEST_TARGET"
 if [[ -n "$REQUEST_ERROR" ]]; then
   reason="$REQUEST_ERROR"
-  echo "::notice::${command_word} needs a non-empty value after --focus"
+  case "$reason" in
+    malformed-focus)
+      echo "::notice::${command_word} needs a non-empty value after --focus"
+      ;;
+    malformed-target)
+      echo "::notice::${command_word} needs exactly one value after --target"
+      ;;
+    invalid-target)
+      echo "::notice::${command_word} target '${target}' is not one of: ${allowed_targets}"
+      ;;
+  esac
+  finish_and_exit
+fi
+
+# The caller may invoke the action once per independently dispatched target.
+# A valid explicit target that belongs to another invocation is a quiet
+# selection result, not an authorization or parsing failure, and must not touch
+# the API or open a check that nothing will finish.
+if [[ -n "$target" && -n "$target_name" && "$target" != "$target_name" ]]; then
+  reason="target-not-selected"
+  echo "::notice::${command_word} selected ${target}, not ${target_name}"
   finish_and_exit
 fi
 
@@ -171,9 +210,9 @@ if [[ "$head_repo" != "$repo" ]]; then
 fi
 
 should_run=true
-request="$(request_display "$filter" "$focus")"
+request="$(request_display "$filter" "$focus" "$target")"
 name="$(check_name "$prefix" "$request" 60)"
-concurrency_key="$(concurrency_key "$(request_identity "$filter" "$focus")")"
+concurrency_key="$(concurrency_key "$(request_identity "$filter" "$focus" "$target")")"
 
 # --- 4. Open the check-run ---------------------------------------------------
 # On the resolved head SHA, never on github.sha: for issue_comment that is the

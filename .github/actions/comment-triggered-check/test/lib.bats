@@ -12,6 +12,38 @@ setup() {
   source "$LIB"
 }
 
+# --- refusal_details --------------------------------------------------------
+
+@test "refusal_details: malformed target gets a readable title and command-specific guidance" {
+  refusal_details "malformed-target" "/test-e2e" "pro oss"
+  [ "$REFUSAL_TITLE" = "Target option is not valid" ]
+  [ "$REFUSAL_GUIDANCE" = 'Add one target before `--focus`. For example: `/test-e2e snapshots --target pro`.' ]
+}
+
+@test "refusal_details: invalid target lists the allowed values" {
+  refusal_details "invalid-target" "/test-e2e" "pro oss"
+  [ "$REFUSAL_TITLE" = "Invalid target" ]
+  [ "$REFUSAL_GUIDANCE" = 'Use one of these targets: `pro`, `oss`.' ]
+}
+
+@test "refusal_details: an empty target list has useful guidance" {
+  refusal_details "invalid-target" "/test-e2e" ""
+  [ "$REFUSAL_TITLE" = "Invalid target" ]
+  [ "$REFUSAL_GUIDANCE" = "No targets are configured." ]
+}
+
+@test "refusal_details: check creation failure stays domain agnostic" {
+  refusal_details "check-run-not-created" "/run-ci" ""
+  [ "$REFUSAL_TITLE" = '`check-run-not-created`' ]
+  [ "$REFUSAL_GUIDANCE" = "The check could not be opened. Re-run the command; see the run log if it fails again." ]
+}
+
+@test "refusal_details: target-not-selected is intentionally silent" {
+  refusal_details "target-not-selected" "/test-e2e" "pro oss"
+  [ "$REFUSAL_TITLE" = "" ]
+  [ "$REFUSAL_GUIDANCE" = "" ]
+}
+
 # --- parse_command -----------------------------------------------------------
 
 @test "parse_command: bare command matches with empty args" {
@@ -74,6 +106,18 @@ setup() {
   [ "$REQUEST_ERROR" = "" ]
 }
 
+@test "parse_request: strips double quotes around a focus with escaped double quotes" {
+  parse_request 'snapshots --focus "returns \"not found\""' "true"
+  [ "$REQUEST_FOCUS" = 'returns \"not found\"' ]
+  [ "$REQUEST_ERROR" = "" ]
+}
+
+@test "parse_request: strips single quotes around a focus with escaped single quotes" {
+  parse_request "snapshots --focus 'returns \\'not found\\''" "true"
+  [ "$REQUEST_FOCUS" = "returns \\'not found\\'" ]
+  [ "$REQUEST_ERROR" = "" ]
+}
+
 @test "parse_request: accepts the unquoted remainder as focus" {
   parse_request 'snapshots --focus creates snapshots' "true"
   [ "$REQUEST_FILTER" = "snapshots" ]
@@ -130,6 +174,110 @@ setup() {
   parse_request 'snapshots --focus "creates snapshots"' ""
   [ "$REQUEST_FILTER" = 'snapshots --focus "creates snapshots"' ]
   [ "$REQUEST_FOCUS" = "" ]
+  [ "$REQUEST_ERROR" = "" ]
+}
+
+@test "parse_request: extracts an allowed target" {
+  parse_request 'private-nodes --target pro' "true" "true" "pro oss"
+  [ "$REQUEST_FILTER" = "private-nodes" ]
+  [ "$REQUEST_TARGET" = "pro" ]
+  [ "$REQUEST_FOCUS" = "" ]
+  [ "$REQUEST_ERROR" = "" ]
+}
+
+@test "parse_request: accepts newline-separated targets" {
+  parse_request 'private-nodes --target oss' "true" "true" $'pro\noss'
+  [ "$REQUEST_TARGET" = "oss" ]
+  [ "$REQUEST_ERROR" = "" ]
+}
+
+@test "parse_request: accepts tab-separated targets" {
+  parse_request 'private-nodes --target oss' "true" "true" $'pro\toss'
+  [ "$REQUEST_TARGET" = "oss" ]
+  [ "$REQUEST_ERROR" = "" ]
+}
+
+@test "parse_request: target may precede the final focus option" {
+  parse_request 'private-nodes --target pro --focus "rejects a stale join"' "true" "true" "pro oss"
+  [ "$REQUEST_FILTER" = "private-nodes" ]
+  [ "$REQUEST_TARGET" = "pro" ]
+  [ "$REQUEST_FOCUS" = "rejects a stale join" ]
+  [ "$REQUEST_ERROR" = "" ]
+}
+
+@test "parse_request: rejects target after focus" {
+  parse_request 'snapshots --focus "creates a snapshot" --target pro' "true" "true" "pro oss"
+  [ "$REQUEST_FILTER" = "snapshots" ]
+  [ "$REQUEST_ERROR" = "malformed-target" ]
+}
+
+@test "parse_request: rejects a quoted target after double-quoted focus" {
+  parse_request 'snapshots --focus "creates a snapshot" --target "pro"' "true" "true" "pro oss"
+  [ "$REQUEST_FILTER" = "snapshots" ]
+  [ "$REQUEST_ERROR" = "malformed-target" ]
+}
+
+@test "parse_request: rejects a quoted target after single-quoted focus" {
+  parse_request "snapshots --focus 'creates a snapshot' --target 'pro'" "true" "true" "pro oss"
+  [ "$REQUEST_FILTER" = "snapshots" ]
+  [ "$REQUEST_ERROR" = "malformed-target" ]
+}
+
+@test "parse_request: only strips quotes that enclose the whole focus" {
+  parse_request 'snapshots --focus "creates" or "deletes"' "true"
+  [ "$REQUEST_FOCUS" = '"creates" or "deletes"' ]
+  [ "$REQUEST_ERROR" = "" ]
+}
+
+@test "parse_request: omitted target means every caller target" {
+  parse_request 'snapshots' "true" "true" "pro oss"
+  [ "$REQUEST_FILTER" = "snapshots" ]
+  [ "$REQUEST_TARGET" = "" ]
+  [ "$REQUEST_ERROR" = "" ]
+}
+
+@test "parse_request: rejects a target outside the allowed set" {
+  parse_request 'snapshots --target enterprise' "true" "true" "pro oss"
+  [ "$REQUEST_FILTER" = "snapshots" ]
+  [ "$REQUEST_TARGET" = "enterprise" ]
+  [ "$REQUEST_ERROR" = "invalid-target" ]
+}
+
+@test "parse_request: keeps a valid focus when the target is invalid" {
+  parse_request 'snapshots --target enterprise --focus "creates a snapshot"' "true" "true" "pro oss"
+  [ "$REQUEST_FILTER" = "snapshots" ]
+  [ "$REQUEST_FOCUS" = "creates a snapshot" ]
+  [ "$REQUEST_TARGET" = "enterprise" ]
+  [ "$REQUEST_ERROR" = "invalid-target" ]
+}
+
+@test "parse_request: rejects a target flag with no value" {
+  parse_request 'snapshots --target' "true" "true" "pro oss"
+  [ "$REQUEST_ERROR" = "malformed-target" ]
+}
+
+@test "parse_request: rejects tokens after the target value" {
+  parse_request 'snapshots --target pro extra' "true" "true" "pro oss"
+  [ "$REQUEST_ERROR" = "malformed-target" ]
+}
+
+@test "parse_request: rejects repeated target options" {
+  parse_request 'snapshots --target pro --target oss' "true" "true" "pro oss"
+  [ "$REQUEST_ERROR" = "malformed-target" ]
+}
+
+@test "parse_request: target syntax inside focus stays literal" {
+  parse_request 'snapshots --target oss --focus "accepts --target pro literally"' "true" "true" "pro oss"
+  [ "$REQUEST_FILTER" = "snapshots" ]
+  [ "$REQUEST_TARGET" = "oss" ]
+  [ "$REQUEST_FOCUS" = "accepts --target pro literally" ]
+  [ "$REQUEST_ERROR" = "" ]
+}
+
+@test "parse_request: target parsing is opt-in for existing consumers" {
+  parse_request 'snapshots --target pro' "true" "false" "pro oss"
+  [ "$REQUEST_FILTER" = "snapshots --target pro" ]
+  [ "$REQUEST_TARGET" = "" ]
   [ "$REQUEST_ERROR" = "" ]
 }
 
@@ -271,6 +419,16 @@ setup() {
   focused="$(request_identity 'snapshots' 'creates snapshots')"
   label="$(request_identity 'snapshots focus-digest-7b53924f' '')"
   [ "$(concurrency_key "$focused")" != "$(concurrency_key "$label")" ]
+}
+
+@test "request_identity: different explicit targets do not share a concurrency key" {
+  pro="$(request_identity 'private-nodes' '' 'pro')"
+  oss="$(request_identity 'private-nodes' '' 'oss')"
+  [ "$(concurrency_key "$pro")" != "$(concurrency_key "$oss")" ]
+}
+
+@test "request_identity: omitting target preserves the existing identity" {
+  [ "$(request_identity 'snapshots' 'creates snapshots' '')" = "$(request_identity 'snapshots' 'creates snapshots')" ]
 }
 
 # --- check_name --------------------------------------------------------------

@@ -170,6 +170,101 @@ created() { calls_matching "POST"; }
   [ "$(kv should-run)" = "true" ]
 }
 
+@test "an explicit selected target opens the matching check" {
+  export INPUT_ALLOWED_TARGETS="pro oss"
+  export INPUT_TARGET_NAME="pro"
+  export INPUT_COMMENT_BODY='/test-e2e private-nodes --target pro'
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv filter)" = "private-nodes" ]
+  [ "$(kv target)" = "pro" ]
+  [ "$(kv should-run)" = "true" ]
+  [ "$(kv check-name)" = 'e2e: private-nodes --target pro' ]
+  [ "$(created)" -eq 1 ]
+}
+
+@test "different targets get different concurrency keys" {
+  export INPUT_ALLOWED_TARGETS="pro oss"
+  export INPUT_TARGET_NAME="pro"
+  export INPUT_COMMENT_BODY='/test-e2e private-nodes --target pro'
+  run bash "$SCRIPT"
+  pro_key="$(kv concurrency-key)"
+
+  : > "$GITHUB_OUTPUT"
+  export INPUT_TARGET_NAME="oss"
+  export INPUT_COMMENT_BODY='/test-e2e private-nodes --target oss'
+  run bash "$SCRIPT"
+  [ "$pro_key" != "$(kv concurrency-key)" ]
+}
+
+@test "a target for another invocation stops before every API call" {
+  export INPUT_ALLOWED_TARGETS="pro oss"
+  export INPUT_TARGET_NAME="pro"
+  export INPUT_COMMENT_BODY='/test-e2e coredns --target oss'
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv filter)" = "coredns" ]
+  [ "$(kv target)" = "oss" ]
+  [ "$(kv reason)" = "target-not-selected" ]
+  [ "$(kv should-run)" = "false" ]
+  [ "$(call_count)" -eq 0 ]
+}
+
+@test "a malformed target emits presentation-ready refusal details" {
+  export INPUT_ALLOWED_TARGETS="pro oss"
+  export INPUT_TARGET_NAME="pro"
+  export INPUT_COMMENT_BODY='/test-e2e snapshots --target'
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv reason)" = "malformed-target" ]
+  [ "$(kv reason-title)" = "Target option is not valid" ]
+  [ "$(kv reason-guidance)" = 'Add one target before `--focus`. For example: `/test-e2e snapshots --target pro`.' ]
+}
+
+@test "an invalid target stops before every API call" {
+  export INPUT_ALLOWED_TARGETS="pro oss"
+  export INPUT_TARGET_NAME="pro"
+  export INPUT_COMMENT_BODY='/test-e2e snapshots --target enterprise'
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv target)" = "enterprise" ]
+  [ "$(kv reason)" = "invalid-target" ]
+  [ "$(kv should-run)" = "false" ]
+  [ "$(call_count)" -eq 0 ]
+}
+
+@test "an explicitly empty allowlist accepts no target" {
+  export INPUT_ALLOWED_TARGETS=""
+  export INPUT_TARGET_NAME="pro"
+  export INPUT_COMMENT_BODY='/test-e2e snapshots --target pro'
+  run bash "$SCRIPT"
+  [ "$(kv reason)" = "invalid-target" ]
+  [ "$(call_count)" -eq 0 ]
+}
+
+@test "an omitted target still selects the current invocation" {
+  export INPUT_ALLOWED_TARGETS="pro oss"
+  export INPUT_TARGET_NAME="pro"
+  export INPUT_COMMENT_BODY='/test-e2e snapshots'
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv target)" = "" ]
+  [ "$(kv should-run)" = "true" ]
+  [ "$(created)" -eq 1 ]
+}
+
+@test "target and focus are both shown in the check request" {
+  export INPUT_ALLOWED_TARGETS="pro oss"
+  export INPUT_TARGET_NAME="oss"
+  export INPUT_COMMENT_BODY='/test-e2e snapshots --target oss --focus "creates snapshots"'
+  run bash "$SCRIPT"
+  [ "$(kv filter)" = "snapshots" ]
+  [ "$(kv target)" = "oss" ]
+  [ "$(kv focus)" = "creates snapshots" ]
+  [ "$(kv check-name)" = 'e2e: snapshots --target oss --focus "creates snapshots"' ]
+  [ "$(calls_matching 'snapshots --target oss --focus "creates snapshots"')" -ge 1 ]
+}
+
 # --- authorization -----------------------------------------------------------
 
 @test "a past contributor cannot run it, and no API call is made" {

@@ -35,90 +35,143 @@ parse_command() {
   trim "${first#"$command"}"
 }
 
-# parse_request <arguments> <parse-focus>
-# Splits an optional trailing `--focus <regex>` from the required label filter.
-# The focus is the whole remainder: it is never evaluated as shell syntax, and
-# one matching outer quote pair is removed only for comment readability.
+# parse_request <arguments> <parse-focus> <parse-target> <allowed-targets>
+# Splits an optional trailing `--focus <regex>` and an optional
+# `--target <value>` immediately before it from the required label filter. The
+# focus is the whole remainder: it is never evaluated as shell syntax, and one
+# matching outer quote pair is removed only for comment readability. Targets
+# are single tokens matched exactly against the whitespace-separated allowlist.
 # Results are returned in globals because command substitution would run this
 # function in a subshell and lose them.
 # shellcheck disable=SC2034 # REQUEST_* are the function's outputs for callers.
 parse_request() {
-  local args filter_part focus first last marker_at marker_end i before after
+  local args filter_part focus target first last inner bare marker_at marker_end i before after allowed_targets
   args="$(trim "${1-}")"
   filter_part="$args"
   focus=""
+  target=""
+  allowed_targets="$(normalize_filter "${4-}")"
 
   REQUEST_FILTER=""
   REQUEST_FOCUS=""
+  REQUEST_TARGET=""
   REQUEST_ERROR=""
 
-  if [[ "${2-}" != "true" ]]; then
-    REQUEST_FILTER="$(normalize_filter "$filter_part")"
-    return 0
-  fi
+  if [[ "${2-}" == "true" ]]; then
+    marker_at=-1
+    marker_end=-1
+    for (( i = 0; i <= ${#args} - 7; i++ )); do
+      [[ "${args:i:7}" == "--focus" ]] || continue
+      before="${args:i-1:1}"
+      after="${args:i+7:1}"
+      if (( i > 0 )) && [[ "$before" != [[:space:]] ]]; then
+        continue
+      fi
+      if (( i + 7 < ${#args} )) && [[ "$after" != [[:space:]] ]]; then
+        continue
+      fi
+      marker_at=$i
+      marker_end=$((i + 7))
+      break
+    done
 
-  marker_at=-1
-  marker_end=-1
-  for (( i = 0; i <= ${#args} - 7; i++ )); do
-    [[ "${args:i:7}" == "--focus" ]] || continue
-    before="${args:i-1:1}"
-    after="${args:i+7:1}"
-    if (( i > 0 )) && [[ "$before" != [[:space:]] ]]; then
-      continue
+    if (( marker_at >= 0 )); then
+      filter_part="${args:0:marker_at}"
+      focus="${args:marker_end}"
+
+      focus="$(trim "$focus")"
+      if (( ${#focus} >= 2 )); then
+        first="${focus:0:1}"
+        last="${focus: -1}"
+        inner="${focus:1:${#focus}-2}"
+        bare="${inner//\\$first/}"
+        if [[ "$first" == "$last" && ( "$first" == '"' || "$first" == "'" ) && "$bare" != *"$first"* ]]; then
+          focus="$inner"
+        elif [[ "${3-}" == "true" && "$focus" =~ (^|[[:space:]])--target($|[[:space:]]) ]]; then
+          REQUEST_FILTER="$(normalize_filter "$filter_part")"
+          REQUEST_ERROR="malformed-target"
+          return 0
+        fi
+      fi
+
+      if [[ -z "$focus" ]]; then
+        REQUEST_FILTER="$(normalize_filter "$filter_part")"
+        REQUEST_ERROR="malformed-focus"
+        return 0
+      fi
     fi
-    if (( i + 7 < ${#args} )) && [[ "$after" != [[:space:]] ]]; then
-      continue
-    fi
-    marker_at=$i
-    marker_end=$((i + 7))
-    break
-  done
-
-  if (( marker_at < 0 )); then
-    REQUEST_FILTER="$(normalize_filter "$filter_part")"
-    return 0
   fi
+  REQUEST_FOCUS="$focus"
 
-  filter_part="${args:0:marker_at}"
-  focus="${args:marker_end}"
+  if [[ "${3-}" == "true" ]]; then
+    marker_at=-1
+    marker_end=-1
+    for (( i = 0; i <= ${#filter_part} - 8; i++ )); do
+      [[ "${filter_part:i:8}" == "--target" ]] || continue
+      before="${filter_part:i-1:1}"
+      after="${filter_part:i+8:1}"
+      if (( i > 0 )) && [[ "$before" != [[:space:]] ]]; then
+        continue
+      fi
+      if (( i + 8 < ${#filter_part} )) && [[ "$after" != [[:space:]] ]]; then
+        continue
+      fi
+      marker_at=$i
+      marker_end=$((i + 8))
+      break
+    done
+
+    if (( marker_at >= 0 )); then
+      target="$(trim "${filter_part:marker_end}")"
+      filter_part="${filter_part:0:marker_at}"
+      REQUEST_FILTER="$(normalize_filter "$filter_part")"
+      REQUEST_TARGET="$target"
+
+      if [[ -z "$target" || "$target" == *[[:space:]]* ]]; then
+        REQUEST_ERROR="malformed-target"
+        return 0
+      fi
+      if [[ " $allowed_targets " != *" $target "* ]]; then
+        REQUEST_ERROR="invalid-target"
+        return 0
+      fi
+    fi
+  fi
 
   REQUEST_FILTER="$(normalize_filter "$filter_part")"
-  focus="$(trim "$focus")"
-  if (( ${#focus} >= 2 )); then
-    first="${focus:0:1}"
-    last="${focus: -1}"
-    if [[ ( "$first" == '"' && "$last" == '"' ) || ( "$first" == "'" && "$last" == "'" ) ]]; then
-      focus="${focus:1:${#focus}-2}"
-    fi
-  fi
-
-  if [[ -z "$focus" ]]; then
-    REQUEST_ERROR="malformed-focus"
-    return 0
-  fi
-
   REQUEST_FOCUS="$focus"
+  REQUEST_TARGET="$target"
 }
 
-# request_identity <filter> <focus> — stable, domain-separated input to
-# concurrency_key. Label-only text cannot reproduce a focused identity because
-# each form receives its own prefix. Focus is digested before whitespace
-# normalization because whitespace is meaningful in a regular expression.
+# request_identity <filter> <focus> <target>
+# Prefixes prevent label, focus, and target requests from colliding. Focus is
+# hashed before normalization because regex whitespace matters. No target keeps
+# the old identity.
 request_identity() {
+  local identity
   if [[ -z "${2-}" ]]; then
-    printf 'label-request %s' "${1-}"
+    identity="label-request ${1-}"
   else
-    printf 'focused-request %s focus-digest-%s' "${1-}" "$(short_digest "$2")"
+    identity="focused-request ${1-} focus-digest-$(short_digest "$2")"
+  fi
+
+  if [[ -n "${3-}" ]]; then
+    printf 'targeted-%s target-%s' "$identity" "$3"
+  else
+    printf '%s' "$identity"
   fi
 }
 
-# request_display <filter> <focus> — human-readable command suffix for checks.
+# request_display <filter> <focus> <target> — human-readable command suffix for checks.
 request_display() {
-  if [[ -z "${2-}" ]]; then
-    printf '%s' "${1-}"
-  else
-    printf '%s --focus "%s"' "${1-}" "$2"
+  local request="${1-}"
+  if [[ -n "${3-}" ]]; then
+    request="${request} --target ${3}"
   fi
+  if [[ -n "${2-}" ]]; then
+    request="${request} --focus \"${2}\""
+  fi
+  printf '%s' "$request"
 }
 
 # filter_is_balanced <string> — true when no ")" precedes its "(" and none is
@@ -175,7 +228,7 @@ short_digest() {
 # other. The digest is taken over the normalized filter, so it survives both the
 # punctuation loss and the truncation.
 concurrency_key() {
-  local filter normalized slug
+  local normalized slug
   normalized="$(normalize_filter "${1-}")"
   slug="$(sanitize_slug "$normalized" "${2:-40}")"
   printf '%s-%s' "${slug:-filter}" "$(short_digest "$normalized")"
@@ -267,6 +320,83 @@ is_authorized_association() {
   local association="${1-}"
   [[ -n "$association" ]] || return 1
   [[ " $AUTHORIZED_ASSOCIATIONS " == *" $association "* ]]
+}
+
+# refusal_details <reason> <command> <allowed-targets>
+# Convert a machine-readable start refusal into presentation-ready text so
+# callers do not have to reproduce a long expression tree in workflow YAML.
+# target-not-selected is routing state rather than a refusal and stays silent.
+# shellcheck disable=SC2034 # REFUSAL_* are outputs for start.sh and tests.
+refusal_details() {
+  local reason="${1-}" command_word="${2:-/test-e2e}" allowed_targets="${3-}"
+  local target allowed_display=""
+
+  REFUSAL_TITLE=""
+  REFUSAL_GUIDANCE=""
+
+  case "$reason" in
+    ""|target-not-selected)
+      return 0
+      ;;
+    malformed-focus)
+      REFUSAL_TITLE="Focus value is missing"
+      REFUSAL_GUIDANCE="Add a value after --focus. For example: \`${command_word} snapshots --focus \"creates snapshots\"\`."
+      ;;
+    malformed-target)
+      REFUSAL_TITLE="Target option is not valid"
+      REFUSAL_GUIDANCE="Add one target before \`--focus\`. For example: \`${command_word} snapshots --target pro\`."
+      ;;
+    invalid-target)
+      REFUSAL_TITLE="Invalid target"
+      if [[ -z "$allowed_targets" ]]; then
+        REFUSAL_GUIDANCE="No targets are configured."
+      else
+        for target in $allowed_targets; do
+          if [[ -n "$allowed_display" ]]; then
+            allowed_display+=", "
+          fi
+          allowed_display+="\`${target}\`"
+        done
+        REFUSAL_GUIDANCE="Use one of these targets: ${allowed_display}."
+      fi
+      ;;
+    fork)
+      REFUSAL_TITLE="\`fork\`"
+      REFUSAL_GUIDANCE="This command cannot run on pull requests from forks."
+      ;;
+    insufficient-permission)
+      REFUSAL_TITLE="\`insufficient-permission\`"
+      REFUSAL_GUIDANCE="You need access to this repository to run the command."
+      ;;
+    empty-filter)
+      REFUSAL_TITLE="\`empty-filter\`"
+      REFUSAL_GUIDANCE="Give it a label filter, for example \`${command_word} snapshots\`."
+      ;;
+    malformed-filter)
+      REFUSAL_TITLE="\`malformed-filter\`"
+      REFUSAL_GUIDANCE="The filter has unbalanced parentheses."
+      ;;
+    not-a-pull-request)
+      REFUSAL_TITLE="\`not-a-pull-request\`"
+      REFUSAL_GUIDANCE="Run this command on a pull request."
+      ;;
+    pull-request-closed)
+      REFUSAL_TITLE="\`pull-request-closed\`"
+      REFUSAL_GUIDANCE="Reopen the pull request before running the command."
+      ;;
+    pull-request-unreadable)
+      REFUSAL_TITLE="\`pull-request-unreadable\`"
+      REFUSAL_GUIDANCE="The pull request could not be read. Re-run the command; see the run log if it fails again."
+      ;;
+    check-run-not-created)
+      REFUSAL_TITLE="\`check-run-not-created\`"
+      REFUSAL_GUIDANCE="The check could not be opened. Re-run the command; see the run log if it fails again."
+      ;;
+    *)
+      REFUSAL_TITLE="\`${reason}\`"
+      REFUSAL_GUIDANCE="See the run log for details."
+      ;;
+  esac
 }
 
 # emit <name> <value> — write a step output and echo it for the log.
