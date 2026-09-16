@@ -1,0 +1,79 @@
+name: 'OSS mirror staleness'
+description: |
+  Report whether a downstream OSS mirror still carries every commit the monorepo
+  subtree has. Companion to oss-commit-sync: the export fails closed and stops,
+  which is correct but invisible, because a red push-triggered run sits in the
+  Actions tab while the mirror quietly stops advancing. Comparing refs rather
+  than run history also catches an export that stopped triggering at all.
+  Advisory: it never exits non-zero, and reports what it could not determine as
+  degraded rather than as a clean bill of health. Needs fetch-depth: 0.
+inputs:
+  subtree-prefix:
+    description: 'Path of the subtree within this repo, e.g. staging/github.com/loft-sh/vcluster. Must match the prefix the export uses.'
+    required: true
+  oss-repo:
+    description: 'Downstream OSS repository as owner/repo, e.g. loft-sh/vcluster.'
+    required: true
+  branch:
+    description: 'Branch to check, same name on both repos.'
+    required: true
+  github-token:
+    description: 'Token used to build the OSS remote URL; never logged. Read-only is enough: this check only fetches the OSS branch, so give it the least-privileged token that can (github.token suffices for a public OSS repo) rather than the write-capable PAT the export needs.'
+    required: true
+  max-age-hours:
+    description: 'How long the oldest un-mirrored commit may wait before the mirror counts as stale. Measured on the OLDEST commit still waiting, not the newest, so a commit that landed moments ago never alerts while a genuine stall always does. Keep it above the time a normal export takes plus the review time a back-sync PR realistically needs, or the check cries wolf on every divergence.'
+    required: false
+    default: '24'
+  exclude-paths:
+    description: 'Newline-separated paths (relative to the OSS repo root) the export never mirrors. Pass the same list given to oss-commit-sync: it holds the two trees to agree everywhere else, so without this the content comparison here never matches and the check falls back to the commit walk, which counts the commits the exporter skips without a record as backlog that never drains.'
+    required: false
+    default: ''
+  scan-limit:
+    description: 'How many commits to read on each side before giving up and reporting degraded. Exports are append-only and frequent, so the frontier sits near the tip; this bound only exists to keep the check off years of pre-merge OSS history.'
+    required: false
+    default: '500'
+outputs:
+  stale:
+    description: "True when the mirror is behind and the oldest un-mirrored commit has been waiting longer than max-age-hours. One exception, unconditional: a backlog deeper than scan-limit with no frontier in it at all sets this whatever the ages are, because at that depth the grace the threshold buys is already spent. That case sets degraded too. Alert on this OR on degraded: a check that could not answer is not a check that passed."
+    value: ${{ steps.check.outputs.stale }}
+  degraded:
+    description: "True when the check could not determine the answer (no OSS branch, shallow checkout, unreadable records, backlog deeper than scan-limit). Never treat this as healthy; it is the fail-safe that keeps an unanswerable check from reading as a green one."
+    value: ${{ steps.check.outputs.degraded }}
+  backlog-count:
+    description: "Number of subtree-touching commits on the branch that the mirror does not carry. Zero means in sync."
+    value: ${{ steps.check.outputs.backlog-count }}
+  frontier:
+    description: "The newest monorepo commit the mirror has a record of. Empty when none was found within scan-limit, which also sets degraded, and empty on a content match whose tip nothing recorded, since no record was located there either."
+    value: ${{ steps.check.outputs.frontier }}
+  export-unconfirmed:
+    description: "True when the mirror content matches but no export recorded the newest commit the export owed a record for. Not staleness: the content is current, so stale stays false. It is the one shape a dead export takes that produces no other signal, so gate on it alongside stale and degraded."
+    value: ${{ steps.check.outputs.export-unconfirmed }}
+  oss-tip:
+    description: "The OSS branch tip the check read."
+    value: ${{ steps.check.outputs.oss-tip }}
+  oldest-unmirrored:
+    description: "The oldest subtree commit the mirror does not carry, i.e. where the backlog starts. Empty when in sync."
+    value: ${{ steps.check.outputs.oldest-unmirrored }}
+  oldest-unmirrored-age-hours:
+    description: "How long that oldest un-mirrored commit has been waiting, in whole hours. This is the figure compared against max-age-hours."
+    value: ${{ steps.check.outputs.oldest-unmirrored-age-hours }}
+runs:
+  using: composite
+  steps:
+    - name: Check mirror staleness
+      id: check
+      shell: bash
+      env:
+        SUBTREE_PREFIX: ${{ inputs.subtree-prefix }}
+        # Two spellings on purpose: the URL carries the token and must never be
+        # printed, so everything human-facing reads OSS_REPO.
+        OSS_REMOTE: https://x-access-token:${{ inputs.github-token }}@github.com/${{ inputs.oss-repo }}.git
+        OSS_REPO: ${{ inputs.oss-repo }}
+        BRANCH: ${{ inputs.branch }}
+        EXCLUDE_PATHS: ${{ inputs.exclude-paths }}
+        MAX_AGE_HOURS: ${{ inputs.max-age-hours }}
+        SCAN_LIMIT: ${{ inputs.scan-limit }}
+      run: ${{ github.action_path }}/src/oss-mirror-staleness.sh
+branding:
+  icon: 'alert-circle'
+  color: 'orange'
