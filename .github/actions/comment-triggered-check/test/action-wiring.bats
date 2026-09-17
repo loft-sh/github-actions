@@ -34,3 +34,14 @@ START="$BATS_TEST_DIRNAME/../src/start.sh"
   run grep -Fq 'INPUT_ALLOWED_TARGETS-pro oss' "$START"
   [ "$status" -ne 0 ]
 }
+
+@test "fork support is opt-in and exposes the resolved repository relationship" {
+  run grep -A3 '^  allow-forks:' "$ACTION"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"default: 'false'"* ]]
+  grep -Fq 'INPUT_ALLOW_FORKS: ${{ inputs.allow-forks }}' "$ACTION"
+  grep -Fq 'is-fork:' "$ACTION"
+  grep -Fq 'value: ${{ steps.start.outputs.is-fork }}' "$ACTION"
+  grep -Fq 'dispatch-ref:' "$ACTION"
+  grep -Fq 'value: ${{ steps.start.outputs.dispatch-ref }}' "$ACTION"
+}

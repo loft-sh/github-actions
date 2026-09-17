@@ -44,6 +44,24 @@ setup() {
   [ "$REFUSAL_GUIDANCE" = "" ]
 }
 
+@test "refusal_details: an unreadable permission has a retry path" {
+  refusal_details "permission-unreadable" "/test-e2e" ""
+  [ "$REFUSAL_TITLE" = '`permission-unreadable`' ]
+  [ "$REFUSAL_GUIDANCE" = "Your repository permission could not be checked. Re-run the command; see the run log if it fails again." ]
+}
+
+@test "has_write_permission: accepts only write-level repository roles" {
+  has_write_permission "write"
+  has_write_permission "maintain"
+  has_write_permission "admin"
+  run has_write_permission "read"
+  [ "$status" -ne 0 ]
+  run has_write_permission "triage"
+  [ "$status" -ne 0 ]
+  run has_write_permission ""
+  [ "$status" -ne 0 ]
+}
+
 # --- parse_command -----------------------------------------------------------
 
 @test "parse_command: bare command matches with empty args" {

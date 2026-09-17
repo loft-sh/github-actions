@@ -30,6 +30,10 @@ inputs:
     description: 'start mode. How the commenter relates to the repository. Pass the github.event.comment.author_association context. OWNER, MEMBER and COLLABORATOR may run the command; anything else, including empty, may not.'
     required: false
     default: ''
+  allow-forks:
+    description: 'start mode. Allow fork pull requests only when the commenter has write, maintain, or admin repository permission. Disabled by default because the dispatched workflow may run fork code with secrets.'
+    required: false
+    default: 'false'
   pr-number:
     description: 'start mode. Pull request number. Pass the github.event.issue.number context.'
     required: false
@@ -107,10 +111,10 @@ outputs:
     description: 'Optional target following --target. Empty means no explicit target was requested.'
     value: ${{ steps.start.outputs.target }}
   should-run:
-    description: 'The caller''s execution gate. "true" only when a check-run was actually opened, so it is false for a comment that was not a command, an empty or unbalanced filter, an invalid or non-selected target, a fork, a closed or unreadable pull request, a rejected author_association, and a failed check-run creation. Read reason for which. Note the association test is not a permission check: MEMBER means organization membership, and COLLABORATOR does not say at what level.'
+    description: 'The caller''s execution gate. "true" only when a check-run was actually opened. Forks are refused unless allow-forks is true and the commenter has write-level permission. Read reason when false.'
     value: ${{ steps.start.outputs.should-run }}
   reason:
-    description: 'Why the command will not run: fork, insufficient-permission, empty-filter, malformed-filter, malformed-focus, malformed-target, invalid-target, target-not-selected, not-a-pull-request, pull-request-closed, pull-request-unreadable, or check-run-not-created. Empty when it will.'
+    description: 'Why the command will not run: fork, insufficient-permission, permission-unreadable, empty-filter, malformed-filter, malformed-focus, malformed-target, invalid-target, target-not-selected, not-a-pull-request, pull-request-closed, pull-request-unreadable, or check-run-not-created. Empty when it will.'
     value: ${{ steps.start.outputs.reason }}
   reason-title:
     description: 'start mode. Presentation-ready title for reason. Empty when the command will run or this invocation was not selected.'
@@ -127,6 +131,12 @@ outputs:
   base-ref:
     description: 'Resolved base branch of the pull request. The event does not carry it either.'
     value: ${{ steps.start.outputs.base-ref }}
+  is-fork:
+    description: 'start mode. "true" when the resolved pull request comes from another repository, "false" for a same-repository pull request, and empty when no pull request was resolved.'
+    value: ${{ steps.start.outputs.is-fork }}
+  dispatch-ref:
+    description: 'start mode. Branch whose workflow should receive the dispatch: the head branch for a same-repository pull request and the trusted base branch for a fork.'
+    value: ${{ steps.start.outputs.dispatch-ref }}
   concurrency-key:
     description: 'Domain-separated request identity reduced to a lowercase slug plus an eight-character digest, safe to interpolate into a concurrency group. Distinct filters, focuses, and targets do not share a group.'
     value: ${{ steps.start.outputs.concurrency-key }}
@@ -160,6 +170,7 @@ runs:
         INPUT_COMMENT_BODY: ${{ inputs.comment-body }}
         INPUT_COMMENT_AUTHOR: ${{ inputs.comment-author }}
         INPUT_AUTHOR_ASSOCIATION: ${{ inputs.author-association }}
+        INPUT_ALLOW_FORKS: ${{ inputs.allow-forks }}
         INPUT_PR_NUMBER: ${{ inputs.pr-number }}
         INPUT_REPO: ${{ inputs.repo }}
         INPUT_CHECK_NAME_PREFIX: ${{ inputs.check-name-prefix }}
