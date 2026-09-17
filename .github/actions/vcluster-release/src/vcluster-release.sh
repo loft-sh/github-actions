@@ -263,14 +263,24 @@ resolve_target() {
 # Distinguishing the two matters to every caller: an unreachable API must never be
 # silently read as "absent" (a missed double-cut guard) or "missing" (a wrong branch).
 api_exists() {
-  local path="$1" what="$2" headers http_code
-  headers="$(gh api "$path" --silent -i 2>/dev/null || true)"
-  http_code="$(printf '%s\n' "$headers" | head -1 | awk '{print $2}')"
+  local path="$1" what="$2" out http_code
+  # stderr is merged, not discarded. On the no-status path gh's own message is
+  # the only evidence of what went wrong, and dropping it leaves a diagnosis
+  # that names three causes and distinguishes none of them. Merging is safe
+  # because the status line is matched by prefix rather than by position.
+  out="$(gh api "$path" --silent -i 2>&1 || true)"
+  # `|| true` is load-bearing under `set -o pipefail`: on the no-status path grep
+  # matches nothing and exits 1, which would abort here and skip the very
+  # diagnostic this function exists to print.
+  http_code="$(printf '%s\n' "$out" | grep -m1 '^HTTP/' | awk '{print $2}' || true)"
   case "$http_code" in
     200) return 0 ;;
     404) return 1 ;;
     "")
-      echo "::error::failed to reach GitHub API for ${what} (no HTTP status - DNS, rate-limit, or auth). Not treating as absent." >&2
+      # Newlines flattened before interpolation, matching the treatment of gh
+      # output elsewhere in this file: a multi-line value would otherwise break
+      # the annotation and let response text forge a second workflow command.
+      echo "::error::failed to reach GitHub API for ${what} (no HTTP status - DNS, rate-limit, or auth). Not treating as absent. gh said: $(printf '%s' "${out:-<no output>}" | LC_ALL=C tr '\n\r\t' '   ')" >&2
       exit 1
       ;;
     *)
@@ -593,12 +603,29 @@ create_tag() {
   # ref-response shape jq would otherwise print the literal "null" and exit 0
   # (set -e does not catch it), producing a GitHub 422 "Invalid SHA" instead of
   # a meaningful diagnostic.
-  sha="$(gh api "repos/${repo}/git/refs/heads/${branch}" --jq '.object.sha // empty')"
+  # Singular `git/ref/heads/`, for the same reason the tag probe above uses the
+  # singular tags form: the plural endpoint falls back to prefix matching and
+  # answers with an ARRAY of near-misses when the exact ref is gone, which turns
+  # a deleted-branch race into a jq type error instead of a clean 404.
+  #
+  # Checked rather than bare, so the failure keeps its own message: under set -e
+  # a bare assignment aborts the moment gh exits non-zero, which left the `-z`
+  # diagnostic below reachable only when gh succeeded with empty output.
+  if ! sha="$(gh api "repos/${repo}/git/ref/heads/${branch}" --jq '.object.sha // empty')"; then
+    echo "::error::could not read HEAD of branch '${branch}' in ${repo}; it may have been deleted after the existence check. See the gh error above." >&2
+    exit 1
+  fi
   if [[ -z "$sha" ]]; then
     echo "::error::could not resolve HEAD sha for branch '${branch}' in ${repo}" >&2
     exit 1
   fi
-  gh api -X POST "repos/${repo}/git/refs" -f ref="refs/tags/${tag}" -f sha="${sha}" >/dev/null
+  # Checked for the same reason: under set -e a bare call aborts with gh's raw
+  # one-liner and no ::error:: annotation, on the one path where the operator is
+  # left with a half-finished cut and no guidance.
+  if ! gh api -X POST "repos/${repo}/git/refs" -f ref="refs/tags/${tag}" -f sha="${sha}" >/dev/null; then
+    echo "::error::failed to create tag ${tag} in ${repo} at ${sha}. Either the token lacks write access on refs in ${repo} (a protected-tag rule will also reject it), or a concurrent cut created ${tag} after the double-cut guard ran. Nothing was dispatched. See the gh error above." >&2
+    exit 1
+  fi
   echo "created tag ${tag} in ${repo} at ${branch} (${sha})"
 }
 

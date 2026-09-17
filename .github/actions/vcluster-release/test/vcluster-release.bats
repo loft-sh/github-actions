@@ -63,7 +63,15 @@ if [[ "$sub" == "api" ]]; then
   # GH_STUB_UNEXPECTED=1 simulates an unexpected status (403/500) that is neither
   # 200 nor 404 - it must abort, not fall back.
   emit_status() {
-    if [[ "${GH_STUB_TRANSIENT:-}" == "1" ]]; then exit 1; fi
+    if [[ "${GH_STUB_TRANSIENT:-}" == "1" ]]; then
+      # Real gh writes the cause to stderr and prints no status line.
+      if [[ "${GH_STUB_TRANSIENT_MULTILINE:-}" == "1" ]]; then
+        printf 'gh: dial tcp\n::error::FORGED\n' >&2
+      else
+        echo "gh: dial tcp: lookup api.github.com" >&2
+      fi
+      exit 1
+    fi
     if [[ "$2" == "tags" && "${GH_STUB_TRANSIENT_TAGS:-}" == "1" ]]; then exit 1; fi
     if [[ "${GH_STUB_UNEXPECTED:-}" == "1" ]]; then echo "HTTP/2.0 403 Forbidden"; exit 1; fi
     if [[ "$1" == "0" ]]; then echo "HTTP/2.0 200 OK"; exit 0; else echo "HTTP/2.0 404 Not Found"; exit 1; fi
@@ -167,8 +175,19 @@ if [[ "$sub" == "api" ]]; then
     repos/*/git/tags/*)
       # Peeling an annotated tag object to the commit it points at.
       echo "deadbeefcafe1234"; exit 0 ;;
-    repos/*/git/refs/heads/*)
+    repos/*/git/ref/heads/*)
+      # Singular endpoint: exact match only, mirroring the real API.
+      # GH_STUB_HEAD_MISSING=1 makes only this probe 404, simulating a branch
+      # deleted between require_branch and create_tag.
+      if [[ "${GH_STUB_HEAD_MISSING:-}" == "1" ]]; then
+        echo "gh: Not Found (HTTP 404)" >&2; exit 1
+      fi
       echo "deadbeefcafe"; exit 0 ;;
+    repos/*/git/refs/heads/*)
+      # Plural endpoint: falls back to an array of prefix matches when the exact
+      # ref is gone, so `--jq .object.sha` errors out. Kept so a regression from
+      # the singular form is visible rather than silently equivalent.
+      echo "jq: error: Cannot index array with string \"object\"" >&2; exit 1 ;;
     repos/*/pulls*)
       # Emulate `gh api <pulls> --jq "$BUMP_PR_JQ"`. The stub replaces gh (no
       # real jq), so echo the exact tuple wait_for_bump_merge parses. A merged
@@ -202,7 +221,14 @@ if [[ "$sub" == "api" ]]; then
     *)
       # POST repos/<repo>/git/refs and anything else: succeed. Record tag
       # creation so GH_STUB_RUNS_FAIL_AFTER_TAG can target the barrier only.
-      case "$path" in repos/*/git/refs) : > "$(dirname "$0")/tag_created" ;; esac
+      case "$path" in
+        repos/*/git/refs)
+          : > "$(dirname "$0")/tag_created"
+          # A protected-ref rule or a concurrent cut rejects the create.
+          if [[ "${GH_STUB_TAG_POST_FAILS:-}" == "1" ]]; then
+            echo "gh: Reference already exists (HTTP 422)" >&2; exit 1
+          fi ;;
+      esac
       exit 0 ;;
   esac
 fi
@@ -326,6 +352,52 @@ EOF
   INPUT_VERSION="v0.36" INPUT_DRY_RUN="true" run main
   [ "$status" -ne 0 ]
   [[ "$output" == *"is not a valid release version"* ]]
+}
+
+# ---- create_tag / api_exists diagnostics (DEVOPS-1540) ----
+#
+# These four paths all failed the same way before: the script aborted under
+# set -e with gh's raw output and no ::error:: annotation, on exactly the runs
+# where the operator most needs to know what happened.
+
+@test "create_tag: a branch deleted mid-cut is a clean error, not a jq crash" {
+  # require_branch passed a moment ago, so this is the deleted-branch race. The
+  # singular git/ref/heads/ endpoint turns it into a 404; the plural one would
+  # answer with an array of prefix matches and blow up inside --jq instead.
+  export GH_STUB_HEAD_MISSING=1 DRY_RUN=false
+  run create_tag "loft-sh/vcluster" "v0.37" "v0.37.1"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"could not read HEAD of branch 'v0.37'"* ]]
+  [[ "$output" == *"deleted after the existence check"* ]]
+}
+
+@test "create_tag: a rejected tag POST fails loudly" {
+  export GH_STUB_TAG_POST_FAILS=1 DRY_RUN=false
+  run create_tag "loft-sh/vcluster" "v0.37" "v0.37.1"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"failed to create tag v0.37.1"* ]]
+  # The two live causes have different remedies, so both are named.
+  [[ "$output" == *"lacks write access"* ]]
+  [[ "$output" == *"concurrent cut"* ]]
+}
+
+@test "api_exists: a transient failure surfaces gh's own error" {
+  export GH_STUB_TRANSIENT=1
+  run api_exists "repos/loft-sh/vcluster/branches/main" "branch main"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Not treating as absent"* ]]
+  # Without this the message names three causes and distinguishes none of them.
+  [[ "$output" == *"dial tcp"* ]]
+}
+
+@test "api_exists: a multi-line gh error cannot forge a workflow command" {
+  export GH_STUB_TRANSIENT=1 GH_STUB_TRANSIENT_MULTILINE=1
+  run api_exists "repos/loft-sh/vcluster/branches/main" "branch main"
+  [ "$status" -ne 0 ]
+  # Kept as inline text so the diagnostic is not lost...
+  [[ "$output" == *"FORGED"* ]]
+  # ...but flattened, so it cannot start a line and be read as a second command.
+  [ "$(printf '%s\n' "$output" | grep -c '^::error::')" -eq 1 ]
 }
 
 # ---- main: a bare version routes and tags identically to the v-prefixed one ----
