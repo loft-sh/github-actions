@@ -33,8 +33,11 @@ inputs:
     required: false
     default: '500'
 outputs:
+  needs-attention:
+    description: "The output to gate on. True when any of stale, degraded or export-unconfirmed is, i.e. whenever a human should look. It exists because the three are separate findings but one decision, and a caller that gates on two of them reintroduces the silence this check was written to end. Read the three individually to write the message, not to decide whether to send it."
+    value: ${{ steps.check.outputs.needs-attention }}
   stale:
-    description: "True when the mirror is behind and the oldest un-mirrored commit has been waiting longer than max-age-hours. One exception, unconditional: a backlog deeper than scan-limit with no frontier in it at all sets this whatever the ages are, because at that depth the grace the threshold buys is already spent. That case sets degraded too. Alert on this OR on degraded: a check that could not answer is not a check that passed."
+    description: "True when the mirror is behind and the oldest un-mirrored commit has been waiting longer than max-age-hours. One exception, unconditional: a backlog deeper than scan-limit with no frontier in it at all sets this whatever the ages are, because at that depth the grace the threshold buys is already spent. That case sets degraded too, so the age reported alongside it may be under the threshold."
     value: ${{ steps.check.outputs.stale }}
   degraded:
     description: "True when the check could not determine the answer (no OSS branch, shallow checkout, unreadable records, backlog deeper than scan-limit). Never treat this as healthy; it is the fail-safe that keeps an unanswerable check from reading as a green one."
@@ -46,7 +49,7 @@ outputs:
     description: "The newest monorepo commit the mirror has a record of. Empty when none was found within scan-limit, which also sets degraded, and empty on a content match whose tip nothing recorded, since no record was located there either."
     value: ${{ steps.check.outputs.frontier }}
   export-unconfirmed:
-    description: "True when the mirror content matches but no export recorded the newest commit the export owed a record for. Not staleness: the content is current, so stale stays false. It is the one shape a dead export takes that produces no other signal, so gate on it alongside stale and degraded."
+    description: "True when the mirror content matches but no export recorded the newest commit the export owed a record for. Not staleness: the content is current, so stale stays false. It is the one shape a dead export takes that produces no other signal, which is why needs-attention covers it."
     value: ${{ steps.check.outputs.export-unconfirmed }}
   oss-tip:
     description: "The OSS branch tip the check read."

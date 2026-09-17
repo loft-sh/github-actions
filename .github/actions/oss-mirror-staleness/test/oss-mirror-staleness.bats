@@ -335,6 +335,7 @@ Monorepo-Commit: 0000000000000000000000000000000000000000"
   [ -n "$(out degraded)" ]
   [ -n "$(out backlog-count)" ]
   [ -n "$(out export-unconfirmed)" ]
+  [ -n "$(out needs-attention)" ]
 }
 
 @test "the token in the remote URL never reaches the step summary" {
@@ -722,3 +723,78 @@ Monorepo-Commit: $m1"
   grep -q "Stale" "$ROOT/summary.md"
 }
 
+
+@test "needs-attention is raised by every finding a human has to see" {
+  # The three findings are separate answers but one decision, and a caller that
+  # gates on two of them is silent for the third. Each is driven here through the
+  # path that produces it, because the risk is a path that forgets to raise it.
+
+  # stale
+  mono_commit "feat: one" 90 >/dev/null
+  MAX_AGE_HOURS=24 run bash "$CHECK"
+  [ "$status" -eq 0 ]
+  [ "$(out stale)" = "true" ]
+  [ "$(out needs-attention)" = "true" ]
+
+  # degraded
+  : >"$GITHUB_OUTPUT"
+  OSS_REMOTE="$ROOT/does-not-exist.git" run bash "$CHECK"
+  [ "$status" -eq 0 ]
+  [ "$(out degraded)" = "true" ]
+  [ "$(out needs-attention)" = "true" ]
+
+  # export-unconfirmed
+  : >"$GITHUB_OUTPUT"
+  oss_mirror_content "export"
+  (
+    cd "$MONO"
+    echo "adds a line" >>"$PFX/pkg/app.go"
+    git add . && git commit -qm "feat: add"
+    git revert --no-edit HEAD >/dev/null
+  )
+  run bash "$CHECK"
+  [ "$status" -eq 0 ]
+  [ "$(out export-unconfirmed)" = "true" ]
+  [ "$(out stale)" = "false" ]
+  [ "$(out degraded)" = "false" ]
+  [ "$(out needs-attention)" = "true" ]
+}
+
+@test "needs-attention stays false while nothing wants a human" {
+  local m1
+  m1=$(mono_commit "feat: one")
+  oss_record "feat: one
+
+Monorepo-Commit: $m1"
+
+  run bash "$CHECK"
+  [ "$status" -eq 0 ]
+  [ "$(out needs-attention)" = "false" ]
+  [ "$(out stale)" = "false" ]
+  [ "$(out degraded)" = "false" ]
+  [ "$(out export-unconfirmed)" = "false" ]
+
+  # Catching up is not a finding either: a commit that landed minutes ago has not
+  # had time to mirror, so a caller gating on needs-attention must not be paged.
+  : >"$GITHUB_OUTPUT"
+  mono_commit "feat: two" >/dev/null
+  MAX_AGE_HOURS=24 run bash "$CHECK"
+  [ "$status" -eq 0 ]
+  [ "$(out backlog-count)" = "1" ]
+  [ "$(out needs-attention)" = "false" ]
+}
+
+@test "an unreachable OSS remote says why, not just that it could not" {
+  # The pairing with the redaction test above is the point. 2>/dev/null passes
+  # that one, and leaves whoever reads a check written to end silent failure
+  # guessing between a renamed branch, an expired token and a network fault. So
+  # git's own diagnosis has to survive the scrubbing rather than be thrown away
+  # along with the URL.
+  export OSS_REMOTE="file://x-access-token:ghp_supersecrettoken@/nonexistent/vcluster.git"
+  run bash "$CHECK"
+  [ "$status" -eq 0 ]
+  [ "$(out degraded)" = "true" ]
+  [[ "$output" != *"ghp_supersecrettoken"* ]]
+  # Something of git's own, not just our own summary line.
+  [[ "$output" == *"does not appear to be a git repository"* ]]
+}

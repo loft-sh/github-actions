@@ -16,16 +16,34 @@ set -euo pipefail
 #
 # Advisory: this never exits non-zero, since silence is the failure it exists to
 # catch and it must not become a new way to fail quietly. When it cannot answer
-# it sets degraded, and CALLERS MUST ALERT ON degraded AS WELL AS stale.
+# it sets degraded rather than reporting a clean bill of health.
+#
+# Three findings want a human (stale, degraded, export-unconfirmed) and the cost
+# of a caller gating on two of them is the silence this exists to end, so
+# needs-attention is the OR of all three and the output a caller should gate on.
+# The three stay separate for the message; needs-attention decides whether to
+# send one.
 #
 # Required env: SUBTREE_PREFIX, OSS_REMOTE, OSS_REPO, BRANCH.
 # Optional env: EXCLUDE_PATHS, MAX_AGE_HOURS, SCAN_LIMIT, GITHUB_OUTPUT,
 # GITHUB_STEP_SUMMARY.
 
+# The exporter's own trailer reading, exclude pathspecs and remote scrubbing,
+# not a second opinion about them. This check's entire job is agreeing with what
+# the export did, and "no looser and no stricter" is not an invariant two copies
+# can hold on their own: a reading that drifts either way here reports a mirror
+# that is fine as broken, or a mirror that has stopped advancing as in sync.
+# Reaching across actions the way semver-validation reaches into setup-semstat.
+# A caller pinning oss-mirror-staleness/v1 checks out the whole repository at
+# that tag, so the lib.sh read here is always the one this version was written
+# against.
+# shellcheck source=.github/actions/oss-commit-sync/lib.sh disable=SC1091
+source "$(dirname "${BASH_SOURCE[0]}")/../../oss-commit-sync/lib.sh"
+
 # Defaulted rather than asserted with ${VAR:?}, which aborts with status 1 before
-# a single output exists: a caller gating on stale or degraded would then see
-# neither, which is the silence this check was written to break. main validates
-# them through degrade instead.
+# a single output exists: a caller gating on needs-attention would then see
+# nothing at all, which is the silence this check was written to break. main
+# validates them through degrade instead.
 SUBTREE_PREFIX="${SUBTREE_PREFIX:-}"
 # A trailing slash silently changes what pathspecs match, so settle the
 # spelling once, here, rather than at each use.
@@ -43,8 +61,6 @@ GITHUB_STEP_SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/null}"
 # Namespaced so the fetch cannot collide with a real remote-tracking ref in the
 # caller's checkout. Nothing reads it before main has rejected an empty BRANCH.
 FETCH_REF="refs/oss-mirror-staleness/${BRANCH}"
-
-emit() { printf '%s=%s\n' "$1" "$2" >>"${GITHUB_OUTPUT}"; }
 
 summary_heading_written=""
 
@@ -68,6 +84,7 @@ summarize() {
 degrade() {
   echo "::warning::${1}"
   emit degraded true
+  emit needs-attention true
   summarize "Could not determine mirror staleness: ${1}"
   exit 0
 }
@@ -82,19 +99,6 @@ validate_numeric() {
   fi
 }
 
-# The paths the export never mirrors, as pathspecs. Same list the exporter is
-# given: it holds the OSS tree and the subtree tree to agree everywhere else and
-# says so, so a tree comparison here that demanded equality everywhere would
-# never match on any repo that configures them.
-build_excludes() {
-  excludes=()
-  local path
-  while IFS= read -r path; do
-    [ -n "${path}" ] && excludes+=(":(exclude)${path}")
-  done <<<"${EXCLUDE_PATHS}"
-  return 0
-}
-
 # A caller reading `stale` after a degraded run must get a real answer, not an
 # empty string that compares equal to nothing.
 emit_defaults() {
@@ -106,40 +110,33 @@ emit_defaults() {
   emit oldest-unmirrored ""
   emit oldest-unmirrored-age-hours 0
   emit export-unconfirmed false
+  emit needs-attention false
 }
 
-# Git's trailer block only, never the message body, matching the exporter (see
-# trailer_reads_body in oss-commit-sync lib.sh). OSS is public and takes outside
-# contributions, so a body line is contributor-controlled: a column-zero
-# "Monorepo-Commit: <sha>" in one would otherwise be read here as a record we
-# wrote, and a record is what ends the backlog walk, so it would report a mirror
-# that has stopped advancing as in sync.
+# Every Monorepo-Commit value recorded on the OSS branch, deduped.
 #
-# This narrows that, it does not end it, exactly as lib.sh says of the same key:
-# the line written where git reads it, as the last paragraph, is still accepted,
-# because at this layer nothing tells it apart from a record we wrote. What is
-# closed is the variant a contributor gets for free by putting the line anywhere
-# in a PR description, which a squash then leaves in the body. Closing the rest
-# needs provenance this layer does not have; read the lib.sh comment for the
-# whole statement rather than trusting this to be a boundary.
+# trailer_scan, because it is what the exporter writes these through and reads
+# them back with, and because it owns the decision this key most depends on:
+# trailer_reads_body refuses the message body for Monorepo-Commit alone. OSS is
+# public and takes outside contributions, so a body line is contributor
+# controlled, and a column-zero "Monorepo-Commit: <sha>" in one would otherwise
+# read here as a record we wrote -- a record being what ends the backlog walk, so
+# a mirror that has stopped advancing would report as in sync. Reimplementing the
+# read would mean owning that trust boundary in a second place.
 #
-# Nothing legitimate is lost either way: replay_commit writes the trailer with
-# `interpret-trailers --no-divider` precisely so it lands in the block, and
-# export pushes straight to OSS with no PR and no squash in between. Unlike
-# Oss-Commit, this key cannot be orphaned out of the block.
+# It narrows the forgery rather than ending it; lib.sh states the same exposure
+# for the same key and what closing it would take. Read that comment rather than
+# trusting this to be a boundary.
 #
 # Returns 0 with the values, 1 when there are none, 2 when git itself failed.
-# Reading git inside the pipeline would hide its status behind grep's: under
-# pipefail the rightmost non-zero wins, so a missing ref arrives as grep's
-# no-match and gets the wrong diagnosis. Bounded because the frontier always sits
-# near the tip, and an unbounded walk would read years of pre-merge OSS history.
+# Bounded because the frontier always sits near the tip, and an unbounded walk
+# would read years of pre-merge OSS history.
 read_recorded_anchors() {
-  local values
-  values="$(git log --max-count="$((10#$SCAN_LIMIT))" \
-    --format='%(trailers:key=Monorepo-Commit,valueonly,unfold)' "${FETCH_REF}")" || return 2
-  printf '%s\n' "${values}" |
-    grep -oiE '^[0-9a-f]{7,64}$' |
-    tr 'A-F' 'a-f' | sort -u
+  local entries
+  entries="$(trailer_scan "$MONOREPO_TRAILER" 1 \
+    --max-count="$((10#$SCAN_LIMIT))" "${FETCH_REF}")" || return 2
+  [ -n "${entries}" ] || return 1
+  awk '{print $2}' <<<"${entries}" | sort -u
 }
 
 # The exporter skips commits that came from OSS and never records them, so
@@ -148,51 +145,17 @@ read_recorded_anchors() {
 # Reading more strictly than the exporter is not the safe direction it looks
 # like. Stricter means a commit the exporter has already skipped, and will never
 # record, stays in the backlog for good: a stale that no export can drain. So
-# this reads the same union the exporter reads (oss-commit-sync lib.sh
-# trailer_scan), and is deliberately no narrower.
+# this asks the exporter's own reader instead of matching it by hand -- the same
+# union of git's trailer block, which accepts a space before the colon and
+# unfolds a value split across lines, and the body scan that recovers a record a
+# squash orphaned out of the block, with the same fold and shape rules.
 #
 # 0 yes, 1 no, 2 git failed. The tripling matters: collapsing a git failure into
 # "no" would route the commit into a skip it was never entitled to.
 originated_on_oss() {
-  local block message
-  # Git reading its own trailer block, which is the exporter's first source.
-  # Both shapes it accepts and a hand-written regex does not are real: a space
-  # before the colon, and a value folded onto the next line, which unfold joins
-  # back up. Hex all through and no longer than 40, matching the exporter shape
-  # test, so a folded value that joins into prose fails here as it does there.
-  block="$(git log -1 --format='%(trailers:key=Oss-Commit,valueonly,unfold)' "$1")" || return 2
-  if grep -qiE '^[0-9a-f]{7,40}[[:space:]]*$' <<<"${block}"; then
-    return 0
-  fi
-  # Then the body, for a record a squash orphaned out of the block, with the
-  # laxer key matching the exporter allows down there. A line whose successor is
-  # indented was a folded value and records nothing, which is the rule that keeps
-  # this scan agreeing with the unfolded block reading above.
-  # (No apostrophes in the awk: it is a single-quoted shell string.)
-  message="$(git log -1 --format='%B' "$1")" || return 2
-  awk -v min=7 '
-    function shaped(candidate) {
-      return (candidate ~ /^[0-9a-f]+$/ && length(candidate) >= min && length(candidate) <= 40)
-    }
-    /^[ \t]/ && /[^ \t\r]/ { pending = ""; next }
-    {
-      if (pending != "" && shaped(pending)) { found = 1; exit }
-      line = tolower($0)
-      sub(/[ \t\r]+$/, "", line)
-      pending = ""
-      if (substr(line, 1, 10) != "oss-commit") next
-      rest = substr(line, 11)
-      sub(/^[ \t]+/, "", rest)
-      if (substr(rest, 1, 1) != ":") next
-      rest = substr(rest, 2)
-      sub(/^[ \t]+/, "", rest)
-      pending = rest
-    }
-    END {
-      if (!found && pending != "" && shaped(pending)) found = 1
-      exit(found ? 0 : 1)
-    }
-  ' <<<"${message}"
+  local entries
+  entries="$(trailer_scan "$OSS_TRAILER" 1 -1 "$1")" || return 2
+  [ -n "${entries}" ]
 }
 
 # The exporter refuses merges outright rather than skipping them, so one in the
@@ -281,7 +244,12 @@ main() {
     degrade "the checkout is shallow; this check needs fetch-depth: 0 to walk subtree history"
   fi
 
-  git fetch --no-tags --quiet "${OSS_REMOTE}" "+refs/heads/${BRANCH}:${FETCH_REF}" 2>/dev/null ||
+  # git_scrubbed rather than 2>/dev/null: git prints the remote URL on its
+  # failure lines and that URL carries the token, but throwing the whole message
+  # away leaves whoever reads a check written to end silent failure guessing
+  # between a renamed branch, an expired token and a network fault. The helper
+  # redacts the URL and keeps the diagnosis.
+  git_scrubbed fetch --no-tags --quiet "${OSS_REMOTE}" "+refs/heads/${BRANCH}:${FETCH_REF}" ||
     degrade "could not fetch ${BRANCH} from the OSS remote (missing branch, bad token, or network)"
 
   local oss_tip
@@ -316,6 +284,9 @@ main() {
   # applies as a no-op never gets a record, so the walk alone would count it as
   # backlog forever.
   local oss_tree mono_tree excludes=()
+  # The exporter's own, for the reason the trailer reads are: it holds the two
+  # trees to agree everywhere except these paths, so a comparison built from a
+  # different list would never match on a repo that configures any.
   build_excludes
   oss_tree="$(git rev-parse --verify --quiet "${FETCH_REF}^{tree}")" ||
     degrade "could not read the OSS branch tree"
@@ -356,6 +327,7 @@ main() {
         # and a warning in the log of a scheduled run is the same invisibility
         # the whole action was written to end.
         emit export-unconfirmed true
+        emit needs-attention true
         echo "::warning::${BRANCH} matches the mirror by content, but no export recorded ${owed}; check that the export is still running"
         summarize "No export recorded \`${owed:0:12}\`, the newest commit it owed a record for, so the trees agree for some other reason. Worth confirming the export still runs on this branch."
       fi
@@ -459,6 +431,7 @@ main() {
 
   if [ "${age_hours}" -ge "$((10#$MAX_AGE_HOURS))" ]; then
     emit stale true
+    emit needs-attention true
     echo "::warning::${OSS_REPO} ${BRANCH} is ${backlog} commit(s) behind ${SUBTREE_PREFIX}; the oldest has been waiting ${age_hours}h"
     summarize "**Stale.** \`${backlog}\` commit(s) in \`${SUBTREE_PREFIX}\` are missing from the mirror. The oldest (\`${oldest_unmirrored:0:12}\`) has been waiting **${age_hours}h**, past the ${MAX_AGE_HOURS}h threshold."
   else
