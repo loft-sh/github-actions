@@ -77,7 +77,7 @@ teardown() {
 
 # Install a fake `gh` on PATH so the CREATE_PR=true paths can be exercised
 # hermetically (no network). Controlled by env:
-#   GH_PRLIST=empty|exists|legacy|fail -- what `gh pr list` returns (default empty)
+#   GH_PRLIST=empty|exists|legacy|missing-owner|missing-name|fail -- list result
 #   GH_CREATE_LOG=<file>         -- `gh pr create` appends its argv here (one/line)
 install_fake_gh() {
   mkdir -p "$ROOT/bin"
@@ -85,12 +85,15 @@ install_fake_gh() {
 #!/usr/bin/env bash
 if [ "$1" = pr ] && [ "$2" = list ]; then
   printf '%s\n' "$@" >> "${GH_PRLIST_LOG:-/dev/null}"
-  jq_filter=""
+  repo=""
   while [ "$#" -gt 0 ]; do
-    if [ "$1" = --jq ]; then jq_filter="$2"; break; fi
-    shift
+    case "$1" in
+      --repo) repo="$2"; shift 2 ;;
+      --jq) echo "stub: embedded --jq is unsupported" >&2; exit 1 ;;
+      *) shift ;;
+    esac
   done
-  [ -n "$jq_filter" ] || { echo "stub: --jq missing" >&2; exit 1; }
+  [ -n "$repo" ] || { echo "stub: --repo missing" >&2; exit 1; }
   # GH_PRLIST_SEQ gives one behaviour per call ("empty fail"), so a mixed route
   # can fail the second half's lookup only. Consumed via a counter file.
   if [ -n "${GH_PRLIST_SEQ:-}" ]; then
@@ -100,24 +103,39 @@ if [ "$1" = pr ] && [ "$2" = list ]; then
     [ -n "$GH_PRLIST" ] || GH_PRLIST=empty
   fi
   case "${GH_PRLIST:-empty}" in
-    fail) exit 3 ;;
+    fail)
+      echo "gh: simulated lookup failure" >&2
+      exit 3
+      ;;
     exists)
-      fixture="$(jq -n --arg head "$BACKPORT_BRANCH" --arg repo "$EXPECTED_REPO" '
-        [{number: 42, headRefName: $head, headRepository: {nameWithOwner: $repo}, body: "", url: "https://github.com/x/y/pull/42"}]')"
+      fixture="$(jq -n --arg head "backport/${TARGET_BRANCH}/$(git -C "$MONO" rev-parse HEAD)" --arg repo "$repo" '
+        ($repo | split("/")) as $repoParts |
+        [{number: 42, headRefName: $head, headRepository: {id: "repo-id", name: $repoParts[1]}, headRepositoryOwner: {login: $repoParts[0]}, body: "", url: "https://github.com/x/y/pull/42"}]')"
+      ;;
+    missing-owner)
+      fixture="$(jq -n --arg head "backport/${TARGET_BRANCH}/$(git -C "$MONO" rev-parse HEAD)" --arg repo "$repo" '
+        ($repo | split("/")) as $repoParts |
+        [{number: 42, headRefName: $head, headRepository: {id: "repo-id", name: $repoParts[1]}, headRepositoryOwner: {}, body: "", url: "https://github.com/x/y/pull/42"}]')"
+      ;;
+    missing-name)
+      fixture="$(jq -n --arg head "backport/${TARGET_BRANCH}/$(git -C "$MONO" rev-parse HEAD)" --arg repo "$repo" '
+        ($repo | split("/")) as $repoParts |
+        [{number: 42, headRefName: $head, headRepository: {id: "repo-id"}, headRepositoryOwner: {login: $repoParts[0]}, body: "", url: "https://github.com/x/y/pull/42"}]')"
       ;;
     legacy)
-      fixture="$(jq -n --arg full "$BACKPORT_BRANCH" --arg old "$GH_LEGACY_HEAD" \
-        --arg repo "$EXPECTED_REPO" --arg source "$SOURCE_PR_REF" '
+      fixture="$(jq -n --arg full "backport/${TARGET_BRANCH}/$(git -C "$MONO" rev-parse HEAD)" --arg old "$GH_LEGACY_HEAD" \
+        --arg repo "$repo" --arg source "loft-sh/vcluster-pro#${PR_NUMBER:-1}" '
+        ($repo | split("/")) as $repoParts |
         [
-          {number: 39, headRefName: $full, headRepository: {nameWithOwner: "fork/example"}, body: $source, url: "https://github.com/fork/example/pull/39"},
-          {number: 40, headRefName: ($full | sub("[^/]+$"; "deadbeef")), headRepository: {nameWithOwner: $repo}, body: $source, url: "https://github.com/x/y/pull/40"},
-          {number: 41, headRefName: $old, headRepository: {nameWithOwner: $repo}, body: "", url: "https://github.com/x/y/pull/41"},
-          {number: 42, headRefName: $old, headRepository: {nameWithOwner: $repo}, body: ("Backport of " + $source), url: "https://github.com/x/y/pull/42"}
+          {number: 39, headRefName: $full, headRepository: {id: "fork-id", name: $repoParts[1]}, headRepositoryOwner: {login: "fork"}, body: $source, url: "https://github.com/fork/example/pull/39"},
+          {number: 40, headRefName: ($full | sub("[^/]+$"; "deadbeef")), headRepository: {id: "repo-id", name: $repoParts[1]}, headRepositoryOwner: {login: $repoParts[0]}, body: $source, url: "https://github.com/x/y/pull/40"},
+          {number: 41, headRefName: $old, headRepository: {id: "repo-id", name: $repoParts[1]}, headRepositoryOwner: {login: $repoParts[0]}, body: "", url: "https://github.com/x/y/pull/41"},
+          {number: 42, headRefName: $old, headRepository: {id: "repo-id", name: $repoParts[1]}, headRepositoryOwner: {login: $repoParts[0]}, body: ("Backport of " + $source), url: "https://github.com/x/y/pull/42"}
         ]')"
       ;;
     *) fixture='[]' ;;
   esac
-  printf '%s\n' "$fixture" | jq -r "$jq_filter"
+  printf '%s\n' "$fixture"
   exit 0
 fi
 if [ "$1" = pr ] && [ "$2" = create ]; then
@@ -712,9 +730,32 @@ install_source_pr_ref() {
   [ "$status" -ne 0 ]
   [ "$(output_value oss-pushed)" = "false" ]
   [[ "$output" == *"could not query open PRs"* ]]
+  [[ "$output" == *"gh: simulated lookup failure"* ]]
   [ ! -s "$GH_CREATE_LOG" ]   # nothing clobbered
   run comment_body
   [[ "$output" == *"failed — action required"* ]]
+}
+
+@test "create-pr: incomplete head repository metadata fails closed" {
+  install_fake_gh
+  cd "$MONO"
+  printf 'line1\nOSS\nline3\n' > "$PFX/app.go"
+  git commit -qam "oss: change"
+
+  local fixture expected
+  for fixture in missing-owner missing-name; do
+    [ "$fixture" = missing-owner ] && expected="headRepositoryOwner.login missing"
+    [ "$fixture" = missing-name ] && expected="headRepository.name missing"
+    export GH_PRLIST="$fixture"
+    : > "$GITHUB_OUTPUT"
+    : > "$GH_CREATE_LOG"
+
+    run bash "$SCRIPT"
+    [ "$status" -ne 0 ]
+    [ "$(output_value oss-pushed)" = "false" ]
+    [[ "$output" == *"$expected"* ]]
+    [ ! -s "$GH_CREATE_LOG" ]
+  done
 }
 
 @test "create-pr: a failed lookup on one half does not let the other claim success" {
@@ -770,7 +811,8 @@ install_source_pr_ref() {
   grep -Fxq -- v0.35 "$GH_PRLIST_LOG"
   grep -Fxq -- --limit "$GH_PRLIST_LOG"
   grep -Fxq -- 100 "$GH_PRLIST_LOG"
-  grep -Fxq -- number,headRefName,headRepository,body,url "$GH_PRLIST_LOG"
+  grep -Fxq -- number,headRefName,headRepository,headRepositoryOwner,body,url "$GH_PRLIST_LOG"
+  ! grep -Fxq -- --jq "$GH_PRLIST_LOG"
 }
 
 @test "create-pr: a conflicted backport opens a DRAFT PR" {

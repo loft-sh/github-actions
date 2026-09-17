@@ -328,35 +328,44 @@ backport_side() {
     : "${slug:?repo slug (OSS_REPO/PRO_REPO) is required when CREATE_PR=true}"
     : "${GH_TOKEN:?GH_TOKEN is required when CREATE_PR=true}"
     local existing="" existing_branch="" existing_url="" existing_record="" rc=0
+    local lookup_err="${WORKDIR}/${side}-pr-lookup.err"
+    : > "$lookup_err"
     # Search once before any writes. Prefer the new exact full-SHA head, then
     # accept an older head whose nonempty suffix is any prefix of the source SHA
     # and whose body still identifies the source PR. Checking headRepository,
     # base, and source prevents a fork or unrelated PR from being reused.
-    # shellcheck disable=SC2016 # $pr is a jq binding, not a shell variable.
     existing_record="$(
-      EXPECTED_REPO="$slug" BACKPORT_BRANCH="$BACKPORT_BRANCH" \
-        LEGACY_PREFIX="$LEGACY_BRANCH_PREFIX" SOURCE_SHA="$SHA" \
-        SOURCE_PR_REF="$SRC_PR_REF" \
+      {
         gh pr list --repo "$slug" --base "$TARGET_BRANCH" --state open --limit 100 \
-          --json number,headRefName,headRepository,body,url --jq '
-            map(
-              . as $pr |
-              select($pr.headRepository.nameWithOwner == env.EXPECTED_REPO) |
-              select(
-                $pr.headRefName == env.BACKPORT_BRANCH or
-                (
-                  env.SOURCE_PR_REF != "" and
-                  ($pr.headRefName | startswith(env.LEGACY_PREFIX)) and
-                  (($pr.headRefName | ltrimstr(env.LEGACY_PREFIX)) != "") and
-                  (env.SOURCE_SHA | startswith($pr.headRefName | ltrimstr(env.LEGACY_PREFIX))) and
-                  (($pr.body // "") | contains(env.SOURCE_PR_REF))
+            --json number,headRefName,headRepository,headRepositoryOwner,body,url |
+          jq -r \
+            --arg expectedRepo "$slug" \
+            --arg backportBranch "$BACKPORT_BRANCH" \
+            --arg legacyPrefix "$LEGACY_BRANCH_PREFIX" \
+            --arg sourceSHA "$SHA" \
+            --arg sourcePRRef "$SRC_PR_REF" '
+              map(
+                . as $pr |
+                select((
+                  ($pr.headRepositoryOwner.login // error("headRepositoryOwner.login missing")) + "/" +
+                  ($pr.headRepository.name // error("headRepository.name missing"))
+                ) == $expectedRepo) |
+                select(
+                  $pr.headRefName == $backportBranch or
+                  (
+                    $sourcePRRef != "" and
+                    ($pr.headRefName | startswith($legacyPrefix)) and
+                    (($pr.headRefName | ltrimstr($legacyPrefix)) != "") and
+                    ($sourceSHA | startswith($pr.headRefName | ltrimstr($legacyPrefix))) and
+                    (($pr.body // "") | contains($sourcePRRef))
+                  )
                 )
-              )
-            ) |
-            sort_by(if .headRefName == env.BACKPORT_BRANCH then 0 else 1 end) |
-            .[0] // empty |
-            if . == "" then empty else [.number, .headRefName, .url] | @tsv end
-          ' 2>/dev/null
+              ) |
+              sort_by(if .headRefName == $backportBranch then 0 else 1 end) |
+              .[0] // empty |
+              if . == "" then empty else [.number, .headRefName, .url] | @tsv end
+            '
+      } 2>"$lookup_err"
     )" || rc=$?
     if [ "$rc" -ne 0 ]; then
       # Do not touch the branch or PR -- the query may have failed while a PR
@@ -366,7 +375,10 @@ backport_side() {
       # left the job green and, on a mixed route where the other half worked,
       # posted "Backported to <target>" naming only that half. That is the
       # DEVOPS-1438 silent miss reached through a skip instead of a failure.
-      echo "::error::${side}: could not query open PRs (gh exit ${rc}); left the branch and PR untouched rather than risk clobbering an open PR. Re-run to retry."
+      echo "::error::${side}: could not query open PRs (lookup exit ${rc}); left the branch and PR untouched rather than risk clobbering an open PR. Re-run to retry."
+      local lookup_detail
+      lookup_detail="$(<"$lookup_err")"
+      [ -n "$lookup_detail" ] && printf '%s\n' "${lookup_detail//"$GH_TOKEN"/***}"
       exit 1
     fi
     if [ -n "$existing_record" ]; then
