@@ -39,13 +39,21 @@ inputs:
     required: false
     default: ${{ github.repository }}
   check-name-prefix:
-    description: 'start mode. Prefix for the check-run name; the filter and optional focus are appended.'
+    description: 'start mode. Prefix for the check-run name; the filter and optional target and focus are appended.'
     required: false
     default: 'e2e'
   parse-focus:
     description: 'start mode. Set to true to split an optional trailing --focus expression from the filter. Disabled by default for existing consumers.'
     required: false
     default: 'false'
+  allowed-targets:
+    description: 'start mode. Whitespace-separated target values accepted when target-name is set. Each value needs a matching action invocation.'
+    required: false
+    default: 'pro oss'
+  target-name:
+    description: 'start mode. Target represented by this invocation. Setting it enables --target parsing; a different explicit target returns target-not-selected without opening a check.'
+    required: false
+    default: ''
   run-id:
     description: 'start mode. Used to build the check-run details link. Pass the github.run_id context.'
     required: false
@@ -93,14 +101,23 @@ outputs:
     description: 'Argument string with whitespace normalized. This is what to pass to the test runner.'
     value: ${{ steps.start.outputs.filter }}
   focus:
-    description: 'Optional focus expression following --focus, without one matching outer quote pair.'
+    description: 'Optional focus expression following --focus. One outer quote pair is removed only when it encloses the whole expression.'
     value: ${{ steps.start.outputs.focus }}
+  target:
+    description: 'Optional target following --target. Empty means no explicit target was requested.'
+    value: ${{ steps.start.outputs.target }}
   should-run:
-    description: 'The caller''s execution gate. "true" only when a check-run was actually opened, so it is false for a comment that was not a command, an empty or unbalanced filter, a fork, a closed or unreadable pull request, a rejected author_association, and a failed check-run creation. Read reason for which. Note the association test is not a permission check: MEMBER means organization membership, and COLLABORATOR does not say at what level.'
+    description: 'The caller''s execution gate. "true" only when a check-run was actually opened, so it is false for a comment that was not a command, an empty or unbalanced filter, an invalid or non-selected target, a fork, a closed or unreadable pull request, a rejected author_association, and a failed check-run creation. Read reason for which. Note the association test is not a permission check: MEMBER means organization membership, and COLLABORATOR does not say at what level.'
     value: ${{ steps.start.outputs.should-run }}
   reason:
-    description: 'Why the command will not run: fork, insufficient-permission, empty-filter, malformed-filter, malformed-focus, not-a-pull-request, pull-request-closed, pull-request-unreadable, or check-run-not-created. Empty when it will.'
+    description: 'Why the command will not run: fork, insufficient-permission, empty-filter, malformed-filter, malformed-focus, malformed-target, invalid-target, target-not-selected, not-a-pull-request, pull-request-closed, pull-request-unreadable, or check-run-not-created. Empty when it will.'
     value: ${{ steps.start.outputs.reason }}
+  reason-title:
+    description: 'start mode. Presentation-ready title for reason. Empty when the command will run or this invocation was not selected.'
+    value: ${{ steps.start.outputs.reason-title }}
+  reason-guidance:
+    description: 'start mode. Presentation-ready next step for reason. Empty when the command will run or this invocation was not selected.'
+    value: ${{ steps.start.outputs.reason-guidance }}
   head-sha:
     description: 'Resolved head commit of the pull request. The event does not carry it.'
     value: ${{ steps.start.outputs.head-sha }}
@@ -111,7 +128,7 @@ outputs:
     description: 'Resolved base branch of the pull request. The event does not carry it either.'
     value: ${{ steps.start.outputs.base-ref }}
   concurrency-key:
-    description: 'Domain-separated request identity reduced to a lowercase slug plus an eight-character digest, safe to interpolate into a concurrency group. Label-only and focused requests cannot impersonate each other, and distinct filters or focuses do not share a group when slug sanitization drops their punctuation.'
+    description: 'Domain-separated request identity reduced to a lowercase slug plus an eight-character digest, safe to interpolate into a concurrency group. Distinct filters, focuses, and targets do not share a group.'
     value: ${{ steps.start.outputs.concurrency-key }}
   check-name:
     description: 'Display name of the check-run, sanitized and length-bounded.'
@@ -147,6 +164,8 @@ runs:
         INPUT_REPO: ${{ inputs.repo }}
         INPUT_CHECK_NAME_PREFIX: ${{ inputs.check-name-prefix }}
         INPUT_PARSE_FOCUS: ${{ inputs.parse-focus }}
+        INPUT_ALLOWED_TARGETS: ${{ inputs.allowed-targets }}
+        INPUT_TARGET_NAME: ${{ inputs.target-name }}
         INPUT_RUN_ID: ${{ inputs.run-id }}
         INPUT_SERVER_URL: ${{ inputs.server-url }}
         GH_TOKEN: ${{ inputs.github-token }}
