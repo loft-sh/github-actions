@@ -284,7 +284,11 @@ api_exists() {
       exit 1
       ;;
     *)
-      echo "::error::unexpected status ${http_code} from GitHub API for ${what}." >&2
+      # Same treatment as the no-status arm: a 403 is where secondary rate
+      # limits and SSO/scope rejections land, and the status code alone does not
+      # distinguish them. gh's body is already in ${out}; printing the code and
+      # discarding the reason would leave the operator reproducing it by hand.
+      echo "::error::unexpected status ${http_code} from GitHub API for ${what}. gh said: $(printf '%s' "${out:-<no output>}" | LC_ALL=C tr '\n\r\t' '   ')" >&2
       exit 1
       ;;
   esac

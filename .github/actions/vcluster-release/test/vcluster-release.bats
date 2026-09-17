@@ -50,6 +50,10 @@ if [[ "$sub" == "api" ]]; then
   path=""
   for _a in "$@"; do case "$_a" in repos/*) path="$_a"; break ;; esac; done
   [ -n "$path" ] || path="$1"
+  # Recorded so a test can pin WHICH endpoint was called, not just that the call
+  # failed the way we expected - the singular and plural ref forms otherwise
+  # produce the same error text here.
+  if [ -n "${GH_STUB_CALL_LOG:-}" ]; then printf '%s\n' "$path" >>"$GH_STUB_CALL_LOG"; fi
   # api_exists calls `gh api <path> --silent -i`; every other call reads a value.
   # The tag endpoint is used both ways, so the stub has to distinguish them.
   wants_status=0
@@ -73,7 +77,11 @@ if [[ "$sub" == "api" ]]; then
       exit 1
     fi
     if [[ "$2" == "tags" && "${GH_STUB_TRANSIENT_TAGS:-}" == "1" ]]; then exit 1; fi
-    if [[ "${GH_STUB_UNEXPECTED:-}" == "1" ]]; then echo "HTTP/2.0 403 Forbidden"; exit 1; fi
+    if [[ "${GH_STUB_UNEXPECTED:-}" == "1" ]]; then
+      echo "HTTP/2.0 403 Forbidden"
+      echo "gh: You have exceeded a secondary rate limit" >&2
+      exit 1
+    fi
     if [[ "$1" == "0" ]]; then echo "HTTP/2.0 200 OK"; exit 0; else echo "HTTP/2.0 404 Not Found"; exit 1; fi
   }
   case "$path" in
@@ -361,14 +369,37 @@ EOF
 # where the operator most needs to know what happened.
 
 @test "create_tag: a branch deleted mid-cut is a clean error, not a jq crash" {
-  # require_branch passed a moment ago, so this is the deleted-branch race. The
-  # singular git/ref/heads/ endpoint turns it into a 404; the plural one would
-  # answer with an array of prefix matches and blow up inside --jq instead.
+  # require_branch passed a moment ago, so this is the deleted-branch race: the
+  # read has to fail with its own message rather than abort under set -e. Which
+  # endpoint gets used is pinned separately below - both forms fail here, just
+  # for different reasons, so this test alone cannot tell them apart.
   export GH_STUB_HEAD_MISSING=1 DRY_RUN=false
   run create_tag "loft-sh/vcluster" "v0.37" "v0.37.1"
   [ "$status" -ne 0 ]
   [[ "$output" == *"could not read HEAD of branch 'v0.37'"* ]]
   [[ "$output" == *"deleted after the existence check"* ]]
+}
+
+@test "create_tag: reads the branch head through the singular ref endpoint" {
+  # The plural git/refs/heads/ prefix-matches and answers with an ARRAY once the
+  # exact ref is gone, so --jq '.object.sha' crashes instead of 404ing. Both
+  # forms make the deleted-branch test above red, so this pins the choice by
+  # asserting the path actually requested.
+  export GH_STUB_CALL_LOG="${STUB_DIR}/calls" DRY_RUN=false
+  run create_tag "loft-sh/vcluster" "v0.37" "v0.37.1"
+  [ "$status" -eq 0 ]
+  run grep -Fx 'repos/loft-sh/vcluster/git/ref/heads/v0.37' "$GH_STUB_CALL_LOG"
+  [ "$status" -eq 0 ]
+}
+
+@test "api_exists: an unexpected status carries gh's reason, not just the code" {
+  # 403 is where secondary rate limits and SSO/scope rejections land; the code
+  # alone does not tell them apart.
+  export GH_STUB_UNEXPECTED=1
+  run api_exists "repos/loft-sh/vcluster/branches/v0.37" "branch v0.37"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"unexpected status 403"* ]]
+  [[ "$output" == *"secondary rate limit"* ]]
 }
 
 @test "create_tag: a rejected tag POST fails loudly" {
