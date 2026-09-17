@@ -108,7 +108,7 @@ runs:
       run: bash "${{ github.action_path }}/resolve-release-text.sh"
     - name: Post release notification
       if: inputs.status == 'success' && inputs.dry-run != 'true'
-      uses: slackapi/slack-github-action@45a88b9581bfab2566dc881e2cd66d334e621e2c  # v3.0.3
+      uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d  # v4.0.0
       with:
         errors: true
         webhook-type: incoming-webhook
@@ -166,7 +166,7 @@ runs:
         esac
     - name: Post release failure notification
       if: inputs.status != 'success' && inputs.dry-run != 'true'
-      uses: slackapi/slack-github-action@45a88b9581bfab2566dc881e2cd66d334e621e2c  # v3.0.3
+      uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d  # v4.0.0
       with:
         errors: true
         webhook-type: incoming-webhook
