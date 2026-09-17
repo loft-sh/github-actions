@@ -34,12 +34,16 @@ collects those records from the OSS branch, then walks the monorepo branch's
 subtree-touching commits newest first. The first commit that is recorded is the
 **frontier**; everything newer than it is **backlog**.
 
-Trailer reading is permissive about capitalisation and matches abbreviated values
-by prefix, because a record we fail to read invents backlog that is not there and
-a false alarm costs more trust than it buys. It stops at git's trailer block: the
-mirror is public and takes outside contributions, so a column-zero
-`Monorepo-Commit:` line in a contributor's message body would be read as a record
-we wrote, and a record is what ends the walk. Nothing legitimate is lost by
+Both trailers are read through `oss-commit-sync`'s own `trailer_scan`, sourced
+rather than reimplemented. Agreeing with the exporter is the whole job, and "no
+looser and no stricter" (below) is not an invariant two copies of a parser can
+hold on their own. Reading is permissive about capitalisation and matches
+abbreviated values by prefix, because a record we fail to read invents backlog
+that is not there and a false alarm costs more trust than it buys. For
+`Monorepo-Commit` it stops at git's trailer block: the mirror is public and takes
+outside contributions, so a column-zero `Monorepo-Commit:` line in a
+contributor's message body would be read as a record we wrote, and a record is
+what ends the walk. Nothing legitimate is lost by
 refusing, because the export writes its trailer with `interpret-trailers
 --no-divider` and pushes straight to the mirror, with no PR and no squash in
 between that could orphan it out of the block.
@@ -80,7 +84,9 @@ and alerts on a branch that is current. Matching it means reading the union the
 exporter reads: git's own trailer block, which accepts a space before the colon
 and unfolds a value split across lines, plus a body scan for records a squash
 orphaned out of the block. An indented line on its own is still not a record,
-because git does not read one either.
+because git does not read one either. Calling the exporter's reader is what makes
+that true rather than aspirational: which key gets the body scan is
+`trailer_reads_body`'s decision, made once, there.
 
 A merge commit is the opposite case again, and is counted, loudly. The exporter
 refuses merges outright rather than skipping them, so one in the backlog is the
@@ -102,8 +108,8 @@ caller the dead export as its healthiest signal.
 It gets its own output because nothing else can carry it. The content is current,
 so `stale` is false by definition and `degraded` is not true either — the check
 answered the question it was asked. A warning in the log of a scheduled run is
-exactly the invisibility this action exists to end, so a caller that wants the
-signal has to be able to gate on it.
+exactly the invisibility this action exists to end, so it is rolled into
+`needs-attention` alongside the other two.
 
 The commit asked about is the newest one the export actually owed a record for,
 not the branch tip: most commits on the monorepo branch never touch the subtree,
@@ -123,8 +129,10 @@ that stamps `Oss-Commit`.
 One route to `stale` skips the threshold: a backlog deeper than `scan-limit` with
 no frontier anywhere in it. At that depth the grace the threshold buys has been
 spent several times over, and the ages of the commits in the window say nothing
-about how far back the real backlog starts. That route sets `degraded` as well,
-so a caller following the advice above sees it either way.
+about how far back the real backlog starts. It is the one case where
+`oldest-unmirrored-age-hours` can come back under `max-age-hours` next to
+`stale=true`, so a message templated from the two reads oddly. That route sets
+`degraded` as well, so a caller gating on `needs-attention` sees it either way.
 
 ## Staleness is measured on the oldest waiting commit
 
@@ -136,16 +144,22 @@ newest. A fresh commit landing on top of a week-old stall does not reset the
 clock and hide it. Set `max-age-hours` above a normal export time plus the review
 time a back-sync PR realistically needs.
 
-## Alert on `stale` OR `degraded`
+## Gate on `needs-attention`
 
 The check never exits non-zero. Silence is the bug it exists to fix, so it must
 not become a new way to fail quietly: when it cannot answer, it says so with
 `degraded=true` and still exits 0.
 
-**A caller that alerts only on `stale` reintroduces the original bug.** "I could
-not tell" and "it is fine" are different answers. `degraded` covers an
-unreachable OSS branch, a shallow checkout, unreadable records, a bad threshold,
-and a backlog deeper than `scan-limit`.
+Three outputs are findings a human should see — `stale`, `degraded` and
+`export-unconfirmed` — and they are three answers to one question: does somebody
+need to look? A caller that gates on two of them is silent for the third, which
+is the original bug with a smaller blast radius. So `needs-attention` is the OR
+of all three, and it is the output to gate on. Read the three individually to
+write the message, not to decide whether to send one.
+
+"I could not tell" and "it is fine" are different answers, which is what
+`degraded` is for: an unreachable OSS branch, a shallow checkout, unreadable
+records, a bad threshold, a backlog deeper than `scan-limit`.
 
 Every output carries a value on every path, including degraded ones, so a caller
 reading `stale` after a degraded run gets a real answer rather than an empty
@@ -158,6 +172,10 @@ string that compares equal to nothing.
   instead.
 - A token that can fetch the OSS branch. Read-only is enough, so prefer
   `github.token` over the write-capable PAT the export needs.
+- `oss-commit-sync` beside it in the repository. This check sources that action's
+  `lib.sh` for its trailer reading and exclude pathspecs, which is what keeps the
+  two from drifting apart. A caller pinning a tag checks out the whole repository
+  at that tag, so it always gets the pair that shipped together.
 
 ## Usage
 
@@ -182,7 +200,7 @@ string that compares equal to nothing.
       .github/workflows/push-head-images.yaml
 
 - name: Report
-  if: steps.staleness.outputs.stale == 'true' || steps.staleness.outputs.degraded == 'true'
+  if: steps.staleness.outputs.needs-attention == 'true'
   run: echo "the mirror needs attention"
 ```
 
@@ -214,15 +232,16 @@ currency is a different question and wants its own signal.
 
 <!-- AUTO-DOC-OUTPUT:START - Do not remove or modify this section -->
 
-|           OUTPUT            |  TYPE  |                                                                                                                                                                                                                                      DESCRIPTION                                                                                                                                                                                                                                      |
-|-----------------------------|--------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-|        backlog-count        | string |                                                                                                                                                                                     Number of subtree-touching commits on the <br>branch that the mirror does not <br>carry. Zero means in sync.                                                                                                                                                                                      |
-|          degraded           | string |                                                                                                       True when the check could not <br>determine the answer (no OSS branch, shallow checkout, unreadable records, backlog deeper than scan-limit). Never treat <br>this as healthy; it is the <br>fail-safe that keeps an unanswerable check <br>from reading as a green one.                                                                                                        |
-|     export-unconfirmed      | string |                                                                             True when the mirror content matches <br>but no export recorded the newest <br>commit the export owed a record <br>for. Not staleness: the content is <br>current, so stale stays false. It <br>is the one shape a dead <br>export takes that produces no other <br>signal, so gate on it alongside <br>stale and degraded.                                                                               |
-|          frontier           | string |                                                                                                               The newest monorepo commit the mirror <br>has a record of. Empty when <br>none was found within scan-limit, which <br>also sets degraded, and empty on <br>a content match whose tip nothing <br>recorded, since no record was located <br>there either.                                                                                                                |
-|      oldest-unmirrored      | string |                                                                                                                                                                                   The oldest subtree commit the mirror <br>does not carry, i.e. where the <br>backlog starts. Empty when in sync.                                                                                                                                                                                     |
-| oldest-unmirrored-age-hours | string |                                                                                                                                                                       How long that oldest un-mirrored commit <br>has been waiting, in whole hours. <br>This is the figure compared against <br>max-age-hours.                                                                                                                                                                        |
-|           oss-tip           | string |                                                                                                                                                                                                                        The OSS branch tip the check <br>read.                                                                                                                                                                                                                         |
-|            stale            | string | True when the mirror is behind <br>and the oldest un-mirrored commit has <br>been waiting longer than max-age-hours. One <br>exception, unconditional: a backlog deeper than <br>scan-limit with no frontier in it <br>at all sets this whatever the <br>ages are, because at that depth <br>the grace the threshold buys is <br>already spent. That case sets degraded <br>too. Alert on this OR on <br>degraded: a check that could not <br>answer is not a check that <br>passed.  |
+|           OUTPUT            |  TYPE  |                                                                                                                                                                                                                    DESCRIPTION                                                                                                                                                                                                                     |
+|-----------------------------|--------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|        backlog-count        | string |                                                                                                                                                                   Number of subtree-touching commits on the <br>branch that the mirror does not <br>carry. Zero means in sync.                                                                                                                                                                     |
+|          degraded           | string |                                                                                     True when the check could not <br>determine the answer (no OSS branch, shallow checkout, unreadable records, backlog deeper than scan-limit). Never treat <br>this as healthy; it is the <br>fail-safe that keeps an unanswerable check <br>from reading as a green one.                                                                                       |
+|     export-unconfirmed      | string |                                                              True when the mirror content matches <br>but no export recorded the newest <br>commit the export owed a record <br>for. Not staleness: the content is <br>current, so stale stays false. It <br>is the one shape a dead <br>export takes that produces no other <br>signal, which is why needs-attention covers <br>it.                                                               |
+|          frontier           | string |                                                                                             The newest monorepo commit the mirror <br>has a record of. Empty when <br>none was found within scan-limit, which <br>also sets degraded, and empty on <br>a content match whose tip nothing <br>recorded, since no record was located <br>there either.                                                                                               |
+|       needs-attention       | string |                The output to gate on. True <br>when any of stale, degraded or <br>export-unconfirmed is, i.e. whenever a human <br>should look. It exists because the <br>three are separate findings but one <br>decision, and a caller that gates <br>on two of them reintroduces the <br>silence this check was written to <br>end. Read the three individually to <br>write the message, not to decide <br>whether to send it.                 |
+|      oldest-unmirrored      | string |                                                                                                                                                                  The oldest subtree commit the mirror <br>does not carry, i.e. where the <br>backlog starts. Empty when in sync.                                                                                                                                                                   |
+| oldest-unmirrored-age-hours | string |                                                                                                                                                     How long that oldest un-mirrored commit <br>has been waiting, in whole hours. <br>This is the figure compared against <br>max-age-hours.                                                                                                                                                       |
+|           oss-tip           | string |                                                                                                                                                                                                      The OSS branch tip the check <br>read.                                                                                                                                                                                                        |
+|            stale            | string | True when the mirror is behind <br>and the oldest un-mirrored commit has <br>been waiting longer than max-age-hours. One <br>exception, unconditional: a backlog deeper than <br>scan-limit with no frontier in it <br>at all sets this whatever the <br>ages are, because at that depth <br>the grace the threshold buys is <br>already spent. That case sets degraded <br>too, so the age reported alongside <br>it may be under the threshold.  |
 
 <!-- AUTO-DOC-OUTPUT:END -->

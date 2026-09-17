@@ -606,7 +606,9 @@ See [oss-commit-sync README](./.github/actions/oss-commit-sync/README.md) for th
 
 Companion to OSS Commit Sync, answering the question a run-status alert cannot: is the code on the public mirror the code we have? The export fails closed and stops, which is correct but invisible: a red push-triggered run sits in the Actions tab where nobody looks while the mirror quietly stops advancing (`loft-sh/vcluster` went 18 days and 20 commits behind that way, DEVOPS-1529). Because it compares refs rather than reading run history, it also catches a workflow that stopped triggering at all, which no failure notification can see.
 
-Advisory by construction: it never exits non-zero, and when it cannot answer it reports `degraded` rather than a clean bill of health. **Alert on `stale` OR `degraded`**, because a check that could not answer is not a check that passed.
+Advisory by construction: it never exits non-zero, and when it cannot answer it reports `degraded` rather than a clean bill of health, because a check that could not answer is not a check that passed. Three outputs are findings a human should see (`stale`, `degraded`, `export-unconfirmed`) but one decision, so **gate on `needs-attention`**, which is the OR of the three; read them individually to write the message rather than to decide whether to send one.
+
+Its trailer reading and exclude pathspecs are `oss-commit-sync`'s own `lib.sh`, sourced rather than reimplemented: agreeing exactly with what the export did is the whole job, and a second copy of that parser drifts.
 
 **Location:** `.github/actions/oss-mirror-staleness`
 
@@ -636,7 +638,7 @@ Advisory by construction: it never exits non-zero, and when it cannot answer it 
 
 **Key inputs:** `subtree-prefix`, `oss-repo`, `branch`, `github-token` (read-only is enough); `exclude-paths` (must match the list given to `oss-commit-sync`), `max-age-hours` (grace before a backlog counts as stale, measured on the oldest waiting commit), `scan-limit`.
 
-**Key outputs:** `stale`, `degraded`, `export-unconfirmed`, `backlog-count`, `frontier`, `oldest-unmirrored`, `oldest-unmirrored-age-hours`, `oss-tip`.
+**Key outputs:** `needs-attention` (the one to gate on), `stale`, `degraded`, `export-unconfirmed`, `backlog-count`, `frontier`, `oldest-unmirrored`, `oldest-unmirrored-age-hours`, `oss-tip`.
 
 ### Wait For Release Action
 
