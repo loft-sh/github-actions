@@ -478,3 +478,38 @@ WRAP
   [[ "$output" == *"refusing to import from an unknown point"* ]]
   [[ "$output" != *"lost their provenance record"* ]]
 }
+
+@test "a commit whose last file is binary imports that file too" {
+  # The GIT binary patch of the last file in diff order ends on the diff's final
+  # byte, and that section is terminated by a blank line. Capturing the diff in
+  # "$(...)" strips it; git apply then calls the hunk corrupt, applies every
+  # earlier file, and exits 0 -- so the commit lands, carries its Oss-Commit
+  # trailer, and is missing content nobody is told about. z- sorts after a- so
+  # the binary really is last.
+  E=$(external_binary_commit a-notes.md z-diagram.png one "docs: refresh the diagram")
+
+  run bash "$IMPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value replayed-count)" = "1" ]
+
+  cd "$MONO"
+  git switch -q automation/sync-from-oss-main
+  [ "$(git log -1 --format='%(trailers:key=Oss-Commit,valueonly)')" = "$E" ]
+  # The subtree must hold the commit's whole post-image, byte for byte.
+  [ "$(git rev-parse "HEAD:$PFX/z-diagram.png")" = "$(git -C "$OSS_REMOTE" rev-parse "main:z-diagram.png")" ]
+  [ "$(git rev-parse "HEAD:$PFX/a-notes.md")" = "$(git -C "$OSS_REMOTE" rev-parse "main:a-notes.md")" ]
+}
+
+@test "a commit that only modifies a binary file imports it" {
+  external_binary_commit a-notes.md z-diagram.png one "docs: add the diagram"
+  absorb_external
+  E=$(external_binary_commit a-notes.md z-diagram.png two "docs: redraw the diagram")
+
+  run bash "$IMPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value replayed-count)" = "1" ]
+
+  cd "$MONO"
+  git switch -q automation/sync-from-oss-main
+  [ "$(git rev-parse "HEAD:$PFX/z-diagram.png")" = "$(git -C "$OSS_REMOTE" rev-parse "main:z-diagram.png")" ]
+}

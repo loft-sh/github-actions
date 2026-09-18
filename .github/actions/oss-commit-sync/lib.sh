@@ -855,6 +855,31 @@ replay_commit() {
   rm -f "$msgfile"
 }
 
+# apply_patch <patch-file> <git-dir> [apply options...]
+# 3-way apply <patch-file> in <git-dir>, and fail on a patch git only partially
+# understood.
+#
+# The failure this guards is silent: handed a malformed hunk, git apply reports
+# "corrupt binary patch" on stderr, applies every OTHER file in the patch, and
+# exits 0. A replay loop then stages a subset of the commit's content, commits
+# it under the original message, and records the provenance trailer -- the
+# commit reads as fully replayed on both sides, and the loss only surfaces
+# later, as an unrelated-looking tree mismatch in the opposite direction.
+# Neither side can afford to take rc=0 at face value, so the stderr text is
+# the signal.
+apply_patch() {
+  local patch_file="$1" dir="$2" out rc=0
+  shift 2
+  out="$(git -C "$dir" apply --3way --whitespace=nowarn "$@" "$patch_file" 2>&1)" || rc=$?
+  [ -n "$out" ] && echo "$out"
+  [ "$rc" -eq 0 ] || return "$rc"
+  if grep -q 'corrupt binary patch\|corrupt patch' <<< "$out"; then
+    echo "::error::git apply reported a corrupt patch but exited 0; it applied only part of ${patch_file}"
+    return 1
+  fi
+  return 0
+}
+
 # nothing_staged <git-dir>
 # True when the index matches HEAD, i.e. a non-empty patch applied as a no-op
 # because its content was already present (e.g. the same change landed on

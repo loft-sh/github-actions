@@ -137,3 +137,37 @@ oss_file() {
 oss_tip() {
   git -C "$OSS_REMOTE" rev-parse main
 }
+
+# write_binary <path> <seed>
+# A file git treats as binary (NUL in the first bytes), large and noisy enough
+# that git emits a real GIT binary patch rather than a text diff.
+write_binary() {
+  mkdir -p "$(dirname "$1")"
+  {
+    printf 'PNG\000\r\n\032\n'
+    # Deterministic per seed, incompressible enough that the two revisions of
+    # the same file cannot collide.
+    head -c 4096 /dev/urandom | od -An -tx1 | tr -d ' \n' | head -c 2048
+    printf 'seed=%s\000' "$2"
+  } > "$1"
+}
+
+# external_binary_commit <text-file> <bin-file> <seed> <subject>
+# An OSS commit whose LAST file in diff order is binary: that is where the
+# GIT binary patch terminator lands on the final byte of the diff.
+external_binary_commit() {
+  local clone="$ROOT/ext-$RANDOM"
+  git clone -q "$OSS_REMOTE" "$clone"
+  (
+    cd "$clone"
+    git checkout -q main
+    mkdir -p "$(dirname "$1")"
+    printf '%s\n' "touched by $3" > "$1"
+    write_binary "$2" "$3"
+    git add .
+    GIT_AUTHOR_NAME=alice GIT_AUTHOR_EMAIL=alice@contributor.example \
+      git commit -qm "$4"
+    git push -q origin main
+  )
+  git -C "$OSS_REMOTE" rev-parse main
+}

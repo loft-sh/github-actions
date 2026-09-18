@@ -131,6 +131,9 @@ fi
 # sync PR in place.
 git switch --quiet -C "$PR_BRANCH"
 
+patch_file="$(mktemp)"
+trap 'rm -f "$patch_file"' EXIT
+
 replayed=0
 # Seeded with the healed range: those commits were considered and not replayed,
 # which is exactly what skipped-count reports.
@@ -155,8 +158,13 @@ while read -r E; do
     echo "Skipping ${E} (originated in the monorepo: $(trailer_value "$E" "$MONOREPO_TRAILER"))"
     continue
   fi
-  patch="$(git diff-tree --no-commit-id -p --binary -M "$E" -- . ${excludes[@]+"${excludes[@]}"})"
-  if [ -z "$patch" ]; then
+  # Straight to a file, never through "$(...)": a GIT binary patch section ends
+  # with a blank line, so for a commit whose last file is binary that
+  # terminator is the final byte of the diff -- exactly what command
+  # substitution strips. git apply then calls the last file's hunk corrupt,
+  # skips it, and still exits 0 (see apply_patch).
+  git diff-tree --no-commit-id -p --binary -M "$E" -- . ${excludes[@]+"${excludes[@]}"} > "$patch_file"
+  if [ ! -s "$patch_file" ]; then
     skipped=$((skipped + 1))
     echo "Skipping ${E} (touches only excluded paths)"
     continue
@@ -170,7 +178,7 @@ while read -r E; do
     echo "Skipping ${E} (content already in ${SUBTREE_PREFIX})"
     continue
   fi
-  if ! printf '%s\n' "$patch" | git apply --3way --directory="$SUBTREE_PREFIX" --whitespace=nowarn; then
+  if ! apply_patch "$patch_file" . --directory="$SUBTREE_PREFIX"; then
     git reset --hard --quiet
     git clean -fdq -- "$SUBTREE_PREFIX"
     emit conflict-sha "$E"

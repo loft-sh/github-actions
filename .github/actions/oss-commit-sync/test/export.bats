@@ -1028,3 +1028,23 @@ WRAP
   [ "$(oss_tip)" = "$before" ]
   [ "$(oss_file pkg/app.go)" = "l1-l2-l3" ]
 }
+
+@test "a commit whose last file is binary exports that file too" {
+  # Mirror of the import case: the diff's trailing blank line terminates the
+  # last GIT binary patch, command substitution strips it, and git apply drops
+  # that file while exiting 0. Here the convergence assertion catches it, so the
+  # symptom is a red export rather than silent loss -- but only once, and with a
+  # tree mismatch that names the file rather than the commit that lost it.
+  (
+    cd "$MONO"
+    printf 'notes\n' > "$PFX/a-notes.md"
+    write_binary "$PFX/z-diagram.png" one
+    git add . && git commit -qm "docs: add the diagram"
+  )
+
+  run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value exported-count)" = "1" ]
+  [ "$(git -C "$OSS_REMOTE" rev-parse "main:z-diagram.png")" = "$(git -C "$MONO" rev-parse "HEAD:$PFX/z-diagram.png")" ]
+  [ "$(git -C "$OSS_REMOTE" rev-parse "main:a-notes.md")" = "$(git -C "$MONO" rev-parse "HEAD:$PFX/a-notes.md")" ]
+}
