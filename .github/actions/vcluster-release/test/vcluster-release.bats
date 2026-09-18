@@ -78,7 +78,17 @@ if [[ "$sub" == "api" ]]; then
     fi
     if [[ "$2" == "tags" && "${GH_STUB_TRANSIENT_TAGS:-}" == "1" ]]; then exit 1; fi
     if [[ "${GH_STUB_UNEXPECTED:-}" == "1" ]]; then
+      # The header block is emitted for real, not elided. Real gh -i returns the
+      # status line, ~24 headers, a blank line and only then its own error, so a
+      # stub that prints two lines cannot tell a reason that is MISSING from one
+      # that is merely buried past where GitHub truncates the annotation.
       echo "HTTP/2.0 403 Forbidden"
+      echo "Content-Type: application/json; charset=utf-8"
+      echo "Server: github.com"
+      echo "X-Github-Request-Id: C4A2:1F3B:9AB2C:12D4E5:68CB1234"
+      echo "X-Ratelimit-Remaining: 0"
+      echo "X-Ratelimit-Resource: core"
+      echo ""
       echo "gh: You have exceeded a secondary rate limit" >&2
       exit 1
     fi
@@ -378,6 +388,10 @@ EOF
   [ "$status" -ne 0 ]
   [[ "$output" == *"could not read HEAD of branch 'v0.37'"* ]]
   [[ "$output" == *"deleted after the existence check"* ]]
+  # The read fails non-zero on a rate limit, an SSO/scope rejection and a network
+  # error too, so naming deletion as the cause is the api_exists defect this PR
+  # fixes, inverted - one cause asserted where several are live.
+  [[ "$output" == *"rate limit, SSO/scope, network"* ]]
 }
 
 @test "create_tag: reads the branch head through the singular ref endpoint" {
@@ -400,6 +414,11 @@ EOF
   [ "$status" -ne 0 ]
   [[ "$output" == *"unexpected status 403"* ]]
   [[ "$output" == *"secondary rate limit"* ]]
+  # gh's reason is what this arm exists to print, so the response headers must
+  # not be carried along with it: interpolated whole, the 403 capture ran 1273
+  # bytes with the reason at offset 1183, past GitHub's annotation truncation.
+  [[ "$output" != *"X-Ratelimit-Resource"* ]]
+  [[ "$output" != *"Server: github.com"* ]]
 }
 
 @test "create_tag: a rejected tag POST fails loudly" {
@@ -410,6 +429,14 @@ EOF
   # The two live causes have different remedies, so both are named.
   [[ "$output" == *"lacks write access"* ]]
   [[ "$output" == *"concurrent cut"* ]]
+  # A flat "nothing was dispatched" is false on the legacy path: the pro tag is
+  # written AFTER bump_pro_dependency has dispatched the bump workflow and landed
+  # a commit on the release branch, and a resume can arrive here with the OSS
+  # half already building - require_oss_not_behind_pro permits oss=dispatched,
+  # pro=absent. Scoped to release builds in this run, the claim holds everywhere,
+  # because every create_tag call precedes every ensure_dispatch in a given run.
+  [[ "$output" == *"No release build was dispatched in this run"* ]]
+  [[ "$output" != *"Nothing was dispatched"* ]]
 }
 
 @test "api_exists: a transient failure surfaces gh's own error" {

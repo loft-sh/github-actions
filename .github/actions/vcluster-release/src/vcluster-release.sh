@@ -252,6 +252,32 @@ resolve_target() {
 # in dry-run). Mutating ones honour DRY_RUN.
 # ---------------------------------------------------------------------------
 
+# gh_reason <raw> - gh's own words from a `--silent -i` capture, on one line.
+#
+# The capture is a ~25-line response-header block with gh's error appended, so
+# interpolating it whole pushes the sentence that says WHY past the point where
+# GitHub truncates an annotation - measured at byte 1183 of 1273 on a 403. The
+# status line and `Name: value` headers carry nothing the message does not
+# already state, so they go. Flattening \n\r\t keeps a multi-line body from
+# breaking the annotation or forging a second workflow command.
+gh_reason() {
+  local raw="$1" reason
+  [[ -n "$raw" ]] || { printf '<no output>'; return 0; }
+  # `gh: ...` is kept explicitly, because it matches the `Name: value` shape a
+  # response header has and a bare header filter eats the one line worth
+  # printing. Verified against the live API: a 404 comes back as the status
+  # line, 24 headers, a blank line, then `gh: Not Found (HTTP 404)`.
+  reason="$(printf '%s\n' "$raw" | awk '
+      /^gh:/ { print; next }
+      /^HTTP\// { next }
+      /^[A-Za-z][A-Za-z0-9-]*: / { next }
+      { print }
+    ' | LC_ALL=C tr '\n\r\t' '   ' | tr -s ' ' | sed 's/^ *//; s/ *$//' || true)"
+  # Headers but no reason is itself worth saying: it means gh returned a status
+  # and died without explaining, which reads very differently from no output.
+  printf '%s' "${reason:-<no reason in gh output>}"
+}
+
 # api_exists <path> <what> -> 0 if 200, 1 if 404, exits 1 on transient/unexpected.
 # Shared read-only existence probe. Read only the HTTP status line. On a 404 `gh`
 # exits non-zero, so we must capture its output with `|| true` BEFORE parsing -
@@ -277,10 +303,9 @@ api_exists() {
     200) return 0 ;;
     404) return 1 ;;
     "")
-      # Newlines flattened before interpolation, matching the treatment of gh
-      # output elsewhere in this file: a multi-line value would otherwise break
-      # the annotation and let response text forge a second workflow command.
-      echo "::error::failed to reach GitHub API for ${what} (no HTTP status - DNS, rate-limit, or auth). Not treating as absent. gh said: $(printf '%s' "${out:-<no output>}" | LC_ALL=C tr '\n\r\t' '   ')" >&2
+      # gh_reason strips the header block and flattens what is left, so the
+      # cause leads the annotation instead of trailing 1.2KB of headers.
+      echo "::error::failed to reach GitHub API for ${what} (no HTTP status - DNS, rate-limit, or auth). Not treating as absent. gh said: $(gh_reason "$out")" >&2
       exit 1
       ;;
     *)
@@ -288,7 +313,7 @@ api_exists() {
       # limits and SSO/scope rejections land, and the status code alone does not
       # distinguish them. gh's body is already in ${out}; printing the code and
       # discarding the reason would leave the operator reproducing it by hand.
-      echo "::error::unexpected status ${http_code} from GitHub API for ${what}. gh said: $(printf '%s' "${out:-<no output>}" | LC_ALL=C tr '\n\r\t' '   ')" >&2
+      echo "::error::unexpected status ${http_code} from GitHub API for ${what}. gh said: $(gh_reason "$out")" >&2
       exit 1
       ;;
   esac
@@ -616,7 +641,7 @@ create_tag() {
   # a bare assignment aborts the moment gh exits non-zero, which left the `-z`
   # diagnostic below reachable only when gh succeeded with empty output.
   if ! sha="$(gh api "repos/${repo}/git/ref/heads/${branch}" --jq '.object.sha // empty')"; then
-    echo "::error::could not read HEAD of branch '${branch}' in ${repo}; it may have been deleted after the existence check. See the gh error above." >&2
+    echo "::error::could not read HEAD of branch '${branch}' in ${repo}. Either it was deleted after the existence check, or the read itself failed (rate limit, SSO/scope, network). See the gh error above." >&2
     exit 1
   fi
   if [[ -z "$sha" ]]; then
@@ -626,8 +651,15 @@ create_tag() {
   # Checked for the same reason: under set -e a bare call aborts with gh's raw
   # one-liner and no ::error:: annotation, on the one path where the operator is
   # left with a half-finished cut and no guidance.
+  #
+  # The claim is scoped to release builds in THIS run, not to the cut as a whole.
+  # On the legacy path bump_pro_dependency has already dispatched the bump
+  # workflow and landed a commit on the release branch by the time the pro tag is
+  # written, and a resume may reach here with the OSS half already dispatched -
+  # require_oss_not_behind_pro permits oss=dispatched, pro=absent. A flat
+  # "nothing was dispatched" would tell that operator the opposite of the truth.
   if ! gh api -X POST "repos/${repo}/git/refs" -f ref="refs/tags/${tag}" -f sha="${sha}" >/dev/null; then
-    echo "::error::failed to create tag ${tag} in ${repo} at ${sha}. Either the token lacks write access on refs in ${repo} (a protected-tag rule will also reject it), or a concurrent cut created ${tag} after the double-cut guard ran. Nothing was dispatched. See the gh error above." >&2
+    echo "::error::failed to create tag ${tag} in ${repo} at ${sha}. Either the token lacks write access on refs in ${repo} (a protected-tag rule will also reject it), or a concurrent cut created ${tag} after the double-cut guard ran. No release build was dispatched in this run; re-run with the same version to resume. See the gh error above." >&2
     exit 1
   fi
   echo "created tag ${tag} in ${repo} at ${branch} (${sha})"
