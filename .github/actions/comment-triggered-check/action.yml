@@ -216,6 +216,7 @@ runs:
         INPUT_REQUEST_FOCUS: ${{ inputs.request-focus }}
         INPUT_REQUEST_TARGET: ${{ inputs.request-target }}
         INPUT_REQUEST_HEAD_SHA: ${{ inputs.request-head-sha }}
+        INPUT_TRUSTED_BOT: ${{ inputs.trusted-bot }}
         GH_TOKEN: ${{ inputs.github-token }}
       run: ${{ github.action_path }}/src/queue-fork.sh
 

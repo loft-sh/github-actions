@@ -27,13 +27,42 @@ teardown() {
   run bash "$QUEUE"
 
   [ "$status" -eq 0 ]
-  [ "$(calls_matching '/issues/42/comments')" -eq 1 ]
-  [ "$(calls_matching '--method DELETE repos/loft-sh/demo/issues/42/labels/e2e-fork-request')" -eq 1 ]
+  [ "$(calls_matching '--method POST repos/loft-sh/demo/issues/42/comments')" -eq 1 ]
+  [ "$(calls_matching '--method DELETE repos/loft-sh/demo/issues/42/labels/e2e-fork-request')" -eq 0 ]
   [ "$(calls_matching '--method POST repos/loft-sh/demo/issues/42/labels')" -eq 1 ]
   grep -Fq '"filter":"core"' "$GH_MOCK_CALLS"
   grep -Fq '"focus":"creates a project"' "$GH_MOCK_CALLS"
   grep -Fq '"target":"pro"' "$GH_MOCK_CALLS"
   grep -Fq '"head-sha":"abc123"' "$GH_MOCK_CALLS"
+}
+
+@test "queue updates its request comment and toggles an existing label" {
+  export INPUT_REQUEST_FILTER="snapshots"
+  export INPUT_REQUEST_HEAD_SHA="def456"
+  export GH_MOCK_COMMENTS_JSON='[[{"id":99,"user":{"login":"loft-bot"},"body":"<!-- e2e-fork-request -->\nold"}]]'
+  export GH_MOCK_LABELS_JSON='[[{"name":"e2e-fork-request"}]]'
+
+  run bash "$QUEUE"
+
+  [ "$status" -eq 0 ]
+  [ "$(calls_matching '--method PATCH repos/loft-sh/demo/issues/comments/99')" -eq 1 ]
+  [ "$(calls_matching '--method POST repos/loft-sh/demo/issues/42/comments')" -eq 0 ]
+  [ "$(calls_matching '--method DELETE repos/loft-sh/demo/issues/42/labels/e2e-fork-request')" -eq 1 ]
+  [ "$(calls_matching '--method POST repos/loft-sh/demo/issues/42/labels')" -eq 1 ]
+}
+
+@test "queue stops if an existing request label cannot be removed" {
+  export INPUT_REQUEST_FILTER="core"
+  export INPUT_REQUEST_HEAD_SHA="abc123"
+  export GH_MOCK_LABELS_JSON='[[{"name":"e2e-fork-request"}]]'
+  export GH_MOCK_LABEL_DELETE_FAIL=1
+
+  run bash "$QUEUE"
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"label delete failed"* ]]
+  [ "$(calls_matching '/issues/42/comments')" -eq 0 ]
+  [ "$(calls_matching '--method POST repos/loft-sh/demo/issues/42/labels')" -eq 0 ]
 }
 
 @test "resolve returns the request pinned to the pull request head" {

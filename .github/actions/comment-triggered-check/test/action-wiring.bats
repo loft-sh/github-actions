@@ -54,6 +54,7 @@ START="$BATS_TEST_DIRNAME/../src/start.sh"
   grep -Fq "if: inputs.mode == 'resolve-fork'" "$ACTION"
   grep -Fq 'run: ${{ github.action_path }}/src/resolve-fork.sh' "$ACTION"
   grep -Fq 'INPUT_REQUEST_HEAD_SHA: ${{ inputs.request-head-sha }}' "$ACTION"
+  [[ "$(grep -Fc 'INPUT_TRUSTED_BOT: ${{ inputs.trusted-bot }}' "$ACTION")" -eq 2 ]]
   grep -Fq 'INPUT_PR_HEAD_SHA: ${{ inputs.pr-head-sha }}' "$ACTION"
   grep -Fq 'INPUT_ACTOR_LOGIN: ${{ github.actor }}' "$ACTION"
   grep -Fq 'INPUT_TRUSTED_BOT: ${{ inputs.trusted-bot }}' "$ACTION"

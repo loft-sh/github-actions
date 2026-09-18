@@ -22,6 +22,8 @@
 #   GH_MOCK_LIST_FAIL      non-empty → the commit check-runs listing request fails
 #   GH_MOCK_LIST_JSON      raw body for that listing, for malformed-response cases
 #   GH_MOCK_COMMENTS_JSON  slurped pages returned by the comments endpoint
+#   GH_MOCK_LABELS_JSON    slurped pages returned by the issue labels endpoint
+#   GH_MOCK_LABEL_DELETE_FAIL non-empty -> deleting the request label fails
 
 setup_gh_mock() {
   MOCK_DIR="$(mktemp -d)"
@@ -51,6 +53,17 @@ default_permission='{"permission":"write"}'
 case "$all" in
   *"/issues/"*"/comments"*)
     printf '%s\n' "${GH_MOCK_COMMENTS_JSON:-[[]]}"
+    ;;
+  *"/issues/"*"/labels/"*)
+    [ -n "${GH_MOCK_LABEL_DELETE_FAIL:-}" ] && { echo "mock: label delete failed" >&2; exit 1; }
+    printf '{}\n'
+    ;;
+  *"/issues/"*"/labels"*)
+    if [[ "$all" == *"--method POST"* ]]; then
+      printf '{}\n'
+    else
+      printf '%s\n' "${GH_MOCK_LABELS_JSON:-[[]]}"
+    fi
     ;;
   *"--method POST"*"check-runs"*)
     [ -n "${GH_MOCK_CREATE_FAIL:-}" ] && { echo "mock: create failed" >&2; exit 1; }

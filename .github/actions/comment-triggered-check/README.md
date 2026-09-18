@@ -108,10 +108,11 @@ command takes none.
 id from `start` and the raw job results; it computes the conclusion so the
 matrix lives in a tested script rather than in workflow YAML.
 
-`queue-fork` writes the authorized request to a bot comment and toggles the
-internal request label. Its `github-token` must be a GitHub App or PAT token
-with pull request write access; the built-in `GITHUB_TOKEN` cannot trigger the
-follow-up workflow.
+`queue-fork` writes or updates one authorized bot comment and toggles the
+internal request label. If an existing label cannot be removed, it fails rather
+than claiming a run was queued without emitting a new label event. Its
+`github-token` must be a GitHub App or PAT token with pull request write access;
+the built-in `GITHUB_TOKEN` cannot trigger the follow-up workflow.
 
 `resolve-fork` reads that request from a `pull_request: labeled` run, verifies
 the event actor and request comment match `trusted-bot`, and refuses if the pull
