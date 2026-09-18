@@ -58,8 +58,13 @@ GITHUB_OUTPUT="${GITHUB_OUTPUT:-/dev/null}"
 
 cd "$(git rev-parse --show-toplevel)"
 
+# Two forms of the same list, because this script asks two different questions:
+# the replay diffs monorepo commits under the prefix, while the guard and the
+# convergence assertion compare OSS-rooted trees. Prefixed first so the
+# unprefixed call leaves `excludes` holding what the rest of the file expects.
+build_excludes "$SUBTREE_PREFIX"
+subtree_excludes=(${excludes[@]+"${excludes[@]}"})
 build_excludes
-build_subtree_excludes "$SUBTREE_PREFIX"
 
 emit diverged false
 emit pushed false
@@ -484,7 +489,26 @@ if [ "$STAGING_TREE" != "$OSS_TREE" ]; then
       echo
       echo "${MONOREPO_TRAILER}: $(git rev-parse HEAD)"
     } > "$msgfile"
-    NEW_TIP="$(git commit-tree "$STAGING_TREE" -p "$NEW_TIP" -F "$msgfile")"
+    # Excluded paths are dropped from the snapshot, so the two export paths
+    # honour the input the same way: the replay never sends one, and neither
+    # does this. The migration use still works -- what deletes OSS's copy of a
+    # producer workflow is the aligned tree not containing it, which is exactly
+    # what this produces.
+    aligned_tree="$STAGING_TREE"
+    if [ -n "${EXCLUDE_PATHS//[[:space:]]/}" ]; then
+      align_index="${WT_PARENT}/align-index"
+      rm -f "$align_index"
+      GIT_INDEX_FILE="$align_index" git read-tree "$STAGING_TREE"
+      while IFS= read -r ex_path; do
+        [ -n "$ex_path" ] || continue
+        # Plumbing, not `git rm --cached`: this index has no work tree behind
+        # it, and --force-remove is a no-op on a path the tree never had.
+        GIT_INDEX_FILE="$align_index" git update-index --force-remove -- "$ex_path"
+      done <<< "$EXCLUDE_PATHS"
+      aligned_tree="$(GIT_INDEX_FILE="$align_index" git write-tree)"
+      rm -f "$align_index"
+    fi
+    NEW_TIP="$(git commit-tree "$aligned_tree" -p "$NEW_TIP" -F "$msgfile")"
     rm -f "$msgfile"
     count=$((count + 1))
     echo "Appended alignment commit ${NEW_TIP}"

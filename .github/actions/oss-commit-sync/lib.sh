@@ -509,7 +509,7 @@ has_trailer() {
 
 # --- shared subtree / anchor helpers ------------------------------------------
 
-# build_excludes
+# build_excludes [prefix]
 # Populate the global `excludes` array with :(exclude) pathspecs from the
 # newline-separated EXCLUDE_PATHS. Expand it at call sites as
 # `${excludes[@]+"${excludes[@]}"}` so an empty array is safe under `set -u`.
@@ -517,29 +517,18 @@ has_trailer() {
 # body's last command is a failed test, and a function returning that status is
 # a failing call under `set -e` (unlike the same loop written inline, which
 # bash exempts as a compound command).
-build_excludes() {
-  excludes=()
-  local p
-  while IFS= read -r p; do
-    [ -n "$p" ] && excludes+=(":(exclude)${p}")
-  done <<< "${EXCLUDE_PATHS:-}"
-  return 0
-}
-
-# build_subtree_excludes <prefix>
-# Populate the global `subtree_excludes` array with the same EXCLUDE_PATHS,
-# re-rooted under <prefix>, for the one caller that diffs the monorepo rather
-# than the OSS repo: the export's per-commit patch.
 #
-# The prefix is not cosmetic. --relative rewrites the paths git PRINTS, but a
-# pathspec is still resolved from the repo root, so the OSS-root-relative list
-# build_excludes produces matches nothing against a monorepo commit and the
-# exclusion silently does nothing. Same `return 0` reasoning as above.
-build_subtree_excludes() {
-  local prefix="${1%/}" p
-  subtree_excludes=()
+# With [prefix] the paths are re-rooted under it, for the callers that diff the
+# monorepo rather than the OSS repo. The prefix is not cosmetic there: git's
+# --relative rewrites the paths it PRINTS, but a pathspec is still resolved
+# from the repo root, so the bare OSS-root-relative form matches nothing
+# against a monorepo commit and the exclusion silently does nothing.
+build_excludes() {
+  local prefix="${1:-}" p
+  prefix="${prefix:+${prefix%/}/}"
+  excludes=()
   while IFS= read -r p; do
-    [ -n "$p" ] && subtree_excludes+=(":(exclude)${prefix}/${p}")
+    [ -n "$p" ] && excludes+=(":(exclude)${prefix}${p}")
   done <<< "${EXCLUDE_PATHS:-}"
   return 0
 }
@@ -893,6 +882,14 @@ APPLY_PATCH_CORRUPT=2
 # Neither side can afford to take rc=0 at face value, so the stderr text is
 # the signal.
 #
+# The text is read whatever git exited with, because the exit code tracks how
+# much of the patch survived rather than what was wrong with it: the same
+# unreadable patch exits 0 when earlier files still applied and 128 when the
+# corrupt file was the only one ("No valid patches in input"). Gating the check
+# on rc=0 therefore classified the total failure -- the binary-only shape -- as
+# a conflict, which is the one reading that sends an operator to re-anchor and
+# skip the commit for good.
+#
 # Deliberately not annotated here: this function knows the patch file and not
 # the commit it came from, and a ::error:: naming a /tmp path is the one detail
 # an operator cannot act on. Callers hold the sha and say it in their own words.
@@ -903,11 +900,10 @@ apply_patch() {
   # Echoed whatever the outcome, so git's own wording is in the log: if a future
   # git rewords the message this grep keys on, the log still shows what it said.
   [ -n "$out" ] && echo "$out"
-  [ "$rc" -eq 0 ] || return "$rc"
   if grep -q 'corrupt binary patch\|corrupt patch' <<< "$out"; then
     return "$APPLY_PATCH_CORRUPT"
   fi
-  return 0
+  return "$rc"
 }
 
 # nothing_staged <git-dir>

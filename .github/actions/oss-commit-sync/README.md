@@ -152,11 +152,13 @@ cannot resolve: no readable trailer *and* no subtree content matching any OSS
 commit, i.e. a sync that has never run or whose subtree was rewritten.
 
 - `exclude-paths` drops OSS-only paths (producer workflows) from every
-  replayed diff. A commit whose diff becomes empty is skipped without a
-  marker commit; the skip is re-derived deterministically on every run, so
-  no `--allow-empty` commit needs to survive GitHub's rebase-merge. Pass the
-  same list to the export direction, whose guard and assertion ignore those
-  paths.
+  replayed diff, in both directions, and from the export's alignment
+  snapshot, so no export path can put one on the mirror. The export's
+  divergence guard and convergence assertion ignore them as well, since OSS
+  may legitimately still hold them. A commit whose diff becomes empty is
+  skipped without a marker commit; the skip is re-derived deterministically
+  on every run, so no `--allow-empty` commit needs to survive GitHub's
+  rebase-merge. Pass the same list to both directions.
 - A patch that applies as a no-op (the same change already landed in the
   subtree) is likewise skipped instead of aborting the run; the export guard
   recognizes such commits as benign by comparing their post-image blobs.
@@ -299,7 +301,7 @@ it sees that.
 |      align-tree      | string |  false   | `"false"` |                                                                                       Export only: when the post-replay OSS <br>tree differs from the staging tree, <br>append one snapshot alignment commit instead <br>of failing. Append-only escape hatch; use <br>for migration or after manual reconciliation.                                                                                         |
 |        branch        | string |   true   |           |                                                                                                                                                                     Branch to sync (same name on both repos, usually github.ref_name).                                                                                                                                                                       |
 |      direction       | string |   true   |           |                                                                                                          export (monorepo subtree -> OSS branch), import (external OSS commits -> PR branch under the subtree), or health <br>(read-only report on anchor staleness and squash-orphaned trailers).                                                                                                           |
-|    exclude-paths     | string |  false   |           |                                                           Newline-separated paths (relative to the OSS repo root) that are never <br>mirrored, e.g. producer workflows. Import drops <br>them from replayed diffs; export ignores <br>them in the divergence guard and <br>the convergence assertion. Pass the same <br>list to both directions.                                                             |
+|    exclude-paths     | string |  false   |           |                               Newline-separated paths (relative to the OSS repo root) that are never <br>mirrored, e.g. producer workflows. Both directions <br>drop them from every replayed diff, <br>and from the export's alignment snapshot; <br>the export's divergence guard and convergence <br>assertion ignore them too. Pass the <br>same list to both directions.                                |
 |     github-token     | string |   true   |           |                                                Token used to build the OSS <br>remote URL; never logged. Export needs <br>write access to the OSS repo; <br>import and health only read, so <br>give health the least-privileged token that <br>can fetch the OSS branch (github.token suffices for a public OSS repo) <br>rather than a write-capable PAT.                                                  |
 |  oss-default-branch  | string |  false   | `"main"`  |                                                                                                                                                           OSS default branch used to anchor <br>newly created release-line branches. Export only.                                                                                                                                                            |
 |       oss-repo       | string |   true   |           |                                                                                                                                                                     Downstream OSS repository as owner/repo, e.g. <br>loft-sh/vcluster.                                                                                                                                                                      |
