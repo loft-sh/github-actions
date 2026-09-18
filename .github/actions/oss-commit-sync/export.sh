@@ -38,8 +38,8 @@ set -euo pipefail
 # Optional env: OSS_DEFAULT_BRANCH (default main), SEED_MONOREPO_COMMIT +
 # SEED_OSS_COMMIT (first run on a pre-existing branch with no trailers),
 # ALIGN_TREE (default false), EXCLUDE_PATHS (newline-separated OSS-root
-# paths that are never mirrored; the guard and the convergence assertion
-# ignore them), GITHUB_OUTPUT.
+# paths that are never mirrored: stripped from each replayed patch, and
+# ignored by the guard and the convergence assertion), GITHUB_OUTPUT.
 #
 # Outputs: pushed, diverged, push-rejected, exported-count, oss-tip,
 # loose-absorption.
@@ -59,6 +59,7 @@ GITHUB_OUTPUT="${GITHUB_OUTPUT:-/dev/null}"
 cd "$(git rev-parse --show-toplevel)"
 
 build_excludes
+build_subtree_excludes "$SUBTREE_PREFIX"
 
 emit diverged false
 emit pushed false
@@ -411,7 +412,14 @@ while read -r M; do
   # terminator is the final byte of the diff -- exactly what command
   # substitution strips. git apply then calls the last file's hunk corrupt,
   # skips it, and still exits 0 (see apply_patch).
-  git diff-tree --no-commit-id -p --binary -M --relative="${SUBTREE_PREFIX}/" "$M" > "$patch_file"
+  #
+  # Excluded here as well as in the guard and the assertion. Without it
+  # "never mirrored" held only while those paths happened not to exist under
+  # ${SUBTREE_PREFIX}, which nothing enforces: one committed there was replayed
+  # to OSS, and the assertion then ignored the very path it had just pushed, so
+  # the mirroring was silent.
+  git diff-tree --no-commit-id -p --binary -M --relative="${SUBTREE_PREFIX}/" "$M" \
+    -- . ${subtree_excludes[@]+"${subtree_excludes[@]}"} > "$patch_file"
   if [ ! -s "$patch_file" ]; then
     echo "Skipping ${M} (empty diff under ${SUBTREE_PREFIX})"
     continue

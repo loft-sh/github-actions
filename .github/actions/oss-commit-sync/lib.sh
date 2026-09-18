@@ -526,6 +526,24 @@ build_excludes() {
   return 0
 }
 
+# build_subtree_excludes <prefix>
+# Populate the global `subtree_excludes` array with the same EXCLUDE_PATHS,
+# re-rooted under <prefix>, for the one caller that diffs the monorepo rather
+# than the OSS repo: the export's per-commit patch.
+#
+# The prefix is not cosmetic. --relative rewrites the paths git PRINTS, but a
+# pathspec is still resolved from the repo root, so the OSS-root-relative list
+# build_excludes produces matches nothing against a monorepo commit and the
+# exclusion silently does nothing. Same `return 0` reasoning as above.
+build_subtree_excludes() {
+  local prefix="${1%/}" p
+  subtree_excludes=()
+  while IFS= read -r p; do
+    [ -n "$p" ] && subtree_excludes+=(":(exclude)${prefix}/${p}")
+  done <<< "${EXCLUDE_PATHS:-}"
+  return 0
+}
+
 # external_is_benign <oss-sha>
 # True when the commit's post-image (minus EXCLUDE_PATHS) is already present in
 # the subtree, so mirroring on top of it cannot lose content. Covers the two
