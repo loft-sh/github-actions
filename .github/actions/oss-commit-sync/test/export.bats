@@ -1048,3 +1048,62 @@ WRAP
   [ "$(git -C "$OSS_REMOTE" rev-parse "main:z-diagram.png")" = "$(git -C "$MONO" rev-parse "HEAD:$PFX/z-diagram.png")" ]
   [ "$(git -C "$OSS_REMOTE" rev-parse "main:a-notes.md")" = "$(git -C "$MONO" rev-parse "HEAD:$PFX/a-notes.md")" ]
 }
+
+@test "an excluded path committed under the prefix is not exported" {
+  # exclude-paths reads as a property of the path, not of one direction, and the
+  # import has always honoured it. The export stripped it from the divergence
+  # guard and the convergence assertion but not from the replayed patch, so a
+  # path declared "never mirrored" was mirrored -- and the assertion then
+  # ignored the very file it had just pushed, which is what made it silent.
+  export EXCLUDE_PATHS=".github/workflows/release.yaml"
+  (
+    cd "$MONO"
+    mkdir -p "$PFX/.github/workflows"
+    printf 'name: release\n' > "$PFX/.github/workflows/release.yaml"
+    printf 'l1-changed\n' > "$PFX/pkg/app.go"
+    git add . && git commit -qm "chore: touch a producer workflow and real code"
+  )
+
+  run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+
+  # The real change still crosses.
+  [ "$(oss_file pkg/app.go)" = "l1-changed" ]
+  # The excluded one does not.
+  run git -C "$OSS_REMOTE" cat-file -e "main:.github/workflows/release.yaml"
+  [ "$status" -ne 0 ]
+}
+
+@test "a commit touching only excluded paths exports nothing" {
+  export EXCLUDE_PATHS=".github/workflows/release.yaml"
+  (
+    cd "$MONO"
+    mkdir -p "$PFX/.github/workflows"
+    printf 'name: release\n' > "$PFX/.github/workflows/release.yaml"
+    git add . && git commit -qm "chore: producer workflow only"
+  )
+
+  run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value exported-count)" = "0" ]
+  [ "$(output_value pushed)" = "false" ]
+}
+
+@test "excluding a path does not exclude a prefix-sharing sibling" {
+  # ":(exclude)<prefix>/a.yaml" must not also swallow "<prefix>/a.yaml.bak":
+  # the re-rooting builds the pathspec by string concatenation, so a missing
+  # boundary would silently drop real content.
+  export EXCLUDE_PATHS="keep.yaml"
+  (
+    cd "$MONO"
+    printf 'excluded\n' > "$PFX/keep.yaml"
+    printf 'kept\n' > "$PFX/keep.yaml.bak"
+    git add . && git commit -qm "chore: add both"
+  )
+
+  run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [ "$(oss_file keep.yaml.bak)" = "kept" ]
+  run git -C "$OSS_REMOTE" cat-file -e "main:keep.yaml"
+  [ "$status" -ne 0 ]
+}
