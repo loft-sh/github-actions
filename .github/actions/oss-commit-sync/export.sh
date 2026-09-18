@@ -429,6 +429,13 @@ while read -r M; do
     echo "Skipping ${M} (empty diff under ${SUBTREE_PREFIX})"
     continue
   fi
+  # Before applying, not after: a commit OSS already holds can fail the apply
+  # outright rather than resolving to a no-op, and nothing_staged below only
+  # runs once git apply has succeeded. See monorepo_is_benign.
+  if monorepo_is_benign "$M" "$(git -C "$WT" rev-parse HEAD)"; then
+    echo "Skipping ${M} (content already on OSS)"
+    continue
+  fi
   apply_rc=0
   apply_patch "$patch_file" "$WT" || apply_rc=$?
   if [ "$apply_rc" -ne 0 ]; then

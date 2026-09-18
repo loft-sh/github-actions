@@ -1212,3 +1212,69 @@ Oss-Commit: $(git -C "$OSS_REMOTE" rev-parse main)"
   run git -C "$OSS_REMOTE" cat-file -e "main:.github/workflows/release.yaml"
   [ "$status" -ne 0 ]
 }
+
+@test "a commit whose content OSS already holds is skipped, not called a conflict" {
+  # The shape that stalled vcluster-pro v0.37 for weeks. A release line's OSS
+  # branch is cut from the default branch AFTER a change landed there, so the
+  # monorepo's backport of that same change is replayed onto a tree that already
+  # has the result. Its deletions target paths OSS no longer has, git apply
+  # stops with "does not exist in index", and the run reports a conflict on a
+  # commit that had nothing to contribute.
+  #
+  # nothing_staged cannot catch this: git apply never gets far enough to stage.
+  company_commit pkg/gone.go "doomed" "feat: add a file" >/dev/null
+  run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [ "$(oss_file pkg/gone.go)" = "doomed" ]
+
+  # OSS loses the file by its own route, and we record it as absorbed so the
+  # divergence guard has no objection.
+  clone="$ROOT/ext-del-$RANDOM"
+  git clone -q "$OSS_REMOTE" "$clone"
+  (
+    cd "$clone"
+    git rm -q pkg/gone.go
+    GIT_AUTHOR_NAME=alice GIT_AUTHOR_EMAIL=alice@contributor.example \
+      git commit -qm "chore: drop it upstream"
+    git push -q origin main
+  )
+  (
+    cd "$MONO"
+    git commit -q --allow-empty -m "chore: absorb
+
+Oss-Commit: $(git -C "$OSS_REMOTE" rev-parse main)"
+  )
+
+  # Now the monorepo deletes it too -- the same end state, reached separately.
+  (
+    cd "$MONO"
+    git rm -q "$PFX/pkg/gone.go"
+    git commit -qm "chore: drop it here too"
+  )
+
+  run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"content already on OSS"* ]]
+  [[ "$output" != *"conflict replaying"* ]]
+}
+
+@test "a commit that still has something to add is not skipped as benign" {
+  # The other side of the check: identical on the paths it shares with OSS, but
+  # carrying one real change. Skipping this would silently drop content, which
+  # is a worse failure than the one the check exists to fix.
+  company_commit pkg/shared.go "same" "feat: shared" >/dev/null
+  run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+
+  (
+    cd "$MONO"
+    printf 'same\n' > "$PFX/pkg/shared.go"
+    printf 'brand new\n' > "$PFX/pkg/fresh.go"
+    git add . && git commit -qm "feat: one unchanged path, one new"
+  )
+
+  run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"content already on OSS"* ]]
+  [ "$(oss_file pkg/fresh.go)" = "brand new" ]
+}

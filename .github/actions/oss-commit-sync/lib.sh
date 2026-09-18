@@ -906,6 +906,52 @@ apply_patch() {
   return "$rc"
 }
 
+# monorepo_is_benign <monorepo-sha> <oss-commit>
+# The export's mirror of external_is_benign: true when the commit's post-image
+# under SUBTREE_PREFIX (minus EXCLUDE_PATHS) is already present in <oss-commit>,
+# so replaying it cannot add anything.
+#
+# Checked BEFORE applying, for the same reason the import checks its side
+# before applying, and with a sharper failure mode: a commit whose content OSS
+# already holds does not merely apply as a no-op, it can fail outright. The
+# shape that bites is a release line whose OSS branch was cut from the default
+# branch AFTER a change landed there, so the monorepo's backport of that same
+# change is the first thing replayed: its deletions target paths OSS no longer
+# has, and `git apply` stops with "does not exist in index" -- reported as a
+# conflict, on a commit that had nothing to contribute. nothing_staged cannot
+# catch it, because git apply never gets far enough to stage anything.
+#
+# Renames are inspected without -M so they decompose into delete+add and get
+# checked path by path. A false "benign" cannot corrupt the mirror: the
+# convergence assertion still fails the run before anything is pushed.
+#
+# Reads SUBTREE_PREFIX and the `subtree_excludes` array.
+monorepo_is_benign() {
+  local m="$1" oss="$2" status path blob_mono blob_oss changes
+  # Captured, not piped from a process substitution: a producer failure
+  # invisible to `set -e` would run the loop zero times and answer "benign",
+  # silently dropping a commit that needed exporting. Fail closed instead.
+  # shellcheck disable=SC2154  # assigned by the caller, like SUBTREE_PREFIX
+  changes="$(git diff-tree --no-commit-id --name-status -r --relative="${SUBTREE_PREFIX}/" "$m" \
+    -- . ${subtree_excludes[@]+"${subtree_excludes[@]}"})" || return 1
+  # An empty diff is the excluded-paths-only case, which the caller already
+  # skips; answering "benign" here would be true but is never reached.
+  while IFS=$'\t' read -r status path; do
+    [ -n "$path" ] || continue
+    if [ "$status" = "D" ]; then
+      # A deletion is benign only if OSS has already lost the path too.
+      if git cat-file -e "${oss}:${path}" 2>/dev/null; then
+        return 1
+      fi
+      continue
+    fi
+    blob_mono="$(git rev-parse --quiet --verify "${m}:${SUBTREE_PREFIX}/${path}" 2>/dev/null)" || return 1
+    blob_oss="$(git rev-parse --quiet --verify "${oss}:${path}" 2>/dev/null)" || return 1
+    [ "$blob_mono" = "$blob_oss" ] || return 1
+  done <<< "$changes"
+  return 0
+}
+
 # nothing_staged <git-dir>
 # True when the index matches HEAD, i.e. a non-empty patch applied as a no-op
 # because its content was already present (e.g. the same change landed on
