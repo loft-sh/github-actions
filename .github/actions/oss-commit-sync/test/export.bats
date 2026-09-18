@@ -1107,3 +1107,108 @@ WRAP
   run git -C "$OSS_REMOTE" cat-file -e "main:keep.yaml"
   [ "$status" -ne 0 ]
 }
+
+@test "a corrupt patch is not reported to the operator as a conflict" {
+  # The caller-side half of the guard. apply-patch.bats pins the helper's return
+  # code; this pins that export ACTS on it -- deleting the APPLY_PATCH_CORRUPT
+  # branch from the script leaves the helper's own tests green.
+  #
+  # The distinction is the whole point: the conflict wording sends an operator
+  # to resolve by hand or re-anchor, and both cement content git never read.
+  company_commit pkg/app.go "l1-changed" "feat: company change" >/dev/null
+  before="$(oss_tip)"
+
+  real_git="$(command -v git)"
+  mkdir -p "$ROOT/bin"
+  # Only `git apply`, and with git's real wording plus its real exit-0
+  # behaviour, so the test fails if a future git rewords the message.
+  cat > "$ROOT/bin/git" <<WRAP
+#!/usr/bin/env bash
+for a in "\$@"; do
+  if [ "\$a" = apply ]; then
+    echo "error: corrupt binary patch at line 60:" >&2
+    exit 0
+  fi
+done
+exec "$real_git" "\$@"
+WRAP
+  chmod +x "$ROOT/bin/git"
+
+  PATH="$ROOT/bin:$PATH" run bash "$EXPORT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"could not read the whole diff"* ]]
+  [[ "$output" != *"conflict replaying"* ]]
+  # Nothing was pushed on the strength of a patch git could not read.
+  [ "$(oss_tip)" = "$before" ]
+}
+
+@test "a genuine apply failure still reports a conflict, and cleans the worktree" {
+  # The other arm, which this PR restructured: a non-zero exit with no
+  # corrupt-patch text must keep the old wording. Without this, routing every
+  # apply failure through the corrupt message would pass the suite.
+  company_commit pkg/app.go "l1-changed" "feat: company change" >/dev/null
+
+  real_git="$(command -v git)"
+  mkdir -p "$ROOT/bin"
+  cat > "$ROOT/bin/git" <<WRAP
+#!/usr/bin/env bash
+for a in "\$@"; do
+  if [ "\$a" = apply ]; then
+    echo "error: patch failed: pkg/app.go:1" >&2
+    exit 1
+  fi
+done
+exec "$real_git" "\$@"
+WRAP
+  chmod +x "$ROOT/bin/git"
+
+  PATH="$ROOT/bin:$PATH" run bash "$EXPORT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"conflict replaying"* ]]
+  [[ "$output" != *"could not read the whole diff"* ]]
+}
+
+@test "align-tree does not push an excluded path either" {
+  # The replay strips excluded paths; the alignment snapshot must agree, or the
+  # same input means two different things depending on which export path ran.
+  export EXCLUDE_PATHS=".github/workflows/release.yaml"
+  (
+    cd "$MONO"
+    mkdir -p "$PFX/.github/workflows"
+    printf 'name: release\n' > "$PFX/.github/workflows/release.yaml"
+    git add . && git commit -qm "chore: producer workflow under the prefix"
+  )
+
+  ALIGN_TREE=true run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  run git -C "$OSS_REMOTE" cat-file -e "main:.github/workflows/release.yaml"
+  [ "$status" -ne 0 ]
+}
+
+@test "align-tree still deletes an excluded path OSS already holds" {
+  # The migration use, and the reason the snapshot cannot simply skip those
+  # paths: what removes OSS's producer workflows is the aligned tree not
+  # carrying them.
+  export EXCLUDE_PATHS=".github/workflows/release.yaml"
+  (
+    clone="$ROOT/seed-$RANDOM"
+    git clone -q "$OSS_REMOTE" "$clone"
+    cd "$clone"
+    mkdir -p .github/workflows
+    printf 'name: release\n' > .github/workflows/release.yaml
+    git add . && git commit -qm "chore: OSS-only producer workflow"
+    git push -q origin main
+  )
+  # Absorb it so the divergence guard has nothing to object to.
+  (
+    cd "$MONO"
+    git commit -q --allow-empty -m "chore: absorb
+
+Oss-Commit: $(git -C "$OSS_REMOTE" rev-parse main)"
+  )
+
+  ALIGN_TREE=true run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  run git -C "$OSS_REMOTE" cat-file -e "main:.github/workflows/release.yaml"
+  [ "$status" -ne 0 ]
+}

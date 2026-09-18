@@ -517,3 +517,66 @@ WRAP
   [ "$(git log -1 --format='%(trailers:key=Oss-Commit,valueonly)')" = "$E" ]
   [ "$(git rev-parse "HEAD:$PFX/z-diagram.png")" = "$(git -C "$OSS_REMOTE" rev-parse "main:z-diagram.png")" ]
 }
+
+@test "a corrupt patch withholds conflict-sha and the re-anchor advice" {
+  # The import's distinguishing behaviour, and the one with the sharpest
+  # consequence: the conflict path tells an operator to re-anchor with
+  # seed-oss-commit, which skips the commit permanently and cements exactly the
+  # loss the guard exists to catch. The suite pins that conflict-sha IS emitted
+  # on a real conflict; this pins that it is suppressed here.
+  external_commit ext.go "external" "feat: external contribution" >/dev/null
+
+  real_git="$(command -v git)"
+  mkdir -p "$ROOT/bin"
+  cat > "$ROOT/bin/git" <<WRAP
+#!/usr/bin/env bash
+for a in "\$@"; do
+  if [ "\$a" = apply ]; then
+    echo "error: corrupt binary patch at line 60:" >&2
+    exit 0
+  fi
+done
+exec "$real_git" "\$@"
+WRAP
+  chmod +x "$ROOT/bin/git"
+
+  PATH="$ROOT/bin:$PATH" run bash "$IMPORT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"could not read the whole diff"* ]]
+  [[ "$output" != *"conflict replaying"* ]]
+  # Named, but only to forbid it: the conflict path's "re-anchor ... instead of
+  # resolving by hand" is what an operator must not be handed here.
+  [[ "$output" == *"do not re-anchor with seed-oss-commit"* ]]
+  [[ "$output" != *"instead of resolving by hand"* ]]
+  # And no downstream consumer may read this as a conflict.
+  [ -z "$(output_value conflict-sha)" ]
+}
+
+@test "a fully unreadable patch is corrupt, not a conflict" {
+  # git's exit code tracks how much of the patch survived, not what was wrong
+  # with it: the same unreadable patch exits 0 when earlier files still applied
+  # and 128 when the corrupt file was the only one. Gating the classification on
+  # rc=0 sent the binary-only shape down the conflict path.
+  external_commit ext.go "external" "feat: external contribution" >/dev/null
+
+  real_git="$(command -v git)"
+  mkdir -p "$ROOT/bin"
+  cat > "$ROOT/bin/git" <<WRAP
+#!/usr/bin/env bash
+for a in "\$@"; do
+  if [ "\$a" = apply ]; then
+    echo "error: corrupt binary patch at line 57:" >&2
+    echo "error: No valid patches in input (allow with \"--allow-empty\")" >&2
+    exit 128
+  fi
+done
+exec "$real_git" "\$@"
+WRAP
+  chmod +x "$ROOT/bin/git"
+
+  PATH="$ROOT/bin:$PATH" run bash "$IMPORT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"could not read the whole diff"* ]]
+  [[ "$output" != *"instead of resolving by hand"* ]]
+  [ -z "$(output_value conflict-sha)" ]
+}
