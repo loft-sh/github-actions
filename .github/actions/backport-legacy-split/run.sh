@@ -327,46 +327,70 @@ backport_side() {
   if [ "$CREATE_PR" = "true" ]; then
     : "${slug:?repo slug (OSS_REPO/PRO_REPO) is required when CREATE_PR=true}"
     : "${GH_TOKEN:?GH_TOKEN is required when CREATE_PR=true}"
-    local existing="" existing_branch="" existing_url="" existing_record="" rc=0
-    # Search once before any writes. Prefer the new exact full-SHA head, then
-    # accept an older head whose nonempty suffix is any prefix of the source SHA
-    # and whose body still identifies the source PR. Checking headRepository,
-    # base, and source prevents a fork or unrelated PR from being reused.
-    # shellcheck disable=SC2016 # $pr is a jq binding, not a shell variable.
-    existing_record="$(
-      EXPECTED_REPO="$slug" BACKPORT_BRANCH="$BACKPORT_BRANCH" \
-        LEGACY_PREFIX="$LEGACY_BRANCH_PREFIX" SOURCE_SHA="$SHA" \
-        SOURCE_PR_REF="$SRC_PR_REF" \
-        gh pr list --repo "$slug" --base "$TARGET_BRANCH" --state open --limit 100 \
-          --json number,headRefName,headRepository,body,url --jq '
-            map(
-              . as $pr |
-              select($pr.headRepository.nameWithOwner == env.EXPECTED_REPO) |
-              select(
-                $pr.headRefName == env.BACKPORT_BRANCH or
-                (
-                  env.SOURCE_PR_REF != "" and
-                  ($pr.headRefName | startswith(env.LEGACY_PREFIX)) and
-                  (($pr.headRefName | ltrimstr(env.LEGACY_PREFIX)) != "") and
-                  (env.SOURCE_SHA | startswith($pr.headRefName | ltrimstr(env.LEGACY_PREFIX))) and
-                  (($pr.body // "") | contains(env.SOURCE_PR_REF))
-                )
-              )
-            ) |
-            sort_by(if .headRefName == env.BACKPORT_BRANCH then 0 else 1 end) |
-            .[0] // empty |
-            if . == "" then empty else [.number, .headRefName, .url] | @tsv end
-          ' 2>/dev/null
-    )" || rc=$?
-    if [ "$rc" -ne 0 ]; then
+    local existing="" existing_branch="" existing_url="" existing_record=""
+    local prs="${WORKDIR}/${side}-open-prs.json" query_err="" rc=0
+    command -v jq >/dev/null 2>&1 || {
+      echo "::error::jq is required to match open backport PRs"
+      exit 1
+    }
+
+    # Search once before any writes, and filter with jq rather than gh's --jq.
+    # gh only exposes the environment to its embedded jq when it was built with
+    # an environment loader, so `env.X` reads as null on an older gh -- turning
+    # this lookup into either a silent no-match or an outright startswith(null)
+    # error depending on which release the runner happens to carry. --arg binds
+    # the values explicitly and behaves the same on every gh.
+    if ! query_err="$(gh pr list --repo "$slug" --base "$TARGET_BRANCH" --state open \
+      --limit 100 --json number,headRefName,headRepositoryOwner,headRepository,body,url \
+      2>&1 >"$prs")"; then
       # Do not touch the branch or PR -- the query may have failed while a PR
       # holding a manual conflict resolution is open, and clobbering that is
-      # worse than stopping. But this is a transient infrastructure failure,
-      # not an expected miss, so it must not pass as success: returning 0 here
-      # left the job green and, on a mixed route where the other half worked,
-      # posted "Backported to <target>" naming only that half. That is the
-      # DEVOPS-1438 silent miss reached through a skip instead of a failure.
-      echo "::error::${side}: could not query open PRs (gh exit ${rc}); left the branch and PR untouched rather than risk clobbering an open PR. Re-run to retry."
+      # worse than stopping. But this is an infrastructure failure, not an
+      # expected miss, so it must not pass as success: returning 0 here left the
+      # job green and, on a mixed route where the other half worked, posted
+      # "Backported to <target>" naming only that half. That is the DEVOPS-1438
+      # silent miss reached through a skip instead of a failure.
+      echo "::error::${side}: could not query open PRs on ${slug}; left the branch and PR untouched rather than risk clobbering an open PR. Re-run to retry."
+      [ -n "$query_err" ] && echo "${query_err}"
+      exit 1
+    fi
+
+    # Prefer the exact full-SHA head, then accept an older head whose nonempty
+    # suffix is any prefix of the source SHA and whose body still identifies the
+    # source PR. Matching the head repo as well as the base stops a fork's PR, or
+    # an unrelated one, from being adopted. The slug is rebuilt from owner plus
+    # name because headRepository carries nameWithOwner only on a newer gh.
+    # shellcheck disable=SC2016 # $pr is a jq binding, not a shell variable.
+    existing_record="$(jq -r \
+      --arg repo "$slug" \
+      --arg branch "$BACKPORT_BRANCH" \
+      --arg prefix "$LEGACY_BRANCH_PREFIX" \
+      --arg sha "$SHA" \
+      --arg source "$SRC_PR_REF" '
+        map(
+          . as $pr |
+          select(
+            ((($pr.headRepositoryOwner.login // "") + "/" + ($pr.headRepository.name // "")) == $repo) and
+            (
+              $pr.headRefName == $branch or
+              (
+                $source != "" and
+                ($pr.headRefName | startswith($prefix)) and
+                (($pr.headRefName | ltrimstr($prefix)) != "") and
+                ($sha | startswith($pr.headRefName | ltrimstr($prefix))) and
+                (($pr.body // "") | contains($source))
+              )
+            )
+          )
+        ) |
+        sort_by(if .headRefName == $branch then 0 else 1 end) |
+        .[0] // empty |
+        [.number, .headRefName, .url] | @tsv
+      ' "$prs" 2>&1)" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      # Same fail-safe as above: an unreadable answer is not "no PR open".
+      echo "::error::${side}: could not match open PRs on ${slug} (jq exit ${rc}); left the branch and PR untouched rather than risk clobbering an open PR."
+      [ -n "$existing_record" ] && echo "${existing_record}"
       exit 1
     fi
     if [ -n "$existing_record" ]; then

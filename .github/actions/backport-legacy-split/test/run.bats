@@ -78,6 +78,7 @@ teardown() {
 # Install a fake `gh` on PATH so the CREATE_PR=true paths can be exercised
 # hermetically (no network). Controlled by env:
 #   GH_PRLIST=empty|exists|legacy|fail -- what `gh pr list` returns (default empty)
+#   GH_STUB_SOURCE_REF=<owner/repo#N> -- source ref the legacy fixtures embed
 #   GH_CREATE_LOG=<file>         -- `gh pr create` appends its argv here (one/line)
 install_fake_gh() {
   mkdir -p "$ROOT/bin"
@@ -85,12 +86,28 @@ install_fake_gh() {
 #!/usr/bin/env bash
 if [ "$1" = pr ] && [ "$2" = list ]; then
   printf '%s\n' "$@" >> "${GH_PRLIST_LOG:-/dev/null}"
-  jq_filter=""
-  while [ "$#" -gt 0 ]; do
-    if [ "$1" = --jq ]; then jq_filter="$2"; break; fi
+  # run.sh must fetch plain JSON and filter it locally. gh only exposes the
+  # environment to its embedded jq when built with an env loader, so a --jq
+  # filter reading env.* either matches nothing or dies on startswith(null),
+  # depending on which gh the runner carries. Fail loudly if that regresses.
+  for arg in "$@"; do
+    if [ "$arg" = --jq ]; then
+      echo "stub: gh pr list must not use --jq" >&2
+      exit 1
+    fi
+  done
+  # Derive the head the action should be looking for the same way it does, but
+  # independently: from the real --repo/--base it passed and the monorepo HEAD.
+  slug=""; base=""
+  while [ "$#" -gt 1 ]; do
+    case "$1" in
+      --repo) slug="$2" ;;
+      --base) base="$2" ;;
+    esac
     shift
   done
-  [ -n "$jq_filter" ] || { echo "stub: --jq missing" >&2; exit 1; }
+  owner="${slug%%/*}"; name="${slug##*/}"
+  full_head="backport/${base}/$(git -C "$MONO" rev-parse HEAD)"
   # GH_PRLIST_SEQ gives one behaviour per call ("empty fail"), so a mixed route
   # can fail the second half's lookup only. Consumed via a counter file.
   if [ -n "${GH_PRLIST_SEQ:-}" ]; then
@@ -100,24 +117,29 @@ if [ "$1" = pr ] && [ "$2" = list ]; then
     [ -n "$GH_PRLIST" ] || GH_PRLIST=empty
   fi
   case "${GH_PRLIST:-empty}" in
-    fail) exit 3 ;;
+    fail) echo "stub: simulated gh failure" >&2; exit 3 ;;
     exists)
-      fixture="$(jq -n --arg head "$BACKPORT_BRANCH" --arg repo "$EXPECTED_REPO" '
-        [{number: 42, headRefName: $head, headRepository: {nameWithOwner: $repo}, body: "", url: "https://github.com/x/y/pull/42"}]')"
+      fixture="$(jq -n --arg head "$full_head" --arg owner "$owner" --arg name "$name" '
+        [{number: 42, headRefName: $head, headRepositoryOwner: {login: $owner},
+          headRepository: {name: $name}, body: "", url: "https://github.com/x/y/pull/42"}]')"
       ;;
     legacy)
-      fixture="$(jq -n --arg full "$BACKPORT_BRANCH" --arg old "$GH_LEGACY_HEAD" \
-        --arg repo "$EXPECTED_REPO" --arg source "$SOURCE_PR_REF" '
+      fixture="$(jq -n --arg full "$full_head" --arg old "$GH_LEGACY_HEAD" \
+        --arg owner "$owner" --arg name "$name" --arg source "${GH_STUB_SOURCE_REF:-}" '
         [
-          {number: 39, headRefName: $full, headRepository: {nameWithOwner: "fork/example"}, body: $source, url: "https://github.com/fork/example/pull/39"},
-          {number: 40, headRefName: ($full | sub("[^/]+$"; "deadbeef")), headRepository: {nameWithOwner: $repo}, body: $source, url: "https://github.com/x/y/pull/40"},
-          {number: 41, headRefName: $old, headRepository: {nameWithOwner: $repo}, body: "", url: "https://github.com/x/y/pull/41"},
-          {number: 42, headRefName: $old, headRepository: {nameWithOwner: $repo}, body: ("Backport of " + $source), url: "https://github.com/x/y/pull/42"}
+          {number: 39, headRefName: $full, headRepositoryOwner: {login: "fork"},
+           headRepository: {name: "example"}, body: $source, url: "https://github.com/fork/example/pull/39"},
+          {number: 40, headRefName: ($full | sub("[^/]+$"; "deadbeef")), headRepositoryOwner: {login: $owner},
+           headRepository: {name: $name}, body: $source, url: "https://github.com/x/y/pull/40"},
+          {number: 41, headRefName: $old, headRepositoryOwner: {login: $owner},
+           headRepository: {name: $name}, body: "", url: "https://github.com/x/y/pull/41"},
+          {number: 42, headRefName: $old, headRepositoryOwner: {login: $owner},
+           headRepository: {name: $name}, body: ("Backport of " + $source), url: "https://github.com/x/y/pull/42"}
         ]')"
       ;;
     *) fixture='[]' ;;
   esac
-  printf '%s\n' "$fixture" | jq -r "$jq_filter"
+  printf '%s\n' "$fixture"
   exit 0
 fi
 if [ "$1" = pr ] && [ "$2" = create ]; then
@@ -171,6 +193,9 @@ install_source_pr_ref() {
   git push -q "$origin" "HEAD:refs/pull/1/head"
   git remote add origin "https://github.com/loft-sh/vcluster-pro.git"
   git config "url.$origin.insteadOf" "https://github.com/loft-sh/vcluster-pro.git"
+  # What run.sh should derive from that origin plus PR_NUMBER=1, and therefore
+  # what a real backport PR body would carry.
+  export GH_STUB_SOURCE_REF="loft-sh/vcluster-pro#1"
 }
 
 # --- classification --------------------------------------------------------
@@ -712,6 +737,9 @@ install_source_pr_ref() {
   [ "$status" -ne 0 ]
   [ "$(output_value oss-pushed)" = "false" ]
   [[ "$output" == *"could not query open PRs"* ]]
+  # gh's own stderr has to reach the log; swallowing it turned a diagnosable
+  # failure into an unexplained one.
+  [[ "$output" == *"stub: simulated gh failure"* ]]
   [ ! -s "$GH_CREATE_LOG" ]   # nothing clobbered
   run comment_body
   [[ "$output" == *"failed — action required"* ]]
@@ -770,7 +798,10 @@ install_source_pr_ref() {
   grep -Fxq -- v0.35 "$GH_PRLIST_LOG"
   grep -Fxq -- --limit "$GH_PRLIST_LOG"
   grep -Fxq -- 100 "$GH_PRLIST_LOG"
-  grep -Fxq -- number,headRefName,headRepository,body,url "$GH_PRLIST_LOG"
+  grep -Fxq -- number,headRefName,headRepositoryOwner,headRepository,body,url "$GH_PRLIST_LOG"
+  # The filter must run locally, never through gh's own --jq: gh reads env.* as
+  # null unless it was built with an env loader, which silently broke this lookup.
+  ! grep -Fxq -- --jq "$GH_PRLIST_LOG"
 }
 
 @test "create-pr: a conflicted backport opens a DRAFT PR" {
