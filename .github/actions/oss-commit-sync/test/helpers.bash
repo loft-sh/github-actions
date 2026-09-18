@@ -139,16 +139,28 @@ oss_tip() {
 }
 
 # write_binary <path> <seed>
-# A file git treats as binary (NUL in the first bytes), large and noisy enough
-# that git emits a real GIT binary patch rather than a text diff.
+# A file git treats as binary (the NUL in the header is inside the first 8000
+# bytes, which is what git looks at), with enough body that it diffs as a real
+# GIT binary patch rather than as text.
+#
+# Every byte derives from <seed>, so the same seed always rebuilds the same
+# file and a failing run's fixture can be reproduced from the log. The chain is
+# hashed rather than repeated because git stores blobs zlib-compressed and a
+# repetitive body can pack down far enough that the two revisions of the file
+# produce a delta instead of the literal this suite is about.
 write_binary() {
+  local seed="$2" h i
   mkdir -p "$(dirname "$1")"
   {
     printf 'PNG\000\r\n\032\n'
-    # Deterministic per seed, incompressible enough that the two revisions of
-    # the same file cannot collide.
-    head -c 4096 /dev/urandom | od -An -tx1 | tr -d ' \n' | head -c 2048
-    printf 'seed=%s\000' "$2"
+    h="$seed"
+    for i in $(seq 1 32); do
+      # git, not sha1sum/shasum: git is already required here, and the two
+      # checksum tools are not both present on every platform this runs on.
+      h="$(printf '%s' "$h" | git hash-object -t blob --stdin)"
+      printf '%s' "$h"
+    done
+    printf '\000seed=%s\n' "$seed"
   } > "$1"
 }
 
@@ -167,6 +179,26 @@ external_binary_commit() {
     git add .
     GIT_AUTHOR_NAME=alice GIT_AUTHOR_EMAIL=alice@contributor.example \
       git commit -qm "$4"
+    git push -q origin main
+  )
+  git -C "$OSS_REMOTE" rev-parse main
+}
+
+# external_binary_only_commit <bin-file> <seed> <subject>
+# An OSS commit whose ONLY file is binary, i.e. the binary is both first and
+# last in diff order. The terminator the export/import used to strip is still
+# the diff's final byte, but there is no earlier file left to apply, so a
+# stripped diff loses the whole commit rather than part of it.
+external_binary_only_commit() {
+  local clone="$ROOT/ext-$RANDOM"
+  git clone -q "$OSS_REMOTE" "$clone"
+  (
+    cd "$clone"
+    git checkout -q main
+    write_binary "$1" "$2"
+    git add .
+    GIT_AUTHOR_NAME=alice GIT_AUTHOR_EMAIL=alice@contributor.example \
+      git commit -qm "$3"
     git push -q origin main
   )
   git -C "$OSS_REMOTE" rev-parse main

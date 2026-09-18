@@ -501,9 +501,12 @@ WRAP
 }
 
 @test "a commit that only modifies a binary file imports it" {
-  external_binary_commit a-notes.md z-diagram.png one "docs: add the diagram"
+  # The binary is the whole diff, so it is first and last at once and there is
+  # no text file alongside it to absorb the apply. A stripped terminator loses
+  # the entire commit here rather than part of it.
+  external_binary_only_commit z-diagram.png one "docs: add the diagram"
   absorb_external
-  E=$(external_binary_commit a-notes.md z-diagram.png two "docs: redraw the diagram")
+  E=$(external_binary_only_commit z-diagram.png two "docs: redraw the diagram")
 
   run bash "$IMPORT"
   [ "$status" -eq 0 ]
@@ -511,5 +514,6 @@ WRAP
 
   cd "$MONO"
   git switch -q automation/sync-from-oss-main
+  [ "$(git log -1 --format='%(trailers:key=Oss-Commit,valueonly)')" = "$E" ]
   [ "$(git rev-parse "HEAD:$PFX/z-diagram.png")" = "$(git -C "$OSS_REMOTE" rev-parse "main:z-diagram.png")" ]
 }

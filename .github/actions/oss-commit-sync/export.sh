@@ -416,9 +416,14 @@ while read -r M; do
     echo "Skipping ${M} (empty diff under ${SUBTREE_PREFIX})"
     continue
   fi
-  if ! apply_patch "$patch_file" "$WT"; then
+  apply_rc=0
+  apply_patch "$patch_file" "$WT" || apply_rc=$?
+  if [ "$apply_rc" -ne 0 ]; then
     git -C "$WT" reset --hard --quiet
     git -C "$WT" clean -fdq
+    if [ "$apply_rc" -eq "$APPLY_PATCH_CORRUPT" ]; then
+      die "git could not read the whole diff of ${M}; nothing was replayed. This is a defect in this action, not a conflict in the commit: do not hand-resolve it and do not re-seed, because both would leave OSS missing whatever git failed to read."
+    fi
     die "conflict replaying ${M} onto OSS ${BRANCH}; resolve by importing OSS first or inspect the commit"
   fi
   git -C "$WT" add -A

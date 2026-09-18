@@ -855,9 +855,16 @@ replay_commit() {
   rm -f "$msgfile"
 }
 
+# Distinguishes "git could not read the patch" from "the patch conflicted".
+# They call for opposite handling -- a conflict is resolved or re-anchored by
+# hand, an unreadable patch must never be, since both of those would cement the
+# content git failed to read -- so the callers need to tell them apart.
+APPLY_PATCH_CORRUPT=2
+
 # apply_patch <patch-file> <git-dir> [apply options...]
-# 3-way apply <patch-file> in <git-dir>, and fail on a patch git only partially
-# understood.
+# 3-way apply <patch-file> in <git-dir>. Returns 0 on success,
+# APPLY_PATCH_CORRUPT when git only partially understood the patch, and git's
+# own status for anything else (a real conflict).
 #
 # The failure this guards is silent: handed a malformed hunk, git apply reports
 # "corrupt binary patch" on stderr, applies every OTHER file in the patch, and
@@ -867,15 +874,20 @@ replay_commit() {
 # later, as an unrelated-looking tree mismatch in the opposite direction.
 # Neither side can afford to take rc=0 at face value, so the stderr text is
 # the signal.
+#
+# Deliberately not annotated here: this function knows the patch file and not
+# the commit it came from, and a ::error:: naming a /tmp path is the one detail
+# an operator cannot act on. Callers hold the sha and say it in their own words.
 apply_patch() {
   local patch_file="$1" dir="$2" out rc=0
   shift 2
   out="$(git -C "$dir" apply --3way --whitespace=nowarn "$@" "$patch_file" 2>&1)" || rc=$?
+  # Echoed whatever the outcome, so git's own wording is in the log: if a future
+  # git rewords the message this grep keys on, the log still shows what it said.
   [ -n "$out" ] && echo "$out"
   [ "$rc" -eq 0 ] || return "$rc"
   if grep -q 'corrupt binary patch\|corrupt patch' <<< "$out"; then
-    echo "::error::git apply reported a corrupt patch but exited 0; it applied only part of ${patch_file}"
-    return 1
+    return "$APPLY_PATCH_CORRUPT"
   fi
   return 0
 }

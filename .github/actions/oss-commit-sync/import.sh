@@ -178,9 +178,18 @@ while read -r E; do
     echo "Skipping ${E} (content already in ${SUBTREE_PREFIX})"
     continue
   fi
-  if ! apply_patch "$patch_file" . --directory="$SUBTREE_PREFIX"; then
+  apply_rc=0
+  apply_patch "$patch_file" . --directory="$SUBTREE_PREFIX" || apply_rc=$?
+  if [ "$apply_rc" -ne 0 ]; then
     git reset --hard --quiet
     git clean -fdq -- "$SUBTREE_PREFIX"
+    # Deliberately no conflict-sha and no re-anchor advice on a corrupt patch:
+    # both readings send the operator at content git never managed to read.
+    # Re-anchoring past the commit is the worst of them -- it skips the commit
+    # for good and cements exactly the silent loss this guard exists to catch.
+    if [ "$apply_rc" -eq "$APPLY_PATCH_CORRUPT" ]; then
+      die "git could not read the whole diff of OSS commit ${E}; nothing was imported. This is a defect in this action, not a conflict in the commit: do not hand-resolve it and do not re-anchor with seed-oss-commit, because both would leave ${SUBTREE_PREFIX} missing whatever git failed to read."
+    fi
     emit conflict-sha "$E"
     die "conflict replaying OSS commit ${E} into ${SUBTREE_PREFIX}; resolve manually (export any pending monorepo changes first, then re-run). If ${E} is in fact already present under a different shape, re-anchor with seed-oss-commit instead of resolving by hand."
   fi
