@@ -50,6 +50,10 @@ if [[ "$sub" == "api" ]]; then
   path=""
   for _a in "$@"; do case "$_a" in repos/*) path="$_a"; break ;; esac; done
   [ -n "$path" ] || path="$1"
+  # Recorded so a test can pin WHICH endpoint was called, not just that the call
+  # failed the way we expected - the singular and plural ref forms otherwise
+  # produce the same error text here.
+  if [ -n "${GH_STUB_CALL_LOG:-}" ]; then printf '%s\n' "$path" >>"$GH_STUB_CALL_LOG"; fi
   # api_exists calls `gh api <path> --silent -i`; every other call reads a value.
   # The tag endpoint is used both ways, so the stub has to distinguish them.
   wants_status=0
@@ -63,9 +67,31 @@ if [[ "$sub" == "api" ]]; then
   # GH_STUB_UNEXPECTED=1 simulates an unexpected status (403/500) that is neither
   # 200 nor 404 - it must abort, not fall back.
   emit_status() {
-    if [[ "${GH_STUB_TRANSIENT:-}" == "1" ]]; then exit 1; fi
+    if [[ "${GH_STUB_TRANSIENT:-}" == "1" ]]; then
+      # Real gh writes the cause to stderr and prints no status line.
+      if [[ "${GH_STUB_TRANSIENT_MULTILINE:-}" == "1" ]]; then
+        printf 'gh: dial tcp\n::error::FORGED\n' >&2
+      else
+        echo "gh: dial tcp: lookup api.github.com" >&2
+      fi
+      exit 1
+    fi
     if [[ "$2" == "tags" && "${GH_STUB_TRANSIENT_TAGS:-}" == "1" ]]; then exit 1; fi
-    if [[ "${GH_STUB_UNEXPECTED:-}" == "1" ]]; then echo "HTTP/2.0 403 Forbidden"; exit 1; fi
+    if [[ "${GH_STUB_UNEXPECTED:-}" == "1" ]]; then
+      # The header block is emitted for real, not elided. Real gh -i returns the
+      # status line, ~24 headers, a blank line and only then its own error, so a
+      # stub that prints two lines cannot tell a reason that is MISSING from one
+      # that is merely buried past where GitHub truncates the annotation.
+      echo "HTTP/2.0 403 Forbidden"
+      echo "Content-Type: application/json; charset=utf-8"
+      echo "Server: github.com"
+      echo "X-Github-Request-Id: C4A2:1F3B:9AB2C:12D4E5:68CB1234"
+      echo "X-Ratelimit-Remaining: 0"
+      echo "X-Ratelimit-Resource: core"
+      echo ""
+      echo "gh: You have exceeded a secondary rate limit" >&2
+      exit 1
+    fi
     if [[ "$1" == "0" ]]; then echo "HTTP/2.0 200 OK"; exit 0; else echo "HTTP/2.0 404 Not Found"; exit 1; fi
   }
   case "$path" in
@@ -167,8 +193,25 @@ if [[ "$sub" == "api" ]]; then
     repos/*/git/tags/*)
       # Peeling an annotated tag object to the commit it points at.
       echo "deadbeefcafe1234"; exit 0 ;;
-    repos/*/git/refs/heads/*)
+    repos/*/git/ref/heads/*)
+      # Singular endpoint: exact match only, mirroring the real API.
+      # GH_STUB_HEAD_MISSING=1 makes only this probe 404, simulating a branch
+      # deleted between require_branch and create_tag.
+      if [[ "${GH_STUB_HEAD_MISSING:-}" == "1" ]]; then
+        echo "gh: Not Found (HTTP 404)" >&2; exit 1
+      fi
+      # GH_STUB_HEAD_EMPTY=1 succeeds with no sha: `--jq '.object.sha // empty'`
+      # yields an empty string whenever the ref exists in a shape that carries no
+      # commit. Distinct from the 404 above, and the only way to reach the `-z`
+      # guard - without it an empty sha would flow into the POST and come back as
+      # GitHub's raw 422 "Invalid SHA" instead of the named diagnostic.
+      if [[ "${GH_STUB_HEAD_EMPTY:-}" == "1" ]]; then exit 0; fi
       echo "deadbeefcafe"; exit 0 ;;
+    repos/*/git/refs/heads/*)
+      # Plural endpoint: falls back to an array of prefix matches when the exact
+      # ref is gone, so `--jq .object.sha` errors out. Kept so a regression from
+      # the singular form is visible rather than silently equivalent.
+      echo "jq: error: Cannot index array with string \"object\"" >&2; exit 1 ;;
     repos/*/pulls*)
       # Emulate `gh api <pulls> --jq "$BUMP_PR_JQ"`. The stub replaces gh (no
       # real jq), so echo the exact tuple wait_for_bump_merge parses. A merged
@@ -202,7 +245,14 @@ if [[ "$sub" == "api" ]]; then
     *)
       # POST repos/<repo>/git/refs and anything else: succeed. Record tag
       # creation so GH_STUB_RUNS_FAIL_AFTER_TAG can target the barrier only.
-      case "$path" in repos/*/git/refs) : > "$(dirname "$0")/tag_created" ;; esac
+      case "$path" in
+        repos/*/git/refs)
+          : > "$(dirname "$0")/tag_created"
+          # A protected-ref rule or a concurrent cut rejects the create.
+          if [[ "${GH_STUB_TAG_POST_FAILS:-}" == "1" ]]; then
+            echo "gh: Reference already exists (HTTP 422)" >&2; exit 1
+          fi ;;
+      esac
       exit 0 ;;
   esac
 fi
@@ -326,6 +376,132 @@ EOF
   INPUT_VERSION="v0.36" INPUT_DRY_RUN="true" run main
   [ "$status" -ne 0 ]
   [[ "$output" == *"is not a valid release version"* ]]
+}
+
+# ---- create_tag / api_exists diagnostics (DEVOPS-1540) ----
+#
+# These four paths all failed the same way before: the script aborted under
+# set -e with gh's raw output and no ::error:: annotation, on exactly the runs
+# where the operator most needs to know what happened.
+
+@test "create_tag: a branch deleted mid-cut is a clean error, not a jq crash" {
+  # require_branch passed a moment ago, so this is the deleted-branch race: the
+  # read has to fail with its own message rather than abort under set -e. Which
+  # endpoint gets used is pinned separately below - both forms fail here, just
+  # for different reasons, so this test alone cannot tell them apart.
+  export GH_STUB_HEAD_MISSING=1 DRY_RUN=false
+  run create_tag "loft-sh/vcluster" "v0.37" "v0.37.1"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"could not read HEAD of branch 'v0.37'"* ]]
+  [[ "$output" == *"deleted after the existence check"* ]]
+  # The read fails non-zero on a rate limit, an SSO/scope rejection and a network
+  # error too, so naming deletion as the cause is the api_exists defect this PR
+  # fixes, inverted - one cause asserted where several are live.
+  [[ "$output" == *"rate limit, SSO/scope, network"* ]]
+  # The annotation ends with "See the gh error above", which is only true while
+  # this call leaves stderr uncaptured. Pin it: adding 2>/dev/null here would
+  # make the pointer name evidence that is no longer in the log.
+  [[ "$output" == *"gh: Not Found (HTTP 404)"* ]]
+}
+
+@test "create_tag: reads the branch head through the singular ref endpoint" {
+  # The plural git/refs/heads/ prefix-matches and answers with an ARRAY once the
+  # exact ref is gone, so --jq '.object.sha' crashes instead of 404ing. Both
+  # forms make the deleted-branch test above red, so this pins the choice by
+  # asserting the path actually requested.
+  export GH_STUB_CALL_LOG="${STUB_DIR}/calls" DRY_RUN=false
+  run create_tag "loft-sh/vcluster" "v0.37" "v0.37.1"
+  [ "$status" -eq 0 ]
+  run grep -Fx 'repos/loft-sh/vcluster/git/ref/heads/v0.37' "$GH_STUB_CALL_LOG"
+  [ "$status" -eq 0 ]
+}
+
+@test "api_exists: an unexpected status carries gh's reason, not just the code" {
+  # 403 is where secondary rate limits and SSO/scope rejections land; the code
+  # alone does not tell them apart.
+  export GH_STUB_UNEXPECTED=1
+  run api_exists "repos/loft-sh/vcluster/branches/v0.37" "branch v0.37"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"unexpected status 403"* ]]
+  [[ "$output" == *"secondary rate limit"* ]]
+  # gh's reason is what this arm exists to print, so the response headers must
+  # not be carried along with it: interpolated whole, the 403 capture ran 1273
+  # bytes with the reason at offset 1183, past GitHub's annotation truncation.
+  [[ "$output" != *"X-Ratelimit-Resource"* ]]
+  [[ "$output" != *"Server: github.com"* ]]
+}
+
+@test "create_tag: a rejected tag POST fails loudly" {
+  export GH_STUB_TAG_POST_FAILS=1 DRY_RUN=false
+  run create_tag "loft-sh/vcluster" "v0.37" "v0.37.1"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"failed to create tag v0.37.1"* ]]
+  # The two live causes have different remedies, so both are named.
+  [[ "$output" == *"lacks write access"* ]]
+  [[ "$output" == *"concurrent cut"* ]]
+  # A flat "nothing was dispatched" is false on the legacy path: the pro tag is
+  # written AFTER bump_pro_dependency has dispatched the bump workflow and landed
+  # a commit on the release branch, and a resume can arrive here with the OSS
+  # half already building - require_oss_not_behind_pro permits oss=dispatched,
+  # pro=absent. Scoped to release builds in this run, the claim holds everywhere,
+  # because every create_tag call precedes every ensure_dispatch in a given run.
+  [[ "$output" == *"No release build was dispatched in this run"* ]]
+  [[ "$output" != *"Nothing was dispatched"* ]]
+  # Same pointer, same reason it has to be pinned: this is the one path that
+  # leaves the operator mid-cut, so gh's own line is the only other evidence.
+  [[ "$output" == *"gh: Reference already exists (HTTP 422)"* ]]
+}
+
+@test "create_tag: a branch head that resolves to no sha is named, not POSTed" {
+  # gh exits 0 and the filter yields empty. Without the -z guard this empty sha
+  # reaches the POST and GitHub answers with a raw 422 "Invalid SHA", which says
+  # nothing about which branch failed to resolve.
+  export GH_STUB_HEAD_EMPTY=1 GH_STUB_CALL_LOG="${STUB_DIR}/calls" DRY_RUN=false
+  run create_tag "loft-sh/vcluster" "v0.37" "v0.37.1"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"could not resolve HEAD sha for branch 'v0.37'"* ]]
+  # Nothing may be written on this path.
+  run grep -Fx 'repos/loft-sh/vcluster/git/refs' "$GH_STUB_CALL_LOG"
+  [ "$status" -ne 0 ]
+}
+
+@test "gh_reason: an empty capture and a reasonless one read differently" {
+  # Both placeholders are load-bearing. gh returning nothing at all and gh
+  # returning a status it never explains send the operator to different places,
+  # and an empty string in place of either would leave a bare "gh said:" - the
+  # exact shape a too-wide header filter produces, which is how the reason got
+  # swallowed once already.
+  run gh_reason ""
+  [ "$output" = "<no output>" ]
+  run gh_reason "$(printf 'HTTP/2.0 500 Internal Server Error\nServer: github.com\n')"
+  [ "$output" = "<no reason in gh output>" ]
+}
+
+@test "gh_reason: gh's own line survives the header filter" {
+  # `gh: ...` has the same Name: value shape as a response header, so a filter
+  # keyed on that shape alone eats the one line worth printing. Verified against
+  # the live API: status line, ~24 headers, a blank line, then the gh: line.
+  run gh_reason "$(printf 'HTTP/2.0 403 Forbidden\nServer: github.com\nX-Ratelimit-Remaining: 0\n\ngh: You have exceeded a secondary rate limit\n')"
+  [ "$output" = "gh: You have exceeded a secondary rate limit" ]
+}
+
+@test "api_exists: a transient failure surfaces gh's own error" {
+  export GH_STUB_TRANSIENT=1
+  run api_exists "repos/loft-sh/vcluster/branches/main" "branch main"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Not treating as absent"* ]]
+  # Without this the message names three causes and distinguishes none of them.
+  [[ "$output" == *"dial tcp"* ]]
+}
+
+@test "api_exists: a multi-line gh error cannot forge a workflow command" {
+  export GH_STUB_TRANSIENT=1 GH_STUB_TRANSIENT_MULTILINE=1
+  run api_exists "repos/loft-sh/vcluster/branches/main" "branch main"
+  [ "$status" -ne 0 ]
+  # Kept as inline text so the diagnostic is not lost...
+  [[ "$output" == *"FORGED"* ]]
+  # ...but flattened, so it cannot start a line and be read as a second command.
+  [ "$(printf '%s\n' "$output" | grep -c '^::error::')" -eq 1 ]
 }
 
 # ---- main: a bare version routes and tags identically to the v-prefixed one ----
