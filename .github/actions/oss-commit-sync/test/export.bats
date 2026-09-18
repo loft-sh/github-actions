@@ -1212,3 +1212,137 @@ Oss-Commit: $(git -C "$OSS_REMOTE" rev-parse main)"
   run git -C "$OSS_REMOTE" cat-file -e "main:.github/workflows/release.yaml"
   [ "$status" -ne 0 ]
 }
+
+@test "a commit whose content OSS already holds is skipped, not called a conflict" {
+  # The shape that stalled vcluster-pro v0.37 for weeks. A release line's OSS
+  # branch is cut from the default branch AFTER a change landed there, so the
+  # monorepo's backport of that same change is replayed onto a tree that already
+  # has the result. Its deletions target paths OSS no longer has, git apply
+  # stops with "does not exist in index", and the run reports a conflict on a
+  # commit that had nothing to contribute.
+  #
+  # nothing_staged cannot catch this: git apply never gets far enough to stage.
+  company_commit pkg/gone.go "doomed" "feat: add a file" >/dev/null
+  run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [ "$(oss_file pkg/gone.go)" = "doomed" ]
+
+  # OSS loses the file by its own route, and we record it as absorbed so the
+  # divergence guard has no objection.
+  clone="$ROOT/ext-del-$RANDOM"
+  git clone -q "$OSS_REMOTE" "$clone"
+  (
+    cd "$clone"
+    git rm -q pkg/gone.go
+    GIT_AUTHOR_NAME=alice GIT_AUTHOR_EMAIL=alice@contributor.example \
+      git commit -qm "chore: drop it upstream"
+    git push -q origin main
+  )
+  (
+    cd "$MONO"
+    git commit -q --allow-empty -m "chore: absorb
+
+Oss-Commit: $(git -C "$OSS_REMOTE" rev-parse main)"
+  )
+
+  # Now the monorepo deletes it too -- the same end state, reached separately.
+  (
+    cd "$MONO"
+    git rm -q "$PFX/pkg/gone.go"
+    git commit -qm "chore: drop it here too"
+  )
+
+  run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"already mirrored"* ]]
+  [[ "$output" != *"conflict replaying"* ]]
+}
+
+@test "a commit that still has something to add is not skipped as benign" {
+  # The other side of the check: identical on the paths it shares with OSS, but
+  # carrying one real change. Skipping this would silently drop content, which
+  # is a worse failure than the one the check exists to fix.
+  company_commit pkg/shared.go "same" "feat: shared" >/dev/null
+  run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+
+  (
+    cd "$MONO"
+    printf 'same\n' > "$PFX/pkg/shared.go"
+    printf 'brand new\n' > "$PFX/pkg/fresh.go"
+    git add . && git commit -qm "feat: one unchanged path, one new"
+  )
+
+  run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"already mirrored"* ]]
+  [ "$(oss_file pkg/fresh.go)" = "brand new" ]
+}
+
+@test "a deletion OSS has not seen yet is mirrored, not skipped" {
+  # The one piece of bespoke logic in the benign check. Making every deletion
+  # count as benign leaves the add/modify tests green, so without this the
+  # branch ships unexercised -- and a wrong verdict here skips a real deletion
+  # and stalls the branch at the convergence assertion.
+  company_commit pkg/keep.go "doomed" "feat: add a file" >/dev/null
+  run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [ "$(oss_file pkg/keep.go)" = "doomed" ]
+
+  # Deleted here only; OSS still has it, so there is real work to mirror.
+  (
+    cd "$MONO"
+    git rm -q "$PFX/pkg/keep.go"
+    git commit -qm "chore: drop it"
+  )
+
+  run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"already mirrored"* ]]
+  run git -C "$OSS_REMOTE" cat-file -e "main:pkg/keep.go"
+  [ "$status" -ne 0 ]
+}
+
+@test "a mode-only change is mirrored, not judged benign on content alone" {
+  # `<rev>:<path>` resolves to the blob, so a chmod +x is invisible to a
+  # content-only comparison. Skipping it leaves OSS at the old mode and the
+  # convergence assertion then fails on the very thing the check ignored,
+  # stalling the branch -- a case that mirrored correctly before the check.
+  company_commit pkg/tool.sh "#!/bin/sh" "feat: add a script" >/dev/null
+  run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+
+  (
+    cd "$MONO"
+    chmod +x "$PFX/pkg/tool.sh"
+    git add -A && git commit -qm "chore: make it executable"
+  )
+
+  run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"already mirrored"* ]]
+  [ "$(git -C "$OSS_REMOTE" ls-tree main -- pkg/tool.sh | awk '{print $1}')" = "100755" ]
+}
+
+@test "a rename is decomposed and still mirrored" {
+  # The helper's comment says renames are inspected without -M so they become
+  # delete+add. Re-adding -M collapses them into one R entry whose path is the
+  # new name, the old name is never checked, and the commit reads as benign --
+  # leaving OSS with both copies.
+  company_commit pkg/old.go "moved" "feat: add a file" >/dev/null
+  run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+
+  (
+    cd "$MONO"
+    git mv "$PFX/pkg/old.go" "$PFX/pkg/new.go"
+    git commit -qm "refactor: rename it"
+  )
+
+  run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"already mirrored"* ]]
+  [ "$(oss_file pkg/new.go)" = "moved" ]
+  run git -C "$OSS_REMOTE" cat-file -e "main:pkg/old.go"
+  [ "$status" -ne 0 ]
+}

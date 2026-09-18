@@ -429,6 +429,21 @@ while read -r M; do
     echo "Skipping ${M} (empty diff under ${SUBTREE_PREFIX})"
     continue
   fi
+  # Before applying, not after: a commit OSS already holds can fail the apply
+  # outright rather than resolving to a no-op, and nothing_staged below only
+  # runs once git apply has succeeded. See monorepo_is_benign.
+  #
+  # Read outside the `if`, because a command substitution inside the tested
+  # condition has errexit suspended: a failed read would pass an empty rev,
+  # which resolves against the index and answers "benign" for a delete-only
+  # commit. That is the one answer this check must never give by accident.
+  if ! oss_head="$(git -C "$WT" rev-parse HEAD)"; then
+    die "failed to read the OSS worktree tip while classifying ${M}; refusing to export"
+  fi
+  if monorepo_is_benign "$M" "$oss_head"; then
+    echo "Skipping ${M} (already mirrored; OSS holds this commit's content)"
+    continue
+  fi
   apply_rc=0
   apply_patch "$patch_file" "$WT" || apply_rc=$?
   if [ "$apply_rc" -ne 0 ]; then
