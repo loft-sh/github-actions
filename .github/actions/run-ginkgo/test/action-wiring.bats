@@ -37,11 +37,28 @@ CONCLUSION_SCRIPT="$BATS_TEST_DIRNAME/../src/derive-conclusion.sh"
   grep -Fq 'value: ${{ steps.derive-conclusion.outputs.check-summary }}' "$ACTION"
 }
 
+@test "derived-failure enforcement is optional and disabled by default" {
+  run grep -A4 '^  fail-on-derived-failure:' "$ACTION"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'required: false'* ]]
+  [[ "$output" == *'default: "false"'* ]]
+
+  run grep -A10 '^    - name: Derive check conclusion' "$ACTION"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'INPUT_FAIL_ON_DERIVED_FAILURE: ${{ inputs.fail-on-derived-failure }}'* ]]
+}
+
+@test "an enforcement request runs the conclusion step so its prerequisite can be validated" {
+  run grep -A10 '^    - name: Derive check conclusion' "$ACTION"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"inputs.empty-selection-conclusion != '' || inputs.fail-on-derived-failure != 'false'"* ]]
+}
+
 @test "derives a conclusion after the test command regardless of its result" {
   run grep -A8 '^    - name: Derive check conclusion' "$ACTION"
   [ "$status" -eq 0 ]
   [[ "$output" == *'id: derive-conclusion'* ]]
-  [[ "$output" == *"if: always() && inputs.empty-selection-conclusion != ''"* ]]
+  [[ "$output" == *"if: always() && (inputs.empty-selection-conclusion != '' || inputs.fail-on-derived-failure != 'false')"* ]]
   [[ "$output" == *'INPUT_EMPTY_SELECTION_CONCLUSION: ${{ inputs.empty-selection-conclusion }}'* ]]
   [[ "$output" == *'INPUT_FOCUS: ${{ steps.rerun-focus.outputs.focus || inputs.ginkgo-focus }}'* ]]
 }
@@ -50,4 +67,14 @@ CONCLUSION_SCRIPT="$BATS_TEST_DIRNAME/../src/derive-conclusion.sh"
   run grep -A8 '^    - name: Generate failure summary' "$ACTION"
   [ "$status" -eq 0 ]
   [[ "$output" == *'EMPTY_SELECTION_CONCLUSION: ${{ inputs.empty-selection-conclusion }}'* ]]
+}
+
+@test "report upload still runs after an enforced conclusion failure" {
+  run grep -A2 '^    - name: Check GCP auth for report upload' "$ACTION"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"if: always() && inputs.upload-report == 'true'"* ]]
+
+  run grep -A2 '^    - name: Upload Ginkgo report to GCS' "$ACTION"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"if: always() && inputs.upload-report == 'true'"* ]]
 }

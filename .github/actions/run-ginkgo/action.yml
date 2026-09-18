@@ -58,6 +58,10 @@ inputs:
     description: "Opt in to report-derived outputs and choose the conclusion when the test selection matches no specs: neutral or failure."
     required: false
     default: ""
+  fail-on-derived-failure:
+    description: "Set to 'true' to fail the action when the report-derived conclusion is failure or timed_out. Requires empty-selection-conclusion."
+    required: false
+    default: "false"
 
 outputs:
   failure-summary:
@@ -119,10 +123,11 @@ runs:
 
     - name: Derive check conclusion
       id: derive-conclusion
-      if: always() && inputs.empty-selection-conclusion != ''
+      if: always() && (inputs.empty-selection-conclusion != '' || inputs.fail-on-derived-failure != 'false')
       shell: bash
       env:
         INPUT_EMPTY_SELECTION_CONCLUSION: ${{ inputs.empty-selection-conclusion }}
+        INPUT_FAIL_ON_DERIVED_FAILURE: ${{ inputs.fail-on-derived-failure }}
         INPUT_FOCUS: ${{ steps.rerun-focus.outputs.focus || inputs.ginkgo-focus }}
       run: ${{ github.action_path }}/src/derive-conclusion.sh
 
