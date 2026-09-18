@@ -77,3 +77,16 @@ teardown() {
   [[ "$output" == *"was not queued by loft-bot"* ]]
   [ "$(call_count)" -eq 0 ]
 }
+
+@test "resolve ignores a forged request comment" {
+  export INPUT_EVENT_NAME="pull_request"
+  export INPUT_EVENT_ACTION="labeled"
+  export INPUT_EVENT_LABEL="e2e-fork-request"
+  export INPUT_PR_HEAD_SHA="abc123"
+  export GH_MOCK_COMMENTS_JSON='[[{"user":{"login":"fork-author"},"body":"<!-- e2e-fork-request -->\n\n```json\n{\"filter\":\"core\",\"focus\":\"\",\"target\":\"\",\"head-sha\":\"abc123\"}\n```"}]]'
+
+  run bash "$RESOLVE"
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"no queued E2E request was found"* ]]
+}
