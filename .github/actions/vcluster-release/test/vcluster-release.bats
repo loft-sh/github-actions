@@ -200,6 +200,12 @@ if [[ "$sub" == "api" ]]; then
       if [[ "${GH_STUB_HEAD_MISSING:-}" == "1" ]]; then
         echo "gh: Not Found (HTTP 404)" >&2; exit 1
       fi
+      # GH_STUB_HEAD_EMPTY=1 succeeds with no sha: `--jq '.object.sha // empty'`
+      # yields an empty string whenever the ref exists in a shape that carries no
+      # commit. Distinct from the 404 above, and the only way to reach the `-z`
+      # guard - without it an empty sha would flow into the POST and come back as
+      # GitHub's raw 422 "Invalid SHA" instead of the named diagnostic.
+      if [[ "${GH_STUB_HEAD_EMPTY:-}" == "1" ]]; then exit 0; fi
       echo "deadbeefcafe"; exit 0 ;;
     repos/*/git/refs/heads/*)
       # Plural endpoint: falls back to an array of prefix matches when the exact
@@ -392,6 +398,10 @@ EOF
   # error too, so naming deletion as the cause is the api_exists defect this PR
   # fixes, inverted - one cause asserted where several are live.
   [[ "$output" == *"rate limit, SSO/scope, network"* ]]
+  # The annotation ends with "See the gh error above", which is only true while
+  # this call leaves stderr uncaptured. Pin it: adding 2>/dev/null here would
+  # make the pointer name evidence that is no longer in the log.
+  [[ "$output" == *"gh: Not Found (HTTP 404)"* ]]
 }
 
 @test "create_tag: reads the branch head through the singular ref endpoint" {
@@ -437,6 +447,42 @@ EOF
   # because every create_tag call precedes every ensure_dispatch in a given run.
   [[ "$output" == *"No release build was dispatched in this run"* ]]
   [[ "$output" != *"Nothing was dispatched"* ]]
+  # Same pointer, same reason it has to be pinned: this is the one path that
+  # leaves the operator mid-cut, so gh's own line is the only other evidence.
+  [[ "$output" == *"gh: Reference already exists (HTTP 422)"* ]]
+}
+
+@test "create_tag: a branch head that resolves to no sha is named, not POSTed" {
+  # gh exits 0 and the filter yields empty. Without the -z guard this empty sha
+  # reaches the POST and GitHub answers with a raw 422 "Invalid SHA", which says
+  # nothing about which branch failed to resolve.
+  export GH_STUB_HEAD_EMPTY=1 GH_STUB_CALL_LOG="${STUB_DIR}/calls" DRY_RUN=false
+  run create_tag "loft-sh/vcluster" "v0.37" "v0.37.1"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"could not resolve HEAD sha for branch 'v0.37'"* ]]
+  # Nothing may be written on this path.
+  run grep -Fx 'repos/loft-sh/vcluster/git/refs' "$GH_STUB_CALL_LOG"
+  [ "$status" -ne 0 ]
+}
+
+@test "gh_reason: an empty capture and a reasonless one read differently" {
+  # Both placeholders are load-bearing. gh returning nothing at all and gh
+  # returning a status it never explains send the operator to different places,
+  # and an empty string in place of either would leave a bare "gh said:" - the
+  # exact shape a too-wide header filter produces, which is how the reason got
+  # swallowed once already.
+  run gh_reason ""
+  [ "$output" = "<no output>" ]
+  run gh_reason "$(printf 'HTTP/2.0 500 Internal Server Error\nServer: github.com\n')"
+  [ "$output" = "<no reason in gh output>" ]
+}
+
+@test "gh_reason: gh's own line survives the header filter" {
+  # `gh: ...` has the same Name: value shape as a response header, so a filter
+  # keyed on that shape alone eats the one line worth printing. Verified against
+  # the live API: status line, ~24 headers, a blank line, then the gh: line.
+  run gh_reason "$(printf 'HTTP/2.0 403 Forbidden\nServer: github.com\nX-Ratelimit-Remaining: 0\n\ngh: You have exceeded a secondary rate limit\n')"
+  [ "$output" = "gh: You have exceeded a secondary rate limit" ]
 }
 
 @test "api_exists: a transient failure surfaces gh's own error" {
