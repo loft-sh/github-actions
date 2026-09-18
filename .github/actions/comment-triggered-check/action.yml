@@ -6,13 +6,12 @@ description: |
   command should run, resolves the pull request identity the event does not
   carry, and owns the check-run lifecycle.
 
-  Two modes. `start` parses the comment, authorizes the commenter, resolves the
-  head SHA and base ref, and opens the check-run. `finish` resolves the terminal
-  outcome with a fail-closed matrix and completes it. Repeated commands are
-  deduplicated by the caller's concurrency group, not here.
+  `start` and `finish` own the check lifecycle. `queue-fork` and `resolve-fork`
+  hand an authorized fork request to a pull_request workflow without executing
+  fork code in the privileged issue_comment run.
 inputs:
   mode:
-    description: 'Either "start" or "finish".'
+    description: 'One of "start", "finish", "queue-fork", or "resolve-fork".'
     required: true
   command:
     description: 'Command word that must open the comment, on its own first line.'
@@ -30,8 +29,12 @@ inputs:
     description: 'start mode. How the commenter relates to the repository. Pass the github.event.comment.author_association context. OWNER, MEMBER and COLLABORATOR may run the command; anything else, including empty, may not.'
     required: false
     default: ''
+  allow-forks:
+    description: 'start mode. Allow fork pull requests only when the commenter has write, maintain, or admin repository permission. Disabled by default; use queue-fork and resolve-fork to preserve pull_request isolation.'
+    required: false
+    default: 'false'
   pr-number:
-    description: 'start mode. Pull request number. Pass the github.event.issue.number context.'
+    description: 'Pull request number. Required by start, queue-fork, and resolve-fork.'
     required: false
     default: ''
   repo:
@@ -42,6 +45,30 @@ inputs:
     description: 'start mode. Prefix for the check-run name; the filter and optional target and focus are appended.'
     required: false
     default: 'e2e'
+  request-filter:
+    description: 'queue-fork mode. Authorized filter returned by start.'
+    required: false
+    default: ''
+  request-focus:
+    description: 'queue-fork mode. Authorized focus returned by start.'
+    required: false
+    default: ''
+  request-target:
+    description: 'queue-fork mode. Authorized target returned by start.'
+    required: false
+    default: ''
+  request-head-sha:
+    description: 'queue-fork mode. Pull request head SHA returned by start.'
+    required: false
+    default: ''
+  pr-head-sha:
+    description: 'resolve-fork mode. Head SHA from the pull_request event.'
+    required: false
+    default: ''
+  trusted-bot:
+    description: 'resolve-fork mode. Login whose App or PAT token queued the label and request comment.'
+    required: false
+    default: 'loft-bot'
   parse-focus:
     description: 'start mode. Set to true to split an optional trailing --focus expression from the filter. Disabled by default for existing consumers.'
     required: false
@@ -87,7 +114,7 @@ inputs:
     required: false
     default: ''
   github-token:
-    description: 'Token for gh. The calling job must grant checks: write and pull-requests: read.'
+    description: 'Token for gh. queue-fork requires a GitHub App or PAT token because events created by GITHUB_TOKEN do not start workflows.'
     required: false
     default: ${{ github.token }}
 outputs:
@@ -99,18 +126,18 @@ outputs:
     value: ${{ steps.start.outputs.args }}
   filter:
     description: 'Argument string with whitespace normalized. This is what to pass to the test runner.'
-    value: ${{ steps.start.outputs.filter }}
+    value: ${{ steps.start.outputs.filter || steps.resolve-fork.outputs.filter }}
   focus:
     description: 'Optional focus expression following --focus. One outer quote pair is removed only when it encloses the whole expression.'
-    value: ${{ steps.start.outputs.focus }}
+    value: ${{ steps.start.outputs.focus || steps.resolve-fork.outputs.focus }}
   target:
     description: 'Optional target following --target. Empty means no explicit target was requested.'
-    value: ${{ steps.start.outputs.target }}
+    value: ${{ steps.start.outputs.target || steps.resolve-fork.outputs.target }}
   should-run:
-    description: 'The caller''s execution gate. "true" only when a check-run was actually opened, so it is false for a comment that was not a command, an empty or unbalanced filter, an invalid or non-selected target, a fork, a closed or unreadable pull request, a rejected author_association, and a failed check-run creation. Read reason for which. Note the association test is not a permission check: MEMBER means organization membership, and COLLABORATOR does not say at what level.'
+    description: 'The caller''s execution gate. "true" only when a check-run was actually opened. Forks are refused unless allow-forks is true and the commenter has write-level permission. Read reason when false.'
     value: ${{ steps.start.outputs.should-run }}
   reason:
-    description: 'Why the command will not run: fork, insufficient-permission, empty-filter, malformed-filter, malformed-focus, malformed-target, invalid-target, target-not-selected, not-a-pull-request, pull-request-closed, pull-request-unreadable, or check-run-not-created. Empty when it will.'
+    description: 'Why the command will not run: fork, insufficient-permission, permission-unreadable, empty-filter, malformed-filter, malformed-focus, malformed-target, invalid-target, target-not-selected, not-a-pull-request, pull-request-closed, pull-request-unreadable, or check-run-not-created. Empty when it will.'
     value: ${{ steps.start.outputs.reason }}
   reason-title:
     description: 'start mode. Presentation-ready title for reason. Empty when the command will run or this invocation was not selected.'
@@ -127,6 +154,12 @@ outputs:
   base-ref:
     description: 'Resolved base branch of the pull request. The event does not carry it either.'
     value: ${{ steps.start.outputs.base-ref }}
+  is-fork:
+    description: 'start mode. "true" when the resolved pull request comes from another repository, "false" for a same-repository pull request, and empty when no pull request was resolved.'
+    value: ${{ steps.start.outputs.is-fork }}
+  dispatch-ref:
+    description: 'start mode. Head branch for a same-repository dispatch. Forks return the base branch for identity only; use the fork handoff instead of dispatching fork code there.'
+    value: ${{ steps.start.outputs.dispatch-ref }}
   concurrency-key:
     description: 'Domain-separated request identity reduced to a lowercase slug plus an eight-character digest, safe to interpolate into a concurrency group. Distinct filters, focuses, and targets do not share a group.'
     value: ${{ steps.start.outputs.concurrency-key }}
@@ -143,12 +176,12 @@ runs:
   using: composite
   steps:
     - name: Reject an unknown mode
-      if: inputs.mode != 'start' && inputs.mode != 'finish'
+      if: inputs.mode != 'start' && inputs.mode != 'finish' && inputs.mode != 'queue-fork' && inputs.mode != 'resolve-fork'
       shell: bash
       env:
         INPUT_MODE: ${{ inputs.mode }}
       run: |
-        echo "::error::mode must be 'start' or 'finish', got '${INPUT_MODE}'"
+        echo "::error::mode must be start, finish, queue-fork, or resolve-fork; got '${INPUT_MODE}'"
         exit 1
 
     - name: Start
@@ -160,6 +193,7 @@ runs:
         INPUT_COMMENT_BODY: ${{ inputs.comment-body }}
         INPUT_COMMENT_AUTHOR: ${{ inputs.comment-author }}
         INPUT_AUTHOR_ASSOCIATION: ${{ inputs.author-association }}
+        INPUT_ALLOW_FORKS: ${{ inputs.allow-forks }}
         INPUT_PR_NUMBER: ${{ inputs.pr-number }}
         INPUT_REPO: ${{ inputs.repo }}
         INPUT_CHECK_NAME_PREFIX: ${{ inputs.check-name-prefix }}
@@ -170,6 +204,37 @@ runs:
         INPUT_SERVER_URL: ${{ inputs.server-url }}
         GH_TOKEN: ${{ inputs.github-token }}
       run: ${{ github.action_path }}/src/start.sh
+
+    - name: Queue fork request
+      id: queue-fork
+      if: inputs.mode == 'queue-fork'
+      shell: bash
+      env:
+        INPUT_REPO: ${{ inputs.repo }}
+        INPUT_PR_NUMBER: ${{ inputs.pr-number }}
+        INPUT_REQUEST_FILTER: ${{ inputs.request-filter }}
+        INPUT_REQUEST_FOCUS: ${{ inputs.request-focus }}
+        INPUT_REQUEST_TARGET: ${{ inputs.request-target }}
+        INPUT_REQUEST_HEAD_SHA: ${{ inputs.request-head-sha }}
+        INPUT_TRUSTED_BOT: ${{ inputs.trusted-bot }}
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: ${{ github.action_path }}/src/queue-fork.sh
+
+    - name: Resolve fork request
+      id: resolve-fork
+      if: inputs.mode == 'resolve-fork'
+      shell: bash
+      env:
+        INPUT_REPO: ${{ inputs.repo }}
+        INPUT_PR_NUMBER: ${{ inputs.pr-number }}
+        INPUT_PR_HEAD_SHA: ${{ inputs.pr-head-sha }}
+        INPUT_EVENT_NAME: ${{ github.event_name }}
+        INPUT_EVENT_ACTION: ${{ github.event.action }}
+        INPUT_EVENT_LABEL: ${{ github.event.label.name }}
+        INPUT_ACTOR_LOGIN: ${{ github.actor }}
+        INPUT_TRUSTED_BOT: ${{ inputs.trusted-bot }}
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: ${{ github.action_path }}/src/resolve-fork.sh
 
     - name: Finish
       id: finish

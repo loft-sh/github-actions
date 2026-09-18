@@ -338,12 +338,15 @@ runs no tests: it decides whether a command should run, resolves the pull
 request identity that an `issue_comment` event does not carry, and owns the
 check-run lifecycle.
 
-Two modes. `start` parses the comment, authorizes the commenter from
+`start` parses the comment, authorizes the commenter from
 `author_association`, resolves the head SHA and base ref, and opens the
 check-run, in two API calls. `finish` resolves the outcome with a fail-closed
 matrix, completes the check-run, then confirms it is still displayed and
 republishes it if not — three calls, or four when it republishes. So five for a
-normal lifecycle and six when a check-run has to be republished.
+normal lifecycle and six when a check-run has to be republished. The optional
+`queue-fork` and `resolve-fork` modes hand an authorized fork request to a
+native `pull_request` workflow without executing fork code in the privileged
+comment workflow.
 
 **Location:** `.github/actions/comment-triggered-check`
 
@@ -415,8 +418,9 @@ jobs:
 Two things that are easy to get wrong and are handled here. An `issue_comment`
 run's `GITHUB_SHA` is the default branch, so a check-run must be created against
 the resolved head SHA or it never appears on the PR, and neither the head SHA
-nor the base ref can be inferred from the event. Fork PRs are rejected as a
-security boundary, because this trigger is privileged. See the action README.
+nor the base ref can be inferred from the event. Fork PRs are rejected by
+default because this trigger is privileged; callers with an existing safe fork
+workflow can opt into the documented handoff. See the action README.
 
 ### Repository Dispatch
 
