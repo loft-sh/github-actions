@@ -376,6 +376,7 @@ fi
 
 WT_PARENT="$(mktemp -d)"
 WT="${WT_PARENT}/oss"
+patch_file="${WT_PARENT}/patch"
 git worktree add --detach --quiet "$WT" "$OSS_TIP"
 trap 'git worktree remove --force "$WT" 2>/dev/null || true; rm -rf "$WT_PARENT"' EXIT
 
@@ -404,12 +405,18 @@ while read -r M; do
   # The trailing slash matters: --relative does string-prefix matching, so
   # without it a prefix-sharing sibling directory (vcluster-foo/) would leak
   # into the re-rooted diff.
-  patch="$(git diff-tree --no-commit-id -p --binary -M --relative="${SUBTREE_PREFIX}/" "$M")"
-  if [ -z "$patch" ]; then
+  #
+  # Straight to a file, never through "$(...)": a GIT binary patch section ends
+  # with a blank line, so for a commit whose last file is binary that
+  # terminator is the final byte of the diff -- exactly what command
+  # substitution strips. git apply then calls the last file's hunk corrupt,
+  # skips it, and still exits 0 (see apply_patch).
+  git diff-tree --no-commit-id -p --binary -M --relative="${SUBTREE_PREFIX}/" "$M" > "$patch_file"
+  if [ ! -s "$patch_file" ]; then
     echo "Skipping ${M} (empty diff under ${SUBTREE_PREFIX})"
     continue
   fi
-  if ! printf '%s\n' "$patch" | git -C "$WT" apply --3way --whitespace=nowarn; then
+  if ! apply_patch "$patch_file" "$WT"; then
     git -C "$WT" reset --hard --quiet
     git -C "$WT" clean -fdq
     die "conflict replaying ${M} onto OSS ${BRANCH}; resolve by importing OSS first or inspect the commit"
