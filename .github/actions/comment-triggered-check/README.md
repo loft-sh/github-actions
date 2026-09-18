@@ -32,10 +32,10 @@ calls a local action with `uses: ./...`, the *action definition* comes from the
 pull request and executes with repository secrets and a write token. CodeQL
 flags that as `actions/untrusted-checkout-toctou`, correctly.
 
-Keeping this action's jobs free of any checkout and dispatching the actual work
-to a `workflow_dispatch` run on the head branch avoids it: that run is not a
-privileged trigger, and its trust model is the one a normal pull request run
-already has.
+For a same-repository pull request, keep this action's jobs free of any checkout
+and dispatch the actual work to a `workflow_dispatch` run on the head branch.
+That run is not a privileged trigger, and its trust model is the one a normal
+pull request run already has.
 
 Pass three things along, not one. The check-run id, so the dispatched workflow
 can finish what this one opened, and **both** refs, because they answer
@@ -46,14 +46,9 @@ different questions:
 | `dispatch-ref` | the `--ref` of the dispatch. It selects the head workflow for a same-repository PR and the base workflow for a fork |
 | `head-sha` | the commit the check-run was opened on, and the commit the run must actually test |
 
-They intentionally disagree for a fork: the workflow comes from the base while
-the tested code comes from the head SHA. For a same-repository PR, a push can
-also move the head branch between resolution and dispatch.
-
-The dispatched workflow should therefore take `head-sha` as an input, pin every
-checkout to it, and compare `git rev-parse HEAD` with the input before doing any
-work. `github.sha` is the dispatch ref and is not the tested commit on the fork
-path.
+For a same-repository PR, a push can move the head branch between resolution and
+dispatch. The dispatched workflow should therefore take `head-sha` as an input
+and refuse to run if `github.sha` no longer matches it.
 
 ## Security boundary: forks are opt-in
 
@@ -64,11 +59,29 @@ opened the fork. GitHub's guidance is explicit that privileged workflows "must
 not explicitly check out untrusted code, including from pull request forks".
 
 Forks are therefore refused by default. A caller may set `allow-forks: "true"`
-only when its dispatched workflow deliberately runs fork code. In that mode,
-the action checks the commenter's repository permission and requires `write`,
-`maintain` or `admin`. The comment is the maintainer's explicit approval for
-the resolved head SHA. Keep every checkout gated on `should-run`, dispatch the
-trusted base-branch workflow, and verify the captured SHA after checkout.
+only when its normal `pull_request` workflow already supports reviewed fork
+code. In that mode, the action checks the commenter's repository permission and
+requires `write`, `maintain` or `admin`. The comment is the maintainer's explicit
+approval for the resolved head SHA.
+
+Do not dispatch the base branch and then check out the fork SHA. That gives
+untrusted code the base branch's cache scope and CodeQL reports it as cache
+poisoning. Use the fork handoff instead:
+
+1. Call `start` with `allow-forks: "true"`.
+2. If `is-fork` is `true`, call `queue-fork` with the returned filter, focus,
+   target, and head SHA. It records the authorized request and toggles the
+   internal `e2e-fork-request` label. Pass a GitHub App or PAT token: GitHub
+   deliberately prevents events created by `GITHUB_TOKEN` from starting another
+   workflow.
+3. A small `pull_request: labeled` workflow calls `resolve-fork`. The action
+   accepts only an event and request comment from `trusted-bot` for the event's
+   exact head SHA.
+4. Run the suite from that pull request workflow. It keeps GitHub's native fork
+   approval and cache isolation.
+
+Complete the privileged command check as `neutral` once the request is queued.
+The pull request workflow's native check reports the suite result.
 
 ## Who may run it
 
@@ -84,7 +97,7 @@ read-only collaborator passes. That coarse check remains sufficient for a
 same-repository command. When `allow-forks` is enabled, the action performs the
 precise permission lookup and refuses anyone below write access.
 
-## The two modes
+## Modes
 
 `start` parses the comment, authorizes the commenter, resolves the pull request,
 and opens the check-run. A same-repository request takes two API calls. An
@@ -94,6 +107,16 @@ command takes none.
 `finish` resolves the terminal outcome and completes it. Give it the check-run
 id from `start` and the raw job results; it computes the conclusion so the
 matrix lives in a tested script rather than in workflow YAML.
+
+`queue-fork` writes the authorized request to a bot comment and toggles the
+internal request label. Its `github-token` must be a GitHub App or PAT token
+with pull request write access; the built-in `GITHUB_TOKEN` cannot trigger the
+follow-up workflow.
+
+`resolve-fork` reads that request from a `pull_request: labeled` run, verifies
+the event actor and request comment match `trusted-bot`, and refuses if the pull
+request head no longer matches the approved SHA. It returns the filter, focus,
+and target and requires `pull-requests: read`.
 
 ## The outcome matrix fails closed
 
@@ -182,9 +205,10 @@ Every value in `allowed-targets` needs a matching invocation.
 
 ## Permissions
 
-The calling job needs `checks: write` to create and complete the check-run, and
-`pull-requests: read` to resolve the head SHA and base ref. Repository metadata
-is always readable by `GITHUB_TOKEN`; fork mode uses it to check the commenter's
+`start` and `finish` need `checks: write`; `start` also needs
+`pull-requests: read`. `queue-fork` needs `pull-requests: write`, while
+`resolve-fork` needs `pull-requests: read`. Repository metadata is always
+readable by `GITHUB_TOKEN`; fork mode uses it to check the commenter's
 permission.
 
 ## Inputs
@@ -193,7 +217,7 @@ permission.
 
 |       INPUT        |  TYPE  | REQUIRED |           DEFAULT            |                                                                                                           DESCRIPTION                                                                                                            |
 |--------------------|--------|----------|------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-|    allow-forks     | string |  false   |          `"false"`           |      start mode. Allow fork pull requests <br>only when the commenter has write, <br>maintain, or admin repository permission. Disabled <br>by default because the dispatched workflow <br>may run fork code with secrets.       |
+|    allow-forks     | string |  false   |          `"false"`           |   start mode. Allow fork pull requests <br>only when the commenter has write, <br>maintain, or admin repository permission. Disabled <br>by default; use queue-fork and resolve-fork <br>to preserve pull_request isolation.     |
 |  allowed-targets   | string |  false   |         `"pro oss"`          |                                             start mode. Whitespace-separated target values accepted <br>when target-name is set. Each value <br>needs a matching action invocation.                                              |
 | author-association | string |  false   |                              | start mode. How the commenter relates <br>to the repository. Pass the github.event.comment.author_association <br>context. OWNER, MEMBER and COLLABORATOR may <br>run the command; anything else, including <br>empty, may not.  |
 |    build-result    | string |  false   |                              |                                                                            finish mode. Result of the build <br>job. Pass the matching needs result.                                                                             |
@@ -203,17 +227,23 @@ permission.
 |   comment-author   | string |  false   |                              |                                                                    start mode. Login of the commenter. <br>Pass the github.event.comment.user.login context.                                                                     |
 |    comment-body    | string |  false   |                              |                                                                          start mode. The comment text. Pass <br>the github.event.comment.body context.                                                                           |
 |    details-url     | string |  false   |                              |                                                                                    finish mode. Link target for the <br>completed check-run.                                                                                     |
-|    github-token    | string |  false   |   `"${{ github.token }}"`    |                                                                     Token for gh. The calling job <br>must grant checks: write and pull-requests: <br>read.                                                                      |
-|        mode        | string |   true   |                              |                                                                                                   Either "start" or "finish".                                                                                                    |
+|    github-token    | string |  false   |   `"${{ github.token }}"`    |                                             Token for gh. queue-fork requires a <br>GitHub App or PAT token because <br>events created by GITHUB_TOKEN do not <br>start workflows.                                               |
+|        mode        | string |   true   |                              |                                                                                 One of "start", "finish", "queue-fork", or <br>"resolve-fork".                                                                                   |
 |    parse-focus     | string |  false   |          `"false"`           |                                        start mode. Set to true to <br>split an optional trailing --focus expression <br>from the filter. Disabled by default <br>for existing consumers.                                         |
-|     pr-number      | string |  false   |                              |                                                                        start mode. Pull request number. Pass <br>the github.event.issue.number context.                                                                          |
+|    pr-head-sha     | string |  false   |                              |                                                                                  resolve-fork mode. Head SHA from the <br>pull_request event.                                                                                    |
+|     pr-number      | string |  false   |                              |                                                                            Pull request number. Required by start, <br>queue-fork, and resolve-fork.                                                                             |
 |        repo        | string |  false   | `"${{ github.repository }}"` |                                                                                                  Repository in owner/name form.                                                                                                  |
 | report-conclusion  | string |  false   |                              |                                         finish mode. What the test run <br>declared about itself, parsed from its <br>report. The only input that can <br>produce a neutral conclusion.                                          |
+|   request-filter   | string |  false   |                              |                                                                                    queue-fork mode. Authorized filter returned by <br>start.                                                                                     |
+|   request-focus    | string |  false   |                              |                                                                                    queue-fork mode. Authorized focus returned by <br>start.                                                                                      |
+|  request-head-sha  | string |  false   |                              |                                                                                  queue-fork mode. Pull request head SHA <br>returned by start.                                                                                   |
+|   request-target   | string |  false   |                              |                                                                                    queue-fork mode. Authorized target returned by <br>start.                                                                                     |
 |       run-id       | string |  false   |                              |                                                                  start mode. Used to build the <br>check-run details link. Pass the github.run_id <br>context.                                                                   |
 |     server-url     | string |  false   |    `"https://github.com"`    |                                                           start mode. Base URL used to <br>build the check-run details link. Pass <br>the github.server_url context.                                                             |
 |    suite-result    | string |  false   |                              |                                                                            finish mode. Result of the suite <br>job. Pass the matching needs result.                                                                             |
 |      summary       | string |  false   |                              |                                                                finish mode. Markdown body for the <br>completed check-run. Defaults to the two <br>job results.                                                                  |
 |    target-name     | string |  false   |                              |                      start mode. Target represented by this <br>invocation. Setting it enables --target parsing; <br>a different explicit target returns target-not-selected <br>without opening a check.                        |
+|    trusted-bot     | string |  false   |         `"loft-bot"`         |                                                                  resolve-fork mode. Login whose App or <br>PAT token queued the label and <br>request comment.                                                                   |
 
 <!-- AUTO-DOC-INPUT:END -->
 
@@ -229,7 +259,7 @@ permission.
 |  check-run-id   | string |                                                                                                              Id of the opened check-run. Empty <br>when nothing was opened; gate the <br>finish job on it.                                                                                                               |
 |   conclusion    | string |                                                                                                                                   finish mode. The conclusion that was <br>published.                                                                                                                                    |
 | concurrency-key | string |                                                Domain-separated request identity reduced to a <br>lowercase slug plus an eight-character digest, <br>safe to interpolate into a concurrency <br>group. Distinct filters, focuses, and targets <br>do not share a group.                                                  |
-|  dispatch-ref   | string |                                                                        start mode. Branch whose workflow should <br>receive the dispatch: the head branch <br>for a same-repository pull request and <br>the trusted base branch for a <br>fork.                                                                         |
+|  dispatch-ref   | string |                                                                  start mode. Head branch for a <br>same-repository dispatch. Forks return the base <br>branch for identity only; use the <br>fork handoff instead of dispatching fork <br>code there.                                                                    |
 |     filter      | string |                                                                                                              Argument string with whitespace normalized. This <br>is what to pass to the <br>test runner.                                                                                                                |
 |      focus      | string |                                                                                            Optional focus expression following --focus. One <br>outer quote pair is removed only <br>when it encloses the whole expression.                                                                                              |
 |    head-ref     | string |                                                          Resolved head BRANCH of the pull <br>request. Needed by a caller that <br>dispatches the work to a non-privileged <br>run, because `gh workflow run --ref` takes a branch <br>or tag and never a SHA.                                                           |
