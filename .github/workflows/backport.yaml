@@ -77,8 +77,10 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Install GH CLI
-        uses: dev-hanz-ops/install-gh-cli-action@af38ce09b1ec248aeb08eea2b16bbecea9e059f8 # v0.2.1
+      # No gh install step: gh ships on GitHub-hosted runners, and the third-party
+      # installers default to a years-old release. This job drives the GitHub API
+      # through sorenlouv's own client and needs no gh at all; a self-hosted runner
+      # or a job container would need it installed explicitly.
 
       - name: Backport Action
         uses: sorenlouv/backport-github-action@9460b7102fea25466026ce806c9ebf873ac48721 # v11.0.0
@@ -167,8 +169,10 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Install GH CLI
-        uses: dev-hanz-ops/install-gh-cli-action@af38ce09b1ec248aeb08eea2b16bbecea9e059f8 # v0.2.1
+      # No gh install step: gh ships on GitHub-hosted runners, and the third-party
+      # installers default to a years-old release whose --jq cannot read the
+      # environment, which the open-PR lookup below relies on. A self-hosted runner
+      # or a job container would need gh installed explicitly.
 
       - name: Backport to ${{ matrix.target }}
         id: backport
