@@ -133,7 +133,7 @@ runs:
     # two modes get their own step.
     - name: Log in to GHCR
       if: inputs.dry-run != 'true'
-      uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+      uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
       with:
         registry: ghcr.io
         username: ${{ inputs.docker-username }}
@@ -146,7 +146,7 @@ runs:
       id: ghcr-login-rehearsal
       if: inputs.dry-run == 'true'
       continue-on-error: true
-      uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+      uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
       with:
         registry: ghcr.io
         username: ${{ inputs.docker-username }}
