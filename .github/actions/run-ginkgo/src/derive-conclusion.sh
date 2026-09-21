@@ -15,6 +15,8 @@
 #   INPUT_REPORT                       path to the Ginkgo JSON report
 #   INPUT_EMPTY_SELECTION_CONCLUSION   what an empty selection reports; neutral
 #                                      or failure, defaulting to neutral
+#   INPUT_FAIL_ON_DERIVED_FAILURE      when true, exit non-zero for failure or
+#                                      timed_out; defaults to false
 #   INPUT_FOCUS                        optional focus expression, used to explain
 #                                      an empty combined selection
 #
@@ -124,6 +126,12 @@ derive_conclusion() {
 }
 
 main() {
+  if [[ -z "${INPUT_EMPTY_SELECTION_CONCLUSION:-}" ]] &&
+    [[ "${INPUT_FAIL_ON_DERIVED_FAILURE:-false}" != "false" ]]; then
+    echo "::warning::fail-on-derived-failure requires empty-selection-conclusion; enforcement is disabled"
+    return 0
+  fi
+
   # An unrecognised value becomes failure, not the neutral default. The only
   # reason to set this input is to be stricter than neutral, so a typo must not
   # silently restore the behaviour the caller was opting out of.
@@ -133,6 +141,17 @@ main() {
     *)
       echo "::warning::empty-selection-conclusion must be neutral or failure, got '${empty_conclusion}'; using failure"
       empty_conclusion="failure"
+      ;;
+  esac
+
+  # Only an explicit false disables enforcement. This input is meant to make
+  # report-derived failures stricter, so a typo must not silently fail open.
+  local fail_on_derived_failure="${INPUT_FAIL_ON_DERIVED_FAILURE:-false}"
+  case "$fail_on_derived_failure" in
+    true | false) ;;
+    *)
+      echo "::warning::fail-on-derived-failure must be true or false, got '${fail_on_derived_failure}'; using true"
+      fail_on_derived_failure="true"
       ;;
   esac
 
@@ -161,6 +180,12 @@ main() {
     emit_summary "$summary"
   fi
   emit "$conclusion"
+
+  if [[ "$fail_on_derived_failure" == "true" ]] &&
+    [[ "$conclusion" == "failure" || "$conclusion" == "timed_out" ]]; then
+    echo "::error::report-derived conclusion is ${conclusion}; failing because fail-on-derived-failure is true"
+    return 1
+  fi
 }
 
 # Only auto-run when executed directly; sourcing (e.g. from bats) must not.
