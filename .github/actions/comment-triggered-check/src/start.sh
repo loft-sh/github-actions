@@ -2,7 +2,8 @@
 # start mode: decide whether this comment is a command we should act on, and if
 # so open a check-run on the pull request's head commit.
 #
-# Two API calls, and no more. Deduplicating repeated commands is left to the
+# Two API calls for a same-repository PR, and one extra permission lookup for
+# an allowed fork. Deduplicating repeated commands is left to the
 # caller's `concurrency` group (see the README): GitHub already supersedes an
 # older run for the same key, and a superseded job still runs the caller's
 # `always()` finish job, which closes its check. Doing it here instead meant
@@ -15,6 +16,7 @@
 #   INPUT_COMMENT_BODY        github.event.comment.body
 #   INPUT_COMMENT_AUTHOR      github.event.comment.user.login
 #   INPUT_AUTHOR_ASSOCIATION  github.event.comment.author_association
+#   INPUT_ALLOW_FORKS         whether write-level commenters may run fork code
 #   INPUT_PR_NUMBER           github.event.issue.number
 #   INPUT_REPO                owner/name
 #   INPUT_CHECK_NAME_PREFIX   prefix for the check-run name
@@ -34,6 +36,7 @@ command_word="${INPUT_COMMAND:-/test-e2e}"
 comment_body="${INPUT_COMMENT_BODY:-}"
 comment_author="${INPUT_COMMENT_AUTHOR:-}"
 association="${INPUT_AUTHOR_ASSOCIATION:-}"
+allow_forks="${INPUT_ALLOW_FORKS:-false}"
 pr_number="${INPUT_PR_NUMBER:-}"
 repo="${INPUT_REPO:?INPUT_REPO required}"
 prefix="${INPUT_CHECK_NAME_PREFIX:-e2e}"
@@ -59,6 +62,7 @@ reason_guidance=""
 head_sha=""
 head_ref=""
 base_ref=""
+is_fork=""
 concurrency_key=""
 name=""
 check_run_id=""
@@ -80,6 +84,7 @@ finish_and_exit() {
   emit "head-sha" "$head_sha"
   emit "head-ref" "$head_ref"
   emit "base-ref" "$base_ref"
+  emit "is-fork" "$is_fork"
   emit "concurrency-key" "$concurrency_key"
   emit "check-name" "$name"
   emit "check-run-id" "$check_run_id"
@@ -199,14 +204,33 @@ if [[ "$pr_state" != "open" ]]; then
   finish_and_exit
 fi
 
-# Fork check, before the caller checks anything out. This trigger is privileged:
-# it runs from the default branch of the base repository with its secrets and a
-# write token, so a workflow that fetches and runs fork code hands those to a
-# stranger. A security boundary, not a convenience limit.
+# Fork support is explicit. The association is not enough here: COLLABORATOR
+# may be read-only, while running fork code requires maintainer approval.
 if [[ "$head_repo" != "$repo" ]]; then
-  reason="fork"
-  echo "::notice::${command_word} is not available on pull requests from forks"
-  finish_and_exit
+  is_fork=true
+  if [[ "$allow_forks" != "true" ]]; then
+    reason="fork"
+    echo "::notice::${command_word} is not available on pull requests from forks"
+    finish_and_exit
+  fi
+
+  if ! permission_json="$(gh_json "repos/${repo}/collaborators/${comment_author}/permission")"; then
+    reason="permission-unreadable"
+    echo "::warning::could not check ${comment_author}'s permission in ${repo}"
+    finish_and_exit
+  fi
+  if ! permission="$(printf '%s' "$permission_json" | jq -er '.permission | select(type == "string")' 2>/dev/null)"; then
+    reason="permission-unreadable"
+    echo "::warning::the permission response for ${comment_author} was unreadable"
+    finish_and_exit
+  fi
+  if ! has_write_permission "$permission"; then
+    reason="insufficient-permission"
+    echo "::notice::${comment_author} has ${permission} access; a fork command needs write access"
+    finish_and_exit
+  fi
+else
+  is_fork=false
 fi
 
 should_run=true
