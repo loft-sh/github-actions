@@ -51,6 +51,7 @@ created() { calls_matching "POST"; }
   [ "$(kv should-run)" = "true" ]
   [ "$(kv head-sha)" = "abc123" ]
   [ "$(kv base-ref)" = "main" ]
+  [ "$(kv is-fork)" = "false" ]
   [ "$(kv check-run-id)" = "4242" ]
   [ "$(kv reason)" = "" ]
 }
@@ -286,6 +287,57 @@ created() { calls_matching "POST"; }
   export GH_MOCK_PR_JSON='{"head":{"sha":"abc123","ref":"feature/x","repo":{"full_name":"someone/demo"}},"base":{"ref":"main"},"state":"open"}'
   run bash "$SCRIPT"
   [ "$(kv reason)" = "fork" ]
+  [ "$(kv is-fork)" = "true" ]
+  [ "$(kv should-run)" = "false" ]
+  [ "$(calls_matching '/collaborators/')" -eq 0 ]
+  [ "$(created)" -eq 0 ]
+}
+
+@test "an opted-in fork opens a check for a writer" {
+  export INPUT_ALLOW_FORKS="true"
+  export GH_MOCK_PR_JSON='{"head":{"sha":"fork123","ref":"feature/x","repo":{"full_name":"someone/demo"}},"base":{"ref":"main"},"state":"open"}'
+  export GH_MOCK_PERMISSION_JSON='{"permission":"write"}'
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv is-fork)" = "true" ]
+  [ "$(kv head-sha)" = "fork123" ]
+  [ "$(kv should-run)" = "true" ]
+  [ "$(kv reason)" = "" ]
+  [ "$(calls_matching '/collaborators/dev/permission')" -eq 1 ]
+  [ "$(created)" -eq 1 ]
+}
+
+@test "an opted-in fork refuses a read-only commenter" {
+  export INPUT_ALLOW_FORKS="true"
+  export GH_MOCK_PR_JSON='{"head":{"sha":"fork123","ref":"feature/x","repo":{"full_name":"someone/demo"}},"base":{"ref":"main"},"state":"open"}'
+  export GH_MOCK_PERMISSION_JSON='{"permission":"read"}'
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv is-fork)" = "true" ]
+  [ "$(kv reason)" = "insufficient-permission" ]
+  [ "$(kv should-run)" = "false" ]
+  [ "$(created)" -eq 0 ]
+}
+
+@test "an opted-in fork fails closed when permission cannot be read" {
+  export INPUT_ALLOW_FORKS="true"
+  export GH_MOCK_PR_JSON='{"head":{"sha":"fork123","ref":"feature/x","repo":{"full_name":"someone/demo"}},"base":{"ref":"main"},"state":"open"}'
+  export GH_MOCK_PERMISSION_FAIL=1
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv is-fork)" = "true" ]
+  [ "$(kv reason)" = "permission-unreadable" ]
+  [ "$(kv should-run)" = "false" ]
+  [ "$(created)" -eq 0 ]
+}
+
+@test "an opted-in fork fails closed on a malformed permission response" {
+  export INPUT_ALLOW_FORKS="true"
+  export GH_MOCK_PR_JSON='{"head":{"sha":"fork123","ref":"feature/x","repo":{"full_name":"someone/demo"}},"base":{"ref":"main"},"state":"open"}'
+  export GH_MOCK_PERMISSION_JSON='{}'
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv reason)" = "permission-unreadable" ]
   [ "$(kv should-run)" = "false" ]
   [ "$(created)" -eq 0 ]
 }

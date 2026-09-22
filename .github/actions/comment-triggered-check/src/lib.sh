@@ -322,6 +322,14 @@ is_authorized_association() {
   [[ " $AUTHORIZED_ASSOCIATIONS " == *" $association "* ]]
 }
 
+# has_write_permission <repository-permission>
+has_write_permission() {
+  case "${1-}" in
+    write|maintain|admin) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # refusal_details <reason> <command> <allowed-targets>
 # Convert a machine-readable start refusal into presentation-ready text so
 # callers do not have to reproduce a long expression tree in workflow YAML.
@@ -366,7 +374,11 @@ refusal_details() {
       ;;
     insufficient-permission)
       REFUSAL_TITLE="\`insufficient-permission\`"
-      REFUSAL_GUIDANCE="You need access to this repository to run the command."
+      REFUSAL_GUIDANCE="You need repository access to run the command. Fork requests require write access."
+      ;;
+    permission-unreadable)
+      REFUSAL_TITLE="\`permission-unreadable\`"
+      REFUSAL_GUIDANCE="Your repository permission could not be checked. Please try the command again."
       ;;
     empty-filter)
       REFUSAL_TITLE="\`empty-filter\`"
