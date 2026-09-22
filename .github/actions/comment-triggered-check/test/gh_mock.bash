@@ -10,6 +10,8 @@
 # Controls, all optional:
 #   GH_MOCK_PR_JSON      body for .../pulls/N
 #   GH_MOCK_PR_FAIL      non-empty → the pulls call fails
+#   GH_MOCK_PERMISSION_JSON body for .../collaborators/USER/permission
+#   GH_MOCK_PERMISSION_FAIL non-empty → the permission call fails
 #   GH_MOCK_CREATE_JSON  body for POST .../check-runs
 #   GH_MOCK_CREATE_FAIL  non-empty → the create call fails
 #   GH_MOCK_PATCH_FAIL   non-empty → a PATCH fails
@@ -19,6 +21,9 @@
 #   GH_MOCK_LATEST_IDS     space-separated ids the commit listing reports as displayed
 #   GH_MOCK_LIST_FAIL      non-empty → the commit check-runs listing request fails
 #   GH_MOCK_LIST_JSON      raw body for that listing, for malformed-response cases
+#   GH_MOCK_COMMENTS_JSON  slurped pages returned by the comments endpoint
+#   GH_MOCK_LABELS_JSON    slurped pages returned by the issue labels endpoint
+#   GH_MOCK_LABEL_DELETE_FAIL non-empty -> deleting the request label fails
 
 setup_gh_mock() {
   MOCK_DIR="$(mktemp -d)"
@@ -43,8 +48,23 @@ all="$*"
 default_pr='{"head":{"sha":"abc123","ref":"feature/x","repo":{"full_name":"loft-sh/demo"}},"base":{"ref":"main"},"state":"open"}'
 default_create='{"id":4242}'
 default_checkrun='{"id":4242,"name":"e2e-pro: snapshots","head_sha":"abc123","app":{"id":1}}'
+default_permission='{"permission":"write"}'
 
 case "$all" in
+  *"/issues/"*"/comments"*)
+    printf '%s\n' "${GH_MOCK_COMMENTS_JSON:-[[]]}"
+    ;;
+  *"/issues/"*"/labels/"*)
+    [ -n "${GH_MOCK_LABEL_DELETE_FAIL:-}" ] && { echo "mock: label delete failed" >&2; exit 1; }
+    printf '{}\n'
+    ;;
+  *"/issues/"*"/labels"*)
+    if [[ "$all" == *"--method POST"* ]]; then
+      printf '{}\n'
+    else
+      printf '%s\n' "${GH_MOCK_LABELS_JSON:-[[]]}"
+    fi
+    ;;
   *"--method POST"*"check-runs"*)
     [ -n "${GH_MOCK_CREATE_FAIL:-}" ] && { echo "mock: create failed" >&2; exit 1; }
     printf '%s\n' "${GH_MOCK_CREATE_JSON:-$default_create}"
@@ -56,6 +76,10 @@ case "$all" in
   *"/pulls/"*)
     [ -n "${GH_MOCK_PR_FAIL:-}" ] && { echo "mock: pulls failed" >&2; exit 1; }
     printf '%s\n' "${GH_MOCK_PR_JSON:-$default_pr}"
+    ;;
+  *"/collaborators/"*"/permission"*)
+    [ -n "${GH_MOCK_PERMISSION_FAIL:-}" ] && { echo "mock: permission lookup failed" >&2; exit 1; }
+    printf '%s\n' "${GH_MOCK_PERMISSION_JSON:-$default_permission}"
     ;;
   # Before the by-id case: this path also contains "check-runs".
   *"/commits/"*"check-runs"*)
