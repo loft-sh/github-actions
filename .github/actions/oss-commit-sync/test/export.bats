@@ -1279,6 +1279,90 @@ Oss-Commit: $(git -C "$OSS_REMOTE" rev-parse main)"
   [ "$(oss_file pkg/fresh.go)" = "brand new" ]
 }
 
+@test "a modification whose content OSS already holds is skipped as mirrored" {
+  # The M-status side of the content comparison, which no deletion case reaches:
+  # a deletion is answered by looking for the path on the OSS side alone, so a
+  # check that searched for the monorepo's paths at the OSS root -- without
+  # SUBTREE_PREFIX -- would still answer every deletion correctly and quietly
+  # fail closed on everything else, leaving this PR's fix doing nothing for the
+  # shape that stalled the branch.
+  company_commit pkg/both.go "v1" "feat: add a file" >/dev/null
+  run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+
+  # OSS reaches v2 by its own route; recorded as absorbed so the divergence
+  # guard has nothing to object to.
+  clone="$ROOT/ext-mod-$RANDOM"
+  git clone -q "$OSS_REMOTE" "$clone"
+  (
+    cd "$clone"
+    printf 'v2\n' > pkg/both.go
+    GIT_AUTHOR_NAME=alice GIT_AUTHOR_EMAIL=alice@contributor.example \
+      git commit -qam "fix: same change upstream"
+    git push -q origin main
+  )
+  (
+    cd "$MONO"
+    git commit -q --allow-empty -m "chore: absorb
+
+Oss-Commit: $(git -C "$OSS_REMOTE" rev-parse main)"
+  )
+
+  # The monorepo gets there separately: an M entry on a path both sides hold.
+  (
+    cd "$MONO"
+    printf 'v2\n' > "$PFX/pkg/both.go"
+    git commit -qam "fix: same change here too"
+  )
+
+  run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"already mirrored"* ]]
+  [ "$(oss_file pkg/both.go)" = "v2" ]
+}
+
+@test "align-tree names the commits its snapshot absorbs" {
+  # Where a benign skip stops being free. Every other export skip is provably a
+  # no-op; this one is a judgement, and the snapshot takes the skipped commit's
+  # content as a bot commit with no author, date or subject of its own and
+  # records a trailer past it, so it can never be replayed afterwards. An
+  # operator asking for align-tree has to be able to see which commits that is.
+  company_commit pkg/gone.go "doomed" "feat: add a file" >/dev/null
+  run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+
+  # OSS drops that file and gains one of its own, absorbed by trailer, so the
+  # trees diverge with the divergence guard satisfied.
+  clone="$ROOT/ext-align-$RANDOM"
+  git clone -q "$OSS_REMOTE" "$clone"
+  (
+    cd "$clone"
+    git rm -q pkg/gone.go
+    printf 'upstream\n' > oss-only.go
+    git add -A
+    GIT_AUTHOR_NAME=alice GIT_AUTHOR_EMAIL=alice@contributor.example \
+      git commit -qm "chore: drop one, add another"
+    git push -q origin main
+  )
+  (
+    cd "$MONO"
+    git commit -q --allow-empty -m "chore: absorb
+
+Oss-Commit: $(git -C "$OSS_REMOTE" rev-parse main)"
+  )
+  (
+    cd "$MONO"
+    git rm -q "$PFX/pkg/gone.go"
+    git commit -qm "chore: drop it here too"
+  )
+  skipped=$(git -C "$MONO" rev-parse HEAD)
+
+  ALIGN_TREE=true run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"already mirrored"* ]]
+  [[ "$output" == *"::warning::  ${skipped}"* ]]
+}
+
 @test "a deletion OSS has not seen yet is mirrored, not skipped" {
   # The one piece of bespoke logic in the benign check. Making every deletion
   # count as benign leaves the add/modify tests green, so without this the

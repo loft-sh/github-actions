@@ -547,6 +547,12 @@ build_excludes() {
 benign_paths_match() {
   local src="$1" src_prefix="$2" dst="$3" dst_prefix="$4" changes="$5"
   local status path entry_src entry_dst
+  # Answered here, beside the branch it protects, rather than only at a call
+  # site: an empty rev makes the deletion branch's `git cat-file -e ":<path>"`
+  # resolve against the INDEX, which answers "benign" for a delete-only commit.
+  # That is the one verdict this must never give by accident. The non-D branch
+  # already fails closed on its own.
+  [ -n "$src" ] && [ -n "$dst" ] || return 1
   while IFS=$'\t' read -r status path; do
     [ -n "$path" ] || continue
     if [ "$status" = "D" ]; then
@@ -562,8 +568,10 @@ benign_paths_match() {
     # commit still has. It is also what keeps the verdict fail-closed for any
     # shape diff-tree reports: callers pass no -M, so a rename arrives as
     # delete+add and is checked path by path, but were one to arrive as a
-    # single R entry, `path` would read as the OLD name, find nothing here, and
-    # answer "not benign" rather than skipping a commit that still has work.
+    # single R entry, `read` would leave the whole remainder in `path` --
+    # "<old><TAB><new>", neither name on its own -- which matches nothing here
+    # and answers "not benign" rather than skipping a commit that still has
+    # work.
     [ -n "$entry_src" ] || return 1
     # Everything up to the tab is "<mode> <type> <sha>"; the paths differ by
     # prefix and are deliberately out of the comparison.
@@ -948,7 +956,11 @@ apply_patch() {
 # catch it, because git apply never gets far enough to stage anything.
 #
 # A false "benign" cannot corrupt the mirror: the convergence assertion still
-# fails the run before anything is pushed.
+# fails the run before anything is pushed. That fail-safe stops at the
+# align-tree path, though, which the assertion itself recommends: the snapshot
+# absorbs a wrongly-skipped commit's content without its author, date or
+# subject and records a trailer past it, so the commit can never be replayed.
+# The export therefore names what it skipped here in that gate.
 #
 # Reads SUBTREE_PREFIX and the `subtree_excludes` array.
 monorepo_is_benign() {

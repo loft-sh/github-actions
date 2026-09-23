@@ -80,6 +80,12 @@ emit loose-absorption false
 # giving it the same treatment is a separate change.
 loose_absorbed=()
 
+# Commits the replay loop skipped as already mirrored. Every other export skip
+# is provably a no-op; this one is a judgement made before applying, and the
+# alignment snapshot is where it stops being free (see monorepo_is_benign), so
+# both gates name them rather than leaving the operator to diff for them.
+benign_skipped=()
+
 # loose_absorption_recovery
 # What to do about an external absorbed only by a line outside git's trailer
 # block. Printed from both places that stop on one, so the two cannot drift: the
@@ -441,6 +447,7 @@ while read -r M; do
     die "failed to read the OSS worktree tip while classifying ${M}; refusing to export"
   fi
   if monorepo_is_benign "$M" "$oss_head"; then
+    benign_skipped+=("$M")
     echo "Skipping ${M} (already mirrored; OSS holds this commit's content)"
     continue
   fi
@@ -495,6 +502,14 @@ if [ "$STAGING_TREE" != "$OSS_TREE" ]; then
       loose_absorption_recovery
       exit 1
     fi
+    # Named before the snapshot is written: it absorbs whatever the replay loop
+    # skipped as already mirrored into one bot commit -- no author, date or
+    # subject of its own -- and records a trailer past it, so those commits can
+    # never be replayed individually afterwards.
+    if [ "${#benign_skipped[@]}" -gt 0 ]; then
+      echo "::warning::The alignment snapshot absorbs these commits, skipped by this run as already mirrored:"
+      printf '::warning::  %s\n' "${benign_skipped[@]}"
+    fi
     msgfile="$(mktemp)"
     {
       echo "chore: align OSS mirror with monorepo staging tree"
@@ -542,6 +557,10 @@ if [ "$STAGING_TREE" != "$OSS_TREE" ]; then
       loose_absorption_recovery
     else
       echo "::error::Re-run with align-tree=true to append a snapshot alignment commit."
+      if [ "${#benign_skipped[@]}" -gt 0 ]; then
+        echo "::error::That run also absorbs these commits, which this run skipped as already mirrored -- check them against the diff above before asking for it:"
+        printf '::error::  %s\n' "${benign_skipped[@]}"
+      fi
     fi
     exit 1
   else
