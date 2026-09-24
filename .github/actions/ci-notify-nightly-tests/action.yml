@@ -30,35 +30,51 @@ inputs:
 runs:
   using: "composite"
   steps:
+    # Built with jq rather than an inline YAML payload: test_results and
+    # failed_tests are usually multi-line, and slack-github-action v4 rejects
+    # unindented continuation lines.
+    - name: Build Slack payload
+      shell: bash
+      env:
+        STATUS: ${{ inputs.status }}
+        SOURCE_REPO: ${{ inputs.source_repo }}
+        RUN_ID: ${{ inputs.run_id }}
+        RUN_NUMBER: ${{ inputs.run_number }}
+        TEST_RESULTS: ${{ inputs.test_results }}
+        FAILED_TESTS: ${{ inputs.failed_tests }}
+        PAYLOAD_FILE: ${{ runner.temp }}/ci-notify-nightly-tests-payload.json
+      run: |
+        title="Nightly E2E Tests: ❌ Failure"
+        if [[ "$STATUS" == "success" ]]; then
+          title="Nightly E2E Tests: ✅ Success"
+        fi
+        jq -n \
+          --arg title "$title" \
+          --arg repo "$SOURCE_REPO" \
+          --arg run_id "$RUN_ID" \
+          --arg run_number "$RUN_NUMBER" \
+          --arg results "$TEST_RESULTS" \
+          --arg failed "$FAILED_TESTS" \
+          '{
+            text: $title,
+            blocks: [
+              { type: "header", text: { type: "plain_text", text: $title, emoji: false } },
+              { type: "section", fields: [
+                { type: "mrkdwn", text: "*Repository:*\n\($repo)" },
+                { type: "mrkdwn", text: "*Run:*\n#\($run_number)" }
+              ] },
+              { type: "section", text: { type: "mrkdwn", text: "*Test Results:*\n\($results)" } },
+              { type: "section", text: { type: "mrkdwn", text: "*Failed tests:*\n\($failed)" } },
+              { type: "context", elements: [
+                { type: "mrkdwn", text: "<https://github.com/\($repo)/actions/runs/\($run_id)|View Run Details>" }
+              ] }
+            ]
+          }' > "$PAYLOAD_FILE"
+
     - name: Post E2E test results notification
-      uses: slackapi/slack-github-action@45a88b9581bfab2566dc881e2cd66d334e621e2c  # v3.0.3
+      uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d  # v4.0.0
       with:
         errors: true
         webhook-type: incoming-webhook
         webhook: ${{ inputs.webhook_url }}
-        payload: |
-          text: "Nightly E2E Tests: ${{ inputs.status == 'success' && '✅ Success' || '❌ Failure' }}"
-          blocks:
-            - type: header
-              text:
-                type: plain_text
-                text: "Nightly E2E Tests: ${{ inputs.status == 'success' && '✅ Success' || '❌ Failure' }}"
-                emoji: false
-            - type: section
-              fields:
-                - type: mrkdwn
-                  text: "*Repository:*\n${{ inputs.source_repo }}"
-                - type: mrkdwn
-                  text: "*Run:*\n#${{ inputs.run_number }}"
-            - type: section
-              text:
-                type: mrkdwn
-                text: "*Test Results:*\n${{ inputs.test_results }}"
-            - type: section
-              text:
-                type: mrkdwn
-                text: "*Failed tests:*\n${{ inputs.failed_tests }}"
-            - type: context
-              elements:
-                - type: mrkdwn
-                  text: "<https://github.com/${{ inputs.source_repo }}/actions/runs/${{ inputs.run_id }}|View Run Details>"
+        payload-file-path: ${{ runner.temp }}/ci-notify-nightly-tests-payload.json
