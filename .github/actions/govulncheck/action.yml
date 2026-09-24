@@ -88,7 +88,7 @@ runs:
         steps.govulncheck.conclusion == 'failure' &&
         inputs.notify == 'true' &&
         github.event_name == 'schedule'
-      uses: loft-sh/github-actions/.github/actions/ci-test-notify@d462e847d4f8f4a139890264a35b68cc30472547 # ci-test-notify/v1
+      uses: loft-sh/github-actions/.github/actions/ci-test-notify@c6a76f19cc302d63d1631853496bce5bf76a4e0a # ci-test-notify/v1
       with:
         test-name: ${{ inputs.test-name }}
         status: failure
