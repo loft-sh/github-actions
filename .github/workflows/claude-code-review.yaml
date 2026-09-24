@@ -30,6 +30,9 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 1
           persist-credentials: false
+          # checkout v7 refuses fork PR heads under pull_request_target. Reviewing
+          # fork PRs is the point of this job, and nothing here executes their code.
+          allow-unsafe-pr-checkout: true
 
       - name: Restore CLAUDE.md from base branch
         env:
