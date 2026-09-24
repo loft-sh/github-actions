@@ -1,0 +1,101 @@
+[
+  {
+    "PreRunStats": {
+      "TotalSpecs": 3,
+      "SpecsThatWillRun": 3
+    },
+    "RunTime": 701000000000,
+    "SpecReports": [
+      {
+        "State": "passed",
+        "LeafNodeType": "SynchronizedBeforeSuite",
+        "LeafNodeText": "",
+        "LeafNodeLocation": {
+          "FileName": "e2e_suite_test.go",
+          "LineNumber": 20
+        }
+      },
+      {
+        "State": "passed",
+        "LeafNodeType": "SynchronizedBeforeSuite",
+        "LeafNodeText": "",
+        "LeafNodeLocation": {
+          "FileName": "e2e_suite_test.go",
+          "LineNumber": 20
+        }
+      },
+      {
+        "State": "passed",
+        "LeafNodeType": "It",
+        "LeafNodeText": "Fresh install: clean install on the latest release",
+        "ContainerHierarchyTexts": [
+          "customer config acct01"
+        ],
+        "LeafNodeLocation": {
+          "FileName": "suite.go",
+          "LineNumber": 194
+        }
+      },
+      {
+        "State": "passed",
+        "LeafNodeType": "It",
+        "LeafNodeText": "Customer upgrade: customer version up to the newest patch of the next minor",
+        "ContainerHierarchyTexts": [
+          "customer config acct01"
+        ],
+        "LeafNodeLocation": {
+          "FileName": "suite.go",
+          "LineNumber": 194
+        }
+      },
+      {
+        "State": "passed",
+        "LeafNodeType": "It",
+        "LeafNodeText": "Release upgrade: newest patch below the latest up to the latest",
+        "ContainerHierarchyTexts": [
+          "customer config acct01"
+        ],
+        "LeafNodeLocation": {
+          "FileName": "suite.go",
+          "LineNumber": 194
+        }
+      },
+      {
+        "State": "passed",
+        "LeafNodeType": "SynchronizedAfterSuite",
+        "LeafNodeText": "",
+        "LeafNodeLocation": {
+          "FileName": "e2e_suite_test.go",
+          "LineNumber": 20
+        }
+      },
+      {
+        "State": "passed",
+        "LeafNodeType": "SynchronizedAfterSuite",
+        "LeafNodeText": "",
+        "LeafNodeLocation": {
+          "FileName": "e2e_suite_test.go",
+          "LineNumber": 20
+        }
+      },
+      {
+        "State": "passed",
+        "LeafNodeType": "DeferCleanup (Suite)",
+        "LeafNodeText": "",
+        "LeafNodeLocation": {
+          "FileName": "e2e_suite_test.go",
+          "LineNumber": 20
+        }
+      },
+      {
+        "State": "passed",
+        "LeafNodeType": "ReportAfterSuite",
+        "LeafNodeText": "",
+        "LeafNodeLocation": {
+          "FileName": "e2e_suite_test.go",
+          "LineNumber": 20
+        }
+      }
+    ]
+  }
+]

@@ -268,6 +268,33 @@ get_summary_line() {
   [[ "$summary" == *"⏸️ Pending:"* ]]
 }
 
+# --- Setup nodes ---
+
+@test "setup nodes are not counted as passed tests" {
+  # Ginkgo writes a passed report per SynchronizedBeforeSuite/AfterSuite process,
+  # DeferCleanup and ReportAfterSuite. Only It nodes are tests.
+  REPORT_FILE="$FIXTURES/with-setup-nodes.json" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+
+  local summary
+  summary="$(get_summary)"
+  [[ "$summary" == *"Executed: 3/3 tests"* ]]
+  [[ "$summary" == *"All tests passed! (3/3)"* ]]
+  [[ "$summary" != *"(9/3)"* ]]
+}
+
+@test "a failed setup node still counts as failed" {
+  jq '(.[0].SpecReports[0].State) = "failed"' "$FIXTURES/with-setup-nodes.json" > "$MOCK_DIR/setup-failed.json"
+  REPORT_FILE="$MOCK_DIR/setup-failed.json" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+
+  local summary
+  summary="$(get_summary)"
+  [[ "$summary" == *"Failed: 1"* ]]
+  [[ "$summary" == *"Passed: 3"* ]]
+  [[ "$summary" == *"[FAILED] [SynchronizedBeforeSuite]"* ]]
+}
+
 # --- Flaked specs (passed only on a retry) ---
 
 @test "a spec that passed on a retry is reported as flaked" {

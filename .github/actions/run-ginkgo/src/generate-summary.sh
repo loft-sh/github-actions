@@ -26,16 +26,20 @@ command -v jq >/dev/null || { echo "::error::jq is required but not found"; exit
 # Count as failed: anything not passed, skipped, or pending. Suites matching zero specs
 # under the label filter (e.g. a discovered package with no matching labels) report
 # "SpecReports": null rather than [] - default to [] so they don't abort the whole script.
+# Passed is restricted to It nodes: ginkgo also writes one passed report per setup node
+# (SynchronizedBeforeSuite per process, AfterSuite, DeferCleanup, ReportAfterSuite), and
+# counting those printed headlines such as "All tests passed! (29/3)". Failed stays
+# unrestricted on purpose - a setup node that fails must still redden the summary.
 STATS=$(jq -r '
   {
     failed: ([.[] | (.SpecReports // [])[] | select(.State | IN("passed", "skipped", "pending") | not)] | length),
-    passed: ([.[] | (.SpecReports // [])[] | select(.State == "passed")] | length),
+    passed: ([.[] | (.SpecReports // [])[] | select(.LeafNodeType == "It" and .State == "passed")] | length),
     # Specs that only passed on a retry. Ginkgo reports these as State "passed",
     # so without their own count they are indistinguishable from a clean pass and
     # enabling flake-attempts would silently erase the evidence that the suite is
     # degrading - on a release bump PR, exactly the signal worth keeping.
     # Same predicate ginkgo uses for CountOfFlakedSpecs.
-    flaked: ([.[] | (.SpecReports // [])[] | select(.State == "passed" and (.MaxFlakeAttempts // 0) > 1 and (.NumAttempts // 0) > 1)] | length),
+    flaked: ([.[] | (.SpecReports // [])[] | select(.LeafNodeType == "It" and .State == "passed" and (.MaxFlakeAttempts // 0) > 1 and (.NumAttempts // 0) > 1)] | length),
     skipped: ([.[] | (.SpecReports // [])[] | select(.State == "skipped")] | length),
     pending: ([.[] | (.SpecReports // [])[] | select(.State == "pending")] | length),
     total_specs: (.[0].PreRunStats.TotalSpecs // 0),
