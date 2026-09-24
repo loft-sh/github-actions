@@ -76,7 +76,7 @@ BASE_URL="https://github.com/loft-sh/semstat/releases/download"
 # github.action_path to avoid pinning a sibling by SHA. One line to bump, and no
 # way for the two to install different releases.
 # renovate: datasource=github-releases depName=loft-sh/semstat
-DEFAULT_VERSION=v0.0.2
+DEFAULT_VERSION=v0.0.3
 
 # The workflow that publishes the release, and so the identity its signatures
 # carry. Verified at the exact tag rather than at a branch or a glob: a bundle
