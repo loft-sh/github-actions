@@ -1,0 +1,33 @@
+name: Test platform-release
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/test-platform-release.yaml'
+      - '.github/actions/platform-release/**'
+      - '.github/actions/release-lib/**'
+
+permissions:
+  contents: read
+
+jobs:
+  bats:
+    name: Run bats tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      # This action installs bats, it does not run anything. It has no `tests`
+      # input, and an unknown input is a warning rather than an error, so a job
+      # that only calls it passes without executing a single test.
+      - uses: bats-core/bats-action@77d6fb60505b4d0d1d73e48bd035b55074bbfb43 # 4.0.0
+        with:
+          support-install: false
+          assert-install: false
+          detik-install: false
+          file-install: false
+      - name: Run platform-release tests
+        run: bats .github/actions/platform-release/test/*.bats
+      - name: Run release-lib tests
+        run: bats .github/actions/release-lib/test/*.bats
