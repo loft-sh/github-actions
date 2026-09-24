@@ -84,7 +84,7 @@ inputs:
       one itself.
     required: false
     # renovate: datasource=npm depName=@commitlint/cli
-    default: 19.8.1
+    default: 21.2.3
   fail-on-warnings:
     description: 'Treat commitlint warnings as failures.'
     required: false
