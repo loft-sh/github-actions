@@ -95,7 +95,7 @@ runs:
 
     - name: Claude PR review
       if: steps.cfg.outputs.proceed == 'true' && inputs.provider == 'anthropic'
-      uses: anthropics/claude-code-action@f4fb5c6cdccc1ee7af63692f5d08d56efaa64cc8 # v1.0.121
+      uses: anthropics/claude-code-action@8cf3482550831fb35a4fc3fbf7ca139cf8028b4c # v1.0.233
       with:
         anthropic_api_key: ${{ inputs.anthropic-api-key }} # zizmor: ignore[secrets-outside-env] -- API key passed via composite input, not a repo secret
         github_token: ${{ inputs.github-token }}
@@ -144,7 +144,7 @@ runs:
     - name: Codex PR review
       id: codex
       if: steps.cfg.outputs.proceed == 'true' && inputs.provider == 'openai'
-      uses: openai/codex-action@e0fdf01220eb9a88167c4898839d273e3f2609d1 # v1.8
+      uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1.12
       with:
         openai-api-key: ${{ inputs.openai-api-key }} # zizmor: ignore[secrets-outside-env] -- API key passed via composite input, not a repo secret
         model: ${{ steps.cfg.outputs.model }}
