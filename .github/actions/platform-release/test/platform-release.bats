@@ -3,7 +3,7 @@
 #
 # The routing helpers (normalize_version / validate_version / parse_major_minor /
 # derive_line / classify_suffix / is_feature_branch / resolve_target) are pure and
-# network-free. require_branch / guard_not_released / create_tag / dispatch and
+# network-free. resolve_head / check_release_state / create_tag / dispatch and
 # main are exercised with a configurable `gh` stub on PATH, so no real API call is
 # made.
 
@@ -19,6 +19,9 @@ setup_file() {
 
 setup() {
   SCRIPT="${BATS_TEST_DIRNAME}/../src/platform-release.sh"
+  # Read when the script is sourced, so the post-dispatch wait does not sleep.
+  export PLATFORM_DISPATCH_VISIBLE_ATTEMPTS=3
+  export PLATFORM_DISPATCH_VISIBLE_SLEEP_SECONDS=0
   source "$SCRIPT"
 
   STUB_DIR="$(mktemp -d)"
@@ -26,6 +29,7 @@ setup() {
   # The commit an existing tag points at, and the tag object of an annotated one.
   export STUB_TAG_COMMIT="1111111111111111111111111111111111111111"
   export STUB_TAG_OBJECT="2222222222222222222222222222222222222222"
+  export STUB_TAG_OBJECT2="4444444444444444444444444444444444444444"
   install_gh_stub
 }
 
@@ -43,12 +47,15 @@ teardown() {
 # `workflow run` succeed (only reached in non-dry-run tests). GH_STUB_TRANSIENT /
 # GH_STUB_UNEXPECTED simulate API failures on every probe; GH_STUB_TRANSIENT_TAGS
 # scopes a transient failure to the double-cut probes only (branch check still
-# passes), to exercise guard_not_released's transient handling in isolation.
+# passes), to exercise check_release_state's transient handling in isolation.
 install_gh_stub() {
   cat >"${STUB_DIR}/gh" <<'EOF'
 #!/usr/bin/env bash
 set -u
 sub="$1"; shift || true
+# Where the stub keeps what earlier calls changed: the tag it created and the
+# runs it queued.
+state_dir="$(dirname "$0")"
 
 contains() { case " $1 " in *" $2 "*) return 0 ;; *) return 1 ;; esac; }
 
@@ -131,6 +138,7 @@ if [[ "$sub" == "api" ]]; then
       rest="${path#repos/}"; repo="${rest%%/branches/*}"; branch="${rest##*/branches/}"
       contains "${GH_STUB_BRANCHES:-}" "${repo}:${branch}" && emit_status 0 branches || emit_status 1 branches ;;
     repos/*/releases/tags/*)
+      [[ -n "${GH_STUB_CONTENTS_LOG:-}" ]] && printf '%s\n' "$path" >>"$GH_STUB_CONTENTS_LOG"
       rest="${path#repos/}"; repo="${rest%%/releases/tags/*}"; tag="${rest##*/releases/tags/}"
       contains "${GH_STUB_RELEASES:-}" "${repo}:${tag}" && emit_status 0 tags || emit_status 1 tags ;;
     repos/*/releases\?*)
@@ -172,10 +180,21 @@ if [[ "$sub" == "api" ]]; then
       fi
       respond 200 '{"object":{"sha":"'"${GH_STUB_TAG_SHA:-$STUB_TAG_COMMIT}"'","type":"commit"}}' ;;
     repos/*/git/tags/*)
-      respond 200 '{"object":{"sha":"'"${GH_STUB_TAG_SHA:-$STUB_TAG_COMMIT}"'","type":"commit"}}' ;;
+      # Peels a tag object. GH_STUB_TAG_NESTED=1 makes STUB_TAG_OBJECT point at a
+      # second tag object (STUB_TAG_OBJECT2) before the commit.
+      # GH_STUB_TAG_PEELS_TO=<type> makes the last object that type, not a commit.
+      [[ -n "${GH_STUB_CONTENTS_LOG:-}" ]] && printf '%s\n' "$path" >>"$GH_STUB_CONTENTS_LOG"
+      if [[ "${GH_STUB_TAG_NESTED:-}" == "1" && "${path##*/}" == "$STUB_TAG_OBJECT" ]]; then
+        respond 200 '{"object":{"sha":"'"${STUB_TAG_OBJECT2}"'","type":"tag"}}'
+      fi
+      respond 200 '{"object":{"sha":"'"${GH_STUB_TAG_SHA:-$STUB_TAG_COMMIT}"'","type":"'"${GH_STUB_TAG_PEELS_TO:-commit}"'"}}' ;;
     repos/*/actions/workflows/*/runs\?*)
-      # The runs the resume check reads. GH_STUB_RUNS lists them as
-      # <head_sha>:<status>:<conclusion>. GH_STUB_RUNS_FAILS=1 fails the read,
+      # The runs the resume check and the post-dispatch wait read. GH_STUB_RUNS
+      # lists them as <head_sha>:<status>:<conclusion>, and every dispatch the
+      # stub accepts adds a queued run of the tagged commit. GitHub records
+      # them under head_branch GH_STUB_RUNS_HEAD_BRANCH (short: the tag name,
+      # the default; full: refs/tags/<tag>), and only a branch= query for that
+      # spelling lists them. GH_STUB_RUNS_FAILS=1 fails the read,
       # GH_STUB_RUNS_BAD_SHAPE=1 answers 200 with an error-shaped body.
       [[ -n "${GH_STUB_CONTENTS_LOG:-}" ]] && printf '%s\n' "$path" >>"$GH_STUB_CONTENTS_LOG"
       if [[ "${GH_STUB_RUNS_FAILS:-}" == "1" ]]; then
@@ -184,14 +203,31 @@ if [[ "$sub" == "api" ]]; then
       if [[ "${GH_STUB_RUNS_BAD_SHAPE:-}" == "1" ]]; then
         printf '{"message":"Server Error"}\n' | jq -r "${jq_filter:-.}"; exit $?
       fi
+      query_branch="${path#*branch=}"; query_branch="${query_branch%%&*}"
+      case "${GH_STUB_RUNS_HEAD_BRANCH:-short}" in
+        full) [[ "$query_branch" == refs/tags/* ]] ;;
+        *) [[ "$query_branch" != refs/tags/* ]] ;;
+      esac
+      listed=$?
       runs=()
-      for entry in ${GH_STUB_RUNS:-}; do
+      n=0
+      entries="${GH_STUB_RUNS:-}"
+      [[ -f "${state_dir}/dispatched_runs" ]] && entries+=" $(cat "${state_dir}/dispatched_runs")"
+      for entry in $entries; do
+        n=$((n + 1))
+        ((listed == 0)) || continue
         IFS=: read -r r_sha r_status r_conclusion <<<"$entry"
         if [[ "$r_conclusion" == "null" ]]; then r_conclusion=null; else r_conclusion="\"${r_conclusion}\""; fi
-        runs+=("$(printf '{"head_sha":"%s","status":"%s","conclusion":%s}' "$r_sha" "$r_status" "$r_conclusion")")
+        runs+=("$(printf '{"id":%s,"head_sha":"%s","status":"%s","conclusion":%s}' "$n" "$r_sha" "$r_status" "$r_conclusion")")
       done
       printf '{"workflow_runs":[%s]}\n' "$(IFS=,; printf '%s' "${runs[*]}")" | jq -r "${jq_filter:-.}"
       exit $? ;;
+    repos/*/compare/*)
+      # The resume's check that the tag is on the target branch.
+      # GH_STUB_COMPARE_STATUS is the answer (default behind: the tag commit is
+      # an ancestor of the branch head). GH_STUB_COMPARE_LOG records the path.
+      [[ -n "${GH_STUB_COMPARE_LOG:-}" ]] && printf '%s\n' "$path" >>"$GH_STUB_COMPARE_LOG"
+      respond 200 "$(printf '{"status":"%s"}' "${GH_STUB_COMPARE_STATUS:-behind}")" ;;
     repos/*/git/refs/tags/*)
       # The action never deletes a tag. Logged so a test can prove it.
       if [[ "$method" == "DELETE" ]]; then
@@ -237,6 +273,8 @@ if [[ "$sub" == "api" ]]; then
       if [[ "${GH_STUB_TAG_POST_FAILS:-}" == "1" ]]; then
         echo "gh: Reference already exists (HTTP 422)" >&2; exit 1
       fi
+      # Remembered so a later dispatch queues a run of the commit just tagged.
+      [[ "$all_args" =~ sha=([^ ]+) ]] && printf '%s' "${BASH_REMATCH[1]}" >"${state_dir}/posted_sha"
       exit 0 ;;
     repos/*/contents/.github/workflows/*)
       # Read by require_dispatchable. The default is the converted
@@ -270,15 +308,15 @@ if [[ "$sub" == "api" ]]; then
       fi
       # The block-sequence trigger form, indented under the key.
       if [[ "${GH_STUB_WF_SEQUENCE_ON:-}" == "1" ]]; then
-        printf 'on:\n  - pull_request\n  - workflow_dispatch\n'; exit 0
+        printf 'on:\n  - workflow_call\n  - workflow_dispatch\n'; exit 0
       fi
       # The same sequence at the parent's indentation, which is legal YAML.
       if [[ "${GH_STUB_WF_SEQUENCE_FLUSH:-}" == "1" ]]; then
-        printf 'name: Release\non:\n- pull_request\n- workflow_dispatch\njobs: {}\n'; exit 0
+        printf 'name: Release\non:\n- workflow_call\n- workflow_dispatch\njobs: {}\n'; exit 0
       fi
       # A trailing comment on the trigger line itself.
       if [[ "${GH_STUB_WF_TRAILING_COMMENT:-}" == "1" ]]; then
-        printf 'on:\n  - pull_request\n  - workflow_dispatch  # manual cut only\n'; exit 0
+        printf 'on:\n  - workflow_call\n  - workflow_dispatch  # manual cut only\n'; exit 0
       fi
       if [[ "${GH_STUB_WF_SCALAR_TRAILING_COMMENT:-}" == "1" ]]; then
         printf 'on: workflow_dispatch  # manual cut only\njobs: {}\n'; exit 0
@@ -437,43 +475,26 @@ if [[ "$sub" == "api" ]]; then
       # A flow sequence spread over lines: legal, dispatchable, and unreadable
       # here. Refused - but it must say so, not claim there is no trigger.
       if [[ "${GH_STUB_WF_MULTILINE_FLOW_SEQ:-}" == "1" ]]; then
-        printf 'on: [\n  pull_request,\n  workflow_dispatch\n]\njobs: {}\n'; exit 0
+        printf 'on: [\n  workflow_call,\n  workflow_dispatch\n]\njobs: {}\n'; exit 0
       fi
       # The one-line inline list, which dispatch_re does read. Pinned so the
       # flow-sequence refusal above cannot start swallowing it.
       if [[ "${GH_STUB_WF_INLINE_LIST:-}" == "1" ]]; then
-        printf 'on: [pull_request, workflow_dispatch]\njobs: {}\n'; exit 0
+        printf 'on: [workflow_call, workflow_dispatch]\njobs: {}\n'; exit 0
       fi
       # Half-converted: workflow_dispatch added, the old tag trigger left behind.
       # create_tag would start a second build racing the dispatched one.
       if [[ "${GH_STUB_WF_PUSH_TAGS:-}" == "1" ]]; then
         printf 'on:\n  push:\n    tags: ["v*"]\n  workflow_dispatch:\n    inputs:\n      triggered_by:\n        required: false\njobs: {}\n'; exit 0
       fi
-      # branches plus tags-ignore still fires for every tag not ignored.
-      if [[ "${GH_STUB_WF_PUSH_BRANCHES_TAGS_IGNORE:-}" == "1" ]]; then
-        printf 'on:\n  push:\n    branches: [main]\n    tags-ignore: ["nightly-*"]\n  workflow_dispatch:\n    inputs:\n      triggered_by:\n        required: false\njobs: {}\n'; exit 0
-      fi
-      # The filters reach the push trigger through an alias.
-      if [[ "${GH_STUB_WF_PUSH_ALIAS:-}" == "1" ]]; then
-        printf 'x-filters: &p\n  branches: [main]\non:\n  push: *p\n  workflow_dispatch:\n    inputs:\n      triggered_by:\n        required: false\njobs: {}\n'; exit 0
-      fi
-      # tags-ignore still fires for tags - just not for the ignored ones.
-      if [[ "${GH_STUB_WF_PUSH_TAGS_IGNORE:-}" == "1" ]]; then
-        printf 'on:\n  push:\n    tags-ignore: ["nightly-*"]\n  workflow_dispatch:\n    inputs:\n      triggered_by:\n        required: false\njobs: {}\n'; exit 0
-      fi
       # A push trigger with no filter at all fires for every ref, tags included.
       if [[ "${GH_STUB_WF_PUSH_BARE:-}" == "1" ]]; then
         printf 'on:\n  push:\n  workflow_dispatch:\n    inputs:\n      triggered_by:\n        required: false\njobs: {}\n'; exit 0
       fi
-      # Filtered to branches, so it never sees a tag. Must still pass - this is
-      # a legal shape for a release.yaml that also builds main.
+      # Filtered to branches, so it never sees a tag, and still refused: only a
+      # dispatch may build.
       if [[ "${GH_STUB_WF_PUSH_BRANCHES:-}" == "1" ]]; then
         printf 'on:\n  push:\n    branches: [main]\n  workflow_dispatch:\n    inputs:\n      triggered_by:\n        required: false\njobs: {}\n'; exit 0
-      fi
-      # `paths` filters by changed file, not by ref, so this push trigger still
-      # fires for a tag. Counting it as filtered let the second build through.
-      if [[ "${GH_STUB_WF_PUSH_PATHS:-}" == "1" ]]; then
-        printf 'on:\n  push:\n    paths:\n      - "**"\n  workflow_dispatch:\n    inputs:\n      triggered_by:\n        required: false\njobs: {}\n'; exit 0
       fi
       # No push TRIGGER at all - just a workflow_dispatch input that happens to
       # be called push. An on:-wide grep refused the cut over it.
@@ -518,10 +539,6 @@ if [[ "$sub" == "api" ]]; then
       if [[ "${GH_STUB_WF_INPUT_NAMED_RELEASE:-}" == "1" ]]; then
         printf 'on:\n  workflow_dispatch:\n    inputs:\n      triggered_by:\n        required: false\n      release:\n        description: whether to publish\n        default: "true"\njobs: {}\n'; exit 0
       fi
-      # A legal, tag-safe push trigger whose filter is written inline.
-      if [[ "${GH_STUB_WF_PUSH_FLOW_MAPPING:-}" == "1" ]]; then
-        printf 'on:\n  push: {branches: [main]}\n  workflow_dispatch:\n    inputs:\n      triggered_by:\n        required: false\njobs: {}\n'; exit 0
-      fi
       # A multi-line flow sequence with an unfiltered push on its second line.
       if [[ "${GH_STUB_WF_FLOW_SEQ_DISPATCH_FIRST:-}" == "1" ]]; then
         printf 'on: [workflow_dispatch,\n  push]\njobs: {}\n'; exit 0
@@ -529,15 +546,6 @@ if [[ "$sub" == "api" ]]; then
       # A single input written inline, required and with no default.
       if [[ "${GH_STUB_WF_INPUT_INLINE:-}" == "1" ]]; then
         printf 'on:\n  workflow_dispatch:\n    inputs:\n      triggered_by:\n        required: false\n      version: {required: true, description: x}\njobs: {}\n'; exit 0
-      fi
-      # A push trigger whose filters hang off a YAML anchor. Legal and tag-safe.
-      if [[ "${GH_STUB_WF_PUSH_ANCHOR:-}" == "1" ]]; then
-        printf 'on:\n  push: &p\n    branches: [main]\n  workflow_dispatch:\n    inputs:\n      triggered_by:\n        required: false\njobs: {}\n'; exit 0
-      fi
-      # The bare key with a trailing comment: no value, so the filters really
-      # are absent and this must stay a refusal for FIRING, not for shape.
-      if [[ "${GH_STUB_WF_PUSH_BARE_COMMENT:-}" == "1" ]]; then
-        printf 'on:\n  push:  # builds every ref\n  workflow_dispatch:\n    inputs:\n      triggered_by:\n        required: false\njobs: {}\n'; exit 0
       fi
       printf 'on:\n  workflow_dispatch:\n    inputs:\n      triggered_by:\n        type: string\n'
       exit 0 ;;
@@ -576,6 +584,13 @@ if [[ "$sub" == "workflow" && "${1:-}" == "run" ]]; then
     exit 1
   fi
   printf 'stub-dispatch %s\n' "$*"
+  # The run GitHub queues, of the tag just created or the one resumed.
+  # GH_STUB_DISPATCH_INVISIBLE=1 keeps it out of the run list, as when GitHub
+  # is slow to list it.
+  if [[ "${GH_STUB_DISPATCH_INVISIBLE:-}" != "1" ]]; then
+    queued_sha="$(cat "${state_dir}/posted_sha" 2>/dev/null || printf '%s' "${GH_STUB_TAG_SHA:-$STUB_TAG_COMMIT}")"
+    printf '%s:queued:null ' "$queued_sha" >>"${state_dir}/dispatched_runs"
+  fi
   exit 0
 fi
 
@@ -1274,12 +1289,15 @@ EOF
   [[ "$output" == *"ref=refs/tags/v4.11.3"* ]]
 }
 
-@test "main: a transient API failure is not read as an absent branch" {
+@test "main: a transient API failure is not read as an absent release" {
+  # The release listing is the first read a stable cut makes after the repo
+  # probe.
   export GH_STUB_TRANSIENT=1
   INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="true" run main
   [ "$status" -ne 0 ]
-  [[ "$output" == *"failed to reach GitHub API"* ]]
+  [[ "$output" == *"could not list releases"* ]]
   [[ "$output" == *"Not treating as absent"* ]]
+  [[ "$output" == *"dial tcp"* ]]
 }
 
 @test "main: a transient API failure on the tag probes aborts the cut" {
@@ -2067,7 +2085,7 @@ fake_yq() {
   INPUT_VERSION="v4.11.3-rc.1" INPUT_DRY_RUN="false" run main
   [ "$status" -ne 0 ]
   [[ "$output" == *"branch 'release-4.11' not found"* ]]
-  [ ! -s "${STUB_DIR}/contents" ]
+  ! grep -q 'contents/' "${STUB_DIR}/contents"
 }
 
 # ---- require_dispatchable: a multi-line default is still a default ----
@@ -2163,31 +2181,8 @@ fake_yq() {
   TRIGGERED_BY="someone"
   run require_dispatchable loft-sh/loft-enterprise release-4.11 release.yaml v4.11.3
   [ "$status" -ne 0 ]
-  [[ "$output" == *"still triggers on push"* ]]
+  [[ "$output" == *"triggers on more than workflow_dispatch (push)"* ]]
   [[ "$output" == *"Nothing was tagged"* ]]
-}
-
-@test "require_dispatchable: tags-ignore next to a branches filter is still refused" {
-  export GH_STUB_WF_PUSH_BRANCHES_TAGS_IGNORE=1
-  TRIGGERED_BY="someone"
-  run require_dispatchable loft-sh/loft-enterprise release-4.11 release.yaml v4.11.3
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"still triggers on push (its tags-ignore filter does not exclude v4.11.3)"* ]]
-}
-
-@test "require_dispatchable: a push filter reached through an alias is read" {
-  export GH_STUB_WF_PUSH_ALIAS=1
-  TRIGGERED_BY="someone"
-  run require_dispatchable loft-sh/loft-enterprise release-4.11 release.yaml v4.11.3
-  [ "$status" -eq 0 ]
-}
-
-@test "require_dispatchable: a tags-ignore push filter is refused too" {
-  export GH_STUB_WF_PUSH_TAGS_IGNORE=1
-  TRIGGERED_BY="someone"
-  run require_dispatchable loft-sh/loft-enterprise release-4.11 release.yaml v4.11.3
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"still triggers on push"* ]]
 }
 
 @test "require_dispatchable: an unfiltered push trigger is refused" {
@@ -2195,16 +2190,37 @@ fake_yq() {
   TRIGGERED_BY="someone"
   run require_dispatchable loft-sh/loft-enterprise release-4.11 release.yaml v4.11.3
   [ "$status" -ne 0 ]
-  [[ "$output" == *"still triggers on push"* ]]
+  [[ "$output" == *"triggers on more than workflow_dispatch (push)"* ]]
 }
 
-@test "require_dispatchable: a push filtered to branches is accepted" {
-  # It never fires for a tag, so it cannot race the dispatched build. Refusing
-  # it would block a legal release.yaml that also builds main.
+@test "require_dispatchable: a push filtered to branches is refused too" {
+  # It never fires for a tag, but telling which filters do is GitHub's rule to
+  # keep, not this preflight's. A release workflow has no reason to build on
+  # push, so every trigger but a dispatch is refused.
   export GH_STUB_WF_PUSH_BRANCHES=1
   TRIGGERED_BY="someone"
   run require_dispatchable loft-sh/loft-enterprise release-4.11 release.yaml v4.11.3
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"triggers on more than workflow_dispatch (push)"* ]]
+}
+
+@test "require_dispatchable: workflow_call next to workflow_dispatch is accepted" {
+  # workflow_call only runs when another workflow calls it, so it cannot start a
+  # build of the tag on its own.
+  export GH_STUB_WF_TRIGGERED_BY_IN_BOTH=1
+  TRIGGERED_BY="someone"
+  run require_dispatchable loft-sh/loft-enterprise release-4.11 release.yaml v4.11.3
   [ "$status" -eq 0 ]
+}
+
+@test "require_dispatchable: any other trigger is refused, filters or not" {
+  TRIGGERED_BY=""
+  export GH_STUB_WF_BODY=$'on:\n  workflow_dispatch:\n  schedule:\n    - cron: "0 0 * * *"\n  pull_request:\n'
+  run require_dispatchable loft-sh/loft-enterprise release-4.11 release.yaml v4.11.3
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"triggers on more than workflow_dispatch ("*"pull_request"*")"* ]]
+  [[ "$output" == *"schedule"* ]]
+  [[ "$output" == *"Nothing was tagged"* ]]
 }
 
 @test "main: a half-converted line is refused before the tag is created" {
@@ -2213,25 +2229,15 @@ fake_yq() {
   export GH_STUB_CALL_LOG="${STUB_DIR}/calls"
   INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
   [ "$status" -ne 0 ]
-  [[ "$output" == *"still triggers on push"* ]]
+  [[ "$output" == *"triggers on more than workflow_dispatch (push)"* ]]
   [ ! -s "${STUB_DIR}/calls" ]
 }
 
 # ---- the push probe reads triggers, not anything named like one ----
 
-@test "require_dispatchable: a paths-only push filter is refused" {
-  # Only branches/branches-ignore restrict which refs fire. `paths` filters by
-  # changed file, so the trigger still sees the tag.
-  export GH_STUB_WF_PUSH_PATHS=1
-  TRIGGERED_BY="someone"
-  run require_dispatchable loft-sh/loft-enterprise release-4.11 release.yaml v4.11.3
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"not filtered to branches"* ]]
-}
-
 @test "require_dispatchable: an input named push is not a push trigger" {
-  # The false rejection this closes: the cut was refused with "still triggers on
-  # push" for a trigger the file does not have.
+  # The false rejection this closes: the cut was refused over a push trigger the
+  # file does not have.
   export GH_STUB_WF_INPUT_NAMED_PUSH=1
   TRIGGERED_BY="someone"
   run require_dispatchable loft-sh/loft-enterprise release-4.11 release.yaml v4.11.3
@@ -2239,13 +2245,13 @@ fake_yq() {
 }
 
 @test "require_dispatchable: an input named push cannot shadow a real one" {
-  # The other direction: read at any depth, the input answered first and its
-  # harmless-looking filter would have let a tag-triggered build through.
+  # The other direction: read at any depth, the input would answer first and
+  # hide the real push trigger behind it.
   export GH_STUB_WF_INPUT_PUSH_SHADOWS=1
   TRIGGERED_BY="someone"
   run require_dispatchable loft-sh/loft-enterprise release-4.11 release.yaml v4.11.3
   [ "$status" -ne 0 ]
-  [[ "$output" == *"does not exclude v4.11.3"* ]]
+  [[ "$output" == *"triggers on more than workflow_dispatch (push)"* ]]
 }
 
 @test "require_dispatchable: the list spellings of a push trigger are still refused" {
@@ -2257,7 +2263,7 @@ fake_yq() {
     export "${flag}=1"
     run require_dispatchable loft-sh/loft-enterprise release-4.11 release.yaml v4.11.3
     [ "$status" -ne 0 ]
-    [[ "$output" == *"still triggers on push"* ]]
+    [[ "$output" == *"triggers on more than workflow_dispatch (push)"* ]]
     unset "$flag"
   done
 }
@@ -2279,7 +2285,7 @@ fake_yq() {
   TRIGGERED_BY="someone"
   run require_dispatchable loft-sh/loft-enterprise release-4.11 release.yaml v4.11.3
   [ "$status" -ne 0 ]
-  [[ "$output" == *"still triggers on release"* ]]
+  [[ "$output" == *"triggers on more than workflow_dispatch (release)"* ]]
   [[ "$output" == *"Nothing was tagged"* ]]
 }
 
@@ -2289,7 +2295,7 @@ fake_yq() {
   TRIGGERED_BY="someone"
   run require_dispatchable loft-sh/loft-enterprise release-4.11 release.yaml v4.11.3
   [ "$status" -ne 0 ]
-  [[ "$output" == *"still triggers on create"* ]]
+  [[ "$output" == *"triggers on more than workflow_dispatch (create)"* ]]
 }
 
 @test "require_dispatchable: an input named release is not a release trigger" {
@@ -2305,16 +2311,8 @@ fake_yq() {
   export GH_STUB_CALL_LOG="${STUB_DIR}/calls"
   INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
   [ "$status" -ne 0 ]
-  [[ "$output" == *"still triggers on release"* ]]
+  [[ "$output" == *"triggers on more than workflow_dispatch (release)"* ]]
   [ ! -s "${STUB_DIR}/calls" ]
-}
-
-@test "require_dispatchable: a push trigger written as a flow mapping keeps its branches filter" {
-  # `push: {branches: [main]}` never fires for a tag, so it is not refused.
-  export GH_STUB_WF_PUSH_FLOW_MAPPING=1
-  TRIGGERED_BY="someone"
-  run require_dispatchable loft-sh/loft-enterprise release-4.11 release.yaml v4.11.3
-  [ "$status" -eq 0 ]
 }
 
 @test "require_dispatchable: a flow sequence is read whichever trigger comes first" {
@@ -2323,7 +2321,7 @@ fake_yq() {
   TRIGGERED_BY=""
   run require_dispatchable loft-sh/loft-enterprise release-4.11 release.yaml v4.11.3
   [ "$status" -ne 0 ]
-  [[ "$output" == *"still triggers on push (unfiltered"* ]]
+  [[ "$output" == *"triggers on more than workflow_dispatch (push)"* ]]
 }
 
 @test "require_dispatchable: the one-line inline list is still read normally" {
@@ -2344,22 +2342,6 @@ fake_yq() {
   [ "$status" -ne 0 ]
   [[ "$output" == *"required workflow_dispatch input(s) with no default"*"(version)"* ]]
   [[ "$output" == *"Nothing was tagged"* ]]
-}
-
-@test "require_dispatchable: an anchored push trigger keeps its branches filter" {
-  export GH_STUB_WF_PUSH_ANCHOR=1
-  TRIGGERED_BY="someone"
-  run require_dispatchable loft-sh/loft-enterprise release-4.11 release.yaml v4.11.3
-  [ "$status" -eq 0 ]
-}
-
-@test "require_dispatchable: a bare push key with a trailing comment still reads as unfiltered" {
-  # A comment is not a value, so this is a real unfiltered trigger.
-  export GH_STUB_WF_PUSH_BARE_COMMENT=1
-  TRIGGERED_BY="someone"
-  run require_dispatchable loft-sh/loft-enterprise release-4.11 release.yaml v4.11.3
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"still triggers on push (unfiltered"* ]]
 }
 
 
@@ -2400,54 +2382,6 @@ fake_yq() {
   run require_dispatchable loft-sh/loft-enterprise release-4.11 release.yaml v4.11.3
   [ "$status" -ne 0 ]
   [[ "$output" == *"(version)"* ]]
-}
-
-@test "require_dispatchable: an empty branches filter is refused" {
-  export GH_STUB_WF_BODY=$'on:\n  push:\n    branches:\n  workflow_dispatch:\n    inputs:\n      triggered_by:\n        type: string'
-  TRIGGERED_BY="someone"
-  run require_dispatchable loft-sh/loft-enterprise release-4.11 release.yaml v4.11.3
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"push 'branches' filter with no patterns"* ]]
-}
-
-@test "require_dispatchable: an empty branches list is refused" {
-  export GH_STUB_WF_BODY=$'on:\n  push:\n    branches: []\n  workflow_dispatch:\n    inputs:\n      triggered_by:\n        type: string'
-  TRIGGERED_BY="someone"
-  run require_dispatchable loft-sh/loft-enterprise release-4.11 release.yaml v4.11.3
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"push 'branches' filter with no patterns"* ]]
-}
-
-@test "require_dispatchable: an empty branches filter next to a real one is still refused" {
-  export GH_STUB_WF_BODY=$'on:\n  push:\n    branches:\n    branches-ignore: [nightly]\n  workflow_dispatch:\n    inputs:\n      triggered_by:\n        type: string'
-  TRIGGERED_BY="someone"
-  run require_dispatchable loft-sh/loft-enterprise release-4.11 release.yaml v4.11.3
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"push 'branches' filter with no patterns"* ]]
-}
-
-@test "require_dispatchable: tags-ignore listing ** is accepted" {
-  # It excludes every tag, so the tag push cannot start a second build.
-  export GH_STUB_WF_BODY=$'on:\n  push:\n    branches: [main]\n    tags-ignore: ["**"]\n  workflow_dispatch:\n    inputs:\n      triggered_by:\n        type: string'
-  TRIGGERED_BY="someone"
-  run require_dispatchable loft-sh/loft-enterprise release-4.11 release.yaml v4.11.3
-  [ "$status" -eq 0 ]
-}
-
-@test "require_dispatchable: tags-ignore listing ** with no branches filter is accepted" {
-  # Only tags are filtered, so branch pushes do not fire, and every tag is ignored.
-  export GH_STUB_WF_BODY=$'on:\n  push:\n    tags-ignore: "**"\n  workflow_dispatch:\n    inputs:\n      triggered_by:\n        type: string'
-  TRIGGERED_BY="someone"
-  run require_dispatchable loft-sh/loft-enterprise release-4.11 release.yaml v4.11.3
-  [ "$status" -eq 0 ]
-}
-
-@test "require_dispatchable: tags-ignore that does not match the tag is still refused" {
-  export GH_STUB_WF_BODY=$'on:\n  push:\n    branches: [main]\n    tags-ignore: ["nightly-**"]\n  workflow_dispatch:\n    inputs:\n      triggered_by:\n        type: string'
-  TRIGGERED_BY="someone"
-  run require_dispatchable loft-sh/loft-enterprise release-4.11 release.yaml v4.11.3
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"does not exclude v4.11.3"* ]]
 }
 
 @test "require_dispatchable: a differently cased triggered_by is named" {
@@ -2502,136 +2436,6 @@ fake_yq() {
   [[ "$output" == *"Not treating as absent"* ]]
   [[ "$output" == *"dial tcp"* ]]
   [[ "$output" != *"[dry-run] gh api -X POST"* ]]
-}
-
-# ---- push tag patterns ----
-
-# dispatchable_with_push <push-body-lines> - a converted workflow whose push
-# trigger carries the given (already indented) filter lines.
-dispatchable_with_push() {
-  GH_STUB_WF_BODY="$(printf 'on:\n  push:\n%s\n  workflow_dispatch:\n    inputs:\n      triggered_by:\n        type: string' "$1")"
-  export GH_STUB_WF_BODY
-  TRIGGERED_BY="someone"
-}
-
-@test "filter_regex: translates the GitHub glob characters" {
-  run filter_regex 'v*'
-  [ "$output" = '^v[^/]*$' ]
-  run filter_regex 'release/**'
-  [ "$output" = '^release/.*$' ]
-  run filter_regex 'v1.2+'
-  [ "$output" = '^v1\.2+$' ]
-}
-
-@test "filter_regex: refuses what it cannot translate" {
-  run filter_regex '?v'
-  [ "$status" -ne 0 ]
-  run filter_regex 'v*?'
-  [ "$status" -ne 0 ]
-  run filter_regex 'v!1'
-  [ "$status" -ne 0 ]
-}
-
-@test "require_dispatchable: an empty tags-ignore list next to branches is refused" {
-  dispatchable_with_push $'    branches: [main]\n    tags-ignore: []'
-  run require_dispatchable loft-sh/loft-enterprise release-4.11 release.yaml v4.11.3
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"push 'tags-ignore' filter with no patterns"* ]]
-}
-
-@test "require_dispatchable: a bare tags-ignore next to branches is refused" {
-  dispatchable_with_push $'    branches: [main]\n    tags-ignore:'
-  run require_dispatchable loft-sh/loft-enterprise release-4.11 release.yaml v4.11.3
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"push 'tags-ignore' filter with no patterns"* ]]
-}
-
-@test "require_dispatchable: a filter value that is not a pattern list is refused" {
-  dispatchable_with_push $'    branches: {main: true}'
-  run require_dispatchable loft-sh/loft-enterprise release-4.11 release.yaml v4.11.3
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"not a pattern or a list of them"* ]]
-}
-
-@test "require_dispatchable: an unknown key under push is refused" {
-  dispatchable_with_push $'    branch: [main]'
-  run require_dispatchable loft-sh/loft-enterprise release-4.11 release.yaml v4.11.3
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"'branch' under push, which is not a push filter"* ]]
-}
-
-@test "require_dispatchable: branches with branches-ignore is refused" {
-  dispatchable_with_push $'    branches: [main]\n    branches-ignore: [x]'
-  run require_dispatchable loft-sh/loft-enterprise release-4.11 release.yaml v4.11.3
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"sets both 'branches' and 'branches-ignore'"* ]]
-}
-
-@test "require_dispatchable: tags with tags-ignore is refused as invalid, not as racing" {
-  dispatchable_with_push $'    tags: [nightly-*]\n    tags-ignore: [x]'
-  run require_dispatchable loft-sh/loft-enterprise release-4.11 release.yaml v4.11.3
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"sets both 'tags' and 'tags-ignore'"* ]]
-}
-
-@test "require_dispatchable: tags-ignore patterns that exclude the tag are accepted" {
-  local pats
-  for pats in '"*"' '"v*"' '"v4.11.*"' '"v4.1+.3"' 'nightly-*, "v**"'; do
-    dispatchable_with_push "    branches: [main]
-    tags-ignore: [${pats}]"
-    run require_dispatchable loft-sh/loft-enterprise release-4.11 release.yaml v4.11.3
-    [ "$status" -eq 0 ] || { echo "refused: ${pats}: ${output}"; return 1; }
-  done
-}
-
-@test "require_dispatchable: a tags-ignore pattern that only nearly matches is refused" {
-  # `?` makes the preceding character optional, so v4.1?.3 matches v4.1.3 and
-  # v4..3, but not v4.11.3.
-  dispatchable_with_push $'    branches: [main]\n    tags-ignore: ["v4.1?.3"]'
-  run require_dispatchable loft-sh/loft-enterprise release-4.11 release.yaml v4.11.3
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"its tags-ignore filter does not exclude v4.11.3"* ]]
-}
-
-@test "require_dispatchable: tags that do not match the tag are accepted" {
-  dispatchable_with_push $'    tags: ["nightly-*", "v3.*"]'
-  run require_dispatchable loft-sh/loft-enterprise release-4.11 release.yaml v4.11.3
-  [ "$status" -eq 0 ]
-}
-
-@test "require_dispatchable: tags that match the tag are refused" {
-  dispatchable_with_push $'    tags: "v4.*"'
-  run require_dispatchable loft-sh/loft-enterprise release-4.11 release.yaml v4.11.3
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"its tags filter does not exclude v4.11.3"* ]]
-}
-
-@test "require_dispatchable: under tags a later negation excludes the tag" {
-  dispatchable_with_push $'    tags: ["v*", "!v4.11.*"]'
-  run require_dispatchable loft-sh/loft-enterprise release-4.11 release.yaml v4.11.3
-  [ "$status" -eq 0 ]
-  # ...and a later positive pattern brings it back.
-  dispatchable_with_push $'    tags: ["v*", "!v4.11.*", "v4.11.3"]'
-  run require_dispatchable loft-sh/loft-enterprise release-4.11 release.yaml v4.11.3
-  [ "$status" -ne 0 ]
-}
-
-@test "require_dispatchable: a tag pattern it cannot evaluate is refused" {
-  local pats
-  for pats in '"v[0-9]*"' '"*?"' '"!v*"'; do
-    dispatchable_with_push "    branches: [main]
-    tags-ignore: [${pats}]"
-    run require_dispatchable loft-sh/loft-enterprise release-4.11 release.yaml v4.11.3
-    [ "$status" -ne 0 ] || { echo "accepted: ${pats}"; return 1; }
-    [[ "$output" == *"pattern this preflight cannot evaluate"* ]] || { echo "${pats}: ${output}"; return 1; }
-  done
-}
-
-@test "require_dispatchable: a paths filter next to tags does not hide the tag" {
-  dispatchable_with_push $'    tags: ["v*"]\n    paths: ["docs/**"]'
-  run require_dispatchable loft-sh/loft-enterprise release-4.11 release.yaml v4.11.3
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"does not exclude v4.11.3"* ]]
 }
 
 # ---- double-cut listing and token permissions ----
@@ -2694,20 +2498,6 @@ dispatchable_with_push() {
   [[ "$output" != *"[dry-run]"* ]]
 }
 
-@test "require_dispatchable: a push key that is not a filter is refused even when unprintable" {
-  dispatchable_with_push $'    branches: [main]\n    tags_ignore: ["v*"]'
-  run require_dispatchable loft-sh/loft-enterprise release-4.11 release.yaml v4.11.3
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"not a push filter GitHub accepts"* ]]
-}
-
-@test "require_dispatchable: a capitalised push filter key is refused" {
-  dispatchable_with_push $'    Tags: ["nightly-*"]'
-  run require_dispatchable loft-sh/loft-enterprise release-4.11 release.yaml v4.11.3
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"not a push filter GitHub accepts"* ]]
-}
-
 @test "require_dispatchable: a trigger that is not a GitHub event is refused" {
   export GH_STUB_WF_BODY=$'on:\n  Push:\n    tags: ["v*"]\n  workflow_dispatch:\n    inputs:\n      triggered_by:\n        type: string\n'
   TRIGGERED_BY=someone run require_dispatchable loft-sh/loft-enterprise release-4.11 release.yaml v4.11.3
@@ -2722,16 +2512,17 @@ dispatchable_with_push() {
   [[ "$output" == *"whose name is not a GitHub event"* ]]
 }
 
-@test "main: an existing tag with a published release is reported as a release without listing" {
-  # A failing listing proves the tag probe answered on its own.
+@test "main: a published release is found by the listing alone" {
+  # The listing already returns published releases, so the singular
+  # releases/tags/ probe is not read as well.
   export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
   export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
   export GH_STUB_RELEASES="loft-sh/loft-enterprise:v4.11.3"
-  export GH_STUB_TRANSIENT_DRAFTS=1
+  export GH_STUB_CONTENTS_LOG="${STUB_DIR}/contents"
   INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="true" run main
   [ "$status" -ne 0 ]
   [[ "$output" == *"release v4.11.3 already exists"* ]]
-  [[ "$output" != *"could not list releases"* ]]
+  ! grep -q 'releases/tags/' "${STUB_DIR}/contents"
 }
 
 # ---- resuming an interrupted cut ----
@@ -2822,6 +2613,44 @@ dispatchable_with_push() {
   [[ "$output" == *"already passed"* ]]
 }
 
+@test "main: a tag pointing at another tag is peeled down to the commit" {
+  # One level of peeling would match runs against the inner tag object, miss
+  # the passed build and dispatch a second one.
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_TAG_ANNOTATED=1
+  export GH_STUB_TAG_NESTED=1
+  export GH_STUB_CONTENTS_LOG="${STUB_DIR}/contents"
+  export GH_STUB_RUNS="${STUB_TAG_COMMIT}:completed:success"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"already passed"* ]]
+  grep -q "git/tags/${STUB_TAG_OBJECT2}" "${STUB_DIR}/contents"
+}
+
+@test "main: a nested tag resumes from the commit it leads to" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_TAG_ANNOTATED=1
+  export GH_STUB_TAG_NESTED=1
+  export GH_STUB_CONTENTS_LOG="${STUB_DIR}/contents"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="true" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"already exists at ${STUB_TAG_COMMIT}"* ]]
+  grep -q "contents/.github/workflows/release.yaml?ref=${STUB_TAG_COMMIT}" "${STUB_DIR}/contents"
+}
+
+@test "main: a tag that leads to a tree, not a commit, is refused" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_TAG_ANNOTATED=1
+  export GH_STUB_TAG_PEELS_TO=tree
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"does not lead to a commit (it ends at a tree ${STUB_TAG_COMMIT})"* ]]
+  [[ "$output" != *"stub-dispatch"* ]]
+}
+
 @test "main: a tag whose commit cannot be read is refused" {
   export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
   export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
@@ -2860,5 +2689,188 @@ dispatchable_with_push() {
   INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
   [ "$status" -ne 0 ]
   [[ "$output" == *"release.yaml at 'v4.11.3'"* ]]
+  [[ "$output" != *"stub-dispatch"* ]]
+}
+
+# ---- a tag deleted under a running build ----
+
+@test "main: a missing tag with a build still running under its name is refused" {
+  # Re-creating the tag at the branch head would start a second build of the
+  # version from another commit.
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_RUNS="3333333333333333333333333333333333333333:in_progress:null"
+  export GH_STUB_CALL_LOG="${STUB_DIR}/calls"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"no longer exists"* ]]
+  [ ! -s "${STUB_DIR}/calls" ]
+  [[ "$output" != *"stub-dispatch"* ]]
+}
+
+@test "main: a missing tag with only finished builds under its name is cut again" {
+  # Run records outlive the tag, so the delete-and-re-cut path stays open.
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_RUNS="3333333333333333333333333333333333333333:completed:success"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"created tag v4.11.3"* ]]
+  [[ "$output" == *"dispatched release.yaml"* ]]
+}
+
+# ---- runs recorded under either head_branch spelling ----
+
+@test "main: a running build recorded under refs/tags/<tag> still blocks the resume" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_RUNS_HEAD_BRANCH=full
+  export GH_STUB_RUNS="${STUB_TAG_COMMIT}:in_progress:null"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"is still in_progress"* ]]
+  [[ "$output" != *"stub-dispatch"* ]]
+}
+
+@test "main: a passed build recorded under refs/tags/<tag> still blocks the resume" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_RUNS_HEAD_BRANCH=full
+  export GH_STUB_RUNS="${STUB_TAG_COMMIT}:completed:success"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"already passed"* ]]
+}
+
+# ---- waiting for the dispatched run to be listed ----
+
+@test "main: a real cut waits until the dispatched run is listed" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"dispatched release.yaml"* ]]
+  [[ "$output" != *"was not listed"* ]]
+}
+
+@test "main: a dispatched run recorded under refs/tags/<tag> ends the wait too" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_RUNS_HEAD_BRANCH=full
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"was not listed"* ]]
+}
+
+@test "main: a dispatched run that never shows up only warns" {
+  # The build is queued, so failing the cut would be worse than the window.
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_DISPATCH_INVISIBLE=1
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"::warning::release.yaml was dispatched"*"was not listed within 0s"* ]]
+}
+
+@test "main: on a resume, the failed runs already listed do not end the wait" {
+  # Only a new run of the tagged commit proves the dispatch is visible.
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_RUNS="${STUB_TAG_COMMIT}:completed:failure"
+  export GH_STUB_DISPATCH_INVISIBLE=1
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"was not listed"* ]]
+}
+
+@test "main: a dry-run does not wait for a run" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_CONTENTS_LOG="${STUB_DIR}/contents"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="true" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"was not listed"* ]]
+  [ "$(grep -c '/runs?' "${STUB_DIR}/contents")" -eq 2 ]
+}
+
+# ---- a resumed tag must be on the target branch ----
+
+@test "main: a resume checks the tag commit against the target branch head" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_COMPARE_LOG="${STUB_DIR}/compare"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="true" run main
+  [ "$status" -eq 0 ]
+  grep -qx "repos/loft-sh/loft-enterprise/compare/head-release-4.11...${STUB_TAG_COMMIT}" "${STUB_DIR}/compare"
+}
+
+@test "main: a stable tag that is not on its release branch is not resumed" {
+  # The tag was made by hand on main, not on release-4.11.
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_COMPARE_STATUS=diverged
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"is not on release-4.11 (diverged)"* ]]
+  [[ "$output" != *"stub-dispatch"* ]]
+}
+
+@test "main: a tag ahead of its branch is not resumed" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_COMPARE_STATUS=ahead
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"is not on release-4.11 (ahead)"* ]]
+  [[ "$output" != *"stub-dispatch"* ]]
+}
+
+@test "main: an unexpected comparison status is refused" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_COMPARE_STATUS=weird
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"unexpected comparison status 'weird'"* ]]
+  [[ "$output" != *"stub-dispatch"* ]]
+}
+
+@test "main: a next tag re-run with another source-branch is not resumed" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:feature-b"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.12.0-next.1"
+  export GH_STUB_COMPARE_STATUS=diverged
+  INPUT_VERSION="v4.12.0-next.1" INPUT_SOURCE_BRANCH="feature-b" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"is not on feature-b"* ]]
+  [[ "$output" != *"stub-dispatch"* ]]
+}
+
+# ---- a deleted source branch ----
+
+@test "main: a next tag whose feature branch is gone still resumes" {
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.12.0-next.1"
+  INPUT_VERSION="v4.12.0-next.1" INPUT_SOURCE_BRANCH="feature-a" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"::warning::branch 'feature-a' no longer exists"* ]]
+  [[ "$output" == *"dispatched release.yaml in loft-sh/loft-enterprise at v4.12.0-next.1"* ]]
+  [[ "$output" != *"created tag"* ]]
+}
+
+@test "main: a shipped next version whose branch is gone reports the double cut" {
+  export GH_STUB_RELEASES="loft-sh/loft-enterprise:v4.12.0-next.1"
+  INPUT_VERSION="v4.12.0-next.1" INPUT_SOURCE_BRANCH="feature-a" INPUT_DRY_RUN="true" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Refusing to re-cut"* ]]
+  [[ "$output" != *"not found"* ]]
+}
+
+@test "main: a fresh next cut from a missing branch is still refused" {
+  INPUT_VERSION="v4.12.0-next.1" INPUT_SOURCE_BRANCH="feature-a" INPUT_DRY_RUN="true" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"branch 'feature-a' not found"* ]]
+}
+
+@test "main: a resume whose line branch is gone is refused" {
+  # A release-X.Y branch is never deleted, so its absence is not normal.
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.12.0-rc.1"
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:main"
+  export GH_STUB_HEAD_MISSING=1
+  INPUT_VERSION="v4.12.0-rc.1" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"branch 'main' not found"* ]]
   [[ "$output" != *"stub-dispatch"* ]]
 }

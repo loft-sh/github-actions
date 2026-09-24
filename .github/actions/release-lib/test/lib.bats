@@ -85,3 +85,49 @@ setup() {
   [ "$out" = "from stdin" ]
   [ "$err" = "failed" ]
 }
+
+# stub_gh <body> - put a `gh` on PATH that runs <body> with the call's args, and
+# logs every call to $GH_LOG.
+stub_gh() {
+  STUB_DIR="$(mktemp -d)"
+  GH_LOG="${STUB_DIR}/log"
+  export GH_LOG
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"$GH_LOG"\n%s\n' "$1" >"${STUB_DIR}/gh"
+  chmod +x "${STUB_DIR}/gh"
+  PATH="${STUB_DIR}:${PATH}"
+}
+
+@test "tag_runs: queries the workflow it is given, under both tag spellings" {
+  stub_gh 'printf "{\"workflow_runs\":[{\"id\":7,\"head_sha\":\"abc\",\"status\":\"queued\",\"conclusion\":null}]}\n" | jq -r "${@: -1}"'
+  local runs
+  tag_runs runs org/repo build.yaml v0.37.2
+  grep -q 'workflows/build.yaml/runs?branch=v0.37.2&' "$GH_LOG"
+  grep -q 'workflows/build.yaml/runs?branch=refs/tags/v0.37.2&' "$GH_LOG"
+  # The same run under both queries is counted once.
+  [ "$runs" = "7 abc queued none" ]
+  [ "$(count_runs_at "$runs" abc)" -eq 1 ]
+}
+
+@test "tag_runs: an error-shaped body is an unknown answer, not no runs" {
+  stub_gh 'printf "{\"message\":\"Server Error\"}\n" | jq -r "${@: -1}"'
+  local runs
+  run tag_runs runs org/repo build.yaml v0.37.2
+  [ "$status" -ne 0 ]
+}
+
+@test "require_tag_on_target: a gone line branch named by the globals is refused" {
+  stub_gh 'echo "HTTP/2.0 404 Not Found"; exit 1'
+  run require_tag_on_target org/repo v0.37 v0.37.2 abc
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"branch 'v0.37' not found"* ]]
+  run require_tag_on_target org/repo trunk v0.37.2 abc
+  [ "$status" -ne 0 ]
+}
+
+@test "require_tag_on_target: a gone feature branch only warns" {
+  # release-4.11 is a feature branch under this caller's convention.
+  stub_gh 'echo "HTTP/2.0 404 Not Found"; exit 1'
+  run require_tag_on_target org/repo release-4.11 v0.37.2-next.1 abc
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"::warning::branch 'release-4.11' no longer exists"* ]]
+}

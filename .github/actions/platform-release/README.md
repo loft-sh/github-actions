@@ -126,28 +126,22 @@ direct invocation.
   dry-run catches it too, which the dispatch itself cannot, because dry-run
   never dispatches.
 
-  It also refuses a line that would build off the tag itself: the dispatcher
+  It also refuses a line that could build off the tag itself: the dispatcher
   premise is that the tag feeds one build and the GitHub Release is that build's
   output, so a half-converted `release.yaml` (`workflow_dispatch` added, the
   old trigger left behind) would start a second build racing the dispatched one
-  for the release. Three triggers are refused: `push` when it would fire for the
-  tag being created, `create` for the tag itself, and `release` when the
-  dispatched build publishes. A `push:` is left alone when it cannot fire for
-  that tag: its `tags`/`tags-ignore` patterns are matched against the version
-  being cut (so `tags-ignore: ['v*']` or `tags: ['nightly-*']` passes for
-  `v4.11.3`), and with neither filter a `branches`/`branches-ignore` filter keeps
-  tags out. `paths` filters by changed file and is not evaluated for a tag push,
-  so it keeps nothing out. The pattern match covers `*`, `**`, `?`, `+` and a
-  leading `!` under `tags`; a pattern using anything else (a `[...]` class, an
-  escape) is refused rather than guessed. So is a filter with no patterns
-  (`tags-ignore:` or `[]`), whose meaning GitHub does not pin down, and so are
-  shapes GitHub rejects: an unknown key under `push:`, a trigger under `on:`
-  that is not a GitHub event name, or a filter set alongside its `-ignore` twin. `create` and `release` are refused whatever their `types:`
-  says, since no filter on them keeps them from firing for this cut. The probe reads the immediate children of `on:` in both
-  spellings, mapping key and sequence item, so neither a `workflow_dispatch`
-  input named `push` nor a choice option named `push` is mistaken for a trigger.
-  The `workflow_dispatch` trigger itself is read the same way, so a deeper key
-  of that name under `workflow_call` does not make a line dispatchable.
+  for the release. Only `workflow_dispatch` and `workflow_call` are allowed
+  under `on:`, since neither fires on its own. Any other trigger is refused,
+  whatever its filters say: `push` and `create` fire for the tag, `release`
+  fires when the dispatched build publishes, and a release workflow has no use
+  for the rest. So is a trigger under `on:` that is not a GitHub event name.
+  `release.yaml` also refuses to build on anything but a dispatch, so this check
+  is the early warning before the tag exists, not the only guard. The probe
+  reads the immediate children of `on:` in both spellings, mapping key and
+  sequence item, so neither a `workflow_dispatch` input named `push` nor a
+  choice option named `push` is mistaken for a trigger. The `workflow_dispatch`
+  trigger itself is read the same way, so a deeper key of that name under
+  `workflow_call` does not make a line dispatchable.
 
   The workflow is parsed with mikefarah `yq`, so any legal YAML spelling reads
   the same: block or flow style at every level, the scalar and list forms of
@@ -184,7 +178,9 @@ direct invocation.
 The cut is tag-then-dispatch, so an interrupted cut leaves a tag with no build,
 or with a build that failed. A successful dispatch prints
 `dispatched release.yaml in <repo> at <tag>`, and a resumed one first prints
-`resuming at the dispatch without re-tagging`.
+`resuming at the dispatch without re-tagging`. After dispatching, the cut waits
+up to a minute for the new run to show up in the run list, so a cut started
+right after it sees the build and refuses instead of dispatching a second one.
 
 The action never deletes a tag. Re-running the cut with the same version picks
 up where the last one stopped:
@@ -196,7 +192,14 @@ up where the last one stopped:
 - **Tag exists, earlier builds failed or were cancelled:** the re-run
   dispatches a new build at the same tag.
 - **A build is still queued or running at the tag:** the re-run refuses. Wait
-  for it to finish, and re-run the cut if it fails.
+  for it to finish, and re-run the cut if it fails. This also holds when the
+  tag was deleted under the running build, since re-creating it would start a
+  second build from another commit.
+- **The tag is not on the target branch** (a stable tag made by hand on
+  `main`, or a `-next` tag re-run with another `source-branch`): the re-run
+  refuses rather than build the wrong branch.
+- **The `-next` feature branch was deleted after tagging:** the re-run warns
+  and resumes from the tag. A missing `main` or `release-X.Y` branch is refused.
 - **A build at the tag passed but there is no release:** the re-run refuses,
   since another build could publish the version twice. Find out why the build
   did not publish first.

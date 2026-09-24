@@ -58,6 +58,11 @@ DEFAULT_BRANCH="${PLATFORM_DEFAULT_BRANCH:-main}"
 # release-X.Y line whose release.yaml has no `triggered_by` input fails at the
 # dispatch, which require_dispatchable checks for before anything is tagged.
 TRIGGERED_BY="${TRIGGERED_BY:-}"
+# How long dispatch waits for the run it started to be listed, before the cut
+# exits and a following cut could miss it. Overridable so the bats suite does
+# not sleep.
+DISPATCH_VISIBLE_ATTEMPTS="${PLATFORM_DISPATCH_VISIBLE_ATTEMPTS:-12}"
+DISPATCH_VISIBLE_SLEEP_SECONDS="${PLATFORM_DISPATCH_VISIBLE_SLEEP_SECONDS:-5}"
 
 # Reaching across actions the way oss-mirror-staleness reaches into
 # oss-commit-sync. A caller pinning platform-release/v1 checks out the whole
@@ -99,24 +104,13 @@ require_yq() {
 #   duplicate_keys <n>             mappings that repeat a key
 #   trigger <name>                 one per trigger, in any of the three spellings
 #   bad_triggers <n>               triggers whose names cannot be printed
-#   push <tag>                     the tag of the push trigger's value, map form only
-#   bad_push_filters <n>           keys under a mapped push trigger that cannot be printed
-#   push_filter <key> <ok> <empty> one per key under a mapped push trigger. ok is
-#                                  1 for a non-empty pattern or list of them,
-#                                  empty is 1 for null, "" or []; neither is a
-#                                  value of some other shape
-#   push_pattern <key> <pattern>   one per tags/tags-ignore pattern, in order
-#   push_bad_patterns <key> <n>    tags/tags-ignore patterns that cannot be printed
 #   bad_inputs <n>                 workflow_dispatch inputs whose names cannot be printed
 #   input <name> <req> <default>   one per workflow_dispatch input, flags 0 or 1;
 #                                  a null or empty-string default does not count
 # Merge and duplicate keys are counted before aliases are expanded, since
-# expanding hides them. Only string keys shaped like event, filter and input
-# names are printed, which keeps a key carrying a newline from forging a line.
-# The rest are counted instead, so the preflight can refuse what it cannot see.
-#
-# Patterns are only ever checked with test(), never ==, because yq's == treats
-# `*` as a glob.
+# expanding hides them. Only string keys shaped like event and input names are
+# printed, which keeps a key carrying a newline from forging a line. The rest
+# are counted instead, so the preflight can refuse what it cannot see.
 #
 # Two yq quirks shape the expression: a string literal after a pipe ignores an
 # empty input (so every line is built from the data it reports, and the flags
@@ -141,20 +135,6 @@ workflow_facts() {
         ($on | select(tag == "!!seq") | .[] | select(tag != "!!str" or (tag == "!!str" and test("^[a-z_]+$") == false))),
         ($on | select(tag == "!!map") | keys | .[] | select(tag != "!!str" or (tag == "!!str" and test("^[a-z_]+$") == false)))
       ] | length | tostring)),
-      ($on | select(tag == "!!map") | select(has("push")) | "push " + (.push | tag)),
-      ("bad_push_filters " + ([$on | select(tag == "!!map") | .push | select(tag == "!!map") | keys | .[] |
-        select(tag != "!!str" or (tag == "!!str" and test("^[a-z-]+$") == false))] | length | tostring)),
-      ($on | select(tag == "!!map") | .push | select(tag == "!!map") | to_entries | .[] |
-        select(.key | tag == "!!str") | select(.key | test("^[a-z-]+$")) |
-        "push_filter " + .key + " " +
-        ([.value | select((tag == "!!str" and length > 0) or
-          (tag == "!!seq" and length > 0 and ([.[] | select(tag == "!!str" and length > 0)] | length) == length))] | length | tostring) + " " +
-        ([.value | select(tag == "!!null" or ((tag == "!!str" or tag == "!!seq") and length == 0))] | length | tostring)),
-      ($on | select(tag == "!!map") | .push | select(tag == "!!map") | to_entries | .[] |
-        select(.key == "tags" or .key == "tags-ignore") | .key as $k |
-        [.value | (select(tag == "!!str"), (select(tag == "!!seq") | .[] | select(tag == "!!str")))] as $pats |
-        (("push_bad_patterns " + $k + " " + ([$pats[] | select(test("^[A-Za-z0-9._/*?+!-]+$") | not)] | length | tostring)),
-         ($pats[] | select(test("^[A-Za-z0-9._/*?+!-]+$")) | "push_pattern " + $k + " " + .))),
       ("bad_inputs " + ([$inputs | keys | .[] | select(tag != "!!str" or (tag == "!!str" and test("^[A-Za-z0-9_-]+$") == false))] | length | tostring)),
       ($inputs | to_entries | .[] | select(.key | tag == "!!str") | select(.key | test("^[A-Za-z0-9_-]+$")) |
         "input " + .key + " " +
@@ -165,65 +145,17 @@ workflow_facts() {
   '
 }
 
-# filter_regex <pattern> -> an anchored ERE for a GitHub branch/tag filter
-# pattern, or return 1 for one this does not translate. Covers `*` (no `/`),
-# `**`, and `?`/`+` on the preceding character. Anything else, a `[...]` class
-# or an escape included, never reaches here: workflow_facts only prints
-# patterns made of letters, digits and `._/*?+!-`, and a `!` past the first
-# character, or a `?`/`+` with nothing plain before it, is refused here.
-# Refusing is safe, since the caller then refuses the cut rather than guess.
-filter_regex() {
-  local p="$1" out="" c prev="" i=0
-  while ((i < ${#p})); do
-    c="${p:i:1}"
-    case "$c" in
-      '*')
-        if [[ "${p:i+1:1}" == '*' ]]; then out+='.*'; i=$((i + 1)); else out+='[^/]*'; fi
-        prev='*' ;;
-      '?' | '+')
-        [[ -n "$prev" && "$prev" != '*' && "$prev" != '?' && "$prev" != '+' ]] || return 1
-        out+="$c"; prev="$c" ;;
-      '.') out+='\.'; prev="$c" ;;
-      '!') return 1 ;;
-      *) out+="$c"; prev="$c" ;;
-    esac
-    i=$((i + 1))
-  done
-  printf '^%s$' "$out"
-}
-
-# tag_push_fires <tag> <tags|tags-ignore> <pattern...> -> 0 if a push of <tag>
-# fires under that filter, 1 if it does not, 2 if a pattern cannot be read.
-# Under `tags` the last pattern that matches decides, and a leading `!` makes a
-# match exclude. Under `tags-ignore` any match excludes, and `!` has no meaning.
-tag_push_fires() {
-  local tag="$1" key="$2" p neg re fires
-  shift 2
-  if [[ "$key" == "tags" ]]; then fires=1; else fires=0; fi
-  for p in "$@"; do
-    neg=0
-    if [[ "$key" == "tags" && "$p" == '!'* ]]; then neg=1; p="${p:1}"; fi
-    re="$(filter_regex "$p")" || return 2
-    [[ "$tag" =~ $re ]] || continue
-    if [[ "$key" == "tags-ignore" ]]; then return 1; fi
-    fires="$neg"
-  done
-  return "$fires"
-}
-
 # require_dispatchable <repo> <ref> <workflow> <tag> [label] - refuse to tag when
-# the workflow about to be dispatched cannot be dispatched at that ref, or would
-# also fire for the push of <tag>. The ref is a commit sha in a real cut, so
-# `label` carries the branch name the operator typed into the messages; it
-# defaults to the ref for a direct call.
+# the workflow about to be dispatched cannot be dispatched at that ref, or could
+# start a build of its own. The ref is a commit sha in a real cut, so `label`
+# carries the branch name the operator typed into the messages; it defaults to
+# the ref for a direct call.
 #
 # The tag is created BEFORE the dispatch. A failed dispatch leaves the tag in
 # place for the re-run to resume from, but the repo's tag-push workflows have
-# already fired for it, and a release.yaml that also triggers on the tag or the
-# release does not fail the dispatch at all: it races it. Dry-run skips the dispatch, and
-# the workflows API answers for the default branch rather than for an arbitrary
-# ref, so reading the file at the ref is the only way to catch either before the
-# tag exists.
+# already fired for it. Dry-run skips the dispatch, and the workflows API
+# answers for the default branch rather than for an arbitrary ref, so reading
+# the file at the ref is the only way to catch it before the tag exists.
 #
 # Read-only, so it runs in dry-run too: a dry-run against an unconverted line
 # fails instead of printing a cut that would strand a tag.
@@ -244,22 +176,17 @@ require_dispatchable() {
     echo "::error::${wf} at '${label}' in ${repo} is not YAML this preflight can parse, so it cannot confirm the dispatch would succeed before the tag is created. Nothing was tagged. yq said: $(flatten "$reason_line")" >&2
     exit 1
   fi
-  # Read once. `seen` holds the trigger and push lines as printed; inputs keep
-  # their declaration order so the messages below list them the same way, and
-  # tag patterns keep theirs because under `tags` the last match decides.
-  local -A seen=() required=() has_default=() filter_ok=() filter_empty=()
-  local -a inputs=() tag_patterns=()
-  local kind name req def merges=0 dups=0 bad=0 bad_patterns=0 bad_triggers=0 bad_filters=0
+  # Read once. `seen` holds the trigger lines as printed; inputs keep their
+  # declaration order so the messages below list them the same way.
+  local -A seen=() required=() has_default=()
+  local -a inputs=()
+  local kind name req def merges=0 dups=0 bad=0 bad_triggers=0
   while read -r kind name req def; do
     case "$kind" in
       merge_keys) merges="$name" ;;
       duplicate_keys) dups="$name" ;;
       bad_inputs) bad="$name" ;;
       bad_triggers) bad_triggers="$name" ;;
-      bad_push_filters) bad_filters="$name" ;;
-      push_filter) filter_ok["$name"]="$req"; filter_empty["$name"]="$def" ;;
-      push_pattern) tag_patterns+=("$req") ;;
-      push_bad_patterns) bad_patterns=$((bad_patterns + req)) ;;
       input) inputs+=("$name"); required["$name"]="$req"; has_default["$name"]="$def" ;;
       ?*) seen["$kind $name"]=1 ;;
     esac
@@ -271,12 +198,6 @@ require_dispatchable() {
     echo "::error::${wf} at '${label}' in ${repo} uses a YAML merge key (<<) or repeats a key, which GitHub Actions does not accept, so the dispatch would fail after the tag was created. Write the keys out in full, once each. Nothing was tagged." >&2
     exit 1
   fi
-  # GitHub event names are lowercase letters and `_`, so anything else under
-  # `on:` is an event GitHub does not know, and it rejects the file.
-  if [[ "$bad_triggers" != "0" ]]; then
-    echo "::error::${wf} at '${label}' in ${repo} has a trigger under on: whose name is not a GitHub event (event names are lowercase letters and '_'), so the dispatch would fail after the tag was created. Nothing was tagged." >&2
-    exit 1
-  fi
   # All three spellings of `on:` list their triggers, and only the immediate
   # children of `on:` count: a deeper key named `workflow_dispatch` or `push`
   # (an input, a choice option) is not a trigger.
@@ -285,92 +206,28 @@ require_dispatchable() {
     exit 1
   fi
   # The tag is an input to ONE build, the dispatched one, and the GitHub Release
-  # is that build's output. A release.yaml that also fires on the tag push starts
-  # a second build the moment create_tag runs, and the two race for the release.
-  # This catches the half-converted shape (workflow_dispatch added, old trigger
-  # left behind): the tag push here, `release:`/`create:` below.
-  #
-  # Only a push that fires for THIS tag counts. With a `tags` or `tags-ignore`
-  # filter the patterns decide, and they are matched against the tag being cut.
-  # With neither, a `branches`/`branches-ignore` filter means tags never fire,
-  # and no filter at all means they always do. `paths` filters by changed file
-  # and is not evaluated for a tag push, so it restricts nothing here.
-  if [[ -n "${seen[trigger push]:-}" && -n "${seen[push !!map]:-}" ]]; then
-    if [[ "$bad_filters" != "0" ]]; then
-      echo "::error::${wf} at '${label}' in ${repo} has a key under push that is not a push filter GitHub accepts (branches, branches-ignore, tags, tags-ignore, paths, paths-ignore), so the dispatch would fail after the tag was created. Nothing was tagged." >&2
-      exit 1
-    fi
-    local key
-    for key in "${!filter_ok[@]}"; do
-      case "$key" in
-        branches | branches-ignore | tags | tags-ignore | paths | paths-ignore) ;;
-        *)
-          echo "::error::${wf} at '${label}' in ${repo} has '${key}' under push, which is not a push filter GitHub accepts, so the dispatch would fail after the tag was created. Nothing was tagged." >&2
-          exit 1 ;;
-      esac
-      # Whether GitHub reads an empty filter as absent or as matching nothing
-      # is not something this preflight can confirm, and one reading races the
-      # dispatched build while the other rejects the file.
-      if [[ "${filter_ok[$key]}" != "1" ]]; then
-        local shape="a value that is not a pattern or a list of them"
-        [[ "${filter_empty[$key]}" == "1" ]] && shape="no patterns"
-        echo "::error::${wf} at '${label}' in ${repo} has a push '${key}' filter with ${shape}, so this preflight cannot confirm what it matches. List its patterns, or remove the key. Nothing was tagged." >&2
-        exit 1
-      fi
-    done
-    local pair
-    for pair in branches tags paths; do
-      if [[ -n "${filter_ok[$pair]:-}" && -n "${filter_ok[$pair-ignore]:-}" ]]; then
-        echo "::error::${wf} at '${label}' in ${repo} sets both '${pair}' and '${pair}-ignore' under push, which GitHub does not accept for the same event, so the dispatch would fail after the tag was created. Keep one of them. Nothing was tagged." >&2
-        exit 1
-      fi
-    done
+  # is that build's output. Only workflow_dispatch and workflow_call are allowed,
+  # since neither fires on its own. Any other trigger is refused whatever its
+  # filters say: push and create fire for the tag, release fires when the
+  # dispatched build publishes, and the rest have no business in a release
+  # workflow. Reading GitHub's filter rules here would be a second copy of them
+  # to keep in step. release.yaml itself also refuses to build on anything but a
+  # dispatch, so this check is the early warning, not the only guard.
+  local other="" entry
+  for entry in "${!seen[@]}"; do
+    [[ "$entry" == "trigger "* ]] || continue
+    case "${entry#trigger }" in
+      workflow_dispatch | workflow_call) ;;
+      *) other+="${other:+, }${entry#trigger }" ;;
+    esac
+  done
+  if [[ "$bad_triggers" != "0" ]]; then
+    other+="${other:+, }${bad_triggers} whose name is not a GitHub event"
   fi
-  local reason="" tag_key="" fires_rc
-  [[ -n "${filter_ok[tags]:-}" ]] && tag_key="tags"
-  [[ -n "${filter_ok[tags-ignore]:-}" ]] && tag_key="tags-ignore"
-  if [[ -n "${seen[trigger push]:-}" ]]; then
-    if [[ -z "${seen[push !!map]:-}" ]]; then
-      # The list and scalar spellings, a bare `push:`, or a value that is not a
-      # mapping: none of them carries a filter.
-      reason="unfiltered, so it fires for tags too"
-    elif [[ -n "$tag_key" ]]; then
-      fires_rc=0
-      if [[ "$bad_patterns" == "0" ]]; then
-        tag_push_fires "$tag" "$tag_key" "${tag_patterns[@]}" || fires_rc=$?
-      else
-        fires_rc=2
-      fi
-      case "$fires_rc" in
-        0) reason="its ${tag_key} filter does not exclude ${tag}" ;;
-        1) ;;
-        *)
-          echo "::error::${wf} at '${label}' in ${repo} has a push ${tag_key} pattern this preflight cannot evaluate (it reads letters, digits, '.', '_', '-', '/', '*', '**', '?', '+' and a leading '!' under tags), so it cannot confirm the tag push would not start a second build. Nothing was tagged." >&2
-          exit 1 ;;
-      esac
-    elif [[ -z "${filter_ok[branches]:-}${filter_ok[branches-ignore]:-}" ]]; then
-      reason="not filtered to branches, so it fires for tags too"
-    fi
-  fi
-  if [[ -n "$reason" ]]; then
-    echo "::error::${wf} at '${label}' in ${repo} still triggers on push (${reason}), so creating the tag would start a second build racing the dispatched one for the release. Remove that trigger from the line's ${wf} - the dispatched build creates the release. Nothing was tagged." >&2
+  if [[ -n "$other" ]]; then
+    echo "::error::${wf} at '${label}' in ${repo} triggers on more than workflow_dispatch (${other}), so it could start a second build of the tag racing the dispatched one for the release. Leave only workflow_dispatch (and workflow_call, if other workflows call it) - the dispatched build creates the release. Nothing was tagged." >&2
     exit 1
   fi
-  # The same premise from the other end. `release:` fires when the dispatched
-  # build creates the release, `create:` fires on the tag itself - either one a
-  # second build of the tag just cut. Refused whatever `types:` says, unlike
-  # push: no filter on these keeps them from firing for this cut.
-  local event why
-  for event in release create; do
-    if [[ -n "${seen[trigger $event]:-}" ]]; then
-      case "$event" in
-        release) why="which fires when the dispatched build creates the release" ;;
-        *) why="which fires for the tag this creates" ;;
-      esac
-      echo "::error::${wf} at '${label}' in ${repo} still triggers on ${event} (${why}), so it would start a second build racing the dispatched one for the release. Remove that trigger from the line's ${wf} - the dispatched build creates the release. Nothing was tagged." >&2
-      exit 1
-    fi
-  done
   # An input whose name cannot be quoted back safely cannot be checked either.
   # GitHub only allows letters, digits, `-` and `_` there anyway.
   if [[ "$bad" != "0" ]]; then
@@ -435,30 +292,6 @@ require_workflow_active() {
   fi
 }
 
-# tag_commit <repo> <tag> - the commit an existing tag points at, peeled when the
-# tag is annotated, since a workflow run reports the peeled commit as head_sha.
-# create_tag only writes lightweight tags, but a hand-made one can be annotated.
-# Aborts when the commit cannot be read, rather than guessing which build the
-# tag belongs to.
-tag_commit() {
-  local repo="$1" tag="$2" out sha type
-  if ! api_get out "repos/${repo}/git/ref/tags/${tag}" "tag ${tag} in ${repo}" '"\(.object.sha // "") \(.object.type // "")"'; then
-    echo "::error::tag ${tag} in ${repo} disappeared while the cut was reading it. Re-run the cut." >&2
-    exit 1
-  fi
-  sha="${out%% *}" type="${out##* }"
-  if [[ "$type" == "tag" && "$sha" =~ ^[0-9a-f]{40,64}$ ]]; then
-    if ! api_get sha "repos/${repo}/git/tags/${sha}" "tag object ${tag} in ${repo}" '.object.sha // empty'; then
-      sha=""
-    fi
-  fi
-  if [[ ! "$sha" =~ ^[0-9a-f]{40,64}$ ]]; then
-    echo "::error::tag ${tag} exists in ${repo} but the commit it points at could not be resolved, so the cut cannot tell which build belongs to it. Nothing was dispatched." >&2
-    exit 1
-  fi
-  printf '%s' "$sha"
-}
-
 # check_release_state <repo> <tag> - how far an earlier cut of this version got,
 # and whether this one may carry on from there. Sets EXISTING_TAG_SHA to the
 # tagged commit when the tag already exists and the cut should resume at the
@@ -468,7 +301,8 @@ tag_commit() {
 #   - a published release: the version shipped, and releases are cut once
 #   - a draft release: a build got far enough to publish it, so the version is
 #     finished by promoting the draft, not by building it again
-#   - a build still running at the tag: dispatching again would race it
+#   - a build still running under the tag name, whether or not the tag still
+#     exists: dispatching again would race it
 #   - a build that passed at the tag: it should have published, so something
 #     needs a human, and another build could publish the version twice
 # Resumed: a tag with no build at all, or only failed or cancelled builds. The
@@ -480,15 +314,10 @@ tag_commit() {
 check_release_state() {
   local repo="$1" tag="$2" listing err
   EXISTING_TAG_SHA=""
-  # releases/tags/ answers for published releases only, and one request settles
-  # the common double cut before the listing below.
-  if api_exists "repos/${repo}/releases/tags/${tag}" "release ${tag} in ${repo}"; then
-    echo "::error::release ${tag} already exists in ${repo}. Refusing to re-cut (double-cut guard)." >&2
-    exit 1
-  fi
-  # Only a listing finds a draft. Drafts only appear to a token that can push,
-  # which require_push_access has checked. A failed listing aborts rather than
-  # reading as "not released".
+  # One listing answers for published and draft releases alike. The singular
+  # releases/tags/ endpoint cannot replace it, since it never returns a draft.
+  # Drafts only appear to a token that can push, which require_push_access has
+  # checked. A failed listing aborts rather than reading as "not released".
   if ! run_captured listing err gh api --paginate "repos/${repo}/releases?per_page=100" --jq '.[] | "\(.draft) \(.tag_name)"'; then
     echo "::error::could not list releases in ${repo} to check for ${tag}. Not treating as absent. gh said: $(gh_reason "$err")" >&2
     exit 1
@@ -501,33 +330,38 @@ check_release_state() {
     echo "::error::a draft release for ${tag} already exists in ${repo}, left by an earlier build of this version. Promote the draft with ${repo}'s promote-release.yaml workflow instead of cutting ${tag} again. Do not delete it." >&2
     exit 1
   fi
+  # Read before the tag probe, because a missing tag does not prove nothing is
+  # building: the tag can be deleted under a running build, and re-creating it
+  # at the branch head would start a second build of the version from another
+  # commit. Only runs that have not completed block. Run records outlive the tag,
+  # so blocking on any run ever would stop the delete-and-re-cut path for good.
+  local runs
+  if ! tag_runs runs "$repo" "$WORKFLOW" "$tag"; then
+    echo "::error::could not list ${WORKFLOW} runs at ${tag} in ${repo}, so the cut cannot tell whether a build is already running. Nothing was dispatched. gh said: $(gh_reason "$TAG_RUNS_ERR")" >&2
+    exit 1
+  fi
+  local sha="" tagged=0
   # Singular `git/ref/tags/` requires an exact match (404s otherwise). The plural
   # `git/refs/tags/` prefix-matches, so it would report `v4.11.2` as existing when
   # only `v4.11.2-rc.1` had been tagged.
-  if ! api_exists "repos/${repo}/git/ref/tags/${tag}" "tag ${tag} in ${repo}"; then
-    return 0
+  if api_exists "repos/${repo}/git/ref/tags/${tag}" "tag ${tag} in ${repo}"; then
+    tagged=1
+    sha="$(tag_commit "$repo" "$tag")" || exit 1
   fi
-  local sha runs
-  sha="$(tag_commit "$repo" "$tag")" || exit 1
-  # `gh workflow run --ref refs/tags/<tag>` records the tag name as the run's
-  # head_branch, which is what `branch=` filters on. The shape is asserted so an
-  # error body cannot read as "no runs" and let a second build through. 100 runs
-  # is far more than one tag ever collects.
-  # shellcheck disable=SC2016 # jq, not shell
-  if ! run_captured runs err gh api "repos/${repo}/actions/workflows/${WORKFLOW}/runs?branch=${tag}&per_page=100"     --jq 'if (.workflow_runs | type) != "array" then error("no workflow_runs array") else .workflow_runs[] | "\(.head_sha) \(.status) \(.conclusion // "none")" end'; then
-    echo "::error::could not list ${WORKFLOW} runs at ${tag} in ${repo}, so the cut cannot tell whether a build is already running. Nothing was dispatched. gh said: $(gh_reason "$err")" >&2
-    exit 1
-  fi
-  local run_sha status conclusion
-  while read -r run_sha status conclusion; do
-    [[ -n "$run_sha" ]] || continue
+  local id run_sha status conclusion
+  while read -r id run_sha status conclusion; do
+    [[ -n "$id" ]] || continue
     # Any sha: a build still running under this tag name races a new one
     # whichever commit it started from.
     if [[ "$status" != "completed" ]]; then
-      echo "::error::a ${WORKFLOW} run for ${tag} in ${repo} is still ${status}. Wait for it to finish, then re-run the cut if it fails. Nothing was dispatched. Inspect: gh run list --repo ${repo} --workflow ${WORKFLOW} --branch ${tag}" >&2
+      if ((tagged)); then
+        echo "::error::a ${WORKFLOW} run for ${tag} in ${repo} is still ${status}. Wait for it to finish, then re-run the cut if it fails. Nothing was dispatched. Inspect: gh run list --repo ${repo} --workflow ${WORKFLOW} --branch ${tag}" >&2
+      else
+        echo "::error::a ${WORKFLOW} run for ${tag} in ${repo} is still ${status}, but tag ${tag} no longer exists. Re-creating it would start a second build of ${tag} from another commit. Wait for that run to finish, or cancel it, before cutting ${tag} again. Nothing was tagged. Inspect: gh run list --repo ${repo} --workflow ${WORKFLOW} --branch ${tag}" >&2
+      fi
       exit 1
     fi
-    if [[ "$run_sha" == "$sha" && "$conclusion" == "success" ]]; then
+    if ((tagged)) && [[ "$run_sha" == "$sha" && "$conclusion" == "success" ]]; then
       echo "::error::a ${WORKFLOW} run for ${tag} in ${repo} already passed, but there is no release for ${tag}. Check why that build did not publish before building ${tag} again. Nothing was dispatched. Inspect: gh run list --repo ${repo} --workflow ${WORKFLOW} --branch ${tag}" >&2
       exit 1
     fi
@@ -560,38 +394,6 @@ require_push_access() {
   esac
 }
 
-# resolve_head <repo> <branch> -> the branch head sha. Read once per cut, before
-# the preflight, so the commit whose release.yaml is validated is the commit the
-# tag lands on. A second read at tag time would let a push in between get tagged
-# unvalidated.
-#
-# This read is also the existence check. The target is resolved from the suffix
-# matrix, so it must already exist: stable names a release-X.Y branch that has
-# to be cut first, alpha/beta name the default branch, next names a feature
-# branch. A 404 is refused rather than swapped for another branch.
-#
-# Singular `git/ref/heads/`, for the same reason check_release_state uses the
-# singular tags form: the plural endpoint falls back to prefix matching and
-# answers with an ARRAY of near-misses when the exact ref is absent, where the
-# singular form gives a clean 404.
-#
-# `.object.sha // empty` guards the jq null-string hazard: on an unexpected
-# ref-response shape jq would otherwise print the literal "null" and exit 0
-# (set -e does not catch it), producing a GitHub 422 "Invalid SHA" instead of
-# a meaningful diagnostic.
-resolve_head() {
-  local repo="$1" branch="$2" sha
-  if ! api_get sha "repos/${repo}/git/ref/heads/${branch}" "branch '${branch}' in ${repo}" '.object.sha // empty'; then
-    echo "::error::branch '${branch}' not found in ${repo}. Create it (and its workflow_dispatch-enabled release.yaml) before cutting this line - refusing to guess." >&2
-    return 1
-  fi
-  if [[ -z "$sha" ]]; then
-    echo "::error::could not resolve HEAD sha for branch '${branch}' in ${repo}" >&2
-    return 1
-  fi
-  printf '%s' "$sha"
-}
-
 # create_tag <repo> <branch> <tag> <sha> - tag that exact commit. release.yaml
 # triggers on workflow_dispatch, not tag push, so this does not start the build.
 # The repo's other tag-push workflows (code-freeze, golangci-lint) do fire.
@@ -613,18 +415,27 @@ create_tag() {
   echo "created tag ${tag} in ${repo} at ${branch} (${sha})"
 }
 
-# dispatch <repo> <tag> [extra gh flags...] - run that ref's release.yaml.
+# dispatch <repo> <tag> <sha> [extra gh flags...] - run that ref's release.yaml.
 # --ref executes the tagged commit's version of the workflow, so each line
 # builds with its own glue. It is the full ref, since a branch that shares the
-# tag's name would otherwise be what GitHub runs.
+# tag's name would otherwise be what GitHub runs. <sha> is the tagged commit,
+# which the wait below matches runs against.
 dispatch() {
-  local repo="$1" tag="$2"
-  shift 2
+  local repo="$1" tag="$2" sha="$3"
+  shift 3
   local extra=("$@")
   if [[ "${DRY_RUN:-true}" == "true" ]]; then
     echo "[dry-run] gh workflow run ${WORKFLOW} --repo ${repo} --ref refs/tags/${tag} ${extra[*]}"
     return 0
   fi
+  # Counted first, so the wait below recognises the new run even on a resume,
+  # where failed runs of the same commit are already listed.
+  local runs before
+  if ! tag_runs runs "$repo" "$WORKFLOW" "$tag"; then
+    echo "::error::could not list ${WORKFLOW} runs at ${tag} in ${repo} before dispatching. Tag ${tag} stays in place: re-run the cut with the same version and it resumes at the dispatch. gh said: $(gh_reason "$TAG_RUNS_ERR")" >&2
+    exit 1
+  fi
+  before="$(count_runs_at "$runs" "$sha")"
   # The tag is never deleted here. A non-zero exit does not prove GitHub
   # rejected the dispatch (the response can be lost after the run was queued),
   # and deleting the tag under a queued build would break it. The re-run reads
@@ -635,6 +446,21 @@ dispatch() {
     exit 1
   fi
   echo "dispatched ${WORKFLOW} in ${repo} at ${tag}"
+  # `gh workflow run` returns before the run is listed. The caller's concurrency
+  # group ends when this cut exits, so a cut started in that window would see
+  # the tag with no running build and dispatch a second one. Waiting until the
+  # run shows up in the same listing check_release_state reads closes the gap.
+  # Failed reads just keep waiting, and running out of time only warns: the
+  # build is already queued, and failing the cut now would be worse than the
+  # window it guards.
+  local i
+  for ((i = 1; i <= DISPATCH_VISIBLE_ATTEMPTS; i++)); do
+    if tag_runs runs "$repo" "$WORKFLOW" "$tag" && (( $(count_runs_at "$runs" "$sha") > before )); then
+      return 0
+    fi
+    ((i < DISPATCH_VISIBLE_ATTEMPTS)) && sleep "${DISPATCH_VISIBLE_SLEEP_SECONDS}"
+  done
+  echo "::warning::${WORKFLOW} was dispatched in ${repo} at ${tag}, but the run was not listed within $((DISPATCH_VISIBLE_ATTEMPTS * DISPATCH_VISIBLE_SLEEP_SECONDS))s. A cut of ${tag} started right now could dispatch it a second time."
 }
 
 # ---------------------------------------------------------------------------
@@ -645,17 +471,23 @@ dispatch() {
 cut_release() {
   local version="$1" target="$2"
   echo "Routing ${version} -> ${REPO} (target ${target})"
-  # Resolved once and used for both the preflight read and the tag, since the
-  # branch is a moving ref. Read in dry-run too, so the preview names the commit
-  # it would tag.
-  local sha label="$target"
-  sha="$(resolve_head "$REPO" "$target")" || exit 1
+  # State first: a cut that only has to resume, or is refused as already
+  # released, does not need the branch head, and a -next branch is often gone
+  # by then.
   check_release_state "$REPO" "$version"
-  # A resumed cut builds the commit the tag already points at, so that is the
-  # release.yaml the preflight has to read, whatever the branch head is now.
+  local sha label
   if [[ -n "$EXISTING_TAG_SHA" ]]; then
-    echo "::notice::tag ${version} already exists at ${EXISTING_TAG_SHA} with no release and no build running or passed; resuming at the dispatch without re-tagging (${target} head is ${sha})."
+    # A resumed cut builds the commit the tag already points at, so that is the
+    # release.yaml the preflight has to read, whatever the branch head is now.
+    require_tag_on_target "$REPO" "$target" "$version" "$EXISTING_TAG_SHA"
+    echo "::notice::tag ${version} already exists at ${EXISTING_TAG_SHA} on ${target} with no release and no build running or passed; resuming at the dispatch without re-tagging."
     sha="$EXISTING_TAG_SHA" label="$version"
+  else
+    # Resolved once and used for both the preflight read and the tag, since the
+    # branch is a moving ref. Read in dry-run too, so the preview names the
+    # commit it would tag.
+    sha="$(resolve_head "$REPO" "$target")" || exit 1
+    label="$target"
   fi
   # Before create_tag, deliberately: every tag starts the repo's tag-push
   # workflows, so a cut that cannot build should stop before it makes one.
@@ -666,7 +498,7 @@ cut_release() {
   fi
   local dispatch_args=()
   [[ -n "${TRIGGERED_BY}" ]] && dispatch_args=(-f "triggered_by=${TRIGGERED_BY}")
-  dispatch "$REPO" "$version" "${dispatch_args[@]}"
+  dispatch "$REPO" "$version" "$sha" "${dispatch_args[@]}"
 }
 
 main() {

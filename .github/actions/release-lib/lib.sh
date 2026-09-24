@@ -13,6 +13,7 @@
 # does not depend on downloading semstat.
 #
 # Nothing here mutates GitHub, so every function is safe to call in dry-run.
+# Creating the tag and dispatching the build stay in each dispatcher.
 # The probes fail closed: a transient API error exits rather than reading as
 # "absent".
 
@@ -340,15 +341,6 @@ branch_exists() {
   api_exists "repos/${repo}/branches/${branch}" "branch '${branch}' in ${repo}"
 }
 
-# require_branch <repo> <branch> - hard error if the branch is absent.
-require_branch() {
-  local repo="$1" branch="$2"
-  if ! branch_exists "$repo" "$branch"; then
-    echo "::error::branch '${branch}' not found in ${repo}. Create it (and its workflow_dispatch-enabled release.yaml) before cutting this line - refusing to guess." >&2
-    exit 1
-  fi
-}
-
 # resolve_rc_source <repo> <line> <src> -> the branch an rc is cut from, or a
 # hard error when <src> contradicts the line's actual state.
 #
@@ -406,4 +398,152 @@ require_unbranched() {
     echo "::error::${line} exists in ${repo}, so ${DEFAULT_BRANCH} now carries the next line and a ${suffix} of this line would tag the wrong code. Cut an rc from ${line} instead. Nothing was tagged." >&2
     exit 1
   fi
+}
+
+# ---------------------------------------------------------------------------
+# Refs and runs
+# ---------------------------------------------------------------------------
+
+# resolve_head <repo> <branch> -> the branch head sha. Read once per cut, before
+# the preflight, so the commit whose release.yaml is validated is the commit the
+# tag lands on. A second read at tag time would let a push in between get tagged
+# unvalidated.
+#
+# This read is also the existence check. The target is resolved from the suffix
+# matrix, so it must already exist: stable names a release-X.Y branch that has
+# to be cut first, alpha/beta name the default branch, next names a feature
+# branch. A 404 is refused rather than swapped for another branch.
+#
+# Singular `git/ref/heads/`, for the same reason tag_commit reads the singular
+# tags form: the plural endpoint falls back to prefix matching and answers with
+# an ARRAY of near-misses when the exact ref is absent, where the singular form
+# gives a clean 404.
+#
+# `.object.sha // empty` guards the jq null-string hazard: on an unexpected
+# ref-response shape jq would otherwise print the literal "null" and exit 0
+# (set -e does not catch it), producing a GitHub 422 "Invalid SHA" instead of
+# a meaningful diagnostic.
+resolve_head() {
+  local repo="$1" branch="$2" sha
+  if ! api_get sha "repos/${repo}/git/ref/heads/${branch}" "branch '${branch}' in ${repo}" '.object.sha // empty'; then
+    echo "::error::branch '${branch}' not found in ${repo}. Create it (and its workflow_dispatch-enabled release.yaml) before cutting this line - refusing to guess." >&2
+    return 1
+  fi
+  if [[ -z "$sha" ]]; then
+    echo "::error::could not resolve HEAD sha for branch '${branch}' in ${repo}" >&2
+    return 1
+  fi
+  printf '%s' "$sha"
+}
+
+# tag_commit <repo> <tag> - the commit an existing tag points at, peeled when the
+# tag is annotated, since a workflow run reports the peeled commit as head_sha.
+# A tag can point at another tag object, so peeling repeats until it reaches a
+# commit. Anything else (a tree, a blob, a chain too deep to be a real tag) is
+# refused, since no run builds it. Aborts when the commit cannot be read, rather
+# than guessing which build the tag belongs to.
+tag_commit() {
+  local repo="$1" tag="$2" out sha type depth=0
+  if ! api_get out "repos/${repo}/git/ref/tags/${tag}" "tag ${tag} in ${repo}" '"\(.object.sha // "") \(.object.type // "")"'; then
+    echo "::error::tag ${tag} in ${repo} disappeared while the cut was reading it. Re-run the cut." >&2
+    exit 1
+  fi
+  sha="${out%% *}" type="${out##* }"
+  while [[ "$type" == "tag" && "$sha" =~ ^[0-9a-f]{40,64}$ ]] && ((depth++ < 5)); do
+    if ! api_get out "repos/${repo}/git/tags/${sha}" "tag object ${tag} in ${repo}" '"\(.object.sha // "") \(.object.type // "")"'; then
+      sha="" type=""
+      break
+    fi
+    sha="${out%% *}" type="${out##* }"
+  done
+  if [[ ! "$sha" =~ ^[0-9a-f]{40,64}$ ]]; then
+    echo "::error::tag ${tag} exists in ${repo} but the commit it points at could not be resolved, so the cut cannot tell which build belongs to it. Nothing was dispatched." >&2
+    exit 1
+  fi
+  if [[ "$type" != "commit" ]]; then
+    echo "::error::tag ${tag} in ${repo} does not lead to a commit (it ends at a $(flatten "${type:-object of unknown type}") ${sha}), so no build can run from it. Nothing was dispatched." >&2
+    exit 1
+  fi
+  printf '%s' "$sha"
+}
+
+# tag_runs <out-var> <repo> <workflow> <tag> - every <workflow> run recorded
+# under the tag's name, one "<id> <head_sha> <status> <conclusion>" line each.
+# Returns non-zero with the cause in TAG_RUNS_ERR when the answer is unknown, and
+# callers fail closed: read as "no runs", this would let a second build through.
+#
+# `branch=` filters on the run's head_branch. A bare `--ref <tag>` dispatch is
+# known to record the short tag name there, but platform-release dispatches the
+# full `refs/tags/<tag>`, which has not been checked, so both spellings are
+# queried and the runs merged by id. Either way the guards see the run.
+#
+# The shape is asserted so an error body cannot read as "no runs". 100 runs is
+# far more than one tag ever collects.
+tag_runs() {
+  local __tr_var="$1" repo="$2" workflow="$3" tag="$4" __tr_ref __tr_page __tr_err __tr_all=""
+  # Read by the caller, which quotes it in its own error.
+  # shellcheck disable=SC2034
+  TAG_RUNS_ERR=""
+  for __tr_ref in "$tag" "refs/tags/${tag}"; do
+    # shellcheck disable=SC2016 # jq, not shell
+    if ! run_captured __tr_page __tr_err gh api "repos/${repo}/actions/workflows/${workflow}/runs?branch=${__tr_ref}&per_page=100" \
+      --jq 'if (.workflow_runs | type) != "array" then error("no workflow_runs array") else .workflow_runs[] | "\(.id) \(.head_sha) \(.status) \(.conclusion // "none")" end'; then
+      # shellcheck disable=SC2034
+      TAG_RUNS_ERR="$__tr_err"
+      return 1
+    fi
+    [[ -n "$__tr_page" ]] && __tr_all+="${__tr_page}"$'\n'
+  done
+  printf -v "$__tr_var" '%s' "$(printf '%s' "$__tr_all" | sort -u)"
+}
+
+# count_runs_at <runs> <sha> - how many of tag_runs' lines ran <sha>.
+count_runs_at() {
+  local runs="$1" sha="$2" n=0 id run_sha rest
+  while read -r id run_sha rest; do
+    [[ -n "$id" && "$run_sha" == "$sha" ]] && n=$((n + 1))
+  done <<<"$runs"
+  printf '%s' "$n"
+}
+
+# require_tag_on_target <repo> <target> <tag> <sha> - refuse to resume a tag
+# whose commit is not on the branch the routing matrix chose. A resume skips
+# the tag step, so without this a stable tag made by hand on main, or a -next
+# tag re-run with another source-branch, would build a commit the matrix exists
+# to refuse. The commit may sit anywhere on the branch, since the branch moves on
+# after the tag.
+#
+# A feature branch is usually deleted once its prerelease is tagged, so a gone
+# -next branch only warns: the tag is all a resume needs. A line branch or the
+# default branch is never deleted, so a 404 there is refused.
+require_tag_on_target() {
+  local repo="$1" target="$2" tag="$3" sha="$4" head status
+  if ! api_get head "repos/${repo}/git/ref/heads/${target}" "branch '${target}' in ${repo}" '.object.sha // empty'; then
+    if is_feature_branch "$target"; then
+      echo "::warning::branch '${target}' no longer exists in ${repo}, so the cut cannot check that ${tag} (${sha}) came from it. Resuming at the existing tag."
+      return 0
+    fi
+    echo "::error::branch '${target}' not found in ${repo}, so the cut cannot check that ${tag} (${sha}) is on it. Nothing was dispatched." >&2
+    exit 1
+  fi
+  if [[ -z "$head" ]]; then
+    echo "::error::could not resolve HEAD sha for branch '${target}' in ${repo}. Nothing was dispatched." >&2
+    exit 1
+  fi
+  [[ "$head" == "$sha" ]] && return 0
+  # compare/<base>...<head>: "behind" means the tag commit is an ancestor of the
+  # branch head.
+  if ! api_get status "repos/${repo}/compare/${head}...${sha}" "comparison of ${tag} with ${target} in ${repo}" '.status // empty'; then
+    echo "::error::GitHub could not compare ${tag} (${sha}) with ${target} in ${repo}. Nothing was dispatched." >&2
+    exit 1
+  fi
+  case "$status" in
+    identical | behind) return 0 ;;
+    ahead | diverged)
+      echo "::error::tag ${tag} points at ${sha}, which is not on ${target} (${status}), the branch ${tag} has to be cut from. Resuming would build it from the wrong branch. Nothing was dispatched. If the tag is wrong, delete it by hand and cut again." >&2
+      exit 1 ;;
+    *)
+      echo "::error::unexpected comparison status '$(flatten "$status")' for ${tag} against ${target} in ${repo}. Nothing was dispatched." >&2
+      exit 1 ;;
+  esac
 }
