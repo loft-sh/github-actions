@@ -203,12 +203,12 @@ up where the last one stopped:
 - **A build at the tag passed but there is no release:** the re-run refuses,
   since another build could publish the version twice. Find out why the build
   did not publish first.
-- **A draft release exists for the version:** the re-run refuses. The build
-  already got as far as the draft, so promote it with loft-enterprise's own
-  `promote-release.yaml` workflow, which is built on the
-  [`promote-release`](../promote-release/README.md) action the same way
-  [vcluster-pro's](https://github.com/loft-sh/vcluster-pro/blob/main/.github/workflows/promote-release.yaml)
-  is. Do not delete the draft.
+- **A draft release exists for the version:** the re-run refuses. goreleaser
+  drafts the release before uploading assets and publishes it as its last
+  step, so a draft means a build is still running or died mid-upload. If a
+  build is running, wait for it. If it failed, delete the draft and re-run the
+  cut, which resumes at the existing tag. The draft cannot be promoted instead:
+  [`promote-release`](../promote-release/README.md) never un-drafts a release.
 
 To restart a build by hand instead, dispatch the builder directly:
 

@@ -299,8 +299,10 @@ require_workflow_active() {
 #
 # Refused:
 #   - a published release: the version shipped, and releases are cut once
-#   - a draft release: a build got far enough to publish it, so the version is
-#     finished by promoting the draft, not by building it again
+#   - a draft release: goreleaser drafts the release before uploading and
+#     publishes it last, so a draft is a build still running or one that died
+#     mid-upload. Promotion cannot finish a draft, and building again beside it
+#     leaves two, so a human checks the runs and deletes it first
 #   - a build still running under the tag name, whether or not the tag still
 #     exists: dispatching again would race it
 #   - a build that passed at the tag: it should have published, so something
@@ -327,7 +329,7 @@ check_release_state() {
     exit 1
   fi
   if grep -Fxq -- "true ${tag}" <<<"$listing"; then
-    echo "::error::a draft release for ${tag} already exists in ${repo}, left by an earlier build of this version. Promote the draft with ${repo}'s promote-release.yaml workflow instead of cutting ${tag} again. Do not delete it." >&2
+    echo "::error::a draft release for ${tag} already exists in ${repo}. The builder drafts the release before uploading and publishes it last, so either a ${WORKFLOW} run at ${tag} is still going or one died mid-upload. If a run is still going, wait for it. If it failed, delete the draft and re-run this cut: it resumes at the existing tag. Nothing was dispatched. Inspect: gh run list --repo ${repo} --workflow ${WORKFLOW} --branch ${tag}" >&2
     exit 1
   fi
   # Read before the tag probe, because a missing tag does not prove nothing is

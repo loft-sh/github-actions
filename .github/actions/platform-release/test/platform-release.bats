@@ -2432,21 +2432,21 @@ fake_yq() {
   INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="true" run main
   [ "$status" -ne 0 ]
   [[ "$output" == *"a draft release for v4.11.3 already exists"* ]]
-  [[ "$output" == *"Promote the draft with loft-sh/loft-enterprise's promote-release.yaml workflow instead of cutting v4.11.3 again"* ]]
-  [[ "$output" == *"Do not delete it"* ]]
+  [[ "$output" == *"If it failed, delete the draft and re-run this cut"* ]]
+  [[ "$output" == *"gh run list --repo loft-sh/loft-enterprise --workflow release.yaml --branch v4.11.3"* ]]
+  [[ "$output" != *"promote-release"* ]]
   [[ "$output" != *"[dry-run] gh api -X POST"* ]]
 }
 
 @test "main: a draft release blocks the resume of an existing tag too" {
-  # The build already got as far as the draft, so another build is not how the
-  # version gets finished.
+  # A second build beside the draft would leave two drafts for one version.
   export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
   export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
   export GH_STUB_DRAFTS="loft-sh/loft-enterprise:v4.11.3"
   export GH_STUB_RUNS="${STUB_TAG_COMMIT}:completed:failure"
   INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
   [ "$status" -ne 0 ]
-  [[ "$output" == *"Promote the draft"* ]]
+  [[ "$output" == *"delete the draft and re-run this cut"* ]]
   [[ "$output" != *"stub-dispatch"* ]]
 }
 
