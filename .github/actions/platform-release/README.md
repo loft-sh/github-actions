@@ -225,6 +225,10 @@ gh workflow run release.yaml --repo loft-sh/loft-enterprise --ref refs/tags/<ver
 different line. Give it the full `refs/tags/` ref, so a branch with the same
 name as the tag cannot be what runs.
 
+Delete any leftover draft for the version first. goreleaser does not reuse an
+existing draft, so the build creates and publishes a second release and the
+old draft stays behind.
+
 ## Usage
 
 Consumed by a `workflow_dispatch` workflow on the caller's default branch (the

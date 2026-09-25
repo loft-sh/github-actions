@@ -378,7 +378,7 @@ check_release_state() {
     else
       next="Tag ${tag} no longer exists, so the re-run tags the current branch head, which may not be the commit the draft was built from."
     fi
-    echo "::error::a draft release for ${tag} already exists in ${repo}, and no ${WORKFLOW} run at ${tag} is still going, so an earlier build died after drafting it. Delete the draft and keep the tag: gh release delete ${tag} --repo ${repo} (without --cleanup-tag). Then re-run this cut. ${next} Nothing was dispatched. ${inspect}" >&2
+    echo "::error::a draft release for ${tag} already exists in ${repo}, and no ${WORKFLOW} run at ${tag} is still going. Delete the draft and keep the tag: gh release delete ${tag} --repo ${repo} (without --cleanup-tag). Then re-run this cut. ${next} Nothing was dispatched. ${inspect}" >&2
     exit 1
   fi
   EXISTING_TAG_SHA="$sha"
