@@ -519,6 +519,39 @@ version string decides the routing (legacy `< v0.36` fans out to both
 
 See the [action README](./.github/actions/vcluster-release/README.md) for routing and guard details.
 
+### Cut vCluster Platform release
+
+Single entry point for cutting a vCluster Platform (`loft-sh/loft-enterprise`)
+release on any supported line. Single-repo sibling of `vcluster-release`: no era
+classification and no cross-repo fan-out. The prerelease suffix fixes which branch
+a version may be cut from (`-alpha`/`-beta` from `main`, `-rc` from `release-X.Y`
+once that branch exists and from `main` before it, stable from `release-X.Y` only,
+`-next`/`-next.internal` from a short-lived feature branch). Creates the tag at the target branch head and
+dispatches that line's own `release.yaml`; the GitHub Release is a pipeline output,
+not a trigger.
+
+**Location:** `.github/actions/platform-release`
+
+**Usage:**
+
+```yaml
+- uses: loft-sh/github-actions/.github/actions/platform-release@platform-release/v1
+  with:
+    version: ${{ inputs.version }}
+    source-branch: ${{ inputs.source_branch }}
+    dry-run: ${{ inputs.dry_run }}
+    github-token: ${{ secrets.GH_ACCESS_TOKEN }}
+```
+
+**Inputs:**
+
+- `version` (required): release version, e.g. `v4.11.3` or `v4.12.0-rc.1` (the leading `v` is optional)
+- `source-branch` (optional): branch to cut from; required only for `-next`/`-next.internal`
+- `dry-run` (optional, default `true`): run read-only routing checks and print the tag + dispatch calls without firing them
+- `github-token` (required): PAT/App token with `repo` + `workflow` scope on `loft-sh/loft-enterprise`
+
+See the [action README](./.github/actions/platform-release/README.md) for routing and guard details.
+
 ### Subtree Mirror Action
 
 Mirrors a monorepo subtree to a downstream OSS repository. Fast-forward-only for release lines; marker-guarded force push for the mirror branch so contributions merged directly on the OSS repo are never silently destroyed. On divergence it fails closed, sets `diverged=true`, and leaves the OSS branch untouched.

@@ -1,0 +1,56 @@
+name: Cut vCluster Platform release
+description: |
+  Single entry point for cutting a vCluster Platform (loft-sh/loft-enterprise)
+  release on any supported line. The version string plus its prerelease suffix
+  decide the routing, so nobody has to remember which branch a given version is
+  cut from: -alpha/-beta from main until release-X.Y exists, -rc from
+  release-X.Y once that branch exists (an explicit main is refused there) and
+  from main before it,
+  stable from the release-X.Y branch, -next/-next.internal from a short-lived
+  feature branch. It then creates the tag at the target branch head and
+  dispatches that line's own release.yaml via workflow_dispatch
+  (gh workflow run --ref <tag>, which runs the tagged commit's version of the
+  workflow). The GitHub Release is a pipeline output created at the end of a
+  green build, so nothing here triggers a release:created build. Platform is a
+  single repo, so unlike the vcluster-release sibling there is no era
+  classification and no cross-repo fan-out. Needs mikefarah yq v4.46.1+ on the
+  runner, which GitHub-hosted Ubuntu runners include.
+inputs:
+  version:
+    description: 'Release version to cut, e.g. v4.11.3 or v4.12.0-rc.1. The leading v is optional and is added for you.'
+    required: true
+  source-branch:
+    description: 'Branch to cut from. Required for -next/-next.internal (the short-lived feature branch). Optional for -rc (empty auto-routes to release-X.Y when that branch exists, else main; an explicit main is refused once release-X.Y exists). Must be main for -alpha/-beta (refused once release-X.Y exists) and the release-X.Y branch for stable; leave empty to take the matrix default.'
+    required: false
+    default: ''
+  dry-run:
+    description: 'Fail-closed: only an explicit "false" (in any case) cuts for real. Any other value (the default, a typo, stray whitespace) runs the read-only routing checks and prints the exact tag + dispatch calls without firing them.'
+    required: false
+    default: 'true'
+  github-token:
+    description: 'Token with repo + workflow scope on loft-sh/loft-enterprise (tag creation and workflow dispatch). A PAT, not GITHUB_TOKEN: the tag must still fire the repo tag-push workflows (code-freeze, golangci-lint).'
+    required: true
+runs:
+  using: composite
+  steps:
+    # Version validation lives in the script (validate_version), not here.
+    # semver-validation only warns and exits 0 on a bad version, and
+    # running it before the script would make it judge the RAW input and reject a
+    # recoverable paste such as "V4.11.3" that normalize_version repairs.
+    # In-script validation runs after normalization, is stricter than semver (the
+    # leading v and a patch component are required), and the bats suite covers it.
+    - name: Cut release
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        INPUT_VERSION: ${{ inputs.version }}
+        INPUT_SOURCE_BRANCH: ${{ inputs.source-branch }}
+        INPUT_DRY_RUN: ${{ inputs.dry-run }}
+        # The human who invoked cut-release (this composite runs in that
+        # workflow_dispatch context). Forwarded to release.yaml so the Slack
+        # banner attributes the person, not the bot PAT that runs the build.
+        TRIGGERED_BY: ${{ github.actor }}
+      run: ${{ github.action_path }}/src/platform-release.sh
+branding:
+  icon: 'tag'
+  color: 'orange'
