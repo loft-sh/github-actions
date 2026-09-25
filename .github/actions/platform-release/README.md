@@ -250,6 +250,11 @@ on:
 permissions:
   contents: read
 
+# Two runs resuming the same tag would both dispatch a build. Queue them instead.
+concurrency:
+  group: cut-release-${{ inputs.version }}
+  cancel-in-progress: false
+
 jobs:
   cut-release:
     if: ${{ github.repository_owner == 'loft-sh' }}

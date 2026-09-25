@@ -246,8 +246,11 @@ if [[ "$sub" == "api" ]]; then
       # gates it so a branch deleted mid-cut reads as a clean 404, not a sha.
       # GH_STUB_HEAD_MISSING=1 makes only this probe 404, simulating a branch
       # deleted after an earlier probe saw it. GH_STUB_HEAD_NO_SHA=1 answers 200
-      # with a ref body that has no .object.sha.
+      # with a ref body that has no .object.sha. GH_STUB_TRANSIENT_HEADS=1 fails
+      # only this read the way an unreachable API does, so every earlier probe
+      # still answers.
       fail_if_simulated branches
+      if [[ "${GH_STUB_TRANSIENT_HEADS:-}" == "1" ]]; then echo "gh: dial tcp: lookup api.github.com" >&2; exit 1; fi
       [[ "${GH_STUB_HEAD_MISSING:-}" == "1" ]] && respond 404
       rest="${path#repos/}"; repo="${rest%%/git/ref/heads/*}"; branch="${rest##*/git/ref/heads/}"
       contains "${GH_STUB_BRANCHES:-}" "${repo}:${branch}" || respond 404
@@ -1306,6 +1309,19 @@ EOF
   INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="true" run main
   [ "$status" -ne 0 ]
   [[ "$output" == *"failed to reach GitHub API"* ]]
+  [[ "$output" != *"[dry-run] gh api -X POST"* ]]
+}
+
+@test "main: a transient API failure on the target branch read is not read as a missing branch" {
+  # A stable cut makes no branch_exists probe, so resolve_head is its only
+  # missing-branch guard, and it runs inside a command substitution.
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TRANSIENT_HEADS=1
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="true" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"failed to reach GitHub API for branch 'release-4.11'"* ]]
+  [[ "$output" == *"Not treating as absent"* ]]
+  [[ "$output" != *"not found"* ]]
   [[ "$output" != *"[dry-run] gh api -X POST"* ]]
 }
 

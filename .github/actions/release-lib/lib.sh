@@ -179,7 +179,8 @@ validate_branch() {
 # resolve_target <suffix> <source-branch> <line> -> the branch to tag, or a hard
 # error if <source-branch> violates the matrix. Handles the non-feature suffixes
 # only (alpha/beta/rc/stable); next/next.internal are routed by the caller.
-#   alpha|beta -> main only
+#   alpha|beta -> main only (the caller must have run require_unbranched first:
+#                 this does not know whether release-X.Y already exists)
 #   rc         -> main or the line branch release-X.Y (the caller has already
 #                 narrowed this through resolve_rc_source, which refuses main
 #                 once release-X.Y exists)
