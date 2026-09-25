@@ -2432,8 +2432,9 @@ fake_yq() {
   INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="true" run main
   [ "$status" -ne 0 ]
   [[ "$output" == *"a draft release for v4.11.3 already exists"* ]]
-  [[ "$output" == *"gh release delete v4.11.3 --repo loft-sh/loft-enterprise (without --cleanup-tag)"* ]]
-  [[ "$output" == *"Tag v4.11.3 no longer exists, so the re-run tags the current branch head"* ]]
+  [[ "$output" == *"Tag v4.11.3 no longer exists. Delete the draft: gh release delete v4.11.3 --repo loft-sh/loft-enterprise. Then re-run this cut, which tags the current branch head"* ]]
+  [[ "$output" == *"Nothing was tagged"* ]]
+  [[ "$output" != *"keep the tag"* ]]
   [[ "$output" != *"resumes at the existing tag"* ]]
   [[ "$output" == *"gh run list --repo loft-sh/loft-enterprise --workflow release.yaml --branch v4.11.3"* ]]
   [[ "$output" != *"promote-release"* ]]
@@ -2448,8 +2449,24 @@ fake_yq() {
   export GH_STUB_RUNS="${STUB_TAG_COMMIT}:completed:failure"
   INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
   [ "$status" -ne 0 ]
-  [[ "$output" == *"Delete the draft and keep the tag"* ]]
-  [[ "$output" == *"The re-run resumes at the existing tag, ${STUB_TAG_COMMIT}"* ]]
+  [[ "$output" == *"Delete the draft and keep the tag: gh release delete v4.11.3 --repo loft-sh/loft-enterprise (without --cleanup-tag). Then re-run this cut, which resumes at the existing tag, ${STUB_TAG_COMMIT}"* ]]
+  [[ "$output" == *"Nothing was dispatched"* ]]
+  [[ "$output" != *"once per draft"* ]]
+  [[ "$output" != *"stub-dispatch"* ]]
+}
+
+@test "main: several drafts for one version ask for every one to be deleted" {
+  # gh release delete removes one draft per call, so asking for one delete would
+  # leave the re-run refusing on the next.
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_DRAFTS="loft-sh/loft-enterprise:v4.11.3 loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_RUNS="${STUB_TAG_COMMIT}:completed:failure"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"2 draft releases for v4.11.3 already exist in loft-sh/loft-enterprise"* ]]
+  [[ "$output" == *"Delete all 2 drafts and keep the tag"* ]]
+  [[ "$output" == *"(without --cleanup-tag), once per draft"* ]]
   [[ "$output" != *"stub-dispatch"* ]]
 }
 
@@ -2461,7 +2478,7 @@ fake_yq() {
   export GH_STUB_RUNS="${STUB_TAG_COMMIT}:in_progress:null"
   INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
   [ "$status" -ne 0 ]
-  [[ "$output" == *"is still in_progress. Wait for it to finish"* ]]
+  [[ "$output" == *"is still in_progress. Wait for it to finish, then if it fails, delete the draft release for v4.11.3 and re-run the cut"* ]]
   [[ "$output" != *"Delete the draft"* ]]
   [[ "$output" != *"stub-dispatch"* ]]
 }

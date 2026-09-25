@@ -300,10 +300,11 @@ require_workflow_active() {
 # Refused:
 #   - a published release: the version shipped, and releases are cut once
 #   - a draft release: goreleaser drafts the release before uploading and
-#     publishes it last, so a draft is a build still running or one that died
-#     mid-upload. Promotion cannot finish a draft, and building again beside it
-#     leaves two, so a human deletes it first. The draft is read against the
-#     runs, so the error says whether to wait or delete
+#     publishes it last, so a draft is a build still running, one that died
+#     mid-upload, or one that passed without publishing. Promotion cannot
+#     finish a draft, and building again beside it leaves two, so a human
+#     deletes it first. The draft is read against the runs, so the error says
+#     whether to wait, delete, or look at the passed build
 #   - a build still running under the tag name, whether or not the tag still
 #     exists: dispatching again would race it
 #   - a build that passed at the tag: it should have published, so something
@@ -315,7 +316,7 @@ require_workflow_active() {
 # The action never deletes a tag. A failed dispatch leaves the tag in place and
 # the re-run lands here.
 check_release_state() {
-  local repo="$1" tag="$2" listing err draft=0
+  local repo="$1" tag="$2" listing err drafts
   local inspect="Inspect: gh run list --repo ${repo} --workflow ${WORKFLOW} --branch ${tag}"
   EXISTING_TAG_SHA=""
   # One listing answers for published and draft releases alike. The singular
@@ -330,9 +331,9 @@ check_release_state() {
     echo "::error::release ${tag} already exists in ${repo}. Refusing to re-cut (double-cut guard)." >&2
     exit 1
   fi
-  if grep -Fxq -- "true ${tag}" <<<"$listing"; then
-    draft=1
-  fi
+  # GitHub allows several drafts for one tag, and `gh release delete` removes
+  # one per call.
+  drafts="$(grep -Fxc -- "true ${tag}" <<<"$listing")" || true
   # Read before the tag probe, because a missing tag does not prove nothing is
   # building: the tag can be deleted under a running build, and re-creating it
   # at the branch head would start a second build of the version from another
@@ -358,7 +359,9 @@ check_release_state() {
     # whichever commit it started from.
     if [[ "$status" != "completed" ]]; then
       if ((tagged)); then
-        echo "::error::a ${WORKFLOW} run for ${tag} in ${repo} is still ${status}. Wait for it to finish, then re-run the cut if it fails. Nothing was dispatched. ${inspect}" >&2
+        local after="re-run the cut if it fails"
+        ((drafts)) && after="if it fails, delete the draft release for ${tag} and re-run the cut"
+        echo "::error::a ${WORKFLOW} run for ${tag} in ${repo} is still ${status}. Wait for it to finish, then ${after}. Nothing was dispatched. ${inspect}" >&2
       else
         echo "::error::a ${WORKFLOW} run for ${tag} in ${repo} is still ${status}, but tag ${tag} no longer exists. Re-creating it would start a second build of ${tag} from another commit. Wait for that run to finish, or cancel it, before cutting ${tag} again. Nothing was tagged. ${inspect}" >&2
       fi
@@ -366,19 +369,22 @@ check_release_state() {
     fi
     if ((tagged)) && [[ "$run_sha" == "$sha" && "$conclusion" == "success" ]]; then
       local missing="there is no release for ${tag}"
-      ((draft)) && missing="the release for ${tag} is still a draft"
+      ((drafts)) && missing="the release for ${tag} is still a draft"
       echo "::error::a ${WORKFLOW} run for ${tag} in ${repo} already passed, but ${missing}. Check why that build did not publish before building ${tag} again. Nothing was dispatched. ${inspect}" >&2
       exit 1
     fi
   done <<<"$runs"
-  if ((draft)); then
-    local next
-    if ((tagged)); then
-      next="The re-run resumes at the existing tag, ${sha}."
-    else
-      next="Tag ${tag} no longer exists, so the re-run tags the current branch head, which may not be the commit the draft was built from."
+  if ((drafts)); then
+    local found="a draft release for ${tag} already exists" del="Delete the draft" times="" next
+    if ((drafts > 1)); then
+      found="${drafts} draft releases for ${tag} already exist" del="Delete all ${drafts} drafts" times=", once per draft"
     fi
-    echo "::error::a draft release for ${tag} already exists in ${repo}, and no ${WORKFLOW} run at ${tag} is still going. Delete the draft and keep the tag: gh release delete ${tag} --repo ${repo} (without --cleanup-tag). Then re-run this cut. ${next} Nothing was dispatched. ${inspect}" >&2
+    if ((tagged)); then
+      next="${del} and keep the tag: gh release delete ${tag} --repo ${repo} (without --cleanup-tag)${times}. Then re-run this cut, which resumes at the existing tag, ${sha}. Nothing was dispatched."
+    else
+      next="Tag ${tag} no longer exists. ${del}: gh release delete ${tag} --repo ${repo}${times}. Then re-run this cut, which tags the current branch head, and that may not be the commit the draft was built from. Nothing was tagged."
+    fi
+    echo "::error::${found} in ${repo}, and no ${WORKFLOW} run at ${tag} is still going. ${next} ${inspect}" >&2
     exit 1
   fi
   EXISTING_TAG_SHA="$sha"
