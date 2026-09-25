@@ -196,6 +196,9 @@ if [[ "$sub" == "api" ]]; then
       # the default; full: refs/tags/<tag>), and only a branch= query for that
       # spelling lists them. GH_STUB_RUNS_FAILS=1 fails the read,
       # GH_STUB_RUNS_BAD_SHAPE=1 answers 200 with an error-shaped body.
+      # GH_STUB_DISPATCH_VISIBLE_AFTER=<n> holds the dispatched run back until
+      # the n-th poll after the dispatch. A poll reads both spellings, short
+      # first, so the short read counts the polls (into dispatch_polls).
       [[ -n "${GH_STUB_CONTENTS_LOG:-}" ]] && printf '%s\n' "$path" >>"$GH_STUB_CONTENTS_LOG"
       if [[ "${GH_STUB_RUNS_FAILS:-}" == "1" ]]; then
         echo "gh: dial tcp: lookup api.github.com" >&2; exit 1
@@ -209,6 +212,14 @@ if [[ "$sub" == "api" ]]; then
         *) [[ "$query_branch" != refs/tags/* ]] ;;
       esac
       listed=$?
+      if [[ -f "${state_dir}/dispatch_pending" && "$query_branch" != refs/tags/* ]]; then
+        polls=$(( $(cat "${state_dir}/dispatch_polls" 2>/dev/null || echo 0) + 1 ))
+        echo "$polls" >"${state_dir}/dispatch_polls"
+        if ((polls >= GH_STUB_DISPATCH_VISIBLE_AFTER)); then
+          cat "${state_dir}/dispatch_pending" >>"${state_dir}/dispatched_runs"
+          rm "${state_dir}/dispatch_pending"
+        fi
+      fi
       runs=()
       n=0
       entries="${GH_STUB_RUNS:-}"
@@ -592,7 +603,11 @@ if [[ "$sub" == "workflow" && "${1:-}" == "run" ]]; then
   # is slow to list it.
   if [[ "${GH_STUB_DISPATCH_INVISIBLE:-}" != "1" ]]; then
     queued_sha="$(cat "${state_dir}/posted_sha" 2>/dev/null || printf '%s' "${GH_STUB_TAG_SHA:-$STUB_TAG_COMMIT}")"
-    printf '%s:queued:null ' "$queued_sha" >>"${state_dir}/dispatched_runs"
+    if [[ -n "${GH_STUB_DISPATCH_VISIBLE_AFTER:-}" ]]; then
+      printf '%s:queued:null ' "$queued_sha" >"${state_dir}/dispatch_pending"
+    else
+      printf '%s:queued:null ' "$queued_sha" >>"${state_dir}/dispatched_runs"
+    fi
   fi
   exit 0
 fi
@@ -2772,6 +2787,25 @@ fake_yq() {
   INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
   [ "$status" -eq 0 ]
   [[ "$output" != *"was not listed"* ]]
+}
+
+@test "main: the wait keeps polling until the dispatched run is listed" {
+  # setup allows 3 attempts. The run shows up on the last one.
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_DISPATCH_VISIBLE_AFTER=3
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"was not listed"* ]]
+  [ "$(cat "${STUB_DIR}/dispatch_polls")" -eq 3 ]
+}
+
+@test "main: the wait stops at its attempt limit" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_DISPATCH_VISIBLE_AFTER=4
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"was not listed"* ]]
+  [ "$(cat "${STUB_DIR}/dispatch_polls")" -eq 3 ]
 }
 
 @test "main: a dispatched run that never shows up only warns" {
