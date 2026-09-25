@@ -2432,7 +2432,9 @@ fake_yq() {
   INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="true" run main
   [ "$status" -ne 0 ]
   [[ "$output" == *"a draft release for v4.11.3 already exists"* ]]
-  [[ "$output" == *"If it failed, delete the draft and re-run this cut"* ]]
+  [[ "$output" == *"gh release delete v4.11.3 --repo loft-sh/loft-enterprise (without --cleanup-tag)"* ]]
+  [[ "$output" == *"Tag v4.11.3 no longer exists, so the re-run tags the current branch head"* ]]
+  [[ "$output" != *"resumes at the existing tag"* ]]
   [[ "$output" == *"gh run list --repo loft-sh/loft-enterprise --workflow release.yaml --branch v4.11.3"* ]]
   [[ "$output" != *"promote-release"* ]]
   [[ "$output" != *"[dry-run] gh api -X POST"* ]]
@@ -2446,7 +2448,34 @@ fake_yq() {
   export GH_STUB_RUNS="${STUB_TAG_COMMIT}:completed:failure"
   INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
   [ "$status" -ne 0 ]
-  [[ "$output" == *"delete the draft and re-run this cut"* ]]
+  [[ "$output" == *"Delete the draft and keep the tag"* ]]
+  [[ "$output" == *"The re-run resumes at the existing tag, ${STUB_TAG_COMMIT}"* ]]
+  [[ "$output" != *"stub-dispatch"* ]]
+}
+
+@test "main: a draft beside a running build says to wait, not to delete it" {
+  # Deleting the draft under a live build would fail its publish step.
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_DRAFTS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_RUNS="${STUB_TAG_COMMIT}:in_progress:null"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"is still in_progress. Wait for it to finish"* ]]
+  [[ "$output" != *"Delete the draft"* ]]
+  [[ "$output" != *"stub-dispatch"* ]]
+}
+
+@test "main: a draft beside a passed build points at the passed build" {
+  # Deleting the draft and re-running would only hit the passed-build refusal.
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_DRAFTS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_RUNS="${STUB_TAG_COMMIT}:completed:success"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"already passed, but the release for v4.11.3 is still a draft"* ]]
+  [[ "$output" != *"Delete the draft"* ]]
   [[ "$output" != *"stub-dispatch"* ]]
 }
 
