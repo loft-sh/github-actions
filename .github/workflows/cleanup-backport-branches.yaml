@@ -27,3 +27,18 @@ jobs:
           restrict-branches-regex: '^backport/'
           days-before-branch-stale: 7
           days-before-branch-delete: 0
+          ignore-branches-with-open-prs: true
+
+      # Always report ordinary stale branches. Mutations require an explicit
+      # repository opt-in, and manual dry runs still override that opt-in.
+      - name: Report or clean up stale feature branches
+        uses: fpicalausa/remove-stale-branches@9b829bc2975ade0c61e64e9613def53ec0732440 # v2.6.1
+        with:
+          github-token: ${{ secrets.gh-access-token }} # zizmor: ignore[secrets-outside-env] -- PAT passed via workflow_call
+          dry-run: ${{ inputs.dry-run || vars.STALE_BRANCH_CLEANUP_ENABLED != 'true' }}
+          exempt-branches-regex: '^(main|master|v[0-9].*|release[-/].*|backport/.*)$'
+          exempt-protected-branches: true
+          ignore-branches-with-open-prs: true
+          days-before-branch-stale: 90
+          days-before-branch-delete: 14
+          operations-per-run: 10

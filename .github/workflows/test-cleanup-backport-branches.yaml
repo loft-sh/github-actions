@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - '.github/workflows/cleanup-backport-branches.yaml'
+      - '.github/workflows/test-cleanup-backport-branches.yaml'
 
 permissions: {}
 
