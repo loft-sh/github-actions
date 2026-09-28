@@ -34,9 +34,9 @@ concurrent pushes. Restoring a deleted branch requires its last commit SHA.
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-| INPUT | TYPE | REQUIRED | DEFAULT | DESCRIPTION |
-|-------|------|----------|---------|-------------|
-| dry-run | boolean | false | `false` | Dry run mode |
+|  INPUT  |  TYPE   | REQUIRED | DEFAULT | DESCRIPTION  |
+|---------|---------|----------|---------|--------------|
+| dry-run | boolean |  false   | `false` | Dry run mode |
 
 <!-- AUTO-DOC-INPUT:END -->
 
@@ -47,8 +47,8 @@ Callers must pass a boolean, for example `dry-run: true`, rather than the string
 
 <!-- AUTO-DOC-SECRETS:START - Do not remove or modify this section -->
 
-| SECRET | REQUIRED | DESCRIPTION |
-|--------|----------|-------------|
-| gh-access-token | true | GitHub PAT with repo scope for branch deletion |
+|     SECRET      | REQUIRED |                     DESCRIPTION                     |
+|-----------------|----------|-----------------------------------------------------|
+| gh-access-token |   true   | GitHub PAT with repo scope for <br>branch deletion  |
 
 <!-- AUTO-DOC-SECRETS:END -->
