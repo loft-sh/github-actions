@@ -20,6 +20,11 @@ The action first leaves a commit comment notifying the author, then waits at lea
 branch to retain it. Branches with unknown authors are skipped by the pinned action.
 At most ten branches are marked stale or selected for deletion per policy per run.
 
+After a live run deletes at least one branch, the workflow sends one Slack
+notification with separate backport and feature branch lists and a link to the
+workflow run. Dry runs and notice-only runs do not notify. The Slack webhook is
+optional, so repositories without it continue cleanup without a notification.
+
 Read the action logs to review candidates and skip reasons. Counts in a dry run
 represent planned operations, not mutations. Before enabling feature cleanup,
 review a manual dry run, confirm that the repository's default and long-lived
@@ -47,8 +52,17 @@ Callers must pass a boolean, for example `dry-run: true`, rather than the string
 
 <!-- AUTO-DOC-SECRETS:START - Do not remove or modify this section -->
 
-|     SECRET      | REQUIRED |                     DESCRIPTION                     |
-|-----------------|----------|-----------------------------------------------------|
-| gh-access-token |   true   | GitHub PAT with repo scope for <br>branch deletion  |
+|      SECRET       | REQUIRED |                     DESCRIPTION                     |
+|-------------------|----------|-----------------------------------------------------|
+|  gh-access-token  |   true   | GitHub PAT with repo scope for <br>branch deletion  |
+| slack-webhook-url |  false   |  Slack incoming webhook for deletion notifications  |
 
 <!-- AUTO-DOC-SECRETS:END -->
+
+Callers should map a dedicated Actions secret explicitly:
+
+```yaml
+secrets:
+  gh-access-token: ${{ secrets.GH_ACCESS_TOKEN }}
+  slack-webhook-url: ${{ secrets.SLACK_WEBHOOK_OPS_NOTIFICATIONS }}
+```
