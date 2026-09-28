@@ -1,8 +1,8 @@
 # Cleanup Backport Branches
 
-Runs two branch cleanup policies using the pinned `fpicalausa/remove-stale-branches`
-action. Product repositories call this workflow weekly and can request a manual
-dry run.
+Runs two branch cleanup policies in parallel using the pinned
+`fpicalausa/remove-stale-branches` action. Product repositories call this
+workflow weekly and can request a manual dry run.
 
 | Policy | Eligible branches | Last tip commit age | Notice before deletion | Mutation gate |
 |--------|-------------------|---------------------|------------------------|---------------|
