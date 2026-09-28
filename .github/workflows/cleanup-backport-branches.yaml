@@ -12,15 +12,23 @@ on:
       gh-access-token:
         description: 'GitHub PAT with repo scope for branch deletion'
         required: true
+      slack-webhook-url:
+        description: 'Slack incoming webhook for deletion notifications'
+        required: false
 
 jobs:
-  cleanup:
+  cleanup_backports:
     name: Delete stale backport branches
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      removed_branches: ${{ steps.cleanup.outputs.removed_branches }}
+      removed_branches_count: ${{ steps.cleanup.outputs.removed_branches_count }}
     steps:
-      - uses: fpicalausa/remove-stale-branches@9b829bc2975ade0c61e64e9613def53ec0732440 # v2.6.1
+      - name: Clean up stale backport branches
+        id: cleanup
+        uses: fpicalausa/remove-stale-branches@9b829bc2975ade0c61e64e9613def53ec0732440 # v2.6.1
         with:
           github-token: ${{ secrets.gh-access-token }} # zizmor: ignore[secrets-outside-env] -- PAT passed via workflow_call, not a repo secret
           dry-run: ${{ inputs.dry-run }}
@@ -29,9 +37,19 @@ jobs:
           days-before-branch-delete: 0
           ignore-branches-with-open-prs: true
 
+  cleanup_features:
+    name: Report or delete stale feature branches
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      removed_branches: ${{ steps.cleanup.outputs.removed_branches }}
+      removed_branches_count: ${{ steps.cleanup.outputs.removed_branches_count }}
+    steps:
       # Always report ordinary stale branches. Mutations require an explicit
       # repository opt-in, and manual dry runs still override that opt-in.
       - name: Report or clean up stale feature branches
+        id: cleanup
         uses: fpicalausa/remove-stale-branches@9b829bc2975ade0c61e64e9613def53ec0732440 # v2.6.1
         with:
           github-token: ${{ secrets.gh-access-token }} # zizmor: ignore[secrets-outside-env] -- PAT passed via workflow_call
@@ -42,3 +60,29 @@ jobs:
           days-before-branch-stale: 90
           days-before-branch-delete: 14
           operations-per-run: 10
+
+  notify:
+    name: Notify Slack about deleted branches
+    needs: [cleanup_backports, cleanup_features]
+    if: >-
+      !inputs.dry-run &&
+      (
+        fromJSON(needs.cleanup_backports.outputs.removed_branches_count || '0') > 0 ||
+        (
+          vars.STALE_BRANCH_CLEANUP_ENABLED == 'true' &&
+          fromJSON(needs.cleanup_features.outputs.removed_branches_count || '0') > 0
+        )
+      )
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Notify Slack about deleted branches
+        uses: loft-sh/github-actions/.github/actions/ci-test-notify@ci-test-notify/v1 # zizmor: ignore[unpinned-uses] -- internal action-specific tag receives reviewed fixes without changing every reusable workflow caller
+        with:
+          test-name: '⚰️ Stale branch cleanup'
+          status: success
+          details: |
+            Deleted stale branches in `${{ github.repository }}`.
+            Backport branches (${{ needs.cleanup_backports.outputs.removed_branches_count || '0' }}): `${{ needs.cleanup_backports.outputs.removed_branches || '[]' }}`
+            Feature branches (${{ vars.STALE_BRANCH_CLEANUP_ENABLED == 'true' && needs.cleanup_features.outputs.removed_branches_count || '0' }}): `${{ vars.STALE_BRANCH_CLEANUP_ENABLED == 'true' && needs.cleanup_features.outputs.removed_branches || '[]' }}`
+          webhook-url: ${{ secrets.slack-webhook-url }}
