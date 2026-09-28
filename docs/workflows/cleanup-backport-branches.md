@@ -10,8 +10,8 @@ dry run.
 | Feature branches | Unprotected branches without open PRs, excluding `main`, `master`, `v` followed by a digit, `release-`, `release/`, and `backport/` branches | 90 days | 14 days | `dry-run: false` and repository variable `STALE_BRANCH_CLEANUP_ENABLED=true` |
 
 Protected branches are excluded from both policies. Feature cleanup is read-only
-unless the repository opts in. Any unset or other variable value keeps reporting
-read-only. An explicit dry run overrides the variable for both policies.
+unless the repository opts in. An unset variable or any value other than `true`
+(case-insensitive) keeps reporting read-only. An explicit dry run overrides the variable for both policies.
 
 The feature policy covers stale unmerged work too. It does not require a merged
 PR. Age uses the tip commit's author date, not the branch's creation or push time.
