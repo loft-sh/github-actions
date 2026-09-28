@@ -1212,3 +1212,112 @@ Oss-Commit: $(git -C "$OSS_REMOTE" rev-parse main)"
   run git -C "$OSS_REMOTE" cat-file -e "main:.github/workflows/release.yaml"
   [ "$status" -ne 0 ]
 }
+
+# --- PR mode -------------------------------------------------------------------
+
+@test "PR mode: the replay goes to the PR branch and the target does not move" {
+  before=$(oss_tip)
+  C=$(company_commit pkg/app.go "l1-changed" "feat: company change")
+
+  PR_BRANCH=sync/main run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value pushed)" = "true" ]
+  [ "$(output_value pr-branch)" = "sync/main" ]
+  [ "$(output_value exported-count)" = "1" ]
+  [ "$(output_value oss-tip)" = "$before" ]
+  [ "$(oss_tip)" = "$before" ]
+
+  [ "$(git -C "$OSS_REMOTE" rev-parse sync/main~1)" = "$before" ]
+  [ "$(git -C "$OSS_REMOTE" log -1 --format=%an sync/main)" = "dev" ]
+  [ "$(git -C "$OSS_REMOTE" log -1 --format='%(trailers:key=Monorepo-Commit,valueonly)' sync/main)" = "$C" ]
+}
+
+@test "PR mode: a later run replaces the PR branch with everything still pending" {
+  company_commit pkg/a.go "a" "feat: first" >/dev/null
+  PR_BRANCH=sync/main bash "$EXPORT"
+  company_commit pkg/b.go "b" "feat: second" >/dev/null
+
+  PR_BRANCH=sync/main run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value exported-count)" = "2" ]
+  [ "$(git -C "$OSS_REMOTE" log --format=%s "main..sync/main" | tac)" = "feat: first
+feat: second" ]
+}
+
+@test "PR mode: nothing pending pushes nothing and leaves pr-branch empty" {
+  PR_BRANCH=sync/main run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value pushed)" = "false" ]
+  [ "$(output_value pr-branch)" = "" ]
+  run git -C "$OSS_REMOTE" rev-parse --verify --quiet sync/main
+  [ "$status" -ne 0 ]
+}
+
+@test "PR mode: after a rebase-merge the next run resumes past the merged commits" {
+  company_commit pkg/a.go "a" "feat: first" >/dev/null
+  PR_BRANCH=sync/main bash "$EXPORT"
+
+  # GitHub's "Rebase and merge": same author and message, new committer and sha.
+  clone="$ROOT/merge"
+  git clone -q "$OSS_REMOTE" "$clone"
+  (
+    cd "$clone"
+    git checkout -q main
+    GIT_COMMITTER_NAME=GitHub GIT_COMMITTER_EMAIL=noreply@github.com \
+      git cherry-pick "origin/sync/main" >/dev/null
+    git push -q origin main
+  )
+  merged=$(oss_tip)
+  [ "$merged" != "$(git -C "$OSS_REMOTE" rev-parse sync/main)" ]
+
+  company_commit pkg/b.go "b" "feat: second" >/dev/null
+  PR_BRANCH=sync/main run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value diverged)" = "false" ]
+  [ "$(output_value exported-count)" = "1" ]
+  [ "$(git -C "$OSS_REMOTE" rev-parse sync/main~1)" = "$merged" ]
+  [ "$(git -C "$OSS_REMOTE" log -1 --format=%s sync/main)" = "feat: second" ]
+}
+
+@test "PR mode: a new release line is created at its anchor and the replay goes to the PR" {
+  company_commit pkg/app.go "l1-v2" "feat: pre-branch change" >/dev/null
+  bash "$EXPORT"
+  (
+    cd "$MONO"
+    git switch -qc v0.99
+    company_commit pkg/rel.go "rel" "fix: release-line only" >/dev/null
+  )
+
+  BRANCH=v0.99 PR_BRANCH=sync/v0.99 run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [ "$(git -C "$OSS_REMOTE" rev-parse v0.99)" = "$(git -C "$OSS_REMOTE" rev-parse main)" ]
+  [ "$(git -C "$OSS_REMOTE" rev-parse sync/v0.99~1)" = "$(git -C "$OSS_REMOTE" rev-parse main)" ]
+  [ "$(git -C "$OSS_REMOTE" log -1 --format=%s sync/v0.99)" = "fix: release-line only" ]
+}
+
+@test "PR mode: a PR branch equal to the target branch is refused" {
+  company_commit pkg/app.go "l1-changed" "feat: company change" >/dev/null
+  before=$(oss_tip)
+
+  PR_BRANCH=main run bash "$EXPORT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"PR_BRANCH must differ from BRANCH"* ]]
+  [ "$(oss_tip)" = "$before" ]
+}
+
+@test "PR mode: a rejected PR-branch push names the PR branch and sets push-rejected" {
+  company_commit pkg/app.go "l1-changed" "feat: company change" >/dev/null
+  # A local stand-in for a server-side rule on the PR branch.
+  cat > "$OSS_REMOTE/hooks/pre-receive" <<'HOOK'
+#!/usr/bin/env bash
+while read -r _ _ ref; do
+  [ "$ref" != "refs/heads/sync/main" ] || { echo "GH013: rule violation"; exit 1; }
+done
+HOOK
+  chmod +x "$OSS_REMOTE/hooks/pre-receive"
+
+  PR_BRANCH=sync/main run bash "$EXPORT"
+  [ "$status" -ne 0 ]
+  [ "$(output_value push-rejected)" = "true" ]
+  [[ "$output" == *"Push to OSS sync/main was rejected"* ]]
+}

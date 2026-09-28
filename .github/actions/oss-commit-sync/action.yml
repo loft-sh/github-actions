@@ -38,13 +38,13 @@ inputs:
     required: false
     default: ""
   pr-branch:
-    description: "Import only: local branch the replayed commits are created on. Defaults to automation/sync-from-oss-<branch>."
+    description: "Import: local branch the replayed commits are created on; defaults to automation/sync-from-oss-<branch>. Export: when set, the replay is force-pushed to this OSS branch and a PR is opened or updated into `branch`, instead of pushing to `branch` directly. The branch must be owned by the sync alone. Unset keeps the direct push."
     required: false
     default: ""
 
 outputs:
   pushed:
-    description: "Export: true when commits were pushed to the OSS branch."
+    description: "Export: true when commits were pushed to the OSS branch, or to pr-branch in PR mode."
     value: ${{ steps.sync.outputs.pushed }}
   diverged:
     description: "Export: true when OSS has external commits not yet absorbed and the run failed closed. The documented reaction is to dispatch the import direction."
@@ -59,7 +59,7 @@ outputs:
     description: "Export: number of commits created on the OSS branch (including an alignment commit, if any)."
     value: ${{ steps.sync.outputs.exported-count }}
   oss-tip:
-    description: "Export: the OSS branch tip after the run."
+    description: "Export: the OSS branch tip after the run. In PR mode the branch does not move, so this is its tip before the PR merges."
     value: ${{ steps.sync.outputs.oss-tip }}
   has-changes:
     description: "Import: true when at least one external commit was replayed onto the PR branch."
@@ -83,8 +83,17 @@ outputs:
     description: "Import: the OSS commit that failed the 3-way apply, when the run failed on a conflict."
     value: ${{ steps.sync.outputs.conflict-sha }}
   pr-branch:
-    description: "Import: the local branch holding the replayed commits."
+    description: "Import: the local branch holding the replayed commits. Export: the OSS branch the PR was pushed from; empty when nothing was pushed or outside PR mode."
     value: ${{ steps.sync.outputs.pr-branch }}
+  pr-number:
+    description: "Export in PR mode: number of the open PR into `branch`; empty when nothing was pushed."
+    value: ${{ steps.pr.outputs.pr-number }}
+  pr-url:
+    description: "Export in PR mode: URL of the open PR into `branch`; empty when nothing was pushed."
+    value: ${{ steps.pr.outputs.pr-url }}
+  pr-created:
+    description: "Export in PR mode: true when this run opened the PR, false when it updated one already open."
+    value: ${{ steps.pr.outputs.pr-created }}
   converged:
     description: "Health: true when the subtree already holds the OSS branch tip content (ignoring exclude-paths)."
     value: ${{ steps.sync.outputs.converged }}
@@ -137,3 +146,16 @@ runs:
         EXCLUDE_PATHS: ${{ inputs.exclude-paths }}
         PR_BRANCH: ${{ inputs.pr-branch }}
       run: ${{ github.action_path }}/run.sh
+
+    - name: Open or update export PR
+      id: pr
+      if: inputs.direction == 'export' && inputs.pr-branch != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        OSS_REPO: ${{ inputs.oss-repo }}
+        BRANCH: ${{ inputs.branch }}
+        PR_BRANCH: ${{ inputs.pr-branch }}
+        PUSHED: ${{ steps.sync.outputs.pushed }}
+        EXPORTED_COUNT: ${{ steps.sync.outputs.exported-count }}
+      run: ${{ github.action_path }}/export-pr.sh

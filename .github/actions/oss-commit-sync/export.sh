@@ -39,10 +39,15 @@ set -euo pipefail
 # SEED_OSS_COMMIT (first run on a pre-existing branch with no trailers),
 # ALIGN_TREE (default false), EXCLUDE_PATHS (newline-separated OSS-root
 # paths that are never mirrored: stripped from each replayed patch, and
-# ignored by the guard and the convergence assertion), GITHUB_OUTPUT.
+# ignored by the guard and the convergence assertion), PR_BRANCH (see "PR
+# mode" below), GITHUB_OUTPUT.
+#
+# PR mode: with PR_BRANCH set, the replay is pushed to that OSS branch
+# instead of BRANCH, and export-pr.sh opens the PR. BRANCH itself is only
+# ever created (at its anchor, for a fresh release line), never advanced.
 #
 # Outputs: pushed, diverged, push-rejected, exported-count, oss-tip,
-# loose-absorption.
+# loose-absorption, pr-branch.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -54,7 +59,10 @@ SEED_MONOREPO_COMMIT="${SEED_MONOREPO_COMMIT:-}"
 SEED_OSS_COMMIT="${SEED_OSS_COMMIT:-}"
 ALIGN_TREE="${ALIGN_TREE:-false}"
 EXCLUDE_PATHS="${EXCLUDE_PATHS:-}"
+PR_BRANCH="${PR_BRANCH:-}"
 GITHUB_OUTPUT="${GITHUB_OUTPUT:-/dev/null}"
+
+[ "$PR_BRANCH" != "$BRANCH" ] || die "PR_BRANCH must differ from BRANCH (${BRANCH})"
 
 cd "$(git rev-parse --show-toplevel)"
 
@@ -71,6 +79,7 @@ emit pushed false
 emit push-rejected false
 emit exported-count 0
 emit loose-absorption false
+emit pr-branch ""
 
 # Declared before the branch split so the alignment gate can test it unguarded on
 # both paths. It stays empty on the fresh-branch path, which never runs the
@@ -536,20 +545,47 @@ fi
 
 # --- push (plain fast-forward; branch creation for new lines) ---------------
 
+# push_rejected <ref>
+# Every push here targets a ref the sync identity may be blocked on, and git's
+# raw GH013 names none of the fixes, so all of them fail through this.
+push_rejected() {
+  emit push-rejected true
+  echo "::error::Push to OSS $1 was rejected. If this is a branch-protection / ruleset rejection (GH013, 'must be made through a pull request', or 'not authorized to push'), the sync identity is not a bypass actor. It must bypass EVERY protection targeting $1: all repository/organization rulesets (require-PR bypass) AND legacy branch protection (require-PR bypass + push allowlist). Team bypass actors only apply if the team has access to the repo. See the oss-commit-sync README 'Prerequisites'."
+  exit 1
+}
+
+if [ -n "$PR_BRANCH" ]; then
+  # A PR needs a base to target, so a fresh release line is created first, at
+  # its anchor: a commit OSS already has, so this adds no content to it.
+  if [ "$branch_absent" = "true" ]; then
+    git_scrubbed push --quiet "$OSS_REMOTE" "${OSS_TIP}:refs/heads/${BRANCH}" || push_rejected "$BRANCH"
+    echo "Created OSS ${BRANCH} at ${OSS_TIP}"
+  fi
+  if [ "$NEW_TIP" != "$OSS_TIP" ]; then
+    # Forced, and safe to be: the branch is ours alone, and every run replays
+    # everything still pending since the anchor, so the newest push is always a
+    # superset of what it replaces.
+    git_scrubbed push --quiet --force "$OSS_REMOTE" "${NEW_TIP}:refs/heads/${PR_BRANCH}" || push_rejected "$PR_BRANCH"
+    emit pushed true
+    emit pr-branch "$PR_BRANCH"
+    echo "Pushed ${NEW_TIP} to OSS ${PR_BRANCH} for a PR into ${BRANCH}"
+  else
+    echo "Nothing to push; OSS ${BRANCH} is up to date"
+  fi
+  emit exported-count "$count"
+  emit oss-tip "$OSS_TIP"
+  exit 0
+fi
+
 if [ "$NEW_TIP" != "$OSS_TIP" ] || [ "$branch_absent" = "true" ]; then
   # A true pre-push permission check isn't possible: server-side rulesets are
   # not evaluated on --dry-run, and a token with write access can still be
   # blocked by branch protection. So the fail-fast is here: on a rejection,
   # translate git's raw error into an actionable one instead of leaving a bare
   # GH013 in the log.
-  if git_scrubbed push --quiet "$OSS_REMOTE" "${NEW_TIP}:refs/heads/${BRANCH}"; then
-    emit pushed true
-    echo "Pushed ${NEW_TIP} to OSS ${BRANCH}"
-  else
-    emit push-rejected true
-    echo "::error::Push to OSS ${BRANCH} was rejected. If this is a branch-protection / ruleset rejection (GH013, 'must be made through a pull request', or 'not authorized to push'), the sync identity is not a bypass actor. It must bypass EVERY protection targeting ${BRANCH}: all repository/organization rulesets (require-PR bypass) AND legacy branch protection (require-PR bypass + push allowlist). Team bypass actors only apply if the team has access to the repo. See the oss-commit-sync README 'Prerequisites'."
-    exit 1
-  fi
+  git_scrubbed push --quiet "$OSS_REMOTE" "${NEW_TIP}:refs/heads/${BRANCH}" || push_rejected "$BRANCH"
+  emit pushed true
+  echo "Pushed ${NEW_TIP} to OSS ${BRANCH}"
 else
   echo "Nothing to push; OSS ${BRANCH} is up to date"
 fi
