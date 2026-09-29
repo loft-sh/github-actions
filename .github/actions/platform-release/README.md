@@ -190,25 +190,36 @@ up where the last one stopped:
   the existing tag. The tag is never moved, so the preflight reads
   `release.yaml` at the tagged commit, not at the branch head.
 - **Tag exists, earlier builds failed or were cancelled:** the re-run
-  dispatches a new build at the same tag.
-- **A build is still queued or running at the tag:** the re-run refuses. Wait
-  for it to finish, and re-run the cut if it fails. This also holds when the
-  tag was deleted under the running build, since re-creating it would start a
-  second build from another commit.
+  dispatches a new build at the same tag. A re-run that failed after an earlier
+  attempt passed counts as passed (below). If an earlier attempt cannot be
+  read, the re-run refuses, since that attempt may have passed and published:
+  re-run the cut once GitHub answers again.
+- **A build is still queued or running under the version:** the re-run
+  refuses. This also holds when the tag was deleted under the running build,
+  since re-creating it would start a second build from another commit. With a
+  draft, see [Draft releases](#draft-releases). With no published release and
+  no passed build that counts (see below), wait for it to finish, and re-run
+  the cut if it fails. Otherwise the version may already have gone out, so the
+  running build is either the one that published it, still in its later jobs,
+  or a second build that would upload the version's assets and push its images
+  again: open it, and cancel it only if it has not finished its goreleaser
+  step. A passed build counts only if it built the version as it went out, at
+  any commit and whether or not the tag still exists. One from before the
+  version was pulled on purpose and cut again does not.
 - **The tag is not on the target branch** (a stable tag made by hand on
   `main`, or a `-next` tag re-run with another `source-branch`): the re-run
   refuses rather than build the wrong branch.
 - **The `-next` feature branch was deleted after tagging:** the re-run warns
   and resumes from the tag. A missing `main` or `release-X.Y` branch is refused.
-- **A build at the tag passed but there is no release:** the re-run refuses,
-  since another build could publish the version twice. Find out why the build
-  did not publish first.
-- **A draft release exists for the version:** the re-run refuses. The build
-  already got as far as the draft, so promote it with loft-enterprise's own
-  `promote-release.yaml` workflow, which is built on the
-  [`promote-release`](../promote-release/README.md) action the same way
-  [vcluster-pro's](https://github.com/loft-sh/vcluster-pro/blob/main/.github/workflows/promote-release.yaml)
-  is. Do not delete the draft.
+- **A build at the tag passed, in any attempt, but there is no published
+  release:** the re-run refuses, since another build could publish the version
+  twice. Find out why the build did not publish first. If a build is running
+  beside it, see the running-build case above. The refusal stays as long as
+  the tag points at that
+  commit, so build it again by hand (below) once you know.
+- **A draft release exists for the version:** the re-run refuses and names
+  up to five drafts by id, with their publish times, and counts the rest. See
+  [Draft releases](#draft-releases).
 
 To restart a build by hand instead, dispatch the builder directly:
 
@@ -218,7 +229,92 @@ gh workflow run release.yaml --repo loft-sh/loft-enterprise --ref refs/tags/<ver
 
 `--ref` is required: without it the default-branch builder runs and may build a
 different line. Give it the full `refs/tags/` ref, so a branch with the same
-name as the tag cannot be what runs.
+name as the tag cannot be what runs. Settle any draft for the version first, as
+below: goreleaser does not reuse an existing draft, so the build creates and
+publishes a second release and the old draft stays behind. loft-enterprise's
+`.goreleaser.yaml` sets `replace_existing_draft`, but goreleaser only honours it
+with `draft: true`, which that config does not set.
+
+### Draft releases
+
+goreleaser drafts the release before uploading assets and publishes it as its
+last step, and the builder's later jobs (charts, syncs, notifications) run after
+that. So a draft with no publish time is usually a build still running, or one
+that failed after drafting. Deleting a tag, or un-publishing by hand, also
+turns a published release back into a draft, and re-creating the tag does not
+publish it again. A draft that was published should keep its publish time,
+which the error shows. A draft cannot be promoted instead:
+[`promote-release`](../promote-release/README.md) never un-drafts a release.
+
+The refusal does not say what to do next, since whether deleting, publishing
+or cancelling is safe depends on what a running build does next, and on
+whether a release was pulled on purpose. It lists what the cut saw instead:
+whether the tag exists and where it points (or that it could not be read), up
+to five drafts by id with their publish times (published ones first), up to
+five running builds by run id, and up to three commits that passed builds
+built, in full and newest first. To list every draft for the version:
+
+```bash
+gh api --paginate repos/loft-sh/loft-enterprise/releases \
+  --jq '.[] | select(.draft and .tag_name == "<version>") | "\(.id) \(.published_at // "no publish time")"'
+```
+
+In the steps below, a passed build counts only if it built the version as it
+went out. One from before the version was pulled on purpose and cut again
+does not: its release is gone, and the draft beside it belongs to the new cut.
+
+Settle the drafts in this order:
+
+1. **A build of the version is running.** Do not touch any draft while it runs:
+   deleting the draft under it fails its publish. If no draft has a publish
+   time and no passed build counts, wait for it to finish.
+   Otherwise the version may already have shipped, so open each running
+   build. One that has not finished its goreleaser step would ship the
+   version a second time, so cancel it
+   (`gh run cancel <run-id> --repo loft-sh/loft-enterprise`). One past it may
+   be the build that shipped the draft, still in its later jobs, so let it
+   finish. The `gh run list` commands the error prints list every running
+   build.
+2. **A draft has a publish time.** Never delete it: it is the version's
+   release, and may be the only record of it. If the version was pulled on
+   purpose, leave it. Otherwise make sure tag `<version>` points at the commit
+   it shipped from (re-create it if it is gone; the error lists up to three
+   commits passed builds built; `gh run list` shows only each run's latest
+   attempt, so for a failed re-run check the earlier ones with
+   `gh run view <run-id> --attempt <n> --repo loft-sh/loft-enterprise`), then
+   publish it again:
+   `gh api -X PATCH repos/loft-sh/loft-enterprise/releases/<id> -F draft=false -f make_latest=false`.
+   Publishing puts the release on whatever commit the tag names, and GitHub
+   creates a missing tag from the draft's target, not the shipped commit.
+   Without `make_latest=false` GitHub flags it Latest, which moves the
+   baseline [`promote-release`](../promote-release/README.md) promotes against.
+   With several, publish only one, after checking what each holds. Beside a
+   published release, a draft with a publish time means the version may have
+   gone out twice: compare them before doing anything.
+3. **A draft has no publish time, and nothing is running.** It most likely
+   never shipped, but GitHub has not been checked to keep the publish time in
+   every case, so look before deleting it. Only people with push access can
+   download a draft's assets, so downloads beyond what they explain mean it
+   was public once
+   (`gh api repos/loft-sh/loft-enterprise/releases/<id> --jq '[.assets[].download_count] | add'`).
+   If a passed build counts, treat the draft as step 2 until you know
+   otherwise: a passed build publishes, so the draft may be the shipped
+   release with its publish time lost. Then
+   delete it by id, which keeps the tag:
+   `gh api -X DELETE repos/loft-sh/loft-enterprise/releases/<id>`. Do not use
+   `gh release delete <version>`: it cannot pick between drafts, and picks the
+   published release when there is one.
+
+A draft published again in step 2 is the version's release, so that version
+needs no cut. A re-run refuses on the published release, and still lists any
+draft or running build left beside it, which step 2 says to leave alone once
+you have compared them. Otherwise,
+once no draft is left, re-run the cut. It resumes at the existing tag, or tags
+the current branch head if the tag is gone, which may not be the commit a
+draft was built from. If
+a build at the tag passed, the re-run still refuses, so build by hand as above.
+A rebuild pushes the version's images again, since goreleaser pushes them
+before it drafts the release.
 
 ## Usage
 

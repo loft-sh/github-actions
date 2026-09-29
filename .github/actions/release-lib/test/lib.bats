@@ -103,9 +103,46 @@ stub_gh() {
   tag_runs runs org/repo build.yaml v0.37.2
   grep -q 'workflows/build.yaml/runs?branch=v0.37.2&' "$GH_LOG"
   grep -q 'workflows/build.yaml/runs?branch=refs/tags/v0.37.2&' "$GH_LOG"
+  # Every page is read, not just the first.
+  [ "$(grep -c -- '--paginate' "$GH_LOG")" -eq 2 ]
   # The same run under both queries is counted once.
-  [ "$runs" = "7 abc queued none" ]
+  [ "$runs" = "7 abc queued none 1" ]
   [ "$(count_runs_at "$runs" abc)" -eq 1 ]
+}
+
+@test "tag_runs: a run that finishes between the two reads is kept once, as still going" {
+  # Read first under the short name, then under refs/tags/, by when it was done.
+  stub_gh 'if [[ "$*" == *refs/tags/* ]]; then s=completed c="\"success\""; else s=in_progress c=null; fi
+printf "{\"workflow_runs\":[{\"id\":7,\"head_sha\":\"abc\",\"status\":\"%s\",\"conclusion\":%s},{\"id\":8,\"head_sha\":\"abc\",\"status\":\"completed\",\"conclusion\":\"failure\"}]}\n" "$s" "$c" | jq -r "${@: -1}"'
+  local runs
+  tag_runs runs org/repo build.yaml v0.37.2
+  [ "$runs" = $'7 abc in_progress none 1\n8 abc completed failure 1' ]
+  [ "$(count_runs_at "$runs" abc)" -eq 2 ]
+}
+
+@test "tag_runs: the live copy of a run wins whichever read it came from" {
+  stub_gh 'if [[ "$*" == *refs/tags/* ]]; then s=in_progress c=null; else s=completed c="\"success\""; fi
+printf "{\"workflow_runs\":[{\"id\":7,\"head_sha\":\"abc\",\"status\":\"%s\",\"conclusion\":%s}]}\n" "$s" "$c" | jq -r "${@: -1}"'
+  local runs
+  tag_runs runs org/repo build.yaml v0.37.2
+  [ "$runs" = "7 abc in_progress none 1" ]
+}
+
+@test "tag_runs: a re-run started between the two reads is kept as queued" {
+  # A re-run keeps the run id, so the completed copy is the older one here.
+  stub_gh 'if [[ "$*" == *refs/tags/* ]]; then a=2 s=queued c=null; else a=1 s=completed c="\"failure\""; fi
+printf "{\"workflow_runs\":[{\"id\":7,\"run_attempt\":%s,\"head_sha\":\"abc\",\"status\":\"%s\",\"conclusion\":%s}]}\n" "$a" "$s" "$c" | jq -r "${@: -1}"'
+  local runs
+  tag_runs runs org/repo build.yaml v0.37.2
+  [ "$runs" = "7 abc queued none 2" ]
+}
+
+@test "tag_runs: a re-run is kept as queued whichever read it came from" {
+  stub_gh 'if [[ "$*" == *refs/tags/* ]]; then a=1 s=completed c="\"failure\""; else a=2 s=queued c=null; fi
+printf "{\"workflow_runs\":[{\"id\":7,\"run_attempt\":%s,\"head_sha\":\"abc\",\"status\":\"%s\",\"conclusion\":%s}]}\n" "$a" "$s" "$c" | jq -r "${@: -1}"'
+  local runs
+  tag_runs runs org/repo build.yaml v0.37.2
+  [ "$runs" = "7 abc queued none 2" ]
 }
 
 @test "tag_runs: an error-shaped body is an unknown answer, not no runs" {

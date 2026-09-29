@@ -15,7 +15,8 @@
 # Nothing here mutates GitHub, so every function is safe to call in dry-run.
 # Creating the tag and dispatching the build stay in each dispatcher.
 # The probes fail closed: a transient API error exits rather than reading as
-# "absent".
+# "absent". api_read and resolve_tag return a distinct code for it instead, for
+# a caller that has other facts to report before it stops.
 
 # trim <string> -> the string without leading/trailing whitespace.
 # Every operator-supplied input goes through this: the same paste that drops a
@@ -308,32 +309,52 @@ api_exists() {
   esac
 }
 
-# api_get <out-var> <path> <what> <jq> -> 0 with the jq-filtered body in <out-var>
-# on a 200, 1 on a 404, exits 1 on anything else. api_exists for a caller that
-# also needs the body, so one request answers both questions.
+# api_read <out-var> <path> <what> <jq> -> 0 with the jq-filtered body in
+# <out-var> on a 200, 1 on a 404, 2 when GitHub gave no answer. On 1 or 2 the
+# message is in API_READ_ERR. For a caller that decides for itself whether a
+# failed read ends the script, such as one that has other facts to report.
 #
 # stderr is kept apart from the body, which gets parsed, and quoted only when
 # something fails. On a 200 gh prints the response headers, a blank line, then
 # the filtered body; on a 404 it prints the headers and exits non-zero, so the
-# exit status is ignored and the status line decides. Exits rather than returns
-# on a failure, so call it directly, not inside a command substitution, when
-# that exit has to end the script.
-api_get() {
-  local __ag_var="$1" __ag_path="$2" __ag_what="$3" __ag_filter="$4" __ag_out __ag_err __ag_code
-  run_captured __ag_out __ag_err gh api -i "$__ag_path" --jq "$__ag_filter" || true
-  __ag_code="$(printf '%s\n' "$__ag_out" | grep -m1 '^HTTP/' | awk '{print $2}' || true)"
-  case "$__ag_code" in
+# exit status is ignored and the status line decides.
+api_read() {
+  local __ar_var="$1" __ar_path="$2" __ar_what="$3" __ar_filter="$4" __ar_out __ar_err __ar_code
+  # Read by the caller.
+  # shellcheck disable=SC2034
+  API_READ_ERR=""
+  run_captured __ar_out __ar_err gh api -i "$__ar_path" --jq "$__ar_filter" || true
+  __ar_code="$(printf '%s\n' "$__ar_out" | grep -m1 '^HTTP/' | awk '{print $2}' || true)"
+  case "$__ar_code" in
     200)
-      printf -v "$__ag_var" '%s' "$(printf '%s\n' "$__ag_out" | awk 'body { print } /^\r?$/ { body = 1 }')"
+      printf -v "$__ar_var" '%s' "$(printf '%s\n' "$__ar_out" | awk 'body { print } /^\r?$/ { body = 1 }')"
       return 0 ;;
-    404) return 1 ;;
+    404)
+      # shellcheck disable=SC2034
+      API_READ_ERR="GitHub answered 404 for ${__ar_what}"
+      return 1 ;;
     "")
-      echo "::error::failed to reach GitHub API for ${__ag_what} (no HTTP status - DNS, rate-limit, or auth). Not treating as absent. gh said: $(gh_reason "$__ag_err")" >&2
-      exit 1 ;;
+      # shellcheck disable=SC2034
+      API_READ_ERR="failed to reach GitHub API for ${__ar_what} (no HTTP status - DNS, rate-limit, or auth). Not treating as absent. gh said: $(gh_reason "$__ar_err")"
+      return 2 ;;
     *)
-      echo "::error::unexpected status ${__ag_code} from GitHub API for ${__ag_what}. gh said: $(gh_reason "$__ag_err")" >&2
-      exit 1 ;;
+      # shellcheck disable=SC2034
+      API_READ_ERR="unexpected status ${__ar_code} from GitHub API for ${__ar_what}. gh said: $(gh_reason "$__ar_err")"
+      return 2 ;;
   esac
+}
+
+# api_get <out-var> <path> <what> <jq> -> 0 with the jq-filtered body in <out-var>
+# on a 200, 1 on a 404, exits 1 on anything else. api_exists for a caller that
+# also needs the body, so one request answers both questions. Exits rather than
+# returns on a failure, so call it directly, not inside a command substitution,
+# when that exit has to end the script.
+api_get() {
+  local __ag_rc=0
+  api_read "$@" || __ag_rc=$?
+  ((__ag_rc != 2)) && return "$__ag_rc"
+  echo "::error::${API_READ_ERR}" >&2
+  exit 1
 }
 
 # branch_exists <repo> <branch> -> 0 if 200, 1 if 404, exits 1 on transient error.
@@ -415,7 +436,7 @@ require_unbranched() {
 # to be cut first, alpha/beta name the default branch, next names a feature
 # branch. A 404 is refused rather than swapped for another branch.
 #
-# Singular `git/ref/heads/`, for the same reason tag_commit reads the singular
+# Singular `git/ref/heads/`, for the same reason resolve_tag reads the singular
 # tags form: the plural endpoint falls back to prefix matching and answers with
 # an ARRAY of near-misses when the exact ref is absent, where the singular form
 # gives a clean 404.
@@ -437,49 +458,77 @@ resolve_head() {
   printf '%s' "$sha"
 }
 
-# tag_commit <repo> <tag> - the commit an existing tag points at, peeled when the
-# tag is annotated, since a workflow run reports the peeled commit as head_sha.
-# A tag can point at another tag object, so peeling repeats until it reaches a
-# commit. Anything else (a tree, a blob, a chain too deep to be a real tag) is
-# refused, since no run builds it. Aborts when the commit cannot be read, rather
-# than guessing which build the tag belongs to.
-tag_commit() {
-  local repo="$1" tag="$2" out sha type depth=0
-  if ! api_get out "repos/${repo}/git/ref/tags/${tag}" "tag ${tag} in ${repo}" '"\(.object.sha // "") \(.object.type // "")"'; then
-    echo "::error::tag ${tag} in ${repo} disappeared while the cut was reading it. Re-run the cut." >&2
-    exit 1
+# resolve_tag <out-var> <repo> <tag> - the commit a tag points at, peeled when
+# the tag is annotated, since a workflow run reports the peeled commit as
+# head_sha. A tag can point at another tag object, so peeling repeats until it
+# reaches a commit. Returns 0 with the commit in <out-var>, 1 when the tag does
+# not exist, 2 when a read failed, and 3 when the tag leads to something no run
+# builds (a tree, a blob, a chain too deep to be a real tag, or a tag object
+# that cannot be read), with the cause in TAG_ERR on anything but 0 and 1.
+#
+# Singular `git/ref/tags/` requires an exact match (404s otherwise). The plural
+# `git/refs/tags/` prefix-matches, so it would report `v4.11.2` as existing when
+# only `v4.11.2-rc.1` had been tagged.
+resolve_tag() {
+  local __rt_var="$1" __rt_repo="$2" __rt_tag="$3" __rt_out __rt_sha __rt_type __rt_depth=0 __rt_rc=0
+  # shellcheck disable=SC2034
+  TAG_ERR=""
+  api_read __rt_out "repos/${__rt_repo}/git/ref/tags/${__rt_tag}" "tag ${__rt_tag} in ${__rt_repo}" '"\(.object.sha // "") \(.object.type // "")"' || __rt_rc=$?
+  ((__rt_rc == 1)) && return 1
+  if ((__rt_rc)); then
+    # shellcheck disable=SC2034
+    TAG_ERR="$API_READ_ERR"
+    return 2
   fi
-  sha="${out%% *}" type="${out##* }"
-  while [[ "$type" == "tag" && "$sha" =~ ^[0-9a-f]{40,64}$ ]] && ((depth++ < 5)); do
-    if ! api_get out "repos/${repo}/git/tags/${sha}" "tag object ${tag} in ${repo}" '"\(.object.sha // "") \(.object.type // "")"'; then
-      sha="" type=""
+  __rt_sha="${__rt_out%% *}" __rt_type="${__rt_out##* }"
+  while [[ "$__rt_type" == "tag" && "$__rt_sha" =~ ^[0-9a-f]{40,64}$ ]] && ((__rt_depth++ < 5)); do
+    __rt_rc=0
+    api_read __rt_out "repos/${__rt_repo}/git/tags/${__rt_sha}" "tag object ${__rt_tag} in ${__rt_repo}" '"\(.object.sha // "") \(.object.type // "")"' || __rt_rc=$?
+    if ((__rt_rc == 2)); then
+      # shellcheck disable=SC2034
+      TAG_ERR="$API_READ_ERR"
+      return 2
+    fi
+    if ((__rt_rc)); then
+      __rt_sha="" __rt_type=""
       break
     fi
-    sha="${out%% *}" type="${out##* }"
+    __rt_sha="${__rt_out%% *}" __rt_type="${__rt_out##* }"
   done
-  if [[ ! "$sha" =~ ^[0-9a-f]{40,64}$ ]]; then
-    echo "::error::tag ${tag} exists in ${repo} but the commit it points at could not be resolved, so the cut cannot tell which build belongs to it. Nothing was dispatched." >&2
-    exit 1
+  if [[ ! "$__rt_sha" =~ ^[0-9a-f]{40,64}$ ]]; then
+    # shellcheck disable=SC2034
+    TAG_ERR="tag ${__rt_tag} exists in ${__rt_repo} but the commit it points at could not be resolved, so the cut cannot tell which build belongs to it"
+    return 3
   fi
-  if [[ "$type" != "commit" ]]; then
-    echo "::error::tag ${tag} in ${repo} does not lead to a commit (it ends at a $(flatten "${type:-object of unknown type}") ${sha}), so no build can run from it. Nothing was dispatched." >&2
-    exit 1
+  if [[ "$__rt_type" != "commit" ]]; then
+    # shellcheck disable=SC2034
+    TAG_ERR="tag ${__rt_tag} in ${__rt_repo} does not lead to a commit (it ends at a $(flatten "${__rt_type:-object of unknown type}") ${__rt_sha}), so no build can run from it"
+    return 3
   fi
-  printf '%s' "$sha"
+  printf -v "$__rt_var" '%s' "$__rt_sha"
 }
 
 # tag_runs <out-var> <repo> <workflow> <tag> - every <workflow> run recorded
-# under the tag's name, one "<id> <head_sha> <status> <conclusion>" line each.
+# under the tag's name, one "<id> <head_sha> <status> <conclusion> <attempt>"
+# line each. The list reports only a run's latest attempt.
 # Returns non-zero with the cause in TAG_RUNS_ERR when the answer is unknown, and
 # callers fail closed: read as "no runs", this would let a second build through.
 #
 # `branch=` filters on the run's head_branch. A bare `--ref <tag>` dispatch is
 # known to record the short tag name there, but platform-release dispatches the
 # full `refs/tags/<tag>`, which has not been checked, so both spellings are
-# queried and the runs merged by id. Either way the guards see the run.
+# queried and the runs merged by id. Either way the guards see the run. A run
+# can change between two reads, or two pages, and come back twice with
+# different statuses. It is kept once, as the copy with the higher run_attempt,
+# since a re-run keeps the id and goes back to queued. Within one attempt the
+# live copy wins: at worst a run that just finished reads as still going and the
+# cut refuses once, where a completed copy picked over a live one would let a
+# second build through.
 #
-# The shape is asserted so an error body cannot read as "no runs". 100 runs is
-# far more than one tag ever collects.
+# The shape is asserted so an error body cannot read as "no runs". Every page is
+# read: a run left off the list could be the live build a second dispatch
+# would race. GitHub stops a branch-filtered listing at 1000 runs, far more
+# than one tag collects.
 tag_runs() {
   local __tr_var="$1" repo="$2" workflow="$3" tag="$4" __tr_ref __tr_page __tr_err __tr_all=""
   # Read by the caller, which quotes it in its own error.
@@ -487,15 +536,15 @@ tag_runs() {
   TAG_RUNS_ERR=""
   for __tr_ref in "$tag" "refs/tags/${tag}"; do
     # shellcheck disable=SC2016 # jq, not shell
-    if ! run_captured __tr_page __tr_err gh api "repos/${repo}/actions/workflows/${workflow}/runs?branch=${__tr_ref}&per_page=100" \
-      --jq 'if (.workflow_runs | type) != "array" then error("no workflow_runs array") else .workflow_runs[] | "\(.id) \(.head_sha) \(.status) \(.conclusion // "none")" end'; then
+    if ! run_captured __tr_page __tr_err gh api --paginate "repos/${repo}/actions/workflows/${workflow}/runs?branch=${__tr_ref}&per_page=100" \
+      --jq 'if (.workflow_runs | type) != "array" then error("no workflow_runs array") else .workflow_runs[] | "\(.id) \(.run_attempt // 1) \(.head_sha) \(.status) \(.conclusion // "none")" end'; then
       # shellcheck disable=SC2034
       TAG_RUNS_ERR="$__tr_err"
       return 1
     fi
     [[ -n "$__tr_page" ]] && __tr_all+="${__tr_page}"$'\n'
   done
-  printf -v "$__tr_var" '%s' "$(printf '%s' "$__tr_all" | sort -u)"
+  printf -v "$__tr_var" '%s' "$(printf '%s' "$__tr_all" | awk 'NF { rank = $2 * 2 + ($4 != "completed"); if (!($1 in best) || rank > best[$1]) { best[$1] = rank; run[$1] = $1 " " $3 " " $4 " " $5 " " $2 } } END { for (id in run) print run[id] }' | sort -n)"
 }
 
 # count_runs_at <runs> <sha> - how many of tag_runs' lines ran <sha>.
