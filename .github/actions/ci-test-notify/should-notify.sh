@@ -5,10 +5,12 @@ set -euo pipefail
 # `notify=true|false` to $GITHUB_OUTPUT for the composite action to gate on.
 #
 # Callers pass the run conclusion straight from `needs.<job>.result` or
-# `job.status`, which can be success, failure, warning, cancelled, or skipped.
-# Cancelled and skipped runs are silenced: a cancelled run was aborted by a
-# human (or superseded), and a skipped job never executed. A warning is an
-# advisory result and should notify without being labelled as a failure.
+# `job.status`, which can be success, failure, cancelled, or skipped, or set
+# `warning` or `info` themselves. Cancelled and skipped runs are silenced: a
+# cancelled run was aborted by a human (or superseded), and a skipped job never
+# executed. A warning is an advisory result and should notify without being
+# labelled as a failure. Info is a routine report and notifies under a neutral
+# header.
 #
 # An empty webhook (fork PRs, where secrets are unavailable) also suppresses
 # the notification, same as before.
