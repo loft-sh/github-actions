@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Required env vars: TEST_NAME, STATUS, DETAILS, PAYLOAD_FILE, RUN_URL, REPO, RUN_NUMBER
-# Optional env vars: RUN_LINK_POSITION (top or bottom; defaults to top)
+# Optional env vars: RUN_LINK_POSITION (top, bottom or none; defaults to top)
 
 command -v jq >/dev/null || { echo "::error::jq is required but not found"; exit 1; }
 
@@ -21,6 +21,7 @@ case "$STATUS" in
   success)    EMOJI="✅"; STATUS_TEXT="Success" ;;
   failure)    EMOJI="❌"; STATUS_TEXT="Failed" ;;
   warning)    EMOJI="⚠️"; STATUS_TEXT="" ;;
+  info)       EMOJI="📊"; STATUS_TEXT="" ;;
   cancelled)  EMOJI="⚠️"; STATUS_TEXT="Cancelled" ;;
   skipped)    EMOJI="⏭️"; STATUS_TEXT="Skipped" ;;
   *)          EMOJI="❓"; STATUS_TEXT="Unknown ($STATUS)" ;;
@@ -35,21 +36,31 @@ if [[ $HEADER_LEN -gt 150 ]]; then
   HEADER=$(clip_to 150 "$HEADER")
 fi
 
-# Normalise first, so the two positions are each written once and every later
+# Normalise first, so each position is written once and every later
 # reader (the truncation branch below included) sees a value it can trust.
 RUN_LINK_POSITION="${RUN_LINK_POSITION:-top}"
-if [[ "$RUN_LINK_POSITION" != "top" && "$RUN_LINK_POSITION" != "bottom" ]]; then
+if [[ "$RUN_LINK_POSITION" != "top" && "$RUN_LINK_POSITION" != "bottom" && "$RUN_LINK_POSITION" != "none" ]]; then
   echo "::warning::invalid RUN_LINK_POSITION '$RUN_LINK_POSITION', defaulting to top"
   RUN_LINK_POSITION="top"
 fi
 
-# The two positions render the link differently, not just in a different place:
+# `none` relies on the context footer, which links the same run, so the section
+# carries only the details. Slack rejects a section with empty text, so with no
+# details there is nothing to drop the link in favour of: fall back to `bottom`.
+if [[ "$RUN_LINK_POSITION" == "none" && ! "$DETAILS" =~ [^[:space:]] ]]; then
+  echo "::warning::RUN_LINK_POSITION is none but there are no details to show, using bottom"
+  RUN_LINK_POSITION="bottom"
+fi
+
+# `top` and `bottom` render the link differently, not just in a different place:
 # `top` keeps the bare `Build URL:` line every existing caller already gets, and
 # `bottom` uses a linked label that reads better as a footer. Changing `top`
 # would alter the message for ~30 call sites, so the difference is documented in
 # the input rather than smoothed over here.
 RUN_LINK="Workflow: <${RUN_URL}|View workflow run>"
-if [[ "$RUN_LINK_POSITION" == "bottom" ]]; then
+if [[ "$RUN_LINK_POSITION" == "none" ]]; then
+  SECTION="$DETAILS"
+elif [[ "$RUN_LINK_POSITION" == "bottom" ]]; then
   SECTION="$RUN_LINK"
   if [[ "$DETAILS" =~ [^[:space:]] ]]; then
     SECTION="$(printf '%s\n\n%s' "$DETAILS" "$SECTION")"

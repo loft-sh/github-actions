@@ -8,13 +8,13 @@ Replaces the nightly-specific `ci-notify-nightly-tests` action with a generic in
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-|       INPUT       |  TYPE  | REQUIRED | DEFAULT |                                                                                                                                                                            DESCRIPTION                                                                                                                                                                            |
-|-------------------|--------|----------|---------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-|      details      | string |  false   |         |                                                                                                                                  Markdown text appended after the build <br>URL (test results, versions, artifact links, etc.)                                                                                                                                    |
-| run-link-position | string |  false   | `"top"` | Where the immutable workflow-run link goes, <br>and how it reads. `top` (default) <br>puts a bare `Build URL: <url>` line above <br>`details`, unchanged from before this input <br>existed. `bottom` puts a linked `Workflow: View workflow run` <br>line below `details`, so the content <br>leads and the link trails. Invalid <br>values fall back to `top`.  |
-|      status       | string |   true   |         |                                                                                      Run status, typically `needs.<job>.result` or `job.status`. <br>`success`, `failure`, and `warning` notify; `cancelled` <br>and `skipped` are treated as no-ops <br>and send nothing.                                                                                        |
-|     test-name     | string |   true   |         |                                                                                    Test suite name for the header <br>(e.g. "E2E Ginkgo Nightly Tests"). Keep under ~130 chars — <br>Slack header blocks have a 150-char <br>limit and the status suffix takes <br>~15 chars.                                                                                     |
-|    webhook-url    | string |   true   |         |                                                                                                                                                                    Slack incoming webhook URL                                                                                                                                                                     |
+|       INPUT       |  TYPE  | REQUIRED | DEFAULT |                                                                                                                                                                                                                                                                          DESCRIPTION                                                                                                                                                                                                                                                                          |
+|-------------------|--------|----------|---------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|      details      | string |  false   |         |                                                                                                                                                                                                                                Markdown text appended after the build <br>URL (test results, versions, artifact links, etc.)                                                                                                                                                                                                                                  |
+| run-link-position | string |  false   | `"top"` | Where the immutable workflow-run link goes, <br>and how it reads. `top` (default) <br>puts a bare `Build URL: <url>` line above <br>`details`, unchanged from before this input <br>existed. `bottom` puts a linked `Workflow: View workflow run` <br>line below `details`, so the content <br>leads and the link trails. `none` <br>leaves the section to `details` alone, <br>for messages where the context footer <br>(which always links the run) is enough; with empty `details` <br>it falls back to `bottom`. Invalid <br>values fall back to `top`.  |
+|      status       | string |   true   |         |                                                                                                                                       Run status, typically `needs.<job>.result` or `job.status`. <br>`success`, `failure`, `warning`, and `info` notify; <br>`cancelled` and `skipped` are treated as <br>no-ops and send nothing. `info` is <br>for routine reports: a neutral 📊 <br>header with no status suffix.                                                                                                                                         |
+|     test-name     | string |   true   |         |                                                                                                                                                                                  Test suite name for the header <br>(e.g. "E2E Ginkgo Nightly Tests"). Keep under ~130 chars — <br>Slack header blocks have a 150-char <br>limit and the status suffix takes <br>~15 chars.                                                                                                                                                                                   |
+|    webhook-url    | string |   true   |         |                                                                                                                                                                                                                                                                  Slack incoming webhook URL                                                                                                                                                                                                                                                                   |
 
 <!-- AUTO-DOC-INPUT:END -->
 
@@ -44,6 +44,20 @@ Workflow: View workflow run
 ─────────────────────────────
 <repo> · Run #<number>
 ```
+
+With `run-link-position: none`, for digests where a second run link is noise. The
+context footer still links the run, so the message keeps its provenance:
+
+```
+[emoji] [test-name] [status]
+─────────────────────────────
+<details>
+─────────────────────────────
+<repo> · Run #<number>
+```
+
+`none` needs `details`: Slack rejects an empty section, so without them it falls
+back to `bottom`.
 
 The link is not merely moved: `top` prints the bare URL after `Build URL:`, while
 `bottom` renders a linked label. `top` is left exactly as it was so that switching
@@ -108,9 +122,12 @@ skipped job never produces a Slack alert.
 
 Everything else notifies. `success` and `failure` are the usual pair; `warning`
 is for an advisory result that is worth reporting but is not a failure, such as a
-CVE scan running on the default non-blocking posture. An unrecognised status also
-notifies, under a `❓ Unknown (<status>)` header, on the grounds that a status
-nobody anticipated is more useful surfaced than swallowed.
+CVE scan running on the default non-blocking posture. `info` is for a routine
+report with no pass or fail, such as a weekly digest: a neutral `📊` header with
+no status suffix, so the icon changes only when a caller escalates to `warning`.
+An unrecognised status also notifies, under a `❓ Unknown (<status>)` header, on
+the grounds that a status nobody anticipated is more useful surfaced than
+swallowed.
 
 An empty `webhook-url` (fork PRs, where secrets are unavailable) also suppresses
 the notification.

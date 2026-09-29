@@ -48,6 +48,13 @@ payload_field() {
   [ "$(payload_field '.blocks[0].text.text')" = "⚠️ My Test Suite" ]
 }
 
+@test "info status produces a neutral report header without a status suffix" {
+  STATUS="info" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(payload_field '.blocks[0].text.text')" = "📊 My Test Suite" ]
+  [ "$(payload_field '.text')" = "📊 My Test Suite" ]
+}
+
 @test "cancelled status produces correct emoji and text" {
   STATUS="cancelled" run bash "$SCRIPT"
   [ "$status" -eq 0 ]
@@ -124,6 +131,38 @@ payload_field() {
   local section
   section=$(payload_field '.blocks[1].text.text')
   [[ "$section" == "High findings: 6"$'\n\n'"Workflow: <https://github.com/org/repo/actions/runs/12345|View workflow run>" ]]
+}
+
+@test "none run link position leaves only the details in the section" {
+  RUN_LINK_POSITION="none" DETAILS="High findings: 6" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(payload_field '.blocks[1].text.text')" = "High findings: 6" ]
+}
+
+@test "none run link position keeps the run link in the context footer" {
+  RUN_LINK_POSITION="none" DETAILS="High findings: 6" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(payload_field '.blocks[2].elements[0].text')" = "<https://github.com/org/repo/actions/runs/12345|org/repo · Run #42>" ]
+}
+
+# Slack rejects a section block with empty text, so `none` cannot drop the link
+# when there is nothing else to show.
+@test "none run link position without details falls back to the bottom link" {
+  RUN_LINK_POSITION="none" DETAILS="   " run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"no details to show"* ]]
+  [ "$(payload_field '.blocks[1].text.text')" = "Workflow: <https://github.com/org/repo/actions/runs/12345|View workflow run>" ]
+}
+
+@test "none run link position truncates oversized details within the limit" {
+  RUN_LINK_POSITION="none" DETAILS="$(printf 'X%.0s' {1..3200})" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+
+  local section
+  section=$(payload_field '.blocks[1].text.text')
+  [ "${#section}" -le 3000 ]
+  [[ "$section" == *"..." ]]
+  [[ "$section" != *"View workflow run"* ]]
 }
 
 @test "invalid run link position safely falls back to the top" {
