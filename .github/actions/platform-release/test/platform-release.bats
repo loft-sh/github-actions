@@ -22,6 +22,8 @@ setup() {
   # Read when the script is sourced, so the post-dispatch wait does not sleep.
   export PLATFORM_DISPATCH_VISIBLE_ATTEMPTS=3
   export PLATFORM_DISPATCH_VISIBLE_SLEEP_SECONDS=0
+  # Also read when sourced. A CI step must not pick the README link.
+  unset GITHUB_ACTION_REPOSITORY GITHUB_ACTION_REF
   source "$SCRIPT"
 
   STUB_DIR="$(mktemp -d)"
@@ -2561,7 +2563,7 @@ no_advice() {
   INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
   [ "$status" -ne 0 ]
   [[ "$output" == *": 2 release.yaml runs for v4.11.3 are still going. Nothing was dispatched. Steps: ${README_URL}#partial-failure-recovery"* ]]
-  [[ "$output" == *"Still going: runs 1 (in_progress), 3 (queued)."* ]]
+  [[ "$output" == *"Still going: runs 3 (queued), 1 (in_progress)."* ]]
   [[ "$output" != *"Drafts by id"* ]]
   [[ "$output" != *"stub-dispatch"* ]]
 }
@@ -2787,7 +2789,7 @@ fits_annotation() {
           else
             [[ "$output" == *"and 75 more."*"Inspect:"* ]]
           fi
-          [[ "$output" == *"runs 98765432110 (action_required), "*", and 3 more."* || "$runs" != *action_required* ]]
+          [[ "$output" == *"runs 98765432117 (action_required), "*", and 3 more."* || "$runs" != *action_required* ]]
           no_advice "$output"
         done
       done
@@ -2884,8 +2886,63 @@ fits_annotation() {
   export GH_STUB_TRANSIENT_TAGS=1
   INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
   [ "$status" -ne 0 ]
-  [[ "$output" == *": a draft release for v4.11.3 exists."* ]]
+  [[ "$output" == *": a draft release for v4.11.3 exists. Nothing was dispatched."* ]]
   [[ "$output" == *"What the cut saw for v4.11.3 in loft-sh/loft-enterprise: tag v4.11.3 could not be read. Drafts by id: 201 (published 2026-01-01T00:00:00Z)."* ]]
+}
+
+@test "main: the README link follows the ref the action runs at" {
+  export GITHUB_ACTION_REPOSITORY="loft-sh/github-actions" GITHUB_ACTION_REF="0123abcd"
+  source "$SCRIPT"
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_DRAFTS="loft-sh/loft-enterprise:v4.11.3"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="true" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"https://github.com/loft-sh/github-actions/blob/0123abcd/.github/actions/platform-release/README.md#draft-releases"* ]]
+}
+
+@test "main: the README link stays at v1 for a ref from another repository" {
+  export GITHUB_ACTION_REPOSITORY="someone/fork" GITHUB_ACTION_REF="0123abcd"
+  source "$SCRIPT"
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_DRAFTS="loft-sh/loft-enterprise:v4.11.3"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="true" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"${README_URL}#draft-releases"* ]]
+}
+
+@test "main: more running builds than the cap name the newest" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  local runs="" i
+  for i in $(seq 7); do runs+="${STUB_TAG_COMMIT}:in_progress:null "; done
+  export GH_STUB_RUNS="$runs"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Still going: runs 7 (in_progress), 6 (in_progress), 5 (in_progress), 4 (in_progress), 3 (in_progress), and 2 more."* ]]
+}
+
+@test "main: earlier attempts are not read for a commit already known to have passed" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_RUNS="${STUB_TAG_COMMIT}:completed:success ${STUB_TAG_COMMIT}:completed:failure:failure"
+  export GH_STUB_CONTENTS_LOG="${STUB_DIR}/contents.log"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"already passed, but there is no published release"* ]]
+  ! grep -q '/attempts/' "$GH_STUB_CONTENTS_LOG"
+}
+
+@test "main: earlier attempts stop being read once three newer passed commits are known" {
+  # Runs 2 to 4 passed at three other commits, so run 1 cannot make the list.
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_DRAFTS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_RUNS="5555555555555555555555555555555555555555:completed:failure:success 2222222222222222222222222222222222222222:completed:success 3333333333333333333333333333333333333333:completed:success 6666666666666666666666666666666666666666:completed:success"
+  export GH_STUB_CONTENTS_LOG="${STUB_DIR}/contents.log"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Passed release.yaml runs built 6666666666666666666666666666666666666666, 3333333333333333333333333333333333333333, 2222222222222222222222222222222222222222."* ]]
+  ! grep -q '/attempts/' "$GH_STUB_CONTENTS_LOG"
 }
 
 @test "main: a tag that cannot be read still ends a cut nothing else refuses" {
@@ -2952,7 +3009,7 @@ fits_annotation() {
   INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
   [ "$status" -ne 0 ]
   [ "$(grep -c '^::error::' <<<"$output")" -eq 3 ]
-  [[ "$output" == *"Earlier attempts could not be read for runs 1, 2, 3, 4, 5, and 7 more."* ]]
+  [[ "$output" == *"Earlier attempts could not be read for runs 12, 11, 10, 9, 8, and 7 more."* ]]
   [[ "$output" == *"::error::Reads that failed while gathering those facts: failed to reach GitHub API for attempt 1 of run "*"gh said: gh: dial tcp: lookup api.github.com"* ]]
   fits_annotation "$output"
 }

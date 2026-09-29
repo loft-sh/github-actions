@@ -294,8 +294,12 @@ require_workflow_active() {
 
 # The README sections a refusal points at for what to do next. The steps depend
 # on what the runs do next, so they live there rather than in the error. Linked
-# at the tag callers pin, so the steps match the code printing the error.
-RECOVERY_DOC="https://github.com/loft-sh/github-actions/blob/platform-release/v1/.github/actions/platform-release/README.md"
+# at the ref the caller runs, so the steps match the code printing the error.
+RECOVERY_REF="platform-release/v1"
+if [[ "${GITHUB_ACTION_REPOSITORY:-}" == "loft-sh/github-actions" && "${GITHUB_ACTION_REF:-}" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+  RECOVERY_REF="$GITHUB_ACTION_REF"
+fi
+RECOVERY_DOC="https://github.com/loft-sh/github-actions/blob/${RECOVERY_REF}/.github/actions/platform-release/README.md"
 PARTIAL_RECOVERY="${RECOVERY_DOC}#partial-failure-recovery"
 DRAFT_RECOVERY="${RECOVERY_DOC}#draft-releases"
 
@@ -440,14 +444,15 @@ check_release_state() {
   fi
   # The list shows only a run's latest attempt, so a re-run whose latest
   # attempt did not pass can hide an earlier one that did, and published.
+  # Newest first, for the cap on live runs and the early stop on re-runs below.
   local id run_sha status conclusion attempt live=() passed=() rerun=()
   while read -r id run_sha status conclusion attempt; do
     [[ -n "$id" ]] || continue
-    [[ "$status" == "completed" ]] || live+=("${id} (${status})")
+    [[ "$status" == "completed" ]] || live=("${id} (${status})" "${live[@]}")
     if [[ "$status" == "completed" && "$conclusion" == "success" ]]; then
       passed+=("${id} ${run_sha}")
     elif ((attempt > 1)); then
-      rerun+=("${id} ${run_sha} ${attempt}")
+      rerun=("${id} ${run_sha} ${attempt}" "${rerun[@]}")
     fi
   done <<<"$runs"
   if ((published && !drafts && !${#live[@]})); then
@@ -459,11 +464,11 @@ check_release_state() {
   # before it names them. Otherwise it ends the cut, as the refusal hangs on it.
   local refusing=0
   ((drafts || ${#live[@]})) && refusing=1
-  local sha="" tagged=0 tag_note="" tag_reason="" rc=0
+  local sha="" tagged=0 untagged=0 tag_note="" tag_reason="" rc=0
   resolve_tag sha "$repo" "$tag" || rc=$?
   case "$rc" in
     0) tagged=1 ;;
-    1) ;;
+    1) untagged=1 ;;
     *)
       if ((!refusing)); then
         if ((rc == 2)); then
@@ -481,38 +486,45 @@ check_release_state() {
       fi
       ;;
   esac
-  # Earlier attempts cost a call each. The tag's re-runs are read first, since a
-  # pass there refuses the cut. The others are read only once it refuses, for
-  # the passed commits it reports.
-  local entry unread=() pass=0
-  READ_ERR=""
-  for entry in "${rerun[@]}"; do
-    read -r id run_sha attempt <<<"$entry"
-    { ((tagged)) && [[ "$run_sha" == "$sha" ]]; } || continue
-    pass=0
-    earlier_passed "$repo" "$id" "$attempt" || pass=$?
-    ((pass == 0)) && passed+=("${id} ${run_sha}")
-    ((pass == 2)) && unread+=("$id")
+  # Earlier attempts cost a call each, so a commit already known to have passed
+  # is not read again. The tag's re-runs are read first, since a pass there
+  # refuses the cut. The others are read only once it refuses, for the passed
+  # commits it reports, and only until three commits with newer passes are known.
+  local entry unread=() pass phase at_tag newer b passed_at_tag=0
+  local -A newest_pass=()
+  for entry in "${passed[@]}"; do
+    read -r id run_sha <<<"$entry"
+    ((id > ${newest_pass[$run_sha]:-0})) && newest_pass[$run_sha]=$id
   done
-  local passed_at_tag=0
-  ((tagged)) && [[ " ${passed[*]} " == *" ${sha} "* ]] && passed_at_tag=1 refusing=1
-  if ((${#unread[@]} && !refusing)); then
-    echo "::error::could not read an earlier attempt of ${WORKFLOW} run $(capped 5 "${unread[@]}") for ${tag} in ${repo}, so the cut cannot tell whether it passed and published. Nothing was dispatched. Cause: $(capped_text "$READ_ERR"). Steps: ${PARTIAL_RECOVERY} ${inspect}" >&2
-    exit 1
-  fi
-  if ((refusing)); then
+  READ_ERR=""
+  for phase in tag other; do
+    if [[ "$phase" == "other" ]]; then
+      ((tagged)) && [[ -n "${newest_pass[$sha]+x}" ]] && passed_at_tag=1 refusing=1
+      if ((${#unread[@]} && !refusing)); then
+        echo "::error::could not read an earlier attempt of ${WORKFLOW} run $(capped 5 "${unread[@]}") for ${tag} in ${repo}, so the cut cannot tell whether it passed and published. Nothing was dispatched. Cause: $(capped_text "$READ_ERR"). Steps: ${PARTIAL_RECOVERY} ${inspect}" >&2
+        exit 1
+      fi
+      ((refusing)) || break
+    fi
     for entry in "${rerun[@]}"; do
       read -r id run_sha attempt <<<"$entry"
-      ((tagged)) && [[ "$run_sha" == "$sha" ]] && continue
+      at_tag=other
+      ((tagged)) && [[ "$run_sha" == "$sha" ]] && at_tag=tag
+      [[ "$at_tag" == "$phase" && -z "${newest_pass[$run_sha]+x}" ]] || continue
+      if [[ "$phase" == "other" ]]; then
+        newer=0
+        for b in "${!newest_pass[@]}"; do ((newest_pass[$b] > id)) && newer=$((newer + 1)); done
+        ((newer < 3)) || break
+      fi
       pass=0
       earlier_passed "$repo" "$id" "$attempt" || pass=$?
-      ((pass == 0)) && passed+=("${id} ${run_sha}")
+      ((pass == 0)) && passed+=("${id} ${run_sha}") newest_pass[$run_sha]=$id
       ((pass == 2)) && unread+=("$id")
     done
-  fi
+  done
   # Newest run first, so the cap keeps the passes most likely to be the version
   # as it went out, and counts away the ones from before a re-cut.
-  local built=() b
+  local built=()
   local -A seen=()
   while read -r _ b; do
     [[ -n "$b" && -z "${seen[$b]+x}" ]] || continue
@@ -537,7 +549,7 @@ check_release_state() {
     return 0
   fi
   local stopped="Nothing was dispatched." steps="Steps: ${PARTIAL_RECOVERY}"
-  ((tagged)) || stopped="Nothing was tagged."
+  ((untagged)) && stopped="Nothing was tagged."
   ((drafts)) && steps="Read the steps before deleting or publishing a draft or cancelling a run: ${DRAFT_RECOVERY}"
   local why
   printf -v why '%s; ' "${reasons[@]}"

@@ -310,9 +310,10 @@ api_exists() {
 }
 
 # api_read <out-var> <path> <what> <jq> -> 0 with the jq-filtered body in
-# <out-var> on a 200, 1 on a 404, 2 when GitHub gave no answer. On 1 or 2 the
-# message is in API_READ_ERR. For a caller that decides for itself whether a
-# failed read ends the script, such as one that has other facts to report.
+# <out-var> on a 200, 1 on a 404, 2 on no status or any other status, which
+# includes a permanent 403. On 1 or 2 the message is in API_READ_ERR. For a
+# caller that decides for itself whether a failed read ends the script, such as
+# one that has other facts to report.
 #
 # stderr is kept apart from the body, which gets parsed, and quoted only when
 # something fails. On a 200 gh prints the response headers, a blank line, then

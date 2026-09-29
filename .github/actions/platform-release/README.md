@@ -193,7 +193,10 @@ up where the last one stopped:
   dispatches a new build at the same tag. A re-run that failed after an earlier
   attempt passed counts as passed (below). If an earlier attempt cannot be
   read, the re-run refuses, since that attempt may have passed and published:
-  re-run the cut once GitHub answers again.
+  re-run the cut once GitHub answers again. If an attempt keeps coming back
+  with no conclusion, check it with
+  `gh run view <run-id> --attempt <n> --repo loft-sh/loft-enterprise`, and if
+  it did not pass, build by hand (below).
 - **A build is still queued or running under the version:** the re-run
   refuses. This also holds when the tag was deleted under the running build,
   since re-creating it would start a second build from another commit. With a
@@ -251,8 +254,8 @@ or cancelling is safe depends on what a running build does next, and on
 whether a release was pulled on purpose. It lists what the cut saw instead:
 whether the tag exists and where it points (or that it could not be read), up
 to five drafts by id with their publish times (published ones first), up to
-five running builds by run id, and up to three commits that passed builds
-built, in full and newest first. To list every draft for the version:
+five running builds by run id, newest first, and up to three commits that
+passed builds built, in full and newest first. To list every draft for the version:
 
 ```bash
 gh api --paginate repos/loft-sh/loft-enterprise/releases \

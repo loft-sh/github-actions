@@ -168,3 +168,58 @@ printf "{\"workflow_runs\":[{\"id\":7,\"run_attempt\":%s,\"head_sha\":\"abc\",\"
   [ "$status" -eq 0 ]
   [[ "$output" == *"::warning::branch 'release-4.11' no longer exists"* ]]
 }
+
+@test "api_read: a 200 gives the body, a 404 is 1, anything else is 2 with the cause" {
+  stub_gh 'case "$*" in
+  *ok*) printf "HTTP/2.0 200 OK\n\n"; echo "{\"a\":1}" | jq -r "${@: -1}" ;;
+  *gone*) echo "HTTP/2.0 404 Not Found"; exit 1 ;;
+  *denied*) echo "HTTP/2.0 403 Forbidden"; echo "gh: Resource protected by SAML" >&2; exit 1 ;;
+  *) echo "gh: dial tcp" >&2; exit 1 ;;
+esac'
+  local out rc
+  rc=0; api_read out repos/ok "the thing" .a || rc=$?
+  [ "$rc" -eq 0 ]
+  [ "$out" = "1" ]
+  rc=0; api_read out repos/gone "the thing" .a || rc=$?
+  [ "$rc" -eq 1 ]
+  [ "$API_READ_ERR" = "GitHub answered 404 for the thing" ]
+  rc=0; api_read out repos/denied "the thing" .a || rc=$?
+  [ "$rc" -eq 2 ]
+  [[ "$API_READ_ERR" == *"unexpected status 403"*"SAML"* ]]
+  rc=0; api_read out repos/down "the thing" .a || rc=$?
+  [ "$rc" -eq 2 ]
+  [[ "$API_READ_ERR" == *"no HTTP status"*"dial tcp"* ]]
+}
+
+# stub_tag <tag-object-answer> - an annotated tag whose tag object is answered
+# with <tag-object-answer>, a stub_gh case arm body.
+stub_tag() {
+  stub_gh 'case "$*" in
+  *git/ref/tags/*) printf "HTTP/2.0 200 OK\n\n"; echo "{\"object\":{\"sha\":\"2222222222222222222222222222222222222222\",\"type\":\"tag\"}}" | jq -r "${@: -1}" ;;
+  *git/tags/*) '"$1"' ;;
+esac'
+}
+
+@test "resolve_tag: a tag object that cannot be read is a failed read" {
+  stub_tag 'echo "gh: dial tcp" >&2; exit 1'
+  local sha rc=0
+  resolve_tag sha org/repo v0.37.2 || rc=$?
+  [ "$rc" -eq 2 ]
+  [[ "$TAG_ERR" == *"tag object v0.37.2 in org/repo"*"dial tcp"* ]]
+}
+
+@test "resolve_tag: a tag object that is gone is a tag no run builds" {
+  stub_tag 'echo "HTTP/2.0 404 Not Found"; exit 1'
+  local sha rc=0
+  resolve_tag sha org/repo v0.37.2 || rc=$?
+  [ "$rc" -eq 3 ]
+  [[ "$TAG_ERR" == *"could not be resolved"* ]]
+}
+
+@test "resolve_tag: an annotated tag is peeled to its commit" {
+  stub_tag 'printf "HTTP/2.0 200 OK\n\n"; echo "{\"object\":{\"sha\":\"1111111111111111111111111111111111111111\",\"type\":\"commit\"}}" | jq -r "${@: -1}"'
+  local sha rc=0
+  resolve_tag sha org/repo v0.37.2 || rc=$?
+  [ "$rc" -eq 0 ]
+  [ "$sha" = "1111111111111111111111111111111111111111" ]
+}
