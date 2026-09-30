@@ -102,7 +102,7 @@ created() { calls_matching "POST"; }
   export INPUT_COMMENT_BODY='/test-e2e containsAny {aws, azure}'
   run bash "$SCRIPT"
   key="$(kv concurrency-key)"
-  [[ "$key" =~ ^label-request-containsany-aws-azure-[0-9a-f]{8}$ ]]
+  [[ "$key" =~ ^pr-7-label-request-containsany-aws-azure-[0-9a-f]{8}$ ]]
 }
 
 @test "the emitted key distinguishes filters the slug alone would merge" {
@@ -114,6 +114,25 @@ created() { calls_matching "POST"; }
   export INPUT_COMMENT_BODY='/test-e2e snapshots || aws'
   run bash "$SCRIPT"
   [ "$first" != "$(kv concurrency-key)" ]
+}
+
+@test "the same request on different pull requests gets different keys" {
+  run bash "$SCRIPT"
+  first="$(kv concurrency-key)"
+
+  : > "$GITHUB_OUTPUT"
+  export INPUT_PR_NUMBER="8"
+  run bash "$SCRIPT"
+  [ "$first" != "$(kv concurrency-key)" ]
+}
+
+@test "repeating a request on the same pull request keeps its key" {
+  run bash "$SCRIPT"
+  first="$(kv concurrency-key)"
+
+  : > "$GITHUB_OUTPUT"
+  run bash "$SCRIPT"
+  [ "$first" = "$(kv concurrency-key)" ]
 }
 
 @test "a focused request emits filter and focus separately" {

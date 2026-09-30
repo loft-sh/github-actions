@@ -129,8 +129,10 @@ warning and fail closed, so an unexpected value can never read as green.
 ## Repeated commands are GitHub's job, not this action's
 
 Typing the same command twice should not build twice, but the action does not
-deduplicate. Give the caller's suite job a `concurrency` group keyed on the
-repository, the pull request and the filter, with `cancel-in-progress: true`.
+deduplicate. Give the caller's suite job a `concurrency` group built from
+`concurrency-key`, with `cancel-in-progress: true`. The key already carries the
+pull request number, so it stays per-PR even when every run is dispatched from
+the same branch.
 GitHub then supersedes the older run, and the superseded job still triggers the
 caller's `always()` finish job, which closes its check-run as `cancelled`.
 
@@ -234,7 +236,7 @@ the commenter's repository permission through repository metadata.
 |   check-name    | string |                                                                                                                            Display name of the check-run, sanitized <br>and length-bounded.                                                                                                                              |
 |  check-run-id   | string |                                                                                                              Id of the opened check-run. Empty <br>when nothing was opened; gate the <br>finish job on it.                                                                                                               |
 |   conclusion    | string |                                                                                                                                   finish mode. The conclusion that was <br>published.                                                                                                                                    |
-| concurrency-key | string |                                                Domain-separated request identity reduced to a <br>lowercase slug plus an eight-character digest, <br>safe to interpolate into a concurrency <br>group. Distinct filters, focuses, and targets <br>do not share a group.                                                  |
+| concurrency-key | string |                    The pull request number plus the <br>domain-separated request identity, reduced to a <br>lowercase slug and an eight-character digest. <br>Safe to interpolate into a concurrency <br>group. Distinct pull requests, filters, focuses, <br>and targets do not share a <br>group.                      |
 |     filter      | string |                                                                                                              Argument string with whitespace normalized. This <br>is what to pass to the <br>test runner.                                                                                                                |
 |      focus      | string |                                                                                            Optional focus expression following --focus. One <br>outer quote pair is removed only <br>when it encloses the whole expression.                                                                                              |
 |    head-ref     | string |                                                          Resolved head BRANCH of the pull <br>request. Needed by a caller that <br>dispatches the work to a non-privileged <br>run, because `gh workflow run --ref` takes a branch <br>or tag and never a SHA.                                                           |
@@ -294,7 +296,7 @@ jobs:
     # This is the deduplication. A second identical command supersedes this run,
     # and the finish job below still closes the superseded check-run.
     concurrency:
-      group: comment-triggered-check-suite-${{ github.event.issue.number }}-${{ needs.prepare.outputs.key }}
+      group: comment-triggered-check-suite-${{ needs.prepare.outputs.key }}
       cancel-in-progress: true
     outputs:
       check-conclusion: ${{ steps.run.outputs.check-conclusion }}

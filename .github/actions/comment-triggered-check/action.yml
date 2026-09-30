@@ -135,7 +135,7 @@ outputs:
     description: 'start mode. "true" when the pull request comes from another repository, "false" for a same-repository pull request, and empty when no pull request was resolved.'
     value: ${{ steps.start.outputs.is-fork }}
   concurrency-key:
-    description: 'Domain-separated request identity reduced to a lowercase slug plus an eight-character digest, safe to interpolate into a concurrency group. Distinct filters, focuses, and targets do not share a group.'
+    description: 'The pull request number plus the domain-separated request identity, reduced to a lowercase slug and an eight-character digest. Safe to interpolate into a concurrency group. Distinct pull requests, filters, focuses, and targets do not share a group.'
     value: ${{ steps.start.outputs.concurrency-key }}
   check-name:
     description: 'Display name of the check-run, sanitized and length-bounded.'

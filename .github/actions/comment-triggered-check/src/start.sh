@@ -236,7 +236,10 @@ fi
 should_run=true
 request="$(request_display "$filter" "$focus" "$target")"
 name="$(check_name "$prefix" "$request" 60)"
-concurrency_key="$(concurrency_key "$(request_identity "$filter" "$focus" "$target")")"
+# Scoped to the pull request. A caller that dispatches fork runs from the base
+# branch has no other per-PR value in its concurrency group, so without this two
+# fork PRs sending the same filter would cancel each other.
+concurrency_key="pr-$(sanitize_slug "$pr_number" 20)-$(concurrency_key "$(request_identity "$filter" "$focus" "$target")")"
 
 # --- 4. Open the check-run ---------------------------------------------------
 # On the resolved head SHA, never on github.sha: for issue_comment that is the
