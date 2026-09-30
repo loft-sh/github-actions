@@ -98,7 +98,7 @@ stub_gh() {
 }
 
 @test "tag_runs: queries the workflow it is given, under both tag spellings" {
-  stub_gh 'printf "{\"workflow_runs\":[{\"id\":7,\"head_sha\":\"abc\",\"status\":\"queued\",\"conclusion\":null}]}\n" | jq -r "${@: -1}"'
+  stub_gh 'printf "{\"workflow_runs\":[{\"id\":7,\"run_attempt\":1,\"head_sha\":\"abc\",\"status\":\"queued\",\"conclusion\":null}]}\n" | jq -r "${@: -1}"'
   local runs
   tag_runs runs org/repo build.yaml v0.37.2
   grep -q 'workflows/build.yaml/runs?branch=v0.37.2&' "$GH_LOG"
@@ -113,7 +113,7 @@ stub_gh() {
 @test "tag_runs: a run that finishes between the two reads is kept once, as still going" {
   # Read first under the short name, then under refs/tags/, by when it was done.
   stub_gh 'if [[ "$*" == *refs/tags/* ]]; then s=completed c="\"success\""; else s=in_progress c=null; fi
-printf "{\"workflow_runs\":[{\"id\":7,\"head_sha\":\"abc\",\"status\":\"%s\",\"conclusion\":%s},{\"id\":8,\"head_sha\":\"abc\",\"status\":\"completed\",\"conclusion\":\"failure\"}]}\n" "$s" "$c" | jq -r "${@: -1}"'
+printf "{\"workflow_runs\":[{\"id\":7,\"run_attempt\":1,\"head_sha\":\"abc\",\"status\":\"%s\",\"conclusion\":%s},{\"id\":8,\"run_attempt\":1,\"head_sha\":\"abc\",\"status\":\"completed\",\"conclusion\":\"failure\"}]}\n" "$s" "$c" | jq -r "${@: -1}"'
   local runs
   tag_runs runs org/repo build.yaml v0.37.2
   [ "$runs" = $'7 abc in_progress none 1\n8 abc completed failure 1' ]
@@ -122,7 +122,7 @@ printf "{\"workflow_runs\":[{\"id\":7,\"head_sha\":\"abc\",\"status\":\"%s\",\"c
 
 @test "tag_runs: the live copy of a run wins whichever read it came from" {
   stub_gh 'if [[ "$*" == *refs/tags/* ]]; then s=in_progress c=null; else s=completed c="\"success\""; fi
-printf "{\"workflow_runs\":[{\"id\":7,\"head_sha\":\"abc\",\"status\":\"%s\",\"conclusion\":%s}]}\n" "$s" "$c" | jq -r "${@: -1}"'
+printf "{\"workflow_runs\":[{\"id\":7,\"run_attempt\":1,\"head_sha\":\"abc\",\"status\":\"%s\",\"conclusion\":%s}]}\n" "$s" "$c" | jq -r "${@: -1}"'
   local runs
   tag_runs runs org/repo build.yaml v0.37.2
   [ "$runs" = "7 abc in_progress none 1" ]
@@ -143,6 +143,13 @@ printf "{\"workflow_runs\":[{\"id\":7,\"run_attempt\":%s,\"head_sha\":\"abc\",\"
   local runs
   tag_runs runs org/repo build.yaml v0.37.2
   [ "$runs" = "7 abc queued none 2" ]
+}
+
+@test "tag_runs: a run without run_attempt is an unknown answer, not a first attempt" {
+  stub_gh 'printf "{\"workflow_runs\":[{\"id\":7,\"head_sha\":\"abc\",\"status\":\"completed\",\"conclusion\":\"failure\"}]}\n" | jq -r "${@: -1}"'
+  local runs
+  run tag_runs runs org/repo build.yaml v0.37.2
+  [ "$status" -ne 0 ]
 }
 
 @test "tag_runs: an error-shaped body is an unknown answer, not no runs" {

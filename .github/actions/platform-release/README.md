@@ -191,9 +191,11 @@ up where the last one stopped:
   `release.yaml` at the tagged commit, not at the branch head.
 - **Tag exists, earlier builds failed or were cancelled:** the re-run
   dispatches a new build at the same tag. A re-run that failed after an earlier
-  attempt passed counts as passed (below). If an earlier attempt cannot be
-  read, the re-run refuses, since that attempt may have passed and published:
-  re-run the cut once GitHub answers again. If an attempt keeps coming back
+  attempt passed counts as passed (below), and a finished build listed with
+  no conclusion is read again, attempt by attempt, rather than taken for a
+  failure. If an attempt cannot be read, the re-run refuses, since that
+  attempt may have passed and published: re-run the cut once GitHub answers
+  again. If an attempt keeps coming back
   with no conclusion, check it with
   `gh run view <run-id> --attempt <n> --repo loft-sh/loft-enterprise`, and if
   it did not pass, build by hand (below).
@@ -255,7 +257,9 @@ whether a release was pulled on purpose. It lists what the cut saw instead:
 whether the tag exists and where it points (or that it could not be read), up
 to five drafts by id with their publish times (published ones first), up to
 five running builds by run id, newest first, and up to three commits that
-passed builds built, in full and newest first. To list every draft for the version:
+passed builds built, in full and newest first. Once three commits are known,
+older runs are not checked for a pass the run list does not show, and the
+refusal counts them instead. To list every draft for the version:
 
 ```bash
 gh api --paginate repos/loft-sh/loft-enterprise/releases \

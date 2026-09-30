@@ -302,6 +302,10 @@ fi
 RECOVERY_DOC="https://github.com/loft-sh/github-actions/blob/${RECOVERY_REF}/.github/actions/platform-release/README.md"
 PARTIAL_RECOVERY="${RECOVERY_DOC}#partial-failure-recovery"
 DRAFT_RECOVERY="${RECOVERY_DOC}#draft-releases"
+# How many passed commits a refusal names. The earlier attempts of other
+# commits' re-runs are read only until this many commits with a newer pass are
+# known, since an older pass could not make the list.
+PASSES_NAMED=3
 
 # capped <max> <item>... - the items joined with ", ", the ones past <max>
 # counted instead, so a list in an error line cannot push what follows it past
@@ -346,6 +350,40 @@ earlier_passed() {
   [[ -n "$err" ]] || return 1
   READ_ERR="${READ_ERR:-$err}"
   return 2
+}
+
+# scan_reruns <repo> <list-var> <max> - whether a run in the array named
+# <list-var> passed in an attempt the run list does not show. Its lines are
+# "<id> <sha> <before>", newest first, and attempts 1 to <before>-1 are read,
+# skipping any commit already known to have passed. With <max> above 0, a run
+# with <max> commits known to have passed after it is not read, and is counted
+# in the caller's unscanned instead. Adds what it finds to check_release_state's
+# passed, newest_pass and unread.
+scan_reruns() {
+  local repo="$1" max="$3" entry id run_sha before newer b pass
+  # A misnamed list would expand to nothing and switch the guard off.
+  if ! declare -p "$2" &>/dev/null; then
+    echo "::error::scan_reruns: no list named '$2'" >&2
+    exit 1
+  fi
+  local -n __sr_list="$2"
+  for entry in "${__sr_list[@]}"; do
+    read -r id run_sha before <<<"$entry"
+    [[ -z "${newest_pass[$run_sha]+x}" ]] || continue
+    if ((max)); then
+      newer=0
+      for b in "${!newest_pass[@]}"; do ((newest_pass[$b] > id)) && newer=$((newer + 1)); done
+      if ((newer >= max)); then
+        unscanned=$((unscanned + 1))
+        continue
+      fi
+    fi
+    pass=0
+    earlier_passed "$repo" "$id" "$before" || pass=$?
+    ((pass == 0)) && passed+=("${id} ${run_sha}") newest_pass[$run_sha]=$id
+    ((pass == 2)) && unread+=("$id")
+  done
+  return 0
 }
 
 # check_release_state <repo> <tag> - how far an earlier cut of this version got,
@@ -443,16 +481,23 @@ check_release_state() {
     runs="" runs_note=" The ${WORKFLOW} runs could not be listed, so a running or passed build is not ruled out. gh said: $(capped_text "$(gh_reason "$TAG_RUNS_ERR")")"
   fi
   # The list shows only a run's latest attempt, so a re-run whose latest
-  # attempt did not pass can hide an earlier one that did, and published.
-  # Newest first, for the cap on live runs and the early stop on re-runs below.
-  local id run_sha status conclusion attempt live=() passed=() rerun=()
+  # attempt did not pass can hide an earlier one that did, and published. A
+  # finished run always has a conclusion, so one listed without it is not an
+  # answer either, and its latest attempt is read too rather than taken for a
+  # failure. Newest first, for the cap on live runs and the early stop on
+  # re-runs below.
+  local id run_sha status conclusion attempt before live=() passed=() rerun=()
   while read -r id run_sha status conclusion attempt; do
     [[ -n "$id" ]] || continue
     [[ "$status" == "completed" ]] || live=("${id} (${status})" "${live[@]}")
     if [[ "$status" == "completed" && "$conclusion" == "success" ]]; then
       passed+=("${id} ${run_sha}")
-    elif ((attempt > 1)); then
-      rerun=("${id} ${run_sha} ${attempt}" "${rerun[@]}")
+      continue
+    fi
+    before=$attempt
+    [[ "$status" == "completed" && "$conclusion" == "none" ]] && before=$((attempt + 1))
+    if ((before > 1)); then
+      rerun=("${id} ${run_sha} ${before}" "${rerun[@]}")
     fi
   done <<<"$runs"
   if ((published && !drafts && !${#live[@]})); then
@@ -489,39 +534,30 @@ check_release_state() {
   # Earlier attempts cost a call each, so a commit already known to have passed
   # is not read again. The tag's re-runs are read first, since a pass there
   # refuses the cut. The others are read only once it refuses, for the passed
-  # commits it reports, and only until three commits with newer passes are known.
-  local entry unread=() pass phase at_tag newer b passed_at_tag=0
+  # commits it reports, and only until PASSES_NAMED commits with newer passes
+  # are known.
+  local entry unread=() unscanned=0 b passed_at_tag=0 tag_reruns=() other_reruns=()
   local -A newest_pass=()
   for entry in "${passed[@]}"; do
     read -r id run_sha <<<"$entry"
     ((id > ${newest_pass[$run_sha]:-0})) && newest_pass[$run_sha]=$id
   done
-  READ_ERR=""
-  for phase in tag other; do
-    if [[ "$phase" == "other" ]]; then
-      ((tagged)) && [[ -n "${newest_pass[$sha]+x}" ]] && passed_at_tag=1 refusing=1
-      if ((${#unread[@]} && !refusing)); then
-        echo "::error::could not read an earlier attempt of ${WORKFLOW} run $(capped 5 "${unread[@]}") for ${tag} in ${repo}, so the cut cannot tell whether it passed and published. Nothing was dispatched. Cause: $(capped_text "$READ_ERR"). Steps: ${PARTIAL_RECOVERY} ${inspect}" >&2
-        exit 1
-      fi
-      ((refusing)) || break
+  for entry in "${rerun[@]}"; do
+    read -r id run_sha _ <<<"$entry"
+    if ((tagged)) && [[ "$run_sha" == "$sha" ]]; then
+      tag_reruns+=("$entry")
+    else
+      other_reruns+=("$entry")
     fi
-    for entry in "${rerun[@]}"; do
-      read -r id run_sha attempt <<<"$entry"
-      at_tag=other
-      ((tagged)) && [[ "$run_sha" == "$sha" ]] && at_tag=tag
-      [[ "$at_tag" == "$phase" && -z "${newest_pass[$run_sha]+x}" ]] || continue
-      if [[ "$phase" == "other" ]]; then
-        newer=0
-        for b in "${!newest_pass[@]}"; do ((newest_pass[$b] > id)) && newer=$((newer + 1)); done
-        ((newer < 3)) || break
-      fi
-      pass=0
-      earlier_passed "$repo" "$id" "$attempt" || pass=$?
-      ((pass == 0)) && passed+=("${id} ${run_sha}") newest_pass[$run_sha]=$id
-      ((pass == 2)) && unread+=("$id")
-    done
   done
+  READ_ERR=""
+  scan_reruns "$repo" tag_reruns 0
+  ((tagged)) && [[ -n "${newest_pass[$sha]+x}" ]] && passed_at_tag=1 refusing=1
+  if ((${#unread[@]} && !refusing)); then
+    echo "::error::could not read every attempt of ${WORKFLOW} run $(capped 5 "${unread[@]}") for ${tag} in ${repo}, so the cut cannot tell whether it passed and published. Nothing was dispatched. Cause: $(capped_text "$READ_ERR"). Steps: ${PARTIAL_RECOVERY} ${inspect}" >&2
+    exit 1
+  fi
+  ((refusing)) && scan_reruns "$repo" other_reruns "$PASSES_NAMED"
   # Newest run first, so the cap keeps the passes most likely to be the version
   # as it went out, and counts away the ones from before a re-cut.
   local built=()
@@ -565,8 +601,13 @@ check_release_state() {
     facts+="."
   fi
   ((${#live[@]})) && facts+=" Still going: runs $(capped 5 "${live[@]}")."
-  ((${#built[@]})) && facts+=" Passed ${WORKFLOW} runs built $(capped 3 "${built[@]}")."
-  ((${#unread[@]})) && facts+=" Earlier attempts could not be read for runs $(capped 5 "${unread[@]}")."
+  ((${#built[@]})) && facts+=" Passed ${WORKFLOW} runs built $(capped "$PASSES_NAMED" "${built[@]}")."
+  if ((unscanned == 1)); then
+    facts+=" 1 older run was not checked for a pass the run list does not show."
+  elif ((unscanned > 1)); then
+    facts+=" ${unscanned} older runs were not checked for a pass the run list does not show."
+  fi
+  ((${#unread[@]})) && facts+=" Not every attempt could be read for runs $(capped 5 "${unread[@]}")."
   facts+="$runs_note"
   echo "::error::What the cut saw for ${tag} in ${repo}: ${facts} ${inspect}" >&2
   # Kept off the facts line, which the capped lists already fill.

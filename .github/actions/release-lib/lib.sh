@@ -511,7 +511,9 @@ resolve_tag() {
 
 # tag_runs <out-var> <repo> <workflow> <tag> - every <workflow> run recorded
 # under the tag's name, one "<id> <head_sha> <status> <conclusion> <attempt>"
-# line each. The list reports only a run's latest attempt.
+# line each. The list reports only a run's latest attempt. A run without
+# run_attempt is an unknown answer: read as a first attempt, a re-run whose
+# earlier attempt passed would go unread.
 # Returns non-zero with the cause in TAG_RUNS_ERR when the answer is unknown, and
 # callers fail closed: read as "no runs", this would let a second build through.
 #
@@ -538,14 +540,14 @@ tag_runs() {
   for __tr_ref in "$tag" "refs/tags/${tag}"; do
     # shellcheck disable=SC2016 # jq, not shell
     if ! run_captured __tr_page __tr_err gh api --paginate "repos/${repo}/actions/workflows/${workflow}/runs?branch=${__tr_ref}&per_page=100" \
-      --jq 'if (.workflow_runs | type) != "array" then error("no workflow_runs array") else .workflow_runs[] | "\(.id) \(.run_attempt // 1) \(.head_sha) \(.status) \(.conclusion // "none")" end'; then
+      --jq 'if (.workflow_runs | type) != "array" then error("no workflow_runs array") else .workflow_runs[] | "\(.id) \(.head_sha) \(.status) \(.conclusion // "none") \(.run_attempt // error("run \(.id) has no run_attempt"))" end'; then
       # shellcheck disable=SC2034
       TAG_RUNS_ERR="$__tr_err"
       return 1
     fi
     [[ -n "$__tr_page" ]] && __tr_all+="${__tr_page}"$'\n'
   done
-  printf -v "$__tr_var" '%s' "$(printf '%s' "$__tr_all" | awk 'NF { rank = $2 * 2 + ($4 != "completed"); if (!($1 in best) || rank > best[$1]) { best[$1] = rank; run[$1] = $1 " " $3 " " $4 " " $5 " " $2 } } END { for (id in run) print run[id] }' | sort -n)"
+  printf -v "$__tr_var" '%s' "$(printf '%s' "$__tr_all" | awk 'NF { rank = $5 * 2 + ($3 != "completed"); if (!($1 in best) || rank > best[$1]) { best[$1] = rank; run[$1] = $0 } } END { for (id in run) print run[id] }' | sort -n)"
 }
 
 # count_runs_at <runs> <sha> - how many of tag_runs' lines ran <sha>.

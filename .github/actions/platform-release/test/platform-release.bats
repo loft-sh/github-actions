@@ -209,15 +209,29 @@ if [[ "$sub" == "api" ]]; then
       respond 200 '{"object":{"sha":"'"${GH_STUB_TAG_SHA:-$STUB_TAG_COMMIT}"'","type":"'"${GH_STUB_TAG_PEELS_TO:-commit}"'"}}' ;;
     repos/*/actions/runs/*/attempts/*)
       # An earlier attempt of a re-run, from the fourth field of its
-      # GH_STUB_RUNS entry. GH_STUB_ATTEMPTS_FAIL=1 answers 404.
+      # GH_STUB_RUNS entry, or its latest attempt, from the third field unless
+      # GH_STUB_LATEST_ATTEMPT names another conclusion. GH_STUB_ATTEMPTS_FAIL=1
+      # answers 404, =transient fails with no HTTP status and =403 with a 403,
+      # saying GH_STUB_ATTEMPTS_ERR if set.
       [[ -n "${GH_STUB_CONTENTS_LOG:-}" ]] && printf '%s\n' "$path" >>"$GH_STUB_CONTENTS_LOG"
       [[ "${GH_STUB_ATTEMPTS_FAIL:-}" == "1" ]] && respond 404
       if [[ "${GH_STUB_ATTEMPTS_FAIL:-}" == "transient" ]]; then
-        echo "gh: dial tcp: lookup api.github.com" >&2; exit 1
+        echo "${GH_STUB_ATTEMPTS_ERR:-gh: dial tcp: lookup api.github.com}" >&2; exit 1
+      fi
+      if [[ "${GH_STUB_ATTEMPTS_FAIL:-}" == "403" ]]; then
+        ((include)) && printf 'HTTP/2.0 403 Forbidden\nContent-Type: application/json\n\n{"message":"Forbidden"}'
+        echo "${GH_STUB_ATTEMPTS_ERR:-gh: Forbidden (HTTP 403)}" >&2; exit 1
       fi
       rest="${path#*/actions/runs/}"; r_id="${rest%%/*}"; r_k="${path##*/}"
       read -ra r_entries <<<"${GH_STUB_RUNS:-}"
-      IFS=: read -r _ _ _ r_earlier <<<"${r_entries[r_id - ${GH_STUB_RUN_ID_BASE:-0} - 1]:-}"
+      IFS=: read -r _ _ r_last r_earlier <<<"${r_entries[r_id - ${GH_STUB_RUN_ID_BASE:-0} - 1]:-}"
+      r_latest=1
+      [[ -n "$r_earlier" ]] && r_latest=$(( $(tr -cd , <<<"$r_earlier" | wc -c) + 2 ))
+      if ((r_k == r_latest)); then
+        r_last="${GH_STUB_LATEST_ATTEMPT:-$r_last}"
+        [[ "$r_last" == "null" ]] && respond 200 '{"conclusion":null}'
+        respond 200 "$(printf '{"conclusion":"%s"}' "$r_last")"
+      fi
       IFS=, read -ra r_earlier <<<"$r_earlier"
       [[ -n "${r_earlier[r_k - 1]:-}" ]] || respond 404
       respond 200 "$(printf '{"conclusion":"%s"}' "${r_earlier[r_k - 1]}")" ;;
@@ -2710,7 +2724,7 @@ no_advice() {
   export GH_STUB_ATTEMPTS_FAIL=1
   INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
   [ "$status" -ne 0 ]
-  [[ "$output" == *"could not read an earlier attempt of release.yaml run 1 for v4.11.3"* ]]
+  [[ "$output" == *"could not read every attempt of release.yaml run 1 for v4.11.3"* ]]
   [[ "$output" != *"stub-dispatch"* ]]
 }
 
@@ -2747,6 +2761,17 @@ no_advice() {
   [[ "$output" == *"already passed"* ]]
   [[ "$output" != *"stub-dispatch"* ]]
 }
+
+# stub_failed_reruns_at_tag <n> - <n> failed re-runs of the tagged commit, each
+# with a first attempt that passed.
+stub_failed_reruns_at_tag() {
+  local runs="" i
+  for i in $(seq "$1"); do runs+="${STUB_TAG_COMMIT}:completed:failure:success "; done
+  export GH_STUB_RUNS="$runs"
+}
+
+# A gh message far past the 300 characters a quoted cause is cut at.
+LONG_GH_ERR="gh:$(printf ' Resource protected by organization SAML enforcement.%.0s' {1..40})"
 
 # fits_annotation <output> - whether every error line stays under GitHub's
 # ~1273-byte annotation cutoff even for the longest tag form,
@@ -2855,8 +2880,8 @@ fits_annotation() {
   INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
   [ "$status" -ne 0 ]
   [[ "$output" == *": a draft release for v4.11.3 exists; a release.yaml run for v4.11.3 is still going."* ]]
-  [[ "$output" == *"Drafts by id: 201 (no publish time). Still going: runs 1 (in_progress). Earlier attempts could not be read for runs 1. Inspect:"* ]]
-  [[ "$output" != *"could not read an earlier attempt"* ]]
+  [[ "$output" == *"Drafts by id: 201 (no publish time). Still going: runs 1 (in_progress). Not every attempt could be read for runs 1. Inspect:"* ]]
+  [[ "$output" != *"could not read every attempt"* ]]
 }
 
 @test "main: a published release is still the double-cut guard when the runs cannot be listed" {
@@ -2941,7 +2966,7 @@ fits_annotation() {
   export GH_STUB_CONTENTS_LOG="${STUB_DIR}/contents.log"
   INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
   [ "$status" -ne 0 ]
-  [[ "$output" == *"Passed release.yaml runs built 6666666666666666666666666666666666666666, 3333333333333333333333333333333333333333, 2222222222222222222222222222222222222222."* ]]
+  [[ "$output" == *"Passed release.yaml runs built 6666666666666666666666666666666666666666, 3333333333333333333333333333333333333333, 2222222222222222222222222222222222222222. 1 older run was not checked for a pass the run list does not show."* ]]
   ! grep -q '/attempts/' "$GH_STUB_CONTENTS_LOG"
 }
 
@@ -2962,7 +2987,7 @@ fits_annotation() {
   export GH_STUB_ATTEMPTS_FAIL=transient
   INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
   [ "$status" -ne 0 ]
-  [[ "$output" == *"Still going: runs 1 (in_progress). Earlier attempts could not be read for runs 1."* ]]
+  [[ "$output" == *"Still going: runs 1 (in_progress). Not every attempt could be read for runs 1."* ]]
 }
 
 @test "main: a pass found in an earlier attempt at the tag reads the other re-runs" {
@@ -3003,13 +3028,12 @@ fits_annotation() {
   export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
   export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
   export GH_STUB_DRAFTS="loft-sh/loft-enterprise:v4.11.3"
-  local runs="" i
-  for i in $(seq 12); do runs+="${STUB_TAG_COMMIT}:completed:failure:success "; done
-  export GH_STUB_RUNS="$runs" GH_STUB_ATTEMPTS_FAIL=transient
+  export GH_STUB_ATTEMPTS_FAIL=transient
+  stub_failed_reruns_at_tag 12
   INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
   [ "$status" -ne 0 ]
   [ "$(grep -c '^::error::' <<<"$output")" -eq 3 ]
-  [[ "$output" == *"Earlier attempts could not be read for runs 12, 11, 10, 9, 8, and 7 more."* ]]
+  [[ "$output" == *"Not every attempt could be read for runs 12, 11, 10, 9, 8, and 7 more."* ]]
   [[ "$output" == *"::error::Reads that failed while gathering those facts: failed to reach GitHub API for attempt 1 of run "*"gh said: gh: dial tcp: lookup api.github.com"* ]]
   fits_annotation "$output"
 }
@@ -3034,8 +3058,85 @@ fits_annotation() {
   export GH_STUB_ATTEMPTS_FAIL=transient
   INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
   [ "$status" -ne 0 ]
-  [[ "$output" == *"could not read an earlier attempt of release.yaml run 1 for v4.11.3 in loft-sh/loft-enterprise, so the cut cannot tell whether it passed and published. Nothing was dispatched. Cause: failed to reach GitHub API for attempt 1 of run 1 in loft-sh/loft-enterprise (no HTTP status - DNS, rate-limit, or auth). Not treating as absent. gh said: gh: dial tcp: lookup api.github.com. Steps: ${README_URL}#partial-failure-recovery ${INSPECT}"* ]]
+  [[ "$output" == *"could not read every attempt of release.yaml run 1 for v4.11.3 in loft-sh/loft-enterprise, so the cut cannot tell whether it passed and published. Nothing was dispatched. Cause: failed to reach GitHub API for attempt 1 of run 1 in loft-sh/loft-enterprise (no HTTP status - DNS, rate-limit, or auth). Not treating as absent. gh said: gh: dial tcp: lookup api.github.com. Steps: ${README_URL}#partial-failure-recovery ${INSPECT}"* ]]
   [ "$(grep -c '^::error::' <<<"$output")" -eq 1 ]
+}
+
+@test "main: a long gh message is cut short so the steps still fit after it" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_RUN_ID_BASE=98765432100 GH_STUB_ATTEMPTS_FAIL=transient GH_STUB_ATTEMPTS_ERR="$LONG_GH_ERR"
+  stub_failed_reruns_at_tag 12
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  local cause
+  cause="$(capped_text "failed to reach GitHub API for attempt 1 of run 98765432112 in loft-sh/loft-enterprise (no HTTP status - DNS, rate-limit, or auth). Not treating as absent. gh said: ${LONG_GH_ERR}")"
+  [[ "$cause" == *"..." ]]
+  [[ "$output" == *"Cause: ${cause}. Steps: ${README_URL}#partial-failure-recovery ${INSPECT}"* ]]
+  [[ "$output" != *"$LONG_GH_ERR"* ]]
+  fits_annotation "$output"
+}
+
+@test "main: a long gh message behind a draft refusal is cut short" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_DRAFTS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_RUN_ID_BASE=98765432100 GH_STUB_ATTEMPTS_FAIL=transient GH_STUB_ATTEMPTS_ERR="$LONG_GH_ERR"
+  stub_failed_reruns_at_tag 12
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  local cause
+  cause="$(capped_text "failed to reach GitHub API for attempt 1 of run 98765432112 in loft-sh/loft-enterprise (no HTTP status - DNS, rate-limit, or auth). Not treating as absent. gh said: ${LONG_GH_ERR}")"
+  [[ "$cause" == *"..." ]]
+  [[ "$output" == *"Read the steps before deleting or publishing a draft or cancelling a run: ${README_URL}#draft-releases"* ]]
+  grep -qFx "::error::Reads that failed while gathering those facts: ${cause}" <<<"$output"
+  fits_annotation "$output"
+}
+
+@test "main: a long body with an HTTP status is cut short too" {
+  # GitHub rejects a token not authorized for SAML SSO with a 403.
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_RUN_ID_BASE=98765432100 GH_STUB_ATTEMPTS_FAIL=403 GH_STUB_ATTEMPTS_ERR="$LONG_GH_ERR"
+  stub_failed_reruns_at_tag 12
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  local cause
+  cause="$(capped_text "unexpected status 403 from GitHub API for attempt 1 of run 98765432112 in loft-sh/loft-enterprise. gh said: ${LONG_GH_ERR}")"
+  [[ "$cause" == *"..." ]]
+  [[ "$output" == *"Cause: ${cause}. Steps: ${README_URL}#partial-failure-recovery ${INSPECT}"* ]]
+  fits_annotation "$output"
+}
+
+@test "main: a finished run listed with no conclusion is read again, not taken for a failure" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_RUNS="${STUB_TAG_COMMIT}:completed:null"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"could not read every attempt of release.yaml run 1 for v4.11.3"*"Cause: attempt 1 of run 1 in loft-sh/loft-enterprise came back with no conclusion."* ]]
+  [[ "$output" != *"stub-dispatch"* ]]
+}
+
+@test "main: a run listed with no conclusion whose attempt passed refuses the cut" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_RUNS="${STUB_TAG_COMMIT}:completed:null:failure" GH_STUB_LATEST_ATTEMPT=success
+  export GH_STUB_CONTENTS_LOG="${STUB_DIR}/contents.log"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"a release.yaml run at tag v4.11.3 already passed, but there is no published release"* ]]
+  [[ "$output" != *"stub-dispatch"* ]]
+  grep -q 'actions/runs/1/attempts/2$' "$GH_STUB_CONTENTS_LOG"
+}
+
+@test "main: a run listed with no conclusion whose attempt failed is resumed" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_RUNS="${STUB_TAG_COMMIT}:completed:null" GH_STUB_LATEST_ATTEMPT=failure
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"stub-dispatch"* ]]
 }
 
 @test "main: an earlier attempt with no conclusion is not read as a failure" {
@@ -3045,7 +3146,7 @@ fits_annotation() {
   export GH_STUB_RUNS="${STUB_TAG_COMMIT}:completed:failure:none"
   INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
   [ "$status" -ne 0 ]
-  [[ "$output" == *"could not read an earlier attempt of release.yaml run 1"*"Cause: attempt 1 of run 1 in loft-sh/loft-enterprise came back with no conclusion."* ]]
+  [[ "$output" == *"could not read every attempt of release.yaml run 1"*"Cause: attempt 1 of run 1 in loft-sh/loft-enterprise came back with no conclusion."* ]]
   [[ "$output" != *"stub-dispatch"* ]]
 }
 
@@ -3057,7 +3158,7 @@ fits_annotation() {
   export GH_STUB_RUNS="${STUB_TAG_COMMIT}:completed:failure:none,success 2222222222222222222222222222222222222222:completed:failure:,"
   INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
   [ "$status" -ne 0 ]
-  [[ "$output" == *"Earlier attempts could not be read for runs 2."* ]]
+  [[ "$output" == *"Not every attempt could be read for runs 2."* ]]
   [[ "$output" == *"Reads that failed while gathering those facts: GitHub answered 404 for attempt 1 of run 2 in loft-sh/loft-enterprise"* ]]
   [[ "$output" != *"no conclusion"* ]]
 }
