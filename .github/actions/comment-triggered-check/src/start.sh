@@ -164,8 +164,8 @@ fi
 # --- 2. Authorize the commenter ---------------------------------------------
 # From the event payload, so no API call and no token scope to get wrong. It is
 # coarser than the collaborator endpoint: a read-only collaborator reads as
-# COLLABORATOR and would pass. On a same-repo-only command in an internal
-# repository the cost of that is runner time, not access.
+# COLLABORATOR and would pass. For a same-repository pull request the cost of
+# that is runner time, not access. Forks get the precise check in step 3.
 if ! is_authorized_association "$association"; then
   reason="insufficient-permission"
   echo "::notice::${comment_author} (${association:-unknown}) cannot run ${command_word}; it needs repository access"

@@ -72,10 +72,10 @@ In that mode, `start` checks the commenter's repository permission and requires
 `write`, `maintain`, or `admin`. The comment is the maintainer's explicit
 approval for that commit.
 
-Keep the privileged preparation job free of checkouts and secrets. If it calls
-a reusable workflow that runs fork code, pin every checkout to `head-sha`, set
-`persist-credentials: false`, pass only the secrets the suite needs, and prevent
-the fork run from writing shared caches.
+Keep the privileged preparation job free of checkouts and secrets. Run fork
+code in a separate `workflow_dispatch` run loaded from the base branch. In that
+run, pin every checkout to `head-sha`, set `persist-credentials: false`, and set
+`cache-mode: read` so the fork run cannot write shared caches.
 
 ## Who may run it
 

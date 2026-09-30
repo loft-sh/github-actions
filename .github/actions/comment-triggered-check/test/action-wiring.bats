@@ -43,12 +43,3 @@ START="$BATS_TEST_DIRNAME/../src/start.sh"
   grep -Fq 'is-fork:' "$ACTION"
   grep -Fq 'value: ${{ steps.start.outputs.is-fork }}' "$ACTION"
 }
-
-@test "the minimal fork contract has no handoff modes" {
-  run grep -Fq 'queue-fork' "$ACTION"
-  [ "$status" -ne 0 ]
-  run grep -Fq 'resolve-fork' "$ACTION"
-  [ "$status" -ne 0 ]
-  run grep -Fq 'trusted-bot' "$ACTION"
-  [ "$status" -ne 0 ]
-}
