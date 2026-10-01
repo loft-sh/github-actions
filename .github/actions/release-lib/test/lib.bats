@@ -98,14 +98,58 @@ stub_gh() {
 }
 
 @test "tag_runs: queries the workflow it is given, under both tag spellings" {
-  stub_gh 'printf "{\"workflow_runs\":[{\"id\":7,\"head_sha\":\"abc\",\"status\":\"queued\",\"conclusion\":null}]}\n" | jq -r "${@: -1}"'
+  stub_gh 'printf "{\"workflow_runs\":[{\"id\":7,\"run_attempt\":1,\"head_sha\":\"abc\",\"status\":\"queued\",\"conclusion\":null}]}\n" | jq -r "${@: -1}"'
   local runs
   tag_runs runs org/repo build.yaml v0.37.2
   grep -q 'workflows/build.yaml/runs?branch=v0.37.2&' "$GH_LOG"
   grep -q 'workflows/build.yaml/runs?branch=refs/tags/v0.37.2&' "$GH_LOG"
+  # Every page is read, not just the first.
+  [ "$(grep -c -- '--paginate' "$GH_LOG")" -eq 2 ]
   # The same run under both queries is counted once.
-  [ "$runs" = "7 abc queued none" ]
+  [ "$runs" = "7 abc queued none 1" ]
   [ "$(count_runs_at "$runs" abc)" -eq 1 ]
+}
+
+@test "tag_runs: a run that finishes between the two reads is kept once, as still going" {
+  # Read first under the short name, then under refs/tags/, by when it was done.
+  stub_gh 'if [[ "$*" == *refs/tags/* ]]; then s=completed c="\"success\""; else s=in_progress c=null; fi
+printf "{\"workflow_runs\":[{\"id\":7,\"run_attempt\":1,\"head_sha\":\"abc\",\"status\":\"%s\",\"conclusion\":%s},{\"id\":8,\"run_attempt\":1,\"head_sha\":\"abc\",\"status\":\"completed\",\"conclusion\":\"failure\"}]}\n" "$s" "$c" | jq -r "${@: -1}"'
+  local runs
+  tag_runs runs org/repo build.yaml v0.37.2
+  [ "$runs" = $'7 abc in_progress none 1\n8 abc completed failure 1' ]
+  [ "$(count_runs_at "$runs" abc)" -eq 2 ]
+}
+
+@test "tag_runs: the live copy of a run wins whichever read it came from" {
+  stub_gh 'if [[ "$*" == *refs/tags/* ]]; then s=in_progress c=null; else s=completed c="\"success\""; fi
+printf "{\"workflow_runs\":[{\"id\":7,\"run_attempt\":1,\"head_sha\":\"abc\",\"status\":\"%s\",\"conclusion\":%s}]}\n" "$s" "$c" | jq -r "${@: -1}"'
+  local runs
+  tag_runs runs org/repo build.yaml v0.37.2
+  [ "$runs" = "7 abc in_progress none 1" ]
+}
+
+@test "tag_runs: a re-run started between the two reads is kept as queued" {
+  # A re-run keeps the run id, so the completed copy is the older one here.
+  stub_gh 'if [[ "$*" == *refs/tags/* ]]; then a=2 s=queued c=null; else a=1 s=completed c="\"failure\""; fi
+printf "{\"workflow_runs\":[{\"id\":7,\"run_attempt\":%s,\"head_sha\":\"abc\",\"status\":\"%s\",\"conclusion\":%s}]}\n" "$a" "$s" "$c" | jq -r "${@: -1}"'
+  local runs
+  tag_runs runs org/repo build.yaml v0.37.2
+  [ "$runs" = "7 abc queued none 2" ]
+}
+
+@test "tag_runs: a re-run is kept as queued whichever read it came from" {
+  stub_gh 'if [[ "$*" == *refs/tags/* ]]; then a=1 s=completed c="\"failure\""; else a=2 s=queued c=null; fi
+printf "{\"workflow_runs\":[{\"id\":7,\"run_attempt\":%s,\"head_sha\":\"abc\",\"status\":\"%s\",\"conclusion\":%s}]}\n" "$a" "$s" "$c" | jq -r "${@: -1}"'
+  local runs
+  tag_runs runs org/repo build.yaml v0.37.2
+  [ "$runs" = "7 abc queued none 2" ]
+}
+
+@test "tag_runs: a run without run_attempt is an unknown answer, not a first attempt" {
+  stub_gh 'printf "{\"workflow_runs\":[{\"id\":7,\"head_sha\":\"abc\",\"status\":\"completed\",\"conclusion\":\"failure\"}]}\n" | jq -r "${@: -1}"'
+  local runs
+  run tag_runs runs org/repo build.yaml v0.37.2
+  [ "$status" -ne 0 ]
 }
 
 @test "tag_runs: an error-shaped body is an unknown answer, not no runs" {
@@ -130,4 +174,59 @@ stub_gh() {
   run require_tag_on_target org/repo release-4.11 v0.37.2-next.1 abc
   [ "$status" -eq 0 ]
   [[ "$output" == *"::warning::branch 'release-4.11' no longer exists"* ]]
+}
+
+@test "api_read: a 200 gives the body, a 404 is 1, anything else is 2 with the cause" {
+  stub_gh 'case "$*" in
+  *ok*) printf "HTTP/2.0 200 OK\n\n"; echo "{\"a\":1}" | jq -r "${@: -1}" ;;
+  *gone*) echo "HTTP/2.0 404 Not Found"; exit 1 ;;
+  *denied*) echo "HTTP/2.0 403 Forbidden"; echo "gh: Resource protected by SAML" >&2; exit 1 ;;
+  *) echo "gh: dial tcp" >&2; exit 1 ;;
+esac'
+  local out rc
+  rc=0; api_read out repos/ok "the thing" .a || rc=$?
+  [ "$rc" -eq 0 ]
+  [ "$out" = "1" ]
+  rc=0; api_read out repos/gone "the thing" .a || rc=$?
+  [ "$rc" -eq 1 ]
+  [ "$API_READ_ERR" = "GitHub answered 404 for the thing" ]
+  rc=0; api_read out repos/denied "the thing" .a || rc=$?
+  [ "$rc" -eq 2 ]
+  [[ "$API_READ_ERR" == *"unexpected status 403"*"SAML"* ]]
+  rc=0; api_read out repos/down "the thing" .a || rc=$?
+  [ "$rc" -eq 2 ]
+  [[ "$API_READ_ERR" == *"no HTTP status"*"dial tcp"* ]]
+}
+
+# stub_tag <tag-object-answer> - an annotated tag whose tag object is answered
+# with <tag-object-answer>, a stub_gh case arm body.
+stub_tag() {
+  stub_gh 'case "$*" in
+  *git/ref/tags/*) printf "HTTP/2.0 200 OK\n\n"; echo "{\"object\":{\"sha\":\"2222222222222222222222222222222222222222\",\"type\":\"tag\"}}" | jq -r "${@: -1}" ;;
+  *git/tags/*) '"$1"' ;;
+esac'
+}
+
+@test "resolve_tag: a tag object that cannot be read is a failed read" {
+  stub_tag 'echo "gh: dial tcp" >&2; exit 1'
+  local sha rc=0
+  resolve_tag sha org/repo v0.37.2 || rc=$?
+  [ "$rc" -eq 2 ]
+  [[ "$TAG_ERR" == *"tag object v0.37.2 in org/repo"*"dial tcp"* ]]
+}
+
+@test "resolve_tag: a tag object that is gone is a tag no run builds" {
+  stub_tag 'echo "HTTP/2.0 404 Not Found"; exit 1'
+  local sha rc=0
+  resolve_tag sha org/repo v0.37.2 || rc=$?
+  [ "$rc" -eq 3 ]
+  [[ "$TAG_ERR" == *"could not be resolved"* ]]
+}
+
+@test "resolve_tag: an annotated tag is peeled to its commit" {
+  stub_tag 'printf "HTTP/2.0 200 OK\n\n"; echo "{\"object\":{\"sha\":\"1111111111111111111111111111111111111111\",\"type\":\"commit\"}}" | jq -r "${@: -1}"'
+  local sha rc=0
+  resolve_tag sha org/repo v0.37.2 || rc=$?
+  [ "$rc" -eq 0 ]
+  [ "$sha" = "1111111111111111111111111111111111111111" ]
 }

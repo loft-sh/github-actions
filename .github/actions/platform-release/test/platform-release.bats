@@ -22,6 +22,8 @@ setup() {
   # Read when the script is sourced, so the post-dispatch wait does not sleep.
   export PLATFORM_DISPATCH_VISIBLE_ATTEMPTS=3
   export PLATFORM_DISPATCH_VISIBLE_SLEEP_SECONDS=0
+  # Also read when sourced. A CI step must not pick the README link.
+  unset GITHUB_ACTION_REPOSITORY GITHUB_ACTION_REF
   source "$SCRIPT"
 
   STUB_DIR="$(mktemp -d)"
@@ -146,18 +148,34 @@ if [[ "$sub" == "api" ]]; then
       # releases the same way GH_STUB_RELEASES names published ones. Served in
       # pages of GH_STUB_PAGE_SIZE (default 2), published first, and without
       # --paginate only the first page comes back, as with real gh. The
-      # caller's --jq runs over each page, as gh applies it.
+      # caller's --jq runs over each page, as gh applies it. Published releases
+      # get ids from 101, drafts from GH_STUB_DRAFT_ID_BASE+1 (default 201), in
+      # the order listed. A draft entry
+      # ending in @shipped was published once and turned back into a draft
+      # when its tag was deleted, so it keeps a published_at.
+      # GH_STUB_RELEASES_REPEAT=1 lists the last release again, as a list that
+      # shifts between pages does, and =published lists it again as published.
+      [[ -n "${GH_STUB_CONTENTS_LOG:-}" ]] && printf '%s\n' "$path" >>"$GH_STUB_CONTENTS_LOG"
       if [[ "${GH_STUB_TRANSIENT:-}${GH_STUB_TRANSIENT_DRAFTS:-}" == *1* ]]; then
         echo "gh: dial tcp: lookup api.github.com" >&2; exit 1
       fi
       rest="${path#repos/}"; repo="${rest%%/releases\?*}"
       releases=()
+      rid=100
       for entry in ${GH_STUB_RELEASES:-}; do
-        [[ "${entry%%:*}" == "$repo" ]] && releases+=("$(printf '{"tag_name":"%s","draft":false}' "${entry#*:}")")
+        rid=$((rid + 1))
+        [[ "${entry%%:*}" == "$repo" ]] && releases+=("$(printf '{"id":%s,"tag_name":"%s","draft":false}' "$rid" "${entry#*:}")")
       done
+      rid="${GH_STUB_DRAFT_ID_BASE:-200}"
       for entry in ${GH_STUB_DRAFTS:-}; do
-        [[ "${entry%%:*}" == "$repo" ]] && releases+=("$(printf '{"tag_name":"%s","draft":true}' "${entry#*:}")")
+        rid=$((rid + 1))
+        d_published=null
+        [[ "$entry" == *@shipped ]] && d_published='"2026-01-01T00:00:00Z"'
+        entry="${entry%@shipped}"
+        [[ "${entry%%:*}" == "$repo" ]] && releases+=("$(printf '{"id":%s,"tag_name":"%s","draft":true,"published_at":%s}' "$rid" "${entry#*:}" "$d_published")")
       done
+      [[ "${GH_STUB_RELEASES_REPEAT:-}" == "1" ]] && releases+=("${releases[-1]}")
+      [[ "${GH_STUB_RELEASES_REPEAT:-}" == "published" ]] && releases+=("${releases[-1]/\"draft\":true/\"draft\":false}")
       size="${GH_STUB_PAGE_SIZE:-2}"
       for ((i = 0; i == 0 || i < ${#releases[@]}; i += size)); do
         page="$(IFS=,; printf '[%s]' "${releases[*]:i:size}")"
@@ -171,6 +189,7 @@ if [[ "$sub" == "api" ]]; then
       # it an annotated tag, whose ref names a tag object that git/tags/ peels.
       # GH_STUB_TAG_NO_SHA=1 answers with a ref body that has no .object.sha.
       fail_if_simulated tags
+      [[ -n "${GH_STUB_CONTENTS_LOG:-}" ]] && printf '%s\n' "$path" >>"$GH_STUB_CONTENTS_LOG"
       rest="${path#repos/}"; repo="${rest%%/git/ref/tags/*}"; tag="${rest##*/git/ref/tags/}"
       contains "${GH_STUB_TAGS:-}" "${repo}:${tag}" || respond 404
       if [[ "${GH_STUB_TAG_NO_SHA:-}" == "1" ]]; then
@@ -188,6 +207,34 @@ if [[ "$sub" == "api" ]]; then
         respond 200 '{"object":{"sha":"'"${STUB_TAG_OBJECT2}"'","type":"tag"}}'
       fi
       respond 200 '{"object":{"sha":"'"${GH_STUB_TAG_SHA:-$STUB_TAG_COMMIT}"'","type":"'"${GH_STUB_TAG_PEELS_TO:-commit}"'"}}' ;;
+    repos/*/actions/runs/*/attempts/*)
+      # An earlier attempt of a re-run, from the fourth field of its
+      # GH_STUB_RUNS entry, or its latest attempt, from the third field unless
+      # GH_STUB_LATEST_ATTEMPT names another conclusion. GH_STUB_ATTEMPTS_FAIL=1
+      # answers 404, =transient fails with no HTTP status and =403 with a 403,
+      # saying GH_STUB_ATTEMPTS_ERR if set.
+      [[ -n "${GH_STUB_CONTENTS_LOG:-}" ]] && printf '%s\n' "$path" >>"$GH_STUB_CONTENTS_LOG"
+      [[ "${GH_STUB_ATTEMPTS_FAIL:-}" == "1" ]] && respond 404
+      if [[ "${GH_STUB_ATTEMPTS_FAIL:-}" == "transient" ]]; then
+        echo "${GH_STUB_ATTEMPTS_ERR:-gh: dial tcp: lookup api.github.com}" >&2; exit 1
+      fi
+      if [[ "${GH_STUB_ATTEMPTS_FAIL:-}" == "403" ]]; then
+        ((include)) && printf 'HTTP/2.0 403 Forbidden\nContent-Type: application/json\n\n{"message":"Forbidden"}'
+        echo "${GH_STUB_ATTEMPTS_ERR:-gh: Forbidden (HTTP 403)}" >&2; exit 1
+      fi
+      rest="${path#*/actions/runs/}"; r_id="${rest%%/*}"; r_k="${path##*/}"
+      read -ra r_entries <<<"${GH_STUB_RUNS:-}"
+      IFS=: read -r _ _ r_last r_earlier <<<"${r_entries[r_id - ${GH_STUB_RUN_ID_BASE:-0} - 1]:-}"
+      r_latest=1
+      [[ -n "$r_earlier" ]] && r_latest=$(( $(tr -cd , <<<"$r_earlier" | wc -c) + 2 ))
+      if ((r_k == r_latest)); then
+        r_last="${GH_STUB_LATEST_ATTEMPT:-$r_last}"
+        [[ "$r_last" == "null" ]] && respond 200 '{"conclusion":null}'
+        respond 200 "$(printf '{"conclusion":"%s"}' "$r_last")"
+      fi
+      IFS=, read -ra r_earlier <<<"$r_earlier"
+      [[ -n "${r_earlier[r_k - 1]:-}" ]] || respond 404
+      respond 200 "$(printf '{"conclusion":"%s"}' "${r_earlier[r_k - 1]}")" ;;
     repos/*/actions/workflows/*/runs\?*)
       # The runs the resume check and the post-dispatch wait read. GH_STUB_RUNS
       # lists them as <head_sha>:<status>:<conclusion>, and every dispatch the
@@ -195,7 +242,10 @@ if [[ "$sub" == "api" ]]; then
       # them under head_branch GH_STUB_RUNS_HEAD_BRANCH (short: the tag name,
       # the default; full: refs/tags/<tag>), and only a branch= query for that
       # spelling lists them. GH_STUB_RUNS_FAILS=1 fails the read,
-      # GH_STUB_RUNS_BAD_SHAPE=1 answers 200 with an error-shaped body.
+      # GH_STUB_RUNS_BAD_SHAPE=1 answers 200 with an error-shaped body. Runs get
+      # ids from GH_STUB_RUN_ID_BASE+1 (default 1). An entry may add a fourth
+      # field, the conclusions of the run's earlier attempts, comma-separated,
+      # which makes it a re-run whose attempts/<n> answers with them.
       # GH_STUB_DISPATCH_VISIBLE_AFTER=<n> holds the dispatched run back until
       # the n-th poll after the dispatch. A poll reads both spellings, short
       # first, so the short read counts the polls (into dispatch_polls).
@@ -227,12 +277,21 @@ if [[ "$sub" == "api" ]]; then
       for entry in $entries; do
         n=$((n + 1))
         ((listed == 0)) || continue
-        IFS=: read -r r_sha r_status r_conclusion <<<"$entry"
+        IFS=: read -r r_sha r_status r_conclusion r_earlier <<<"$entry"
         if [[ "$r_conclusion" == "null" ]]; then r_conclusion=null; else r_conclusion="\"${r_conclusion}\""; fi
-        runs+=("$(printf '{"id":%s,"head_sha":"%s","status":"%s","conclusion":%s}' "$n" "$r_sha" "$r_status" "$r_conclusion")")
+        r_attempt=1
+        [[ -n "$r_earlier" ]] && r_attempt=$(( $(tr -cd , <<<"$r_earlier" | wc -c) + 2 ))
+        runs+=("$(printf '{"id":%s,"run_attempt":%s,"head_sha":"%s","status":"%s","conclusion":%s}' "$((${GH_STUB_RUN_ID_BASE:-0} + n))" "$r_attempt" "$r_sha" "$r_status" "$r_conclusion")")
       done
-      printf '{"workflow_runs":[%s]}\n' "$(IFS=,; printf '%s' "${runs[*]}")" | jq -r "${jq_filter:-.}"
-      exit $? ;;
+      # Served in pages of GH_STUB_RUNS_PAGE_SIZE (default: all on one), and
+      # without --paginate only the first page comes back, as with real gh.
+      size="${GH_STUB_RUNS_PAGE_SIZE:-${#runs[@]}}"
+      ((size > 0)) || size=1
+      for ((i = 0; i == 0 || i < ${#runs[@]}; i += size)); do
+        printf '{"workflow_runs":[%s]}\n' "$(IFS=,; printf '%s' "${runs[*]:i:size}")" | jq -r "${jq_filter:-.}" || exit $?
+        [[ "$all_args" == *--paginate* ]] || break
+      done
+      exit 0 ;;
     repos/*/compare/*)
       # The resume's check that the tag is on the target branch.
       # GH_STUB_COMPARE_STATUS is the answer (default behind: the tag commit is
@@ -2424,6 +2483,19 @@ fake_yq() {
   [[ "$output" == *"Rename the input to 'triggered_by'"* ]]
 }
 
+README_URL="https://github.com/loft-sh/github-actions/blob/platform-release/v1/.github/actions/platform-release/README.md"
+INSPECT="Inspect: gh run list --repo loft-sh/loft-enterprise --workflow release.yaml --limit 1000 --branch v4.11.3, and again with --branch refs/tags/v4.11.3"
+
+# no_advice <output> - whether the refusal left what to do next to the README.
+# Whether waiting, cancelling, deleting or publishing is safe depends on what a
+# running build does next, which the cut cannot see.
+no_advice() {
+  [[ "$1" != *"Wait for"* && "$1" != *"re-run th"* && "$1" != *"publishing again"* \
+    && "$1" != *"delete it"* && "$1" != *"cancel it"* && "$1" != *"cancel them"* \
+    && "$1" != *"-X DELETE"* && "$1" != *"-X PATCH"* && "$1" != *"gh run cancel"* \
+    && "$1" != *"promote-release"* && "$1" != *"may have shipped"* && "$1" != *"as it shipped"* ]]
+}
+
 @test "main: a draft release for the version is a hard error" {
   # releases/tags/ answers only for published releases, so a draft is found by
   # listing.
@@ -2431,23 +2503,676 @@ fake_yq() {
   export GH_STUB_DRAFTS="loft-sh/loft-enterprise:v4.11.3"
   INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="true" run main
   [ "$status" -ne 0 ]
-  [[ "$output" == *"a draft release for v4.11.3 already exists"* ]]
-  [[ "$output" == *"Promote the draft with loft-sh/loft-enterprise's promote-release.yaml workflow instead of cutting v4.11.3 again"* ]]
-  [[ "$output" == *"Do not delete it"* ]]
+  [[ "$output" == *"::error::refusing to cut v4.11.3 in loft-sh/loft-enterprise: a draft release for v4.11.3 exists. Nothing was tagged. Read the steps before deleting or publishing a draft or cancelling a run: ${README_URL}#draft-releases"* ]]
+  [[ "$output" == *"::error::What the cut saw for v4.11.3 in loft-sh/loft-enterprise: tag v4.11.3 does not exist. Drafts by id: 201 (no publish time). ${INSPECT}"* ]]
+  no_advice "$output"
   [[ "$output" != *"[dry-run] gh api -X POST"* ]]
 }
 
 @test "main: a draft release blocks the resume of an existing tag too" {
-  # The build already got as far as the draft, so another build is not how the
-  # version gets finished.
+  # A second build beside the draft would leave two drafts for one version.
   export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
   export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
   export GH_STUB_DRAFTS="loft-sh/loft-enterprise:v4.11.3"
   export GH_STUB_RUNS="${STUB_TAG_COMMIT}:completed:failure"
   INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
   [ "$status" -ne 0 ]
-  [[ "$output" == *"Promote the draft"* ]]
+  [[ "$output" == *": a draft release for v4.11.3 exists. Nothing was dispatched."* ]]
+  [[ "$output" == *"tag v4.11.3 points at ${STUB_TAG_COMMIT}. Drafts by id: 201 (no publish time). Inspect:"* ]]
+  [[ "$output" != *"Passed release.yaml runs"* && "$output" != *"Still going"* ]]
   [[ "$output" != *"stub-dispatch"* ]]
+}
+
+@test "main: several drafts are each named by id" {
+  # gh release delete by tag cannot pick between drafts of one version.
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_DRAFTS="loft-sh/loft-enterprise:v4.11.3 loft-sh/loft-enterprise:v4.11.3"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *": 2 draft releases for v4.11.3 exist. Nothing was dispatched."* ]]
+  [[ "$output" == *"Drafts by id: 201 (no publish time), 202 (no publish time)."* ]]
+  [[ "$output" != *"stub-dispatch"* ]]
+}
+
+@test "main: a draft and a shipped draft are told apart by publish time" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_DRAFTS="loft-sh/loft-enterprise:v4.11.3 loft-sh/loft-enterprise:v4.11.3@shipped"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  # Published first, whatever order GitHub lists them in.
+  [[ "$output" == *"Drafts by id: 202 (published 2026-01-01T00:00:00Z), 201 (no publish time)."* ]]
+  no_advice "$output"
+}
+
+@test "main: a shipped draft is named even behind many that never shipped" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  local drafts="" i
+  for i in 1 2 3 4 5 6; do drafts+="loft-sh/loft-enterprise:v4.11.3 "; done
+  export GH_STUB_DRAFTS="${drafts}loft-sh/loft-enterprise:v4.11.3@shipped"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Drafts by id: 207 (published 2026-01-01T00:00:00Z), 201 (no publish time)"*", and 2 more. Inspect:"* ]]
+}
+
+@test "main: a draft beside a running build names both" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_DRAFTS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_RUNS="${STUB_TAG_COMMIT}:in_progress:null"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *": a draft release for v4.11.3 exists; a release.yaml run for v4.11.3 is still going. Nothing was dispatched. Read the steps before deleting or publishing a draft or cancelling a run: ${README_URL}#draft-releases"* ]]
+  [[ "$output" == *"Drafts by id: 201 (no publish time). Still going: runs 1 (in_progress). Inspect:"* ]]
+  no_advice "$output"
+  [[ "$output" != *"stub-dispatch"* ]]
+}
+
+@test "main: every running build is named, not just the first" {
+  # Cancelling or waiting on one would leave the others to ship the version.
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_RUNS="${STUB_TAG_COMMIT}:in_progress:null ${STUB_TAG_COMMIT}:completed:failure ${STUB_TAG_COMMIT}:queued:null"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *": 2 release.yaml runs for v4.11.3 are still going. Nothing was dispatched. Steps: ${README_URL}#partial-failure-recovery"* ]]
+  [[ "$output" == *"Still going: runs 3 (queued), 1 (in_progress)."* ]]
+  [[ "$output" != *"Drafts by id"* ]]
+  [[ "$output" != *"stub-dispatch"* ]]
+}
+
+@test "main: a draft with its tag gone beside a running build says the tag is gone" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_DRAFTS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_RUNS="${STUB_TAG_COMMIT}:in_progress:null"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"is still going. Nothing was tagged."* ]]
+  [[ "$output" == *": tag v4.11.3 does not exist. Drafts by id: 201 (no publish time). Still going: runs 1 (in_progress)."* ]]
+  [[ "$output" != *"[dry-run] gh api -X POST"* ]]
+}
+
+@test "main: a passed build with a draft names the commit it built" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_DRAFTS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_RUNS="${STUB_TAG_COMMIT}:completed:success"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *": a draft release for v4.11.3 exists; a release.yaml run at tag v4.11.3 already passed, but there is no published release. Nothing was dispatched. Read the steps"*"#draft-releases"* ]]
+  [[ "$output" == *"Drafts by id: 201 (no publish time). Passed release.yaml runs built ${STUB_TAG_COMMIT}. Inspect:"* ]]
+  no_advice "$output"
+  [[ "$output" != *"stub-dispatch"* ]]
+}
+
+@test "main: a build running beside a passed one at the tag reports both" {
+  # With no draft, the pass alone still refuses: waiting on the live build and
+  # re-running would only be refused again.
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_RUNS="${STUB_TAG_COMMIT}:completed:success ${STUB_TAG_COMMIT}:in_progress:null"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *": a release.yaml run for v4.11.3 is still going; a release.yaml run at tag v4.11.3 already passed, but there is no published release. Nothing was dispatched."* ]]
+  [[ "$output" == *"Still going: runs 2 (in_progress). Passed release.yaml runs built ${STUB_TAG_COMMIT}."* ]]
+  no_advice "$output"
+}
+
+@test "main: a re-cut build beside an older passed one names both commits" {
+  # The version was pulled and re-cut at another commit, so the older pass is
+  # not a sign the running build repeats a release. Only the operator knows
+  # which case it is, so the cut names both commits and the tag.
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_DRAFTS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_RUNS="2222222222222222222222222222222222222222:completed:success ${STUB_TAG_COMMIT}:in_progress:null"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *": a draft release for v4.11.3 exists; a release.yaml run for v4.11.3 is still going. Nothing was dispatched."* ]]
+  [[ "$output" == *"tag v4.11.3 points at ${STUB_TAG_COMMIT}. Drafts by id: 201 (no publish time). Still going: runs 2 (in_progress). Passed release.yaml runs built 2222222222222222222222222222222222222222."* ]]
+  [[ "$output" != *"already passed"* ]]
+  no_advice "$output"
+}
+
+@test "main: a running re-run whose first attempt passed counts the pass" {
+  # The list shows only the live attempt, and the one before it may have
+  # published.
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_DRAFTS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_RUNS="${STUB_TAG_COMMIT}:in_progress:null:success"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"already passed, but there is no published release"* ]]
+  [[ "$output" == *"Still going: runs 1 (in_progress). Passed release.yaml runs built ${STUB_TAG_COMMIT}."* ]]
+}
+
+@test "main: a shipped draft with no run on record is named with its publish time" {
+  # Old run records can be gone; the publish time on the draft is enough.
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_DRAFTS="loft-sh/loft-enterprise:v4.11.3@shipped"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Drafts by id: 201 (published 2026-01-01T00:00:00Z). Inspect:"* ]]
+  [[ "$output" != *"stub-dispatch"* ]]
+}
+
+@test "main: a shipped draft beside a passed build of another commit names both" {
+  # The tag was moved after shipping, so the operator needs the commit it
+  # shipped from to put the tag back before publishing.
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_DRAFTS="loft-sh/loft-enterprise:v4.11.3@shipped"
+  export GH_STUB_RUNS="2222222222222222222222222222222222222222:completed:success ${STUB_TAG_COMMIT}:completed:failure"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"tag v4.11.3 points at ${STUB_TAG_COMMIT}. Drafts by id: 201 (published 2026-01-01T00:00:00Z). Passed release.yaml runs built 2222222222222222222222222222222222222222."* ]]
+}
+
+@test "main: an attempt that passed before a failed re-run still counts as passed" {
+  # The run list shows only the latest attempt.
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_RUNS="${STUB_TAG_COMMIT}:completed:failure:failure,success"
+  export GH_STUB_CONTENTS_LOG="${STUB_DIR}/contents.log"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"already passed, but there is no published release"* ]]
+  [[ "$output" != *"stub-dispatch"* ]]
+  grep -q 'actions/runs/1/attempts/1$' "$GH_STUB_CONTENTS_LOG"
+  grep -q 'actions/runs/1/attempts/2$' "$GH_STUB_CONTENTS_LOG"
+}
+
+@test "main: a re-run whose earlier attempts all failed is resumed" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_RUNS="${STUB_TAG_COMMIT}:completed:failure:cancelled"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"stub-dispatch"* ]]
+}
+
+@test "main: earlier attempts are not read when they cannot change the cut" {
+  # Nothing else refuses, and neither run is at the tag, so a pass in either
+  # would not block. A call each would only slow the cut and add a way to fail.
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_RUNS="2222222222222222222222222222222222222222:completed:failure:failure,failure,failure"
+  export GH_STUB_CONTENTS_LOG="${STUB_DIR}/contents.log"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"stub-dispatch"* ]]
+  ! grep -q '/attempts/' "$GH_STUB_CONTENTS_LOG"
+}
+
+@test "main: earlier attempts of another commit are not read on a resume" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_RUNS="2222222222222222222222222222222222222222:completed:failure:success"
+  export GH_STUB_CONTENTS_LOG="${STUB_DIR}/contents.log"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"stub-dispatch"* ]]
+  ! grep -q '/attempts/' "$GH_STUB_CONTENTS_LOG"
+}
+
+@test "main: an earlier attempt that cannot be read aborts instead of reading as failed" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_RUNS="${STUB_TAG_COMMIT}:completed:failure:success"
+  export GH_STUB_ATTEMPTS_FAIL=1
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"could not read every attempt of release.yaml run 1 for v4.11.3"* ]]
+  [[ "$output" != *"stub-dispatch"* ]]
+}
+
+@test "main: a build that publishes between the reads is seen as published" {
+  # Runs are read before releases, so a release listed after the runs is final.
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_RELEASES="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_CONTENTS_LOG="${STUB_DIR}/contents.log"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"already exists"* ]]
+  [[ "$(grep -m1 -E '/releases\?|/runs\?' "$GH_STUB_CONTENTS_LOG")" == *"workflows/release.yaml/runs?"* ]]
+  grep -q '/releases?' "$GH_STUB_CONTENTS_LOG"
+}
+
+@test "main: a running build on a later page of the runs still blocks the resume" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_RUNS="${STUB_TAG_COMMIT}:completed:failure ${STUB_TAG_COMMIT}:in_progress:null"
+  export GH_STUB_RUNS_PAGE_SIZE=1
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Still going: runs 2 (in_progress)."* ]]
+  [[ "$output" != *"stub-dispatch"* ]]
+}
+
+@test "main: a passed build on a later page of the runs still blocks the resume" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_RUNS="${STUB_TAG_COMMIT}:completed:failure ${STUB_TAG_COMMIT}:completed:success"
+  export GH_STUB_RUNS_PAGE_SIZE=1
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"already passed"* ]]
+  [[ "$output" != *"stub-dispatch"* ]]
+}
+
+# stub_failed_reruns_at_tag <n> - <n> failed re-runs of the tagged commit, each
+# with a first attempt that passed.
+stub_failed_reruns_at_tag() {
+  local runs="" i
+  for i in $(seq "$1"); do runs+="${STUB_TAG_COMMIT}:completed:failure:success "; done
+  export GH_STUB_RUNS="$runs"
+}
+
+# A gh message far past the 300 characters a quoted cause is cut at.
+LONG_GH_ERR="gh:$(printf ' Resource protected by organization SAML enforcement.%.0s' {1..40})"
+
+# fits_annotation <output> - whether every error line stays under GitHub's
+# ~1273-byte annotation cutoff even for the longest tag form,
+# v4.13.0-next.internal.1, which is 16 bytes longer than the v4.11.3 these
+# tests cut.
+fits_annotation() {
+  local line repeats
+  grep -q '^::error::' <<<"$1" || return 1
+  while IFS= read -r line; do
+    repeats="$(grep -o 'v4\.11\.3' <<<"$line" | wc -l || true)"
+    (( ${#line} + repeats * 16 < 1273 )) || return 1
+  done < <(grep '^::error::' <<<"$1")
+}
+
+@test "main: every refusal line fits in one annotation" {
+  # GitHub cuts an annotation at about 1273 bytes, and the pointer to the steps
+  # comes last. Real release ids have 9 digits, run ids 11, and action_required
+  # is the longest status a live run can have.
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_DRAFT_ID_BASE=987654300 GH_STUB_RUN_ID_BASE=98765432100
+  local shipped_drafts="" plain_drafts="" passed="" live="" i
+  for i in $(seq 40); do
+    shipped_drafts+="loft-sh/loft-enterprise:v4.11.3@shipped loft-sh/loft-enterprise:v4.11.3 "
+    plain_drafts+="loft-sh/loft-enterprise:v4.11.3 loft-sh/loft-enterprise:v4.11.3 "
+  done
+  for i in 1 2 3 4 5 6 7 8 9; do passed+="${i}$(printf '%039d' 0):completed:success "; done
+  for i in 1 2 3 4 5 6 7 8; do live+="${STUB_TAG_COMMIT}:action_required:null "; done
+  local at_tag="${STUB_TAG_COMMIT}:completed:success"
+  local releases drafts tags runs
+  for releases in "" "loft-sh/loft-enterprise:v4.11.3"; do
+    for drafts in "$shipped_drafts" "$plain_drafts"; do
+      for tags in "" "loft-sh/loft-enterprise:v4.11.3"; do
+        for runs in "${passed}${live}" "${passed}${at_tag}" "$passed"; do
+          export GH_STUB_RELEASES="$releases" GH_STUB_DRAFTS="$drafts" GH_STUB_TAGS="$tags" GH_STUB_RUNS="$runs"
+          INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+          [ "$status" -ne 0 ]
+          fits_annotation "$output"
+          if [[ "$drafts" == "$shipped_drafts" ]]; then
+            [[ "$output" == *"and 75 more, 35 of them published."*"Passed release.yaml runs built "*", and "*" more. Inspect:"* ]]
+          else
+            [[ "$output" == *"and 75 more."*"Inspect:"* ]]
+          fi
+          [[ "$output" == *"runs 98765432117 (action_required), "*", and 3 more."* || "$runs" != *action_required* ]]
+          no_advice "$output"
+        done
+      done
+    done
+  done
+}
+
+@test "main: a draft and a running build beside the published release are named" {
+  # A draft or live build beside the release may be a second build of the
+  # version on its way to publishing it twice.
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_RELEASES="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_DRAFTS="loft-sh/loft-enterprise:v4.11.3@shipped loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_RUNS="${STUB_TAG_COMMIT}:completed:success ${STUB_TAG_COMMIT}:in_progress:null"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="true" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *": release v4.11.3 already exists; 2 draft releases for v4.11.3 exist; a release.yaml run for v4.11.3 is still going. Nothing was dispatched."*"#draft-releases"* ]]
+  [[ "$output" == *"Drafts by id: 201 (published 2026-01-01T00:00:00Z), 202 (no publish time). Still going: runs 2 (in_progress). Passed release.yaml runs built ${STUB_TAG_COMMIT}. Inspect:"* ]]
+  [[ "$output" != *"already passed"* ]]
+  no_advice "$output"
+}
+
+@test "main: a published release with nothing else beside it is only the double-cut guard" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_RELEASES="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_RUNS="${STUB_TAG_COMMIT}:completed:success"
+  export GH_STUB_CONTENTS_LOG="${STUB_DIR}/contents.log"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="true" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"::error::release v4.11.3 already exists in loft-sh/loft-enterprise. Refusing to re-cut (double-cut guard)."* ]]
+  [[ "$output" != *"What the cut saw"* && "$output" != *"#draft-releases"* ]]
+  ! grep -q '/git/ref/' "$GH_STUB_CONTENTS_LOG"
+}
+
+@test "main: a draft listed twice across pages is counted once" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_DRAFTS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_RELEASES_REPEAT=1
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *": a draft release for v4.11.3 exists."* ]]
+  [[ "$output" == *"Drafts by id: 201 (no publish time). Inspect:"* ]]
+}
+
+@test "main: a pass at the tag still reads the earlier attempts of other re-runs" {
+  # The cut refuses on the pass alone, so the other commit's hidden pass is
+  # one of the facts it reports.
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_RUNS="${STUB_TAG_COMMIT}:completed:success 2222222222222222222222222222222222222222:completed:failure:success"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Passed release.yaml runs built 2222222222222222222222222222222222222222, ${STUB_TAG_COMMIT}."* ]]
+}
+
+@test "main: an unreadable earlier attempt does not hide a refusal that stands anyway" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_DRAFTS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_RUNS="${STUB_TAG_COMMIT}:in_progress:null:success"
+  export GH_STUB_ATTEMPTS_FAIL=1
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *": a draft release for v4.11.3 exists; a release.yaml run for v4.11.3 is still going."* ]]
+  [[ "$output" == *"Drafts by id: 201 (no publish time). Still going: runs 1 (in_progress). Not every attempt could be read for runs 1. Inspect:"* ]]
+  [[ "$output" != *"could not read every attempt"* ]]
+}
+
+@test "main: a published release is still the double-cut guard when the runs cannot be listed" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_RELEASES="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_RUNS_FAILS=1
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="true" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"::error::release v4.11.3 already exists in loft-sh/loft-enterprise. Refusing to re-cut (double-cut guard). The release.yaml runs could not be listed, so a running or passed build is not ruled out. gh said: "*"dial tcp"* ]]
+}
+
+@test "main: drafts are still named when the runs cannot be listed" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_DRAFTS="loft-sh/loft-enterprise:v4.11.3@shipped"
+  export GH_STUB_RUNS_FAILS=1
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *": a draft release for v4.11.3 exists. Nothing was dispatched."*"#draft-releases"* ]]
+  [[ "$output" == *"Drafts by id: 201 (published 2026-01-01T00:00:00Z). The release.yaml runs could not be listed, so a running or passed build is not ruled out. gh said: "*"dial tcp"* ]]
+  [[ "$output" != *"stub-dispatch"* ]]
+}
+
+@test "main: a tag that cannot be read does not hide a refusal that stands anyway" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_DRAFTS="loft-sh/loft-enterprise:v4.11.3@shipped"
+  export GH_STUB_TRANSIENT_TAGS=1
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *": a draft release for v4.11.3 exists. Nothing was dispatched."* ]]
+  [[ "$output" == *"What the cut saw for v4.11.3 in loft-sh/loft-enterprise: tag v4.11.3 could not be read. Drafts by id: 201 (published 2026-01-01T00:00:00Z)."* ]]
+}
+
+@test "main: the README link follows the ref the action runs at" {
+  export GITHUB_ACTION_REPOSITORY="loft-sh/github-actions" GITHUB_ACTION_REF="0123abcd"
+  source "$SCRIPT"
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_DRAFTS="loft-sh/loft-enterprise:v4.11.3"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="true" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"https://github.com/loft-sh/github-actions/blob/0123abcd/.github/actions/platform-release/README.md#draft-releases"* ]]
+}
+
+@test "main: the README link stays at v1 for a ref from another repository" {
+  export GITHUB_ACTION_REPOSITORY="someone/fork" GITHUB_ACTION_REF="0123abcd"
+  source "$SCRIPT"
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_DRAFTS="loft-sh/loft-enterprise:v4.11.3"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="true" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"${README_URL}#draft-releases"* ]]
+}
+
+@test "main: more running builds than the cap name the newest" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  local runs="" i
+  for i in $(seq 7); do runs+="${STUB_TAG_COMMIT}:in_progress:null "; done
+  export GH_STUB_RUNS="$runs"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Still going: runs 7 (in_progress), 6 (in_progress), 5 (in_progress), 4 (in_progress), 3 (in_progress), and 2 more."* ]]
+}
+
+@test "main: earlier attempts are not read for a commit already known to have passed" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_RUNS="${STUB_TAG_COMMIT}:completed:success ${STUB_TAG_COMMIT}:completed:failure:failure"
+  export GH_STUB_CONTENTS_LOG="${STUB_DIR}/contents.log"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"already passed, but there is no published release"* ]]
+  ! grep -q '/attempts/' "$GH_STUB_CONTENTS_LOG"
+}
+
+@test "main: earlier attempts stop being read once three newer passed commits are known" {
+  # Runs 2 to 4 passed at three other commits, so run 1 cannot make the list.
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_DRAFTS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_RUNS="5555555555555555555555555555555555555555:completed:failure:success 2222222222222222222222222222222222222222:completed:success 3333333333333333333333333333333333333333:completed:success 6666666666666666666666666666666666666666:completed:success"
+  export GH_STUB_CONTENTS_LOG="${STUB_DIR}/contents.log"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Passed release.yaml runs built 6666666666666666666666666666666666666666, 3333333333333333333333333333333333333333, 2222222222222222222222222222222222222222. 1 older run was not checked for a pass the run list does not show."* ]]
+  ! grep -q '/attempts/' "$GH_STUB_CONTENTS_LOG"
+}
+
+@test "main: a tag that cannot be read still ends a cut nothing else refuses" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TRANSIENT_TAGS=1
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"failed to reach GitHub API for tag v4.11.3"* ]]
+  [[ "$output" != *"refusing to cut"* && "$output" != *"stub-dispatch"* ]]
+}
+
+@test "main: an earlier attempt that fails outright is reported like a 404 once the cut refuses" {
+  # A 404 is rare for an attempt below run_attempt; a failed request is not.
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_DRAFTS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_RUNS="${STUB_TAG_COMMIT}:in_progress:null:success"
+  export GH_STUB_ATTEMPTS_FAIL=transient
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Still going: runs 1 (in_progress). Not every attempt could be read for runs 1."* ]]
+}
+
+@test "main: a pass found in an earlier attempt at the tag reads the other re-runs" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_RUNS="2222222222222222222222222222222222222222:completed:failure:success ${STUB_TAG_COMMIT}:completed:failure:success 3333333333333333333333333333333333333333:completed:failure:success"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"already passed, but there is no published release"* ]]
+  [[ "$output" == *"Passed release.yaml runs built 3333333333333333333333333333333333333333, ${STUB_TAG_COMMIT}, 2222222222222222222222222222222222222222."* ]]
+}
+
+@test "main: a release published between two pages counts as published" {
+  # The later, published copy of 201 wins over the draft one.
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_DRAFTS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_RELEASES_REPEAT=published
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"::error::release v4.11.3 already exists in loft-sh/loft-enterprise. Refusing to re-cut (double-cut guard)."* ]]
+  [[ "$output" != *"Drafts by id"* ]]
+}
+
+@test "main: an unreadable earlier attempt does not hide a pass in a later one" {
+  # Attempt 1 cannot be read, attempt 2 passed, attempt 3 is the failed latest.
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_DRAFTS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_RUNS="${STUB_TAG_COMMIT}:completed:failure:,success"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"already passed, but there is no published release"* ]]
+  [[ "$output" == *"Passed release.yaml runs built ${STUB_TAG_COMMIT}."* ]]
+}
+
+@test "main: failed reads behind a refusal do not crowd it out of the annotations" {
+  # GitHub shows at most ten error annotations per step.
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_DRAFTS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_ATTEMPTS_FAIL=transient
+  stub_failed_reruns_at_tag 12
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [ "$(grep -c '^::error::' <<<"$output")" -eq 3 ]
+  [[ "$output" == *"Not every attempt could be read for runs 12, 11, 10, 9, 8, and 7 more."* ]]
+  [[ "$output" == *"::error::Reads that failed while gathering those facts: failed to reach GitHub API for attempt 1 of run "*"gh said: gh: dial tcp: lookup api.github.com"* ]]
+  fits_annotation "$output"
+}
+
+@test "main: a tag that does not lead to a commit is one fact, not a second refusal" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_DRAFTS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_TAG_ANNOTATED=1 GH_STUB_TAG_PEELS_TO=tree
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"What the cut saw for v4.11.3 in loft-sh/loft-enterprise: tag v4.11.3 in loft-sh/loft-enterprise does not lead to a commit (it ends at a tree ${STUB_TAG_COMMIT}), so no build can run from it. Drafts by id: 201"* ]]
+  [ "$(grep -o 'does not lead to a commit' <<<"$output" | wc -l)" -eq 1 ]
+  [[ "$output" != *"Re-run the cut"* ]]
+  [ "$(grep -c '^::error::' <<<"$output")" -eq 2 ]
+}
+
+@test "main: an unreadable earlier attempt that decides the cut links the steps" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_RUNS="${STUB_TAG_COMMIT}:completed:failure:success"
+  export GH_STUB_ATTEMPTS_FAIL=transient
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"could not read every attempt of release.yaml run 1 for v4.11.3 in loft-sh/loft-enterprise, so the cut cannot tell whether it passed and published. Nothing was dispatched. Cause: failed to reach GitHub API for attempt 1 of run 1 in loft-sh/loft-enterprise (no HTTP status - DNS, rate-limit, or auth). Not treating as absent. gh said: gh: dial tcp: lookup api.github.com. Steps: ${README_URL}#partial-failure-recovery ${INSPECT}"* ]]
+  [ "$(grep -c '^::error::' <<<"$output")" -eq 1 ]
+}
+
+@test "main: a long gh message is cut short so the steps still fit after it" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_RUN_ID_BASE=98765432100 GH_STUB_ATTEMPTS_FAIL=transient GH_STUB_ATTEMPTS_ERR="$LONG_GH_ERR"
+  stub_failed_reruns_at_tag 12
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  local cause
+  cause="$(capped_text "failed to reach GitHub API for attempt 1 of run 98765432112 in loft-sh/loft-enterprise (no HTTP status - DNS, rate-limit, or auth). Not treating as absent. gh said: ${LONG_GH_ERR}")"
+  [[ "$cause" == *"..." ]]
+  [[ "$output" == *"Cause: ${cause}. Steps: ${README_URL}#partial-failure-recovery ${INSPECT}"* ]]
+  [[ "$output" != *"$LONG_GH_ERR"* ]]
+  fits_annotation "$output"
+}
+
+@test "main: a long gh message behind a draft refusal is cut short" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_DRAFTS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_RUN_ID_BASE=98765432100 GH_STUB_ATTEMPTS_FAIL=transient GH_STUB_ATTEMPTS_ERR="$LONG_GH_ERR"
+  stub_failed_reruns_at_tag 12
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  local cause
+  cause="$(capped_text "failed to reach GitHub API for attempt 1 of run 98765432112 in loft-sh/loft-enterprise (no HTTP status - DNS, rate-limit, or auth). Not treating as absent. gh said: ${LONG_GH_ERR}")"
+  [[ "$cause" == *"..." ]]
+  [[ "$output" == *"Read the steps before deleting or publishing a draft or cancelling a run: ${README_URL}#draft-releases"* ]]
+  grep -qFx "::error::Reads that failed while gathering those facts: ${cause}" <<<"$output"
+  fits_annotation "$output"
+}
+
+@test "main: a long body with an HTTP status is cut short too" {
+  # GitHub rejects a token not authorized for SAML SSO with a 403.
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_RUN_ID_BASE=98765432100 GH_STUB_ATTEMPTS_FAIL=403 GH_STUB_ATTEMPTS_ERR="$LONG_GH_ERR"
+  stub_failed_reruns_at_tag 12
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  local cause
+  cause="$(capped_text "unexpected status 403 from GitHub API for attempt 1 of run 98765432112 in loft-sh/loft-enterprise. gh said: ${LONG_GH_ERR}")"
+  [[ "$cause" == *"..." ]]
+  [[ "$output" == *"Cause: ${cause}. Steps: ${README_URL}#partial-failure-recovery ${INSPECT}"* ]]
+  fits_annotation "$output"
+}
+
+@test "main: a finished run listed with no conclusion is read again, not taken for a failure" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_RUNS="${STUB_TAG_COMMIT}:completed:null"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"could not read every attempt of release.yaml run 1 for v4.11.3"*"Cause: attempt 1 of run 1 in loft-sh/loft-enterprise came back with no conclusion."* ]]
+  [[ "$output" != *"stub-dispatch"* ]]
+}
+
+@test "main: a run listed with no conclusion whose attempt passed refuses the cut" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_RUNS="${STUB_TAG_COMMIT}:completed:null:failure" GH_STUB_LATEST_ATTEMPT=success
+  export GH_STUB_CONTENTS_LOG="${STUB_DIR}/contents.log"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"a release.yaml run at tag v4.11.3 already passed, but there is no published release"* ]]
+  [[ "$output" != *"stub-dispatch"* ]]
+  grep -q 'actions/runs/1/attempts/2$' "$GH_STUB_CONTENTS_LOG"
+}
+
+@test "main: a run listed with no conclusion whose attempt failed is resumed" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_RUNS="${STUB_TAG_COMMIT}:completed:null" GH_STUB_LATEST_ATTEMPT=failure
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"stub-dispatch"* ]]
+}
+
+@test "main: an earlier attempt with no conclusion is not read as a failure" {
+  # A finished attempt always has one, so an empty answer could hide the pass.
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_RUNS="${STUB_TAG_COMMIT}:completed:failure:none"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"could not read every attempt of release.yaml run 1"*"Cause: attempt 1 of run 1 in loft-sh/loft-enterprise came back with no conclusion."* ]]
+  [[ "$output" != *"stub-dispatch"* ]]
+}
+
+@test "main: the cause quoted for failed attempt reads is from a run listed as unread" {
+  # Run 1's first read fails but its second attempt passed, so it is not unread.
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_DRAFTS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_RUNS="${STUB_TAG_COMMIT}:completed:failure:none,success 2222222222222222222222222222222222222222:completed:failure:,"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Not every attempt could be read for runs 2."* ]]
+  [[ "$output" == *"Reads that failed while gathering those facts: GitHub answered 404 for attempt 1 of run 2 in loft-sh/loft-enterprise"* ]]
+  [[ "$output" != *"no conclusion"* ]]
+}
+
+@test "main: the tag is read once, so its existence and commit come from one answer" {
+  # A second read could find the tag gone after the first found it.
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_DRAFTS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_CONTENTS_LOG="${STUB_DIR}/contents.log"
+  INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *": tag v4.11.3 points at ${STUB_TAG_COMMIT}."* ]]
+  [ "$(grep -c '/git/ref/tags/v4.11.3$' "$GH_STUB_CONTENTS_LOG")" -eq 1 ]
 }
 
 @test "main: a draft for another version does not block the cut" {
@@ -2479,7 +3204,7 @@ fake_yq() {
   export GH_STUB_DRAFTS="loft-sh/loft-enterprise:v4.11.3"
   INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="true" run main
   [ "$status" -ne 0 ]
-  [[ "$output" == *"a draft release for v4.11.3 already exists"* ]]
+  [[ "$output" == *"a draft release for v4.11.3 exists"* ]]
 }
 
 @test "main: a published release on a later page is still found" {
@@ -2598,7 +3323,7 @@ fake_yq() {
   export GH_STUB_RUNS="${STUB_TAG_COMMIT}:completed:failure ${STUB_TAG_COMMIT}:in_progress:null"
   INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
   [ "$status" -ne 0 ]
-  [[ "$output" == *"is still in_progress"* ]]
+  [[ "$output" == *"Still going: runs 2 (in_progress)."* ]]
   [[ "$output" != *"stub-dispatch"* ]]
 }
 
@@ -2609,7 +3334,7 @@ fake_yq() {
   export GH_STUB_RUNS="3333333333333333333333333333333333333333:queued:null"
   INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
   [ "$status" -ne 0 ]
-  [[ "$output" == *"is still queued"* ]]
+  [[ "$output" == *"Still going: runs 1 (queued)."* ]]
   [[ "$output" != *"stub-dispatch"* ]]
 }
 
@@ -2619,7 +3344,9 @@ fake_yq() {
   export GH_STUB_RUNS="${STUB_TAG_COMMIT}:completed:success"
   INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
   [ "$status" -ne 0 ]
-  [[ "$output" == *"already passed, but there is no release"* ]]
+  [[ "$output" == *"::error::refusing to cut v4.11.3 in loft-sh/loft-enterprise: a release.yaml run at tag v4.11.3 already passed, but there is no published release. Nothing was dispatched. Steps: ${README_URL}#partial-failure-recovery"* ]]
+  [[ "$output" == *"Passed release.yaml runs built ${STUB_TAG_COMMIT}."* ]]
+  [[ "$output" != *"#draft-releases"* ]]
   [[ "$output" != *"stub-dispatch"* ]]
 }
 
@@ -2733,7 +3460,8 @@ fake_yq() {
   export GH_STUB_CALL_LOG="${STUB_DIR}/calls"
   INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
   [ "$status" -ne 0 ]
-  [[ "$output" == *"no longer exists"* ]]
+  [[ "$output" == *"is still going. Nothing was tagged."* ]]
+  [[ "$output" == *"tag v4.11.3 does not exist. Still going: runs 1 (in_progress)."* ]]
   [ ! -s "${STUB_DIR}/calls" ]
   [[ "$output" != *"stub-dispatch"* ]]
 }
@@ -2757,7 +3485,7 @@ fake_yq() {
   export GH_STUB_RUNS="${STUB_TAG_COMMIT}:in_progress:null"
   INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
   [ "$status" -ne 0 ]
-  [[ "$output" == *"is still in_progress"* ]]
+  [[ "$output" == *"Still going: runs 1 (in_progress)."* ]]
   [[ "$output" != *"stub-dispatch"* ]]
 }
 
