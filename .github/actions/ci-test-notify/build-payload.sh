@@ -101,10 +101,9 @@ fi
 # characters Slack treats as markup or a `>` would end the link early.
 FOOTER_LABEL="${REPO} · Run #${RUN_NUMBER}"
 if [[ "${FOOTER_TEXT:-}" =~ [^[:space:]] ]]; then
-  FOOTER_LABEL="$FOOTER_TEXT"
-  FOOTER_LABEL="${FOOTER_LABEL//&/&amp;}"
-  FOOTER_LABEL="${FOOTER_LABEL//</&lt;}"
-  FOOTER_LABEL="${FOOTER_LABEL//>/&gt;}"
+  # sed, not ${var//pat/rep}: bash 5.2's patsub_replacement expands `&` in the
+  # replacement to the match, so `&lt;` would come out as `<lt;` on the runner.
+  FOOTER_LABEL=$(printf '%s' "$FOOTER_TEXT" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g')
 fi
 
 jq -n \
