@@ -2,7 +2,8 @@
 set -euo pipefail
 
 # Required env vars: TEST_NAME, STATUS, DETAILS, PAYLOAD_FILE, RUN_URL, REPO, RUN_NUMBER
-# Optional env vars: RUN_LINK_POSITION (top, bottom or none; defaults to top)
+# Optional env vars: RUN_LINK_POSITION (top, bottom or none; defaults to top),
+#   FOOTER_TEXT (label for the run link in the footer; defaults to "REPO · Run #N")
 
 command -v jq >/dev/null || { echo "::error::jq is required but not found"; exit 1; }
 
@@ -94,10 +95,22 @@ if [[ $SECTION_LEN -gt 3000 ]]; then
   fi
 fi
 
+# The footer is always the run link; FOOTER_TEXT only replaces its label. A
+# blank value keeps the default so a caller can pass the input unconditionally.
+# The label sits inside Slack's <url|label> syntax, so escape the three
+# characters Slack treats as markup or a `>` would end the link early.
+FOOTER_LABEL="${REPO} · Run #${RUN_NUMBER}"
+if [[ "${FOOTER_TEXT:-}" =~ [^[:space:]] ]]; then
+  FOOTER_LABEL="$FOOTER_TEXT"
+  FOOTER_LABEL="${FOOTER_LABEL//&/&amp;}"
+  FOOTER_LABEL="${FOOTER_LABEL//</&lt;}"
+  FOOTER_LABEL="${FOOTER_LABEL//>/&gt;}"
+fi
+
 jq -n \
   --arg text "$HEADER" \
   --arg section "$SECTION" \
-  --arg context "<${RUN_URL}|${REPO} · Run #${RUN_NUMBER}>" \
+  --arg context "<${RUN_URL}|${FOOTER_LABEL}>" \
   '{
     text: $text,
     blocks: [

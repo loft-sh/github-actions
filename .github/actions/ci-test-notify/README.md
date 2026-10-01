@@ -11,6 +11,7 @@ Replaces the nightly-specific `ci-notify-nightly-tests` action with a generic in
 |       INPUT       |  TYPE  | REQUIRED | DEFAULT |                                                                                                                                                                                                                                                                          DESCRIPTION                                                                                                                                                                                                                                                                          |
 |-------------------|--------|----------|---------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 |      details      | string |  false   |         |                                                                                                                                                                                                                                Markdown text appended after the build <br>URL (test results, versions, artifact links, etc.)                                                                                                                                                                                                                                  |
+|    footer-text    | string |  false   |         |                                                                                                              Label for the run link in <br>the context footer. The footer always <br>links the run; this only replaces <br>the default `<repo> · Run #<number>` text, for callers whose <br>repo name reads like the subject <br>of the message (for example a CVE scan of an image named like the repo). Empty or <br>blank keeps the default.                                                                                                               |
 | run-link-position | string |  false   | `"top"` | Where the immutable workflow-run link goes, <br>and how it reads. `top` (default) <br>puts a bare `Build URL: <url>` line above <br>`details`, unchanged from before this input <br>existed. `bottom` puts a linked `Workflow: View workflow run` <br>line below `details`, so the content <br>leads and the link trails. `none` <br>leaves the section to `details` alone, <br>for messages where the context footer <br>(which always links the run) is enough; with empty `details` <br>it falls back to `bottom`. Invalid <br>values fall back to `top`.  |
 |      status       | string |   true   |         |                                                                                                                                       Run status, typically `needs.<job>.result` or `job.status`. <br>`success`, `failure`, `warning`, and `info` notify; <br>`cancelled` and `skipped` are treated as <br>no-ops and send nothing. `info` is <br>for routine reports: a neutral 📊 <br>header with no status suffix.                                                                                                                                         |
 |     test-name     | string |   true   |         |                                                                                                                                                                                  Test suite name for the header <br>(e.g. "E2E Ginkgo Nightly Tests"). Keep under ~130 chars — <br>Slack header blocks have a 150-char <br>limit and the status suffix takes <br>~15 chars.                                                                                                                                                                                   |
@@ -58,6 +59,18 @@ context footer still links the run, so the message keeps its provenance:
 
 `none` needs `details`: Slack rejects an empty section, so without them it falls
 back to `bottom`.
+
+`footer-text` replaces the footer's `<repo> · Run #<number>` label and keeps the
+run link. Use it when the repo name reads like the subject of the message, for
+example a CVE scan in `vcluster-pro` of an image that is not `vcluster-pro`:
+
+```
+[emoji] [test-name]
+─────────────────────────────
+<details>
+─────────────────────────────
+View run #<number>
+```
 
 The link is not merely moved: `top` prints the bare URL after `Build URL:`, while
 `bottom` renders a linked label. `top` is left exactly as it was so that switching

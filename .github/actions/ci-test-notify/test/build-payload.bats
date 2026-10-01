@@ -184,14 +184,32 @@ payload_field() {
   [ "$(payload_field '.blocks[2].type')" = "context" ]
 }
 
-@test "context block contains repo and run number" {
+@test "context block links the run as repo and run number by default" {
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
+  [ "$(payload_field '.blocks[2].elements[0].text')" = "<https://github.com/org/repo/actions/runs/12345|org/repo · Run #42>" ]
+}
 
-  local context
-  context=$(payload_field '.blocks[2].elements[0].text')
-  [[ "$context" == *"org/repo"* ]]
-  [[ "$context" == *"Run #42"* ]]
+# A caller whose repo name collides with what the message is about (cve-scan in
+# vcluster-pro scans an image also called vcluster-pro) needs to replace the
+# label, not the link.
+@test "footer text replaces the footer label and keeps the run link" {
+  FOOTER_TEXT="View run #42" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(payload_field '.blocks[2].elements[0].text')" = "<https://github.com/org/repo/actions/runs/12345|View run #42>" ]
+}
+
+@test "blank footer text falls back to the default label" {
+  FOOTER_TEXT="   " run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(payload_field '.blocks[2].elements[0].text')" = "<https://github.com/org/repo/actions/runs/12345|org/repo · Run #42>" ]
+}
+
+# `>` would close the link early and `<` or `&` would be read as Slack markup.
+@test "footer text is escaped so it cannot break the run link" {
+  FOOTER_TEXT="a <b> & c" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(payload_field '.blocks[2].elements[0].text')" = "<https://github.com/org/repo/actions/runs/12345|a &lt;b&gt; &amp; c>" ]
 }
 
 # --- Error handling ---
