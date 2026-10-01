@@ -21,6 +21,10 @@ inputs:
     description: 'Where the immutable workflow-run link goes, and how it reads. `top` (default) puts a bare `Build URL: <url>` line above `details`, unchanged from before this input existed. `bottom` puts a linked `Workflow: View workflow run` line below `details`, so the content leads and the link trails. `none` leaves the section to `details` alone, for messages where the context footer (which always links the run) is enough; with empty `details` it falls back to `bottom`. Invalid values fall back to `top`.'
     required: false
     default: 'top'
+  footer-text:
+    description: 'Label for the run link in the context footer. The footer always links the run; this only replaces the default `<repo> · Run #<number>` text, for callers whose repo name reads like the subject of the message (for example a CVE scan of an image named like the repo). Empty or blank keeps the default.'
+    required: false
+    default: ''
 
 runs:
   using: "composite"
@@ -45,6 +49,7 @@ runs:
         REPO: ${{ github.repository }}
         RUN_NUMBER: ${{ github.run_number }}
         RUN_LINK_POSITION: ${{ inputs.run-link-position }}
+        FOOTER_TEXT: ${{ inputs.footer-text }}
       run: ${{ github.action_path }}/build-payload.sh
 
     - name: Send Slack notification

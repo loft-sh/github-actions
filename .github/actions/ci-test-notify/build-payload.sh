@@ -2,7 +2,8 @@
 set -euo pipefail
 
 # Required env vars: TEST_NAME, STATUS, DETAILS, PAYLOAD_FILE, RUN_URL, REPO, RUN_NUMBER
-# Optional env vars: RUN_LINK_POSITION (top, bottom or none; defaults to top)
+# Optional env vars: RUN_LINK_POSITION (top, bottom or none; defaults to top),
+#   FOOTER_TEXT (label for the run link in the footer; defaults to "REPO · Run #N")
 
 command -v jq >/dev/null || { echo "::error::jq is required but not found"; exit 1; }
 
@@ -16,6 +17,11 @@ clip_to() {
   printf '%s' "$2" | jq -Rrs --argjson n "$1" \
     'if length > $n then .[0:($n - 3)] + "..." else . end'
 }
+
+# Split text into characters, each escaped for Slack mrkdwn. Working per
+# character lets a cut land between whole characters, never inside `&amp;`.
+SLACK_ESCAPE_CHARS='[explode[] | [.] | implode
+  | if . == "&" then "&amp;" elif . == "<" then "&lt;" elif . == ">" then "&gt;" end]'
 
 case "$STATUS" in
   success)    EMOJI="✅"; STATUS_TEXT="Success" ;;
@@ -94,10 +100,34 @@ if [[ $SECTION_LEN -gt 3000 ]]; then
   fi
 fi
 
+# The footer is always the run link; FOOTER_TEXT only replaces its label. A
+# blank value keeps the default so a caller can pass the input unconditionally.
+# The label sits inside Slack's <url|label> syntax, so escape the three
+# characters Slack treats as markup or a `>` would end the link early.
+#
+# Slack's 3000-char text limit counts the URL and delimiters too, and escaping
+# grows `&` fivefold, so the escaped label is clipped to what is left. jq does
+# both per character, so the cut never lands inside an entity like `&amp;`
+# (and bash 5.2's patsub_replacement makes `&` unsafe in ${var//pat/rep}).
+FOOTER_LABEL="${REPO} · Run #${RUN_NUMBER}"
+if [[ "${FOOTER_TEXT:-}" =~ [^[:space:]] ]]; then
+  FOOTER_BUDGET=$(( 3000 - $(str_len "<${RUN_URL}|>") ))
+  FOOTER_LEN=$(printf '%s' "$FOOTER_TEXT" | jq -Rs "$SLACK_ESCAPE_CHARS"' | add // "" | length')
+  if [[ $FOOTER_LEN -gt $FOOTER_BUDGET ]]; then
+    echo "::warning::Footer text exceeds Slack's 3000-char limit once escaped (${FOOTER_LEN} chars for ${FOOTER_BUDGET}), truncating"
+  fi
+  FOOTER_LABEL=$(printf '%s' "$FOOTER_TEXT" | jq -Rrs --argjson n "$FOOTER_BUDGET" "$SLACK_ESCAPE_CHARS"'
+    | if (add // "" | length) <= $n then add // ""
+      else reduce .[] as $c ({out: "", full: false};
+             if .full then . elif ((.out + $c) | length) > ($n - 3) then .full = true else .out += $c end)
+           | .out + "..."
+      end')
+fi
+
 jq -n \
   --arg text "$HEADER" \
   --arg section "$SECTION" \
-  --arg context "<${RUN_URL}|${REPO} · Run #${RUN_NUMBER}>" \
+  --arg context "<${RUN_URL}|${FOOTER_LABEL}>" \
   '{
     text: $text,
     blocks: [
