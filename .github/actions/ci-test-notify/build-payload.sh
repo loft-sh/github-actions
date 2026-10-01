@@ -18,6 +18,11 @@ clip_to() {
     'if length > $n then .[0:($n - 3)] + "..." else . end'
 }
 
+# Split text into characters, each escaped for Slack mrkdwn. Working per
+# character lets a cut land between whole characters, never inside `&amp;`.
+SLACK_ESCAPE_CHARS='[explode[] | [.] | implode
+  | if . == "&" then "&amp;" elif . == "<" then "&lt;" elif . == ">" then "&gt;" end]'
+
 case "$STATUS" in
   success)    EMOJI="✅"; STATUS_TEXT="Success" ;;
   failure)    EMOJI="❌"; STATUS_TEXT="Failed" ;;
@@ -99,11 +104,24 @@ fi
 # blank value keeps the default so a caller can pass the input unconditionally.
 # The label sits inside Slack's <url|label> syntax, so escape the three
 # characters Slack treats as markup or a `>` would end the link early.
+#
+# Slack's 3000-char text limit counts the URL and delimiters too, and escaping
+# grows `&` fivefold, so the escaped label is clipped to what is left. jq does
+# both per character, so the cut never lands inside an entity like `&amp;`
+# (and bash 5.2's patsub_replacement makes `&` unsafe in ${var//pat/rep}).
 FOOTER_LABEL="${REPO} · Run #${RUN_NUMBER}"
 if [[ "${FOOTER_TEXT:-}" =~ [^[:space:]] ]]; then
-  # sed, not ${var//pat/rep}: bash 5.2's patsub_replacement expands `&` in the
-  # replacement to the match, so `&lt;` would come out as `<lt;` on the runner.
-  FOOTER_LABEL=$(printf '%s' "$FOOTER_TEXT" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g')
+  FOOTER_BUDGET=$(( 3000 - $(str_len "<${RUN_URL}|>") ))
+  FOOTER_LEN=$(printf '%s' "$FOOTER_TEXT" | jq -Rs "$SLACK_ESCAPE_CHARS"' | add // "" | length')
+  if [[ $FOOTER_LEN -gt $FOOTER_BUDGET ]]; then
+    echo "::warning::Footer text exceeds Slack's 3000-char limit once escaped (${FOOTER_LEN} chars for ${FOOTER_BUDGET}), truncating"
+  fi
+  FOOTER_LABEL=$(printf '%s' "$FOOTER_TEXT" | jq -Rrs --argjson n "$FOOTER_BUDGET" "$SLACK_ESCAPE_CHARS"'
+    | if (add // "" | length) <= $n then add // ""
+      else reduce .[] as $c ({out: "", full: false};
+             if .full then . elif ((.out + $c) | length) > ($n - 3) then .full = true else .out += $c end)
+           | .out + "..."
+      end')
 fi
 
 jq -n \

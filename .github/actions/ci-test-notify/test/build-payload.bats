@@ -212,6 +212,25 @@ payload_field() {
   [ "$(payload_field '.blocks[2].elements[0].text')" = "<https://github.com/org/repo/actions/runs/12345|a &lt;b&gt; &amp; c>" ]
 }
 
+# Slack caps a text object at 3000 characters, URL and delimiters included, and
+# escaping grows `&` fivefold, so an input well under the limit can still break
+# it. The cut lands between whole characters, never inside an entity.
+@test "oversized footer text is truncated within the limit without splitting an entity" {
+  FOOTER_TEXT="$(printf '&%.0s' {1..1000})" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Footer text exceeds"* ]]
+
+  local context label
+  context=$(payload_field '.blocks[2].elements[0].text')
+  [ "$(printf '%s' "$context" | jq -Rs 'length')" -le 3000 ]
+  [[ "$context" == "<https://github.com/org/repo/actions/runs/12345|&amp;"* ]]
+  [[ "$context" == *"...>" ]]
+
+  label=${context#*|}
+  label=${label%...>}
+  [ -z "${label//&amp;/}" ]
+}
+
 # --- Error handling ---
 
 @test "fails when jq is not available" {
