@@ -533,6 +533,53 @@ build_excludes() {
   return 0
 }
 
+# benign_paths_match <src-rev> <src-prefix> <dst-rev> <dst-prefix> <name-status>
+# True when every path in <name-status> already stands at <src-rev>'s version
+# under <dst-rev>. Both directions' benign checks share this, because the two
+# ask the same question of different pairs and a fix to one is a fix to both.
+#
+# Compares TREE ENTRIES, not blobs: `<rev>:<path>` resolves to content only, so
+# a mode-only change (a chmod +x on a script) looks identical on every path.
+# On the export that verdict decides whether a commit is replayed at all, so
+# reading it from the blob alone made a chmod commit "benign", skipped it, and
+# then failed the convergence assertion over the mode it had just ignored --
+# turning a case that mirrored correctly into a stalled branch.
+benign_paths_match() {
+  local src="$1" src_prefix="$2" dst="$3" dst_prefix="$4" changes="$5"
+  local status path entry_src entry_dst
+  # Answered here, beside the branch it protects, rather than only at a call
+  # site: an empty rev makes the deletion branch's `git cat-file -e ":<path>"`
+  # resolve against the INDEX, which answers "benign" for a delete-only commit.
+  # That is the one verdict this must never give by accident. The non-D branch
+  # already fails closed on its own.
+  [ -n "$src" ] && [ -n "$dst" ] || return 1
+  while IFS=$'\t' read -r status path; do
+    [ -n "$path" ] || continue
+    if [ "$status" = "D" ]; then
+      # A deletion is benign only once the other side has lost the path too.
+      if git cat-file -e "${dst}:${dst_prefix}${path}" 2>/dev/null; then
+        return 1
+      fi
+      continue
+    fi
+    entry_src="$(git ls-tree "$src" -- "${src_prefix}${path}")" || return 1
+    entry_dst="$(git ls-tree "$dst" -- "${dst_prefix}${path}")" || return 1
+    # Empty means absent on the source side, which can never match a path the
+    # commit still has. It is also what keeps the verdict fail-closed for any
+    # shape diff-tree reports: callers pass no -M, so a rename arrives as
+    # delete+add and is checked path by path, but were one to arrive as a
+    # single R entry, `read` would leave the whole remainder in `path` --
+    # "<old><TAB><new>", neither name on its own -- which matches nothing here
+    # and answers "not benign" rather than skipping a commit that still has
+    # work.
+    [ -n "$entry_src" ] || return 1
+    # Everything up to the tab is "<mode> <type> <sha>"; the paths differ by
+    # prefix and are deliberately out of the comparison.
+    [ "${entry_src%%$'\t'*}" = "${entry_dst%%$'\t'*}" ] || return 1
+  done <<< "$changes"
+  return 0
+}
+
 # external_is_benign <oss-sha>
 # True when the commit's post-image (minus EXCLUDE_PATHS) is already present in
 # the subtree, so mirroring on top of it cannot lose content. Covers the two
@@ -545,27 +592,14 @@ build_excludes() {
 #
 # Reads SUBTREE_PREFIX and the `excludes` array; compares against HEAD.
 external_is_benign() {
-  local s="$1" status path blob_oss blob_staging changes
+  local s="$1" changes
   # Captured rather than piped from a process substitution: this function
   # answers "already present, safe to skip", so a producer failure invisible to
   # `set -e` would run the loop zero times and return "benign", silently
   # skipping a commit that actually needed importing. Fail closed instead.
   changes="$(git diff-tree --no-commit-id --name-status -r "$s" -- . ${excludes[@]+"${excludes[@]}"})" \
     || return 1
-  while IFS=$'\t' read -r status path; do
-    [ -n "$path" ] || continue
-    if [ "$status" = "D" ]; then
-      # Deletion is benign only if the path is gone from staging too.
-      if git cat-file -e "HEAD:${SUBTREE_PREFIX}/${path}" 2>/dev/null; then
-        return 1
-      fi
-      continue
-    fi
-    blob_oss="$(git rev-parse --quiet --verify "${s}:${path}" 2>/dev/null)" || return 1
-    blob_staging="$(git rev-parse --quiet --verify "HEAD:${SUBTREE_PREFIX}/${path}" 2>/dev/null)" || return 1
-    [ "$blob_oss" = "$blob_staging" ] || return 1
-  done <<< "$changes"
-  return 0
+  benign_paths_match "$s" "" HEAD "${SUBTREE_PREFIX}/" "$changes"
 }
 
 # subtree_matches <oss-sha>
@@ -904,6 +938,40 @@ apply_patch() {
     return "$APPLY_PATCH_CORRUPT"
   fi
   return "$rc"
+}
+
+# monorepo_is_benign <monorepo-sha> <oss-commit>
+# The export's mirror of external_is_benign: true when the commit's post-image
+# under SUBTREE_PREFIX (minus EXCLUDE_PATHS) is already present in <oss-commit>,
+# so replaying it cannot add anything.
+#
+# Checked BEFORE applying, for the same reason the import checks its side
+# before applying, and with a sharper failure mode: a commit whose content OSS
+# already holds does not merely apply as a no-op, it can fail outright. The
+# shape that bites is a release line whose OSS branch was cut from the default
+# branch AFTER a change landed there, so the monorepo's backport of that same
+# change is the first thing replayed: its deletions target paths OSS no longer
+# has, and `git apply` stops with "does not exist in index" -- reported as a
+# conflict, on a commit that had nothing to contribute. nothing_staged cannot
+# catch it, because git apply never gets far enough to stage anything.
+#
+# A false "benign" cannot corrupt the mirror: the convergence assertion still
+# fails the run before anything is pushed. That fail-safe stops at the
+# align-tree path, though, which the assertion itself recommends: the snapshot
+# absorbs a wrongly-skipped commit's content without its author, date or
+# subject and records a trailer past it, so the commit can never be replayed.
+# The export therefore names what it skipped here in that gate.
+#
+# Reads SUBTREE_PREFIX and the `subtree_excludes` array.
+monorepo_is_benign() {
+  local m="$1" oss="$2" changes
+  # Captured, not piped from a process substitution: a producer failure
+  # invisible to `set -e` would run the loop zero times and answer "benign",
+  # silently dropping a commit that needed exporting. Fail closed instead.
+  # shellcheck disable=SC2154  # assigned by the caller, like SUBTREE_PREFIX
+  changes="$(git diff-tree --no-commit-id --name-status -r --relative="${SUBTREE_PREFIX}/" "$m" \
+    -- . ${subtree_excludes[@]+"${subtree_excludes[@]}"})" || return 1
+  benign_paths_match "$m" "${SUBTREE_PREFIX}/" "$oss" "" "$changes"
 }
 
 # nothing_staged <git-dir>

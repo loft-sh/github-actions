@@ -302,6 +302,58 @@ Oss-Commit: $tag"
   [ "$(output_value skipped-count)" = "1" ]
 }
 
+@test "an external deletion the subtree still holds is replayed, not skipped" {
+  # The import's benign check reaches the same shared helper as the export's,
+  # but only from here: nothing else in this suite drives a deletion past it.
+  # A wrong verdict is worse in this direction -- the commit is skipped before
+  # applying and records no trailer, the next run's anchor is already past it,
+  # so the deletion is dropped for good; after which the export's divergence
+  # guard, asking the same question, calls the commit not benign and fails
+  # telling the operator to run the import, which skips it again.
+  external_commit ext.go "external" "feat: external contribution" >/dev/null
+  absorb_external
+
+  clone="$ROOT/ext-del-$RANDOM"
+  git clone -q "$OSS_REMOTE" "$clone"
+  (
+    cd "$clone"
+    git rm -q ext.go
+    GIT_AUTHOR_NAME=alice GIT_AUTHOR_EMAIL=alice@contributor.example \
+      git commit -qm "chore: drop it upstream"
+    git push -q origin main
+  )
+
+  run bash "$IMPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value replayed-count)" = "1" ]
+  run git -C "$MONO" cat-file -e "automation/sync-from-oss-main:$PFX/ext.go"
+  [ "$status" -ne 0 ]
+}
+
+@test "an external mode-only change is replayed, not judged benign on content alone" {
+  # `<rev>:<path>` resolves to the blob, so a chmod +x reads as identical on
+  # every path. On the import that verdict drops the commit with no trailer and
+  # no second chance, so the mode never reaches the subtree.
+  external_commit tool.sh "#!/bin/sh" "feat: add a script" >/dev/null
+  absorb_external
+
+  clone="$ROOT/ext-mode-$RANDOM"
+  git clone -q "$OSS_REMOTE" "$clone"
+  (
+    cd "$clone"
+    chmod +x tool.sh
+    git add -A
+    GIT_AUTHOR_NAME=alice GIT_AUTHOR_EMAIL=alice@contributor.example \
+      git commit -qm "chore: make it executable"
+    git push -q origin main
+  )
+
+  run bash "$IMPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value replayed-count)" = "1" ]
+  [ "$(git -C "$MONO" ls-tree automation/sync-from-oss-main -- "$PFX/tool.sh" | awk '{print $1}')" = "100755" ]
+}
+
 @test "a tag sha seeded as the anchor is stored peeled, so re-runs settle" {
   # `git rev-parse v1.2.3` prints the tag object, which is the natural thing for
   # an operator to paste into seed-oss-commit. Accepting it is right; keeping it

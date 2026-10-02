@@ -80,6 +80,12 @@ emit loose-absorption false
 # giving it the same treatment is a separate change.
 loose_absorbed=()
 
+# Commits the replay loop skipped as already mirrored. Every other export skip
+# is provably a no-op; this one is a judgement made before applying, and the
+# alignment snapshot is where it stops being free (see monorepo_is_benign), so
+# both gates name them rather than leaving the operator to diff for them.
+benign_skipped=()
+
 # loose_absorption_recovery
 # What to do about an external absorbed only by a line outside git's trailer
 # block. Printed from both places that stop on one, so the two cannot drift: the
@@ -429,6 +435,22 @@ while read -r M; do
     echo "Skipping ${M} (empty diff under ${SUBTREE_PREFIX})"
     continue
   fi
+  # Before applying, not after: a commit OSS already holds can fail the apply
+  # outright rather than resolving to a no-op, and nothing_staged below only
+  # runs once git apply has succeeded. See monorepo_is_benign.
+  #
+  # Read outside the `if`, because a command substitution inside the tested
+  # condition has errexit suspended: a failed read would pass an empty rev,
+  # which resolves against the index and answers "benign" for a delete-only
+  # commit. That is the one answer this check must never give by accident.
+  if ! oss_head="$(git -C "$WT" rev-parse HEAD)"; then
+    die "failed to read the OSS worktree tip while classifying ${M}; refusing to export"
+  fi
+  if monorepo_is_benign "$M" "$oss_head"; then
+    benign_skipped+=("$M")
+    echo "Skipping ${M} (already mirrored; OSS holds this commit's content)"
+    continue
+  fi
   apply_rc=0
   apply_patch "$patch_file" "$WT" || apply_rc=$?
   if [ "$apply_rc" -ne 0 ]; then
@@ -480,6 +502,14 @@ if [ "$STAGING_TREE" != "$OSS_TREE" ]; then
       loose_absorption_recovery
       exit 1
     fi
+    # Named before the snapshot is written: it absorbs whatever the replay loop
+    # skipped as already mirrored into one bot commit -- no author, date or
+    # subject of its own -- and records a trailer past it, so those commits can
+    # never be replayed individually afterwards.
+    if [ "${#benign_skipped[@]}" -gt 0 ]; then
+      echo "::warning::The alignment snapshot absorbs these commits, skipped by this run as already mirrored:"
+      printf '::warning::  %s\n' "${benign_skipped[@]}"
+    fi
     msgfile="$(mktemp)"
     {
       echo "chore: align OSS mirror with monorepo staging tree"
@@ -527,6 +557,10 @@ if [ "$STAGING_TREE" != "$OSS_TREE" ]; then
       loose_absorption_recovery
     else
       echo "::error::Re-run with align-tree=true to append a snapshot alignment commit."
+      if [ "${#benign_skipped[@]}" -gt 0 ]; then
+        echo "::error::That run also absorbs these commits, which this run skipped as already mirrored -- check them against the diff above before asking for it:"
+        printf '::error::  %s\n' "${benign_skipped[@]}"
+      fi
     fi
     exit 1
   else
