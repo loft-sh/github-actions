@@ -58,6 +58,13 @@ DEFAULT_BRANCH="${PLATFORM_DEFAULT_BRANCH:-main}"
 # release-X.Y line whose release.yaml has no `triggered_by` input fails at the
 # dispatch, which require_dispatchable checks for before anything is tagged.
 TRIGGERED_BY="${TRIGGERED_BY:-}"
+# Set by require_dispatchable when the line's release.yaml declares a
+# `source_branch` input. The cut then passes the branch it tagged, so the Slack
+# banner names it instead of guessing from git history, which picks any feature
+# branch forked after the tag once main moves on. Optional rather than required
+# like triggered_by: lines cut before the input existed keep dispatching, and
+# their banner falls back to the guess.
+FORWARD_SOURCE_BRANCH=""
 # How long dispatch waits for the run it started to be listed, before the cut
 # exits and a following cut could miss it. Overridable so the bats suite does
 # not sleep.
@@ -258,15 +265,19 @@ require_dispatchable() {
     fi
     exit 1
   fi
+  FORWARD_SOURCE_BRANCH=""
+  [[ -n "${required[source_branch]+x}" ]] && FORWARD_SOURCE_BRANCH=1
   # The mirror image: an input this cut does NOT pass, declared required with no
   # default, 422s with "Required input not provided" - again after the tag
-  # exists. The dispatch sends triggered_by and nothing else. A required input
-  # that has a default is fine; the API fills it in. An empty-string default is
-  # not counted, since an empty value may itself read as not provided.
+  # exists. The dispatch sends triggered_by and source_branch and nothing else.
+  # A required input that has a default is fine; the API fills it in. An
+  # empty-string default is not counted, since an empty value may itself read
+  # as not provided.
   local unsatisfiable=""
   for name in "${inputs[@]}"; do
     [[ "${required[$name]}" == "1" && "${has_default[$name]}" == "0" ]] || continue
     [[ -n "${TRIGGERED_BY}" && "$name" == "triggered_by" ]] && continue
+    [[ "$name" == "source_branch" ]] && continue
     unsatisfiable+="${unsatisfiable:+, }${name}"
   done
   if [[ -n "$unsatisfiable" ]]; then
@@ -751,6 +762,7 @@ cut_release() {
   fi
   local dispatch_args=()
   [[ -n "${TRIGGERED_BY}" ]] && dispatch_args=(-f "triggered_by=${TRIGGERED_BY}")
+  [[ -n "${FORWARD_SOURCE_BRANCH}" ]] && dispatch_args+=(-f "source_branch=${target}")
   dispatch "$REPO" "$version" "$sha" "${dispatch_args[@]}"
 }
 
