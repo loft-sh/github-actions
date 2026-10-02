@@ -42,7 +42,7 @@ inputs:
     description: 'Product name (vCluster or vCluster Platform)'
     required: true
   base_branch:
-    description: 'Source branch from which the release was cut (auto-detected from git history when omitted)'
+    description: 'Source branch from which the release was cut. Used when the tag commit is on it, or when that cannot be checked; otherwise, and when omitted, detected from git history.'
     required: false
     default: ''
   status:
@@ -71,6 +71,9 @@ outputs:
   release_text:
     description: 'Resolved release link text.'
     value: ${{ steps.release_text.outputs.release_text }}
+  base_branch:
+    description: 'Source branch shown in the banner.'
+    value: ${{ steps.detect_branch.outputs.base_branch }}
 
 runs:
   using: "composite"
@@ -86,10 +89,11 @@ runs:
         esac
     - name: Detect base branch
       id: detect_branch
-      if: inputs.status == 'success' && inputs.base_branch == ''
+      if: inputs.status == 'success'
       shell: bash
       env:
         RELEASE_VERSION: ${{ inputs.version }}
+        BASE_BRANCH: ${{ inputs.base_branch }}
       run: |
         BRANCH=$("${{ github.action_path }}/detect-branch.sh")
         echo "base_branch=$BRANCH" >> "$GITHUB_OUTPUT"
@@ -134,7 +138,7 @@ runs:
             - type: section
               fields:
                 - type: mrkdwn
-                  text: "*Source Branch:*\n${{ inputs.base_branch || steps.detect_branch.outputs.base_branch || 'main' }}"
+                  text: "*Source Branch:*\n${{ steps.detect_branch.outputs.base_branch || 'main' }}"
                 # Empty when neither state flag is set, which omits the element
                 # and preserves the banner shape for existing callers.
                 ${{ steps.release_text.outputs.label_field }}

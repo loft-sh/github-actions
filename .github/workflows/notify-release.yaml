@@ -30,6 +30,11 @@ on:
         required: false
         type: string
         default: 'success'
+      base_branch:
+        description: 'Branch the release was cut from, shown in the banner. Pass it when the caller knows it (a dispatcher that picked the branch). It is checked against the tag; when empty or wrong, the branch is detected from git history.'
+        required: false
+        type: string
+        default: ''
       ref:
         description: 'The git ref to checkout (defaults to github.ref)'
         required: false
@@ -98,8 +103,11 @@ jobs:
         with:
           repository: ${{ inputs.target_repo }}
           ref: ${{ inputs.ref || github.ref }}
+          # Branch detection walks commits only, so file contents beyond the
+          # checked-out tree are never needed.
           fetch-depth: 0
           fetch-tags: true
+          filter: blob:none
           persist-credentials: false
       - name: Notify #product-releases Slack channel
         if: ${{ !inputs.dry-run }}
@@ -111,6 +119,7 @@ jobs:
           target_repo: ${{ inputs.target_repo }}
           paired_repo: ${{ inputs.paired_repo }}
           product: ${{ inputs.product }}
+          base_branch: ${{ inputs.base_branch }}
           status: ${{ inputs.status }}
           is_prerelease: ${{ inputs.is_prerelease }}
           needs_promotion: ${{ inputs.needs_promotion }}
