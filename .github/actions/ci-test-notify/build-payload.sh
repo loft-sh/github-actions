@@ -21,7 +21,7 @@ clip_to() {
 # Split text into characters, each escaped for Slack mrkdwn. Working per
 # character lets a cut land between whole characters, never inside `&amp;`.
 SLACK_ESCAPE_CHARS='[explode[] | [.] | implode
-  | if . == "&" then "&amp;" elif . == "<" then "&lt;" elif . == ">" then "&gt;" end]'
+  | if . == "&" then "&amp;" elif . == "<" then "&lt;" elif . == ">" then "&gt;" else . end]'
 
 case "$STATUS" in
   success)    EMOJI="✅"; STATUS_TEXT="Success" ;;
