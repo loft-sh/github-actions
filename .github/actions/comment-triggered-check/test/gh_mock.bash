@@ -10,6 +10,8 @@
 # Controls, all optional:
 #   GH_MOCK_PR_JSON      body for .../pulls/N
 #   GH_MOCK_PR_FAIL      non-empty → the pulls call fails
+#   GH_MOCK_PERMISSION_JSON body for .../collaborators/USER/permission
+#   GH_MOCK_PERMISSION_FAIL non-empty → the permission call fails
 #   GH_MOCK_CREATE_JSON  body for POST .../check-runs
 #   GH_MOCK_CREATE_FAIL  non-empty → the create call fails
 #   GH_MOCK_PATCH_FAIL   non-empty → a PATCH fails
@@ -43,6 +45,7 @@ all="$*"
 default_pr='{"head":{"sha":"abc123","ref":"feature/x","repo":{"full_name":"loft-sh/demo"}},"base":{"ref":"main"},"state":"open"}'
 default_create='{"id":4242}'
 default_checkrun='{"id":4242,"name":"e2e-pro: snapshots","head_sha":"abc123","app":{"id":1}}'
+default_permission='{"permission":"write"}'
 
 case "$all" in
   *"--method POST"*"check-runs"*)
@@ -56,6 +59,10 @@ case "$all" in
   *"/pulls/"*)
     [ -n "${GH_MOCK_PR_FAIL:-}" ] && { echo "mock: pulls failed" >&2; exit 1; }
     printf '%s\n' "${GH_MOCK_PR_JSON:-$default_pr}"
+    ;;
+  *"/collaborators/"*"/permission"*)
+    [ -n "${GH_MOCK_PERMISSION_FAIL:-}" ] && { echo "mock: permission lookup failed" >&2; exit 1; }
+    printf '%s\n' "${GH_MOCK_PERMISSION_JSON:-$default_permission}"
     ;;
   # Before the by-id case: this path also contains "check-runs".
   *"/commits/"*"check-runs"*)
