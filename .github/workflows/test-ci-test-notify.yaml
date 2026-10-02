@@ -10,8 +10,14 @@ permissions: {}
 
 jobs:
   bats:
-    name: Run bats tests
-    runs-on: ubuntu-latest
+    name: Run bats tests (${{ matrix.os }})
+    # ubuntu-22.04 ships jq 1.6, which callers like the scheduled CVE scans run
+    # on. ubuntu-latest has jq 1.7+, which accepts syntax 1.6 rejects.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
