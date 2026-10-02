@@ -236,3 +236,138 @@ run_script() {
   [ "$status" -eq 0 ]
   [ "$output" = "main" ]
 }
+
+# --- main moving on, and the caller's branch ---
+
+run_with_base() {
+  run bash -c "RELEASE_VERSION='$1' BASE_BRANCH='$2' '$SCRIPT' 2>/dev/null"
+}
+
+@test "prerelease on main still returns main after main moves on and a branch forks at the tag" {
+  # The v4.13.0-alpha.20 misreport: main was one commit past the tag, and a
+  # feature branch forked at the tag read as the closest tip.
+  make_commit "initial"
+  git tag v4.13.0-alpha.20
+  push_all
+
+  git checkout -b feature/forked-at-tag
+  make_commit "feature work"
+  push_all
+
+  git checkout main
+  make_commit "main continues"
+  make_commit "main continues more"
+  push_all
+
+  run_script v4.13.0-alpha.20
+  [ "$status" -eq 0 ]
+  [ "$output" = "main" ]
+}
+
+@test "prerelease prefers main over a release line branched after it" {
+  make_commit "initial"
+  git tag v4.13.0-rc.0
+  make_commit "main continues"
+  push_all
+
+  git checkout -b release-4.13
+  make_commit "release work"
+  push_all
+
+  run_script v4.13.0-rc.0
+  [ "$status" -eq 0 ]
+  [ "$output" = "main" ]
+}
+
+@test "stable prefers its release-X.Y line over main" {
+  # A tag at the branch point is on both; stables are only cut from the line.
+  make_commit "initial"
+  git tag v4.12.0
+  git checkout -b release-4.12
+  make_commit "backport"
+  push_all
+  git checkout main
+  make_commit "main continues"
+  push_all
+
+  run_script v4.12.0
+  [ "$status" -eq 0 ]
+  [ "$output" = "release-4.12" ]
+}
+
+@test "stable finds a vX.Y release line" {
+  make_commit "initial"
+  push_all
+  git checkout -b v0.37
+  make_commit "release work"
+  git tag v0.37.1
+  git checkout -b feature/forked-at-tag
+  make_commit "feature work"
+  push_all
+
+  run_script v0.37.1
+  [ "$status" -eq 0 ]
+  [ "$output" = "v0.37" ]
+}
+
+@test "given base branch is used when the tag is on it" {
+  make_commit "initial"
+  push_all
+  git checkout -b feature/next-work
+  make_commit "feature work"
+  git tag v4.13.0-next.1
+  push_all
+
+  run_with_base v4.13.0-next.1 feature/next-work
+  [ "$status" -eq 0 ]
+  [ "$output" = "feature/next-work" ]
+}
+
+@test "given base branch the tag is not on is ignored" {
+  make_commit "initial"
+  git tag v4.13.0-alpha.1
+  push_all
+  git checkout -b release-4.13
+  make_commit "release work"
+  git checkout --orphan unrelated
+  make_commit "unrelated"
+  push_all
+
+  run bash -c "RELEASE_VERSION=v4.13.0-alpha.1 BASE_BRANCH=unrelated '$SCRIPT'"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"::warning::v4.13.0-alpha.1 is not on unrelated"* ]]
+  [ "${lines[-1]}" = "main" ]
+}
+
+@test "given base branch is trusted when the branch is gone from the remote" {
+  # A -next feature branch can be deleted while its build runs.
+  make_commit "initial"
+  git tag v4.13.0-next.2
+  push_all
+
+  run_with_base v4.13.0-next.2 feature/deleted
+  [ "$status" -eq 0 ]
+  [ "$output" = "feature/deleted" ]
+}
+
+@test "given base branch is trusted when the tag is not available" {
+  make_commit "initial"
+  push_all
+
+  run_with_base v9.9.9 main
+  [ "$status" -eq 0 ]
+  [ "$output" = "main" ]
+}
+
+@test "given base branch that is not a plain branch name is ignored" {
+  # It would end the quoted string in the Slack payload's YAML.
+  make_commit "initial"
+  git tag v4.13.0-alpha.2
+  push_all
+
+  run bash -c "RELEASE_VERSION=v4.13.0-alpha.2 BASE_BRANCH='feat/\"x\"' '$SCRIPT'"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"::warning::base_branch is not a plain branch name"* ]]
+  [[ "$output" != *'feat/"x"'* ]]
+  [ "${lines[-1]}" = "main" ]
+}

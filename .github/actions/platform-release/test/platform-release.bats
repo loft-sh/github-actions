@@ -369,6 +369,11 @@ if [[ "$sub" == "api" ]]; then
       if [[ "${GH_STUB_WF_NO_TRIGGERED_BY:-}" == "1" ]]; then
         printf 'on:\n  workflow_dispatch:\n'; exit 0
       fi
+      # A line whose banner takes the branch from the cut. Required with no
+      # default, the strictest shape, which the cut must still satisfy.
+      if [[ "${GH_STUB_WF_SOURCE_BRANCH:-}" == "1" ]]; then
+        printf 'on:\n  workflow_dispatch:\n    inputs:\n      triggered_by:\n        type: string\n      source_branch:\n        required: true\n'; exit 0
+      fi
       # The declaration is gone but the job plumbing that PASSES it remains - the
       # shape that satisfied an unscoped grep and then 422'd after the tag.
       if [[ "${GH_STUB_WF_TRIGGERED_BY_IN_JOB:-}" == "1" ]]; then
@@ -1479,6 +1484,41 @@ EOF
   TRIGGERED_BY="" INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
   [ "$status" -eq 0 ]
   [[ "$output" != *"triggered_by"* ]]
+}
+
+@test "main: a real cut forwards the branch it tagged when release.yaml declares source_branch" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_WF_SOURCE_BRANCH=1
+  TRIGGERED_BY="dmytrosydorov" INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"-f triggered_by=dmytrosydorov -f source_branch=release-4.11"* ]]
+}
+
+@test "main: an alpha cut names main as its source branch" {
+  # The case the git-history guess got wrong: main moved past the tag and a
+  # feature branch forked at it read as closer.
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:main"
+  export GH_STUB_WF_SOURCE_BRANCH=1
+  TRIGGERED_BY="" INPUT_VERSION="v4.13.0-alpha.20" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"--ref refs/tags/v4.13.0-alpha.20 -f source_branch=main"* ]]
+}
+
+@test "main: a -next cut names its feature branch as the source branch" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:feature/foo"
+  export GH_STUB_WF_SOURCE_BRANCH=1
+  TRIGGERED_BY="" INPUT_VERSION="v4.12.0-next.1" INPUT_SOURCE_BRANCH="feature/foo" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"-f source_branch=feature/foo"* ]]
+}
+
+@test "main: a real cut omits source_branch when release.yaml does not declare it" {
+  # Lines cut before the input existed must keep dispatching: gh workflow run
+  # rejects an undeclared input.
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  TRIGGERED_BY="dmytrosydorov" INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"source_branch"* ]]
 }
 
 @test "main: a guarded version never reaches the dispatch on a real cut" {

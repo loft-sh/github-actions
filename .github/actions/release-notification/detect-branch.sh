@@ -1,13 +1,22 @@
 #!/usr/bin/env bash
-# detect-branch.sh — Detect which branch a release tag was cut from.
+# detect-branch.sh — Name the branch a release tag was cut from.
 #
-# Finds all remote branches containing the tag commit, then picks the one
-# whose tip is closest (fewest commits ahead).
+# Resolution order, first match wins:
+#   1. BASE_BRANCH, the caller's answer, when the tag commit is on it. It is
+#      also trusted when it cannot be checked (no checkout, tag not fetched,
+#      branch deleted after the cut), since the caller picked it.
+#   2. The default branch and the version's release line (release-X.Y or
+#      vX.Y), when they contain the tag commit. A stable version checks its
+#      line first, since stables are only cut there; a prerelease checks the
+#      default branch first, since a line branched after an alpha also holds it.
+#   3. The remote branch containing the tag commit whose tip is closest. This
+#      is a guess, and only reached for tags cut from feature branches.
 #
 # Required environment variables:
 #   RELEASE_VERSION  — the release tag (e.g. v1.2.3)
 #
 # Optional environment variables:
+#   BASE_BRANCH      — the branch the caller says the tag was cut from
 #   DEFAULT_BRANCH   — fallback branch name (default: main)
 #
 # Output (stdout): the detected branch name
@@ -16,8 +25,55 @@ set -euo pipefail
 
 : "${RELEASE_VERSION:?RELEASE_VERSION must be set}"
 DEFAULT_BRANCH="${DEFAULT_BRANCH:-main}"
+BASE_BRANCH="${BASE_BRANCH:-}"
 
-TAG_COMMIT=$(git rev-list -n 1 "$RELEASE_VERSION")
+# The name is quoted into the Slack payload's YAML and into log annotations,
+# so only plain branch characters get through.
+valid_branch() {
+  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ && "$1" != *..* ]]
+}
+
+on_branch() {
+  git merge-base --is-ancestor "$TAG_COMMIT" "origin/$1" 2>/dev/null
+}
+
+emit() {
+  echo "Detected source branch: $1 ($2)" >&2
+  echo "$1"
+  exit 0
+}
+
+if [[ -n "$BASE_BRANCH" ]] && ! valid_branch "$BASE_BRANCH"; then
+  echo "::warning::base_branch is not a plain branch name, ignoring it and detecting the branch from git history" >&2
+  BASE_BRANCH=""
+fi
+
+if ! TAG_COMMIT=$(git rev-list -n 1 "$RELEASE_VERSION" 2>/dev/null); then
+  [[ -n "$BASE_BRANCH" ]] && emit "$BASE_BRANCH" "given, tag not available to check"
+  echo "::error::tag $RELEASE_VERSION not found, so the source branch cannot be detected" >&2
+  exit 1
+fi
+
+if [[ -n "$BASE_BRANCH" ]]; then
+  if ! git rev-parse --verify -q "origin/$BASE_BRANCH" >/dev/null; then
+    emit "$BASE_BRANCH" "given, branch not on remote to check"
+  fi
+  on_branch "$BASE_BRANCH" && emit "$BASE_BRANCH" "given"
+  echo "::warning::$RELEASE_VERSION is not on $BASE_BRANCH, detecting the branch from git history instead" >&2
+fi
+
+LINE_BRANCHES=()
+if [[ "$RELEASE_VERSION" =~ ^v?([0-9]+)\.([0-9]+)\. ]]; then
+  LINE_BRANCHES=("release-${BASH_REMATCH[1]}.${BASH_REMATCH[2]}" "v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}")
+fi
+if [[ "$RELEASE_VERSION" == *-* ]]; then
+  CANDIDATES=("$DEFAULT_BRANCH" "${LINE_BRANCHES[@]}")
+else
+  CANDIDATES=("${LINE_BRANCHES[@]}" "$DEFAULT_BRANCH")
+fi
+for CANDIDATE in "${CANDIDATES[@]}"; do
+  on_branch "$CANDIDATE" && emit "$CANDIDATE" "contains the tag"
+done
 
 BEST_BRANCH="$DEFAULT_BRANCH"
 MAX_DISTANCE=999999
@@ -57,5 +113,8 @@ else
   fi
 fi
 
-echo "Detected source branch: $BEST_BRANCH (distance: $BEST_DISTANCE)" >&2
-echo "$BEST_BRANCH"
+if ! valid_branch "$BEST_BRANCH"; then
+  echo "::warning::the closest branch is not a plain branch name, falling back to '$DEFAULT_BRANCH'" >&2
+  BEST_BRANCH="$DEFAULT_BRANCH"
+fi
+emit "$BEST_BRANCH" "closest tip, distance: $BEST_DISTANCE"
