@@ -27,6 +27,11 @@ tag and never a SHA.
 
 ## Handing the work to a non-privileged run
 
+This section describes same-repository pull requests (`is-fork: "false"`). A
+fork's branch does not exist in the base repository, so fork runs follow the
+model in [Forks are opt-in](#forks-are-opt-in): dispatch from the base branch and
+check out `head-sha`.
+
 Worth doing, and the reason `head-ref` exists. A workflow triggered by
 `issue_comment` is privileged, so if it checks out the pull request and then
 calls a local action with `uses: ./...`, the *action definition* comes from the
@@ -69,8 +74,14 @@ not explicitly check out untrusted code, including from pull request forks".
 Forks remain refused by default. A caller may set `allow-forks: "true"` only
 when it deliberately provides a safe execution path for the resolved fork SHA.
 In that mode, `start` checks the commenter's repository permission and requires
-`write`, `maintain`, or `admin`. The comment is the maintainer's explicit
-approval for that commit.
+`write`, `maintain`, or `admin`.
+
+The command tests the pull request head at the moment `start` opens the check,
+and `head-sha` pins that commit for the rest of the run. Pushes after that do
+not change it. Re-runs of the command workflow are refused for forks
+(`rerun-not-allowed`), because a re-run replays the old comment against the
+current head. A push in the seconds between the comment and `start` is not
+detected.
 
 Keep the privileged preparation job free of checkouts and secrets. Run fork
 code in a separate `workflow_dispatch` run loaded from the base branch. In that
@@ -229,25 +240,25 @@ the commenter's repository permission through repository metadata.
 
 <!-- AUTO-DOC-OUTPUT:START - Do not remove or modify this section -->
 
-|     OUTPUT      |  TYPE  |                                                                                                                                                       DESCRIPTION                                                                                                                                                        |
-|-----------------|--------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-|      args       | string |                                                                                                                                 Raw argument string that followed the <br>command word.                                                                                                                                  |
-|    base-ref     | string |                                                                                                                  Resolved base branch of the pull <br>request. The event does not carry <br>it either.                                                                                                                   |
-|   check-name    | string |                                                                                                                            Display name of the check-run, sanitized <br>and length-bounded.                                                                                                                              |
-|  check-run-id   | string |                                                                                                              Id of the opened check-run. Empty <br>when nothing was opened; gate the <br>finish job on it.                                                                                                               |
-|   conclusion    | string |                                                                                                                                   finish mode. The conclusion that was <br>published.                                                                                                                                    |
-| concurrency-key | string |                    The pull request number plus the <br>domain-separated request identity, reduced to a <br>lowercase slug and an eight-character digest. <br>Safe to interpolate into a concurrency <br>group. Distinct pull requests, filters, focuses, <br>and targets do not share a <br>group.                      |
-|     filter      | string |                                                                                                              Argument string with whitespace normalized. This <br>is what to pass to the <br>test runner.                                                                                                                |
-|      focus      | string |                                                                                            Optional focus expression following --focus. One <br>outer quote pair is removed only <br>when it encloses the whole expression.                                                                                              |
-|    head-ref     | string |                                                          Resolved head BRANCH of the pull <br>request. Needed by a caller that <br>dispatches the work to a non-privileged <br>run, because `gh workflow run --ref` takes a branch <br>or tag and never a SHA.                                                           |
-|    head-sha     | string |                                                                                                                     Resolved head commit of the pull <br>request. The event does not carry <br>it.                                                                                                                       |
-|     is-fork     | string |                                                                    start mode. "true" when the pull <br>request comes from another repository, "false" <br>for a same-repository pull request, and <br>empty when no pull request was <br>resolved.                                                                      |
-|     matched     | string |                                                                                                                                "true" when the comment opened with <br>the command word.                                                                                                                                 |
-|     reason      | string | Why the command will not run: <br>fork, insufficient-permission, permission-unreadable, empty-filter, malformed-filter, malformed-focus, <br>malformed-target, invalid-target, target-not-selected, not-a-pull-request, pull-request-closed, pull-request-unreadable, <br>or check-run-not-created. Empty when it will.  |
-| reason-guidance | string |                                                                                          start mode. Presentation-ready next step for <br>reason. Empty when the command will <br>run or this invocation was not <br>selected.                                                                                           |
-|  reason-title   | string |                                                                                              start mode. Presentation-ready title for reason. <br>Empty when the command will run <br>or this invocation was not selected.                                                                                               |
-|   should-run    | string |                                                    The caller's execution gate. "true" only <br>when a check-run was actually opened. <br>Forks are refused unless allow-forks is <br>true and the commenter has write-level <br>permission. Read reason when false.                                                     |
-|     target      | string |                                                                                                                  Optional target following --target. Empty means <br>no explicit target was requested.                                                                                                                   |
+|     OUTPUT      |  TYPE  |                                                                                                                                                                   DESCRIPTION                                                                                                                                                                   |
+|-----------------|--------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|      args       | string |                                                                                                                                            Raw argument string that followed the <br>command word.                                                                                                                                              |
+|    base-ref     | string |                                                                                                                             Resolved base branch of the pull <br>request. The event does not carry <br>it either.                                                                                                                               |
+|   check-name    | string |                                                                                                                                        Display name of the check-run, sanitized <br>and length-bounded.                                                                                                                                         |
+|  check-run-id   | string |                                                                                                                         Id of the opened check-run. Empty <br>when nothing was opened; gate the <br>finish job on it.                                                                                                                           |
+|   conclusion    | string |                                                                                                                                              finish mode. The conclusion that was <br>published.                                                                                                                                                |
+| concurrency-key | string |                                The pull request number plus the <br>domain-separated request identity, reduced to a <br>lowercase slug and an eight-character digest. <br>Safe to interpolate into a concurrency <br>group. Distinct pull requests, filters, focuses, <br>and targets do not share a <br>group.                                 |
+|     filter      | string |                                                                                                                          Argument string with whitespace normalized. This <br>is what to pass to the <br>test runner.                                                                                                                           |
+|      focus      | string |                                                                                                        Optional focus expression following --focus. One <br>outer quote pair is removed only <br>when it encloses the whole expression.                                                                                                         |
+|    head-ref     | string |                                                                     Resolved head BRANCH of the pull <br>request. Needed by a caller that <br>dispatches the work to a non-privileged <br>run, because `gh workflow run --ref` takes a branch <br>or tag and never a SHA.                                                                       |
+|    head-sha     | string |                                                                                                                                 Resolved head commit of the pull <br>request. The event does not carry <br>it.                                                                                                                                  |
+|     is-fork     | string |                                                                                start mode. "true" when the pull <br>request comes from another repository, "false" <br>for a same-repository pull request, and <br>empty when no pull request was <br>resolved.                                                                                 |
+|     matched     | string |                                                                                                                                           "true" when the comment opened with <br>the command word.                                                                                                                                             |
+|     reason      | string | Why the command will not run: <br>fork, rerun-not-allowed, insufficient-permission, permission-unreadable, empty-filter, malformed-filter, <br>malformed-focus, malformed-target, invalid-target, target-not-selected, not-a-pull-request, pull-request-closed, <br>pull-request-unreadable, or check-run-not-created. Empty when it <br>will.  |
+| reason-guidance | string |                                                                                                     start mode. Presentation-ready next step for <br>reason. Empty when the command will <br>run or this invocation was not <br>selected.                                                                                                       |
+|  reason-title   | string |                                                                                                         start mode. Presentation-ready title for reason. <br>Empty when the command will run <br>or this invocation was not selected.                                                                                                           |
+|   should-run    | string |                                                               The caller's execution gate. "true" only <br>when a check-run was actually opened. <br>Forks are refused unless allow-forks is <br>true and the commenter has write-level <br>permission. Read reason when false.                                                                 |
+|     target      | string |                                                                                                                             Optional target following --target. Empty means <br>no explicit target was requested.                                                                                                                               |
 
 <!-- AUTO-DOC-OUTPUT:END -->
 
@@ -366,10 +377,11 @@ Render a refusal when `reason` is non-empty and is not
 `target-not-selected`. That value is silent routing state for an invocation
 that did not own the requested target.
 
-`reason` values: `fork`, `insufficient-permission`, `empty-filter`,
-`malformed-filter`, `malformed-focus`, `malformed-target`, `invalid-target`,
-`target-not-selected`, `not-a-pull-request`, `pull-request-closed`,
-`pull-request-unreadable`, `check-run-not-created`. Empty when the command will
+`reason` values: `fork`, `rerun-not-allowed`, `insufficient-permission`,
+`permission-unreadable`, `empty-filter`, `malformed-filter`, `malformed-focus`,
+`malformed-target`, `invalid-target`, `target-not-selected`,
+`not-a-pull-request`, `pull-request-closed`, `pull-request-unreadable`,
+`check-run-not-created`. Empty when the command will
 run. For refusals, `reason-title` and `reason-guidance` contain text suitable
 for a comment.
 

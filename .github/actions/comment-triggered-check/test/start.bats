@@ -17,6 +17,7 @@ setup() {
   export INPUT_COMMENT_AUTHOR="dev"
   export INPUT_AUTHOR_ASSOCIATION="MEMBER"
   export INPUT_PR_NUMBER="7"
+  export INPUT_RUN_ATTEMPT="1"
   export INPUT_REPO="loft-sh/demo"
   export INPUT_CHECK_NAME_PREFIX="e2e"
   export INPUT_RUN_ID="999"
@@ -324,6 +325,29 @@ created() { calls_matching "POST"; }
   [ "$(kv reason)" = "" ]
   [ "$(calls_matching '/collaborators/dev/permission')" -eq 1 ]
   [ "$(created)" -eq 1 ]
+}
+
+@test "an opted-in fork refuses a re-run before any permission lookup or check" {
+  export INPUT_ALLOW_FORKS="true"
+  export INPUT_RUN_ATTEMPT="2"
+  export GH_MOCK_PR_JSON='{"head":{"sha":"fork123","ref":"feature/x","repo":{"full_name":"someone/demo"}},"base":{"ref":"main"},"state":"open"}'
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv is-fork)" = "true" ]
+  [ "$(kv reason)" = "rerun-not-allowed" ]
+  [ "$(kv should-run)" = "false" ]
+  [ -z "$(kv check-run-id)" ]
+  [ "$(calls_matching '/collaborators/dev/permission')" -eq 0 ]
+  [ "$(calls_matching 'check-runs')" -eq 0 ]
+}
+
+@test "a same-repository re-run still runs" {
+  export INPUT_ALLOW_FORKS="true"
+  export INPUT_RUN_ATTEMPT="2"
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv is-fork)" = "false" ]
+  [ "$(kv should-run)" = "true" ]
 }
 
 @test "an opted-in fork refuses a read-only commenter" {

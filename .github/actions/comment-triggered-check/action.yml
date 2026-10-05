@@ -114,7 +114,7 @@ outputs:
     description: 'The caller''s execution gate. "true" only when a check-run was actually opened. Forks are refused unless allow-forks is true and the commenter has write-level permission. Read reason when false.'
     value: ${{ steps.start.outputs.should-run }}
   reason:
-    description: 'Why the command will not run: fork, insufficient-permission, permission-unreadable, empty-filter, malformed-filter, malformed-focus, malformed-target, invalid-target, target-not-selected, not-a-pull-request, pull-request-closed, pull-request-unreadable, or check-run-not-created. Empty when it will.'
+    description: 'Why the command will not run: fork, rerun-not-allowed, insufficient-permission, permission-unreadable, empty-filter, malformed-filter, malformed-focus, malformed-target, invalid-target, target-not-selected, not-a-pull-request, pull-request-closed, pull-request-unreadable, or check-run-not-created. Empty when it will.'
     value: ${{ steps.start.outputs.reason }}
   reason-title:
     description: 'start mode. Presentation-ready title for reason. Empty when the command will run or this invocation was not selected.'
@@ -168,6 +168,7 @@ runs:
         INPUT_COMMENT_AUTHOR: ${{ inputs.comment-author }}
         INPUT_AUTHOR_ASSOCIATION: ${{ inputs.author-association }}
         INPUT_ALLOW_FORKS: ${{ inputs.allow-forks }}
+        INPUT_RUN_ATTEMPT: ${{ github.run_attempt }}
         INPUT_PR_NUMBER: ${{ inputs.pr-number }}
         INPUT_REPO: ${{ inputs.repo }}
         INPUT_CHECK_NAME_PREFIX: ${{ inputs.check-name-prefix }}

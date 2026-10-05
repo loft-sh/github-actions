@@ -374,7 +374,11 @@ refusal_details() {
       ;;
     insufficient-permission)
       REFUSAL_TITLE="\`insufficient-permission\`"
-      REFUSAL_GUIDANCE="You need repository access to run the command. Fork requests require write access."
+      REFUSAL_GUIDANCE="You need repository access to run the command. On a pull request from a fork, you need write access."
+      ;;
+    rerun-not-allowed)
+      REFUSAL_TITLE="\`rerun-not-allowed\`"
+      REFUSAL_GUIDANCE="Re-runs are refused on pull requests from forks. Comment \`${command_word}\` again instead."
       ;;
     permission-unreadable)
       REFUSAL_TITLE="\`permission-unreadable\`"

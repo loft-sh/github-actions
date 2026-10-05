@@ -541,6 +541,30 @@ setup() {
   done
 }
 
+# --- has_write_permission ----------------------------------------------------
+# The fork gate. Values are the legacy base roles the permission API returns.
+
+@test "has_write_permission: write, maintain and admin may run fork code" {
+  for permission in write maintain admin; do
+    run has_write_permission "$permission"
+    [ "$status" -eq 0 ]
+  done
+}
+
+@test "has_write_permission: triage, read, none and empty may not" {
+  for permission in triage read none ""; do
+    run has_write_permission "$permission"
+    [ "$status" -ne 0 ]
+  done
+}
+
+@test "has_write_permission: the match is exact and case-sensitive" {
+  for permission in WRITE Admin " write" "write " writer; do
+    run has_write_permission "$permission"
+    [ "$status" -ne 0 ]
+  done
+}
+
 # --- is_authorized_association -----------------------------------------------
 
 @test "is_authorized_association: an owner may run it" {

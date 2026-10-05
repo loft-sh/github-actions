@@ -17,6 +17,7 @@
 #   INPUT_COMMENT_AUTHOR      github.event.comment.user.login
 #   INPUT_AUTHOR_ASSOCIATION  github.event.comment.author_association
 #   INPUT_ALLOW_FORKS         whether write-level commenters may run fork code
+#   INPUT_RUN_ATTEMPT         attempt number of this workflow run (github.run_attempt)
 #   INPUT_PR_NUMBER           github.event.issue.number
 #   INPUT_REPO                owner/name
 #   INPUT_CHECK_NAME_PREFIX   prefix for the check-run name
@@ -37,6 +38,7 @@ comment_body="${INPUT_COMMENT_BODY:-}"
 comment_author="${INPUT_COMMENT_AUTHOR:-}"
 association="${INPUT_AUTHOR_ASSOCIATION:-}"
 allow_forks="${INPUT_ALLOW_FORKS:-false}"
+run_attempt="${INPUT_RUN_ATTEMPT:-1}"
 pr_number="${INPUT_PR_NUMBER:-}"
 repo="${INPUT_REPO:?INPUT_REPO required}"
 prefix="${INPUT_CHECK_NAME_PREFIX:-e2e}"
@@ -211,6 +213,15 @@ if [[ "$head_repo" != "$repo" ]]; then
   if [[ "$allow_forks" != "true" ]]; then
     reason="fork"
     echo "::notice::${command_word} is not available on pull requests from forks"
+    finish_and_exit
+  fi
+
+  # A re-run replays the old comment but resolves the head again, so it would
+  # test whatever the fork pushed since, approved by nobody. A new comment is a
+  # new approval of the PR as it is now.
+  if [[ "$run_attempt" != "1" ]]; then
+    reason="rerun-not-allowed"
+    echo "::notice::re-runs of ${command_word} are refused on fork pull requests; comment it again instead"
     finish_and_exit
   fi
 
