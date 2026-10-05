@@ -2,7 +2,8 @@
 # start mode: decide whether this comment is a command we should act on, and if
 # so open a check-run on the pull request's head commit.
 #
-# Two API calls, and no more. Deduplicating repeated commands is left to the
+# Two API calls for a same-repository PR, and one extra permission lookup for
+# an allowed fork. Deduplicating repeated commands is left to the
 # caller's `concurrency` group (see the README): GitHub already supersedes an
 # older run for the same key, and a superseded job still runs the caller's
 # `always()` finish job, which closes its check. Doing it here instead meant
@@ -15,6 +16,8 @@
 #   INPUT_COMMENT_BODY        github.event.comment.body
 #   INPUT_COMMENT_AUTHOR      github.event.comment.user.login
 #   INPUT_AUTHOR_ASSOCIATION  github.event.comment.author_association
+#   INPUT_ALLOW_FORKS         whether write-level commenters may run fork code
+#   INPUT_RUN_ATTEMPT         attempt number of this workflow run (github.run_attempt)
 #   INPUT_PR_NUMBER           github.event.issue.number
 #   INPUT_REPO                owner/name
 #   INPUT_CHECK_NAME_PREFIX   prefix for the check-run name
@@ -34,6 +37,8 @@ command_word="${INPUT_COMMAND:-/test-e2e}"
 comment_body="${INPUT_COMMENT_BODY:-}"
 comment_author="${INPUT_COMMENT_AUTHOR:-}"
 association="${INPUT_AUTHOR_ASSOCIATION:-}"
+allow_forks="${INPUT_ALLOW_FORKS:-false}"
+run_attempt="${INPUT_RUN_ATTEMPT:-1}"
 pr_number="${INPUT_PR_NUMBER:-}"
 repo="${INPUT_REPO:?INPUT_REPO required}"
 prefix="${INPUT_CHECK_NAME_PREFIX:-e2e}"
@@ -59,6 +64,7 @@ reason_guidance=""
 head_sha=""
 head_ref=""
 base_ref=""
+is_fork=""
 concurrency_key=""
 name=""
 check_run_id=""
@@ -80,6 +86,7 @@ finish_and_exit() {
   emit "head-sha" "$head_sha"
   emit "head-ref" "$head_ref"
   emit "base-ref" "$base_ref"
+  emit "is-fork" "$is_fork"
   emit "concurrency-key" "$concurrency_key"
   emit "check-name" "$name"
   emit "check-run-id" "$check_run_id"
@@ -159,8 +166,8 @@ fi
 # --- 2. Authorize the commenter ---------------------------------------------
 # From the event payload, so no API call and no token scope to get wrong. It is
 # coarser than the collaborator endpoint: a read-only collaborator reads as
-# COLLABORATOR and would pass. On a same-repo-only command in an internal
-# repository the cost of that is runner time, not access.
+# COLLABORATOR and would pass. For a same-repository pull request the cost of
+# that is runner time, not access. Forks get the precise check in step 3.
 if ! is_authorized_association "$association"; then
   reason="insufficient-permission"
   echo "::notice::${comment_author} (${association:-unknown}) cannot run ${command_word}; it needs repository access"
@@ -199,20 +206,51 @@ if [[ "$pr_state" != "open" ]]; then
   finish_and_exit
 fi
 
-# Fork check, before the caller checks anything out. This trigger is privileged:
-# it runs from the default branch of the base repository with its secrets and a
-# write token, so a workflow that fetches and runs fork code hands those to a
-# stranger. A security boundary, not a convenience limit.
+# Fork support is explicit. The association is not enough here: COLLABORATOR
+# may be read-only, while running fork code requires maintainer approval.
 if [[ "$head_repo" != "$repo" ]]; then
-  reason="fork"
-  echo "::notice::${command_word} is not available on pull requests from forks"
-  finish_and_exit
+  is_fork=true
+  if [[ "$allow_forks" != "true" ]]; then
+    reason="fork"
+    echo "::notice::${command_word} is not available on pull requests from forks"
+    finish_and_exit
+  fi
+
+  # A re-run replays the old comment but resolves the head again, so it would
+  # test whatever the fork pushed since, approved by nobody. A new comment is a
+  # new approval of the PR as it is now.
+  if [[ "$run_attempt" != "1" ]]; then
+    reason="rerun-not-allowed"
+    echo "::notice::re-runs of ${command_word} are refused on fork pull requests; comment it again instead"
+    finish_and_exit
+  fi
+
+  if ! permission_json="$(gh_json "repos/${repo}/collaborators/${comment_author}/permission")"; then
+    reason="permission-unreadable"
+    echo "::warning::could not check ${comment_author}'s permission in ${repo}"
+    finish_and_exit
+  fi
+  if ! permission="$(printf '%s' "$permission_json" | jq -er '.permission | select(type == "string")' 2>/dev/null)"; then
+    reason="permission-unreadable"
+    echo "::warning::the permission response for ${comment_author} was unreadable"
+    finish_and_exit
+  fi
+  if ! has_write_permission "$permission"; then
+    reason="insufficient-permission"
+    echo "::notice::${comment_author} has ${permission} access; a fork command needs write access"
+    finish_and_exit
+  fi
+else
+  is_fork=false
 fi
 
 should_run=true
 request="$(request_display "$filter" "$focus" "$target")"
 name="$(check_name "$prefix" "$request" 60)"
-concurrency_key="$(concurrency_key "$(request_identity "$filter" "$focus" "$target")")"
+# Scoped to the pull request. A caller that dispatches fork runs from the base
+# branch has no other per-PR value in its concurrency group, so without this two
+# fork PRs sending the same filter would cancel each other.
+concurrency_key="pr-$(sanitize_slug "$pr_number" 20)-$(concurrency_key "$(request_identity "$filter" "$focus" "$target")")"
 
 # --- 4. Open the check-run ---------------------------------------------------
 # On the resolved head SHA, never on github.sha: for issue_comment that is the
