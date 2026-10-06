@@ -58,6 +58,17 @@ DEFAULT_BRANCH="${PLATFORM_DEFAULT_BRANCH:-main}"
 # release-X.Y line whose release.yaml has no `triggered_by` input fails at the
 # dispatch, which require_dispatchable checks for before anything is tagged.
 TRIGGERED_BY="${TRIGGERED_BY:-}"
+# Set by require_dispatchable when the line's release.yaml declares a
+# `source_branch` input. The cut then passes the branch it tagged, so the Slack
+# banner names it instead of inferring it from git history, which cannot tell
+# which branch a tag came from when it sits on several. Optional rather than
+# required like triggered_by: lines cut before the input existed keep
+# dispatching, and their banner falls back to the inference.
+FORWARD_SOURCE_BRANCH=""
+# Set by cut_release before the preflight when it cannot name the branch the
+# tag was cut from. The preflight then leaves source_branch out unless the line
+# requires it with no default, so the banner falls back to the inference.
+SOURCE_BRANCH_UNKNOWN=""
 # How long dispatch waits for the run it started to be listed, before the cut
 # exits and a following cut could miss it. Overridable so the bats suite does
 # not sleep.
@@ -105,8 +116,10 @@ require_yq() {
 #   trigger <name>                 one per trigger, in any of the three spellings
 #   bad_triggers <n>               triggers whose names cannot be printed
 #   bad_inputs <n>                 workflow_dispatch inputs whose names cannot be printed
-#   input <name> <req> <default>   one per workflow_dispatch input, flags 0 or 1;
-#                                  a null or empty-string default does not count
+#   input <name> <req> <default> <has_type> [type]
+#                                  one per workflow_dispatch input, flags 0 or 1;
+#                                  a null or empty-string default does not count;
+#                                  type is printed only when it is a word
 # Merge and duplicate keys are counted before aliases are expanded, since
 # expanding hides them. Only string keys shaped like event and input names are
 # printed, which keeps a key carrying a newline from forging a line. The rest
@@ -140,7 +153,10 @@ workflow_facts() {
         "input " + .key + " " +
         ([.value | select(tag == "!!map") | .required | select((tag == "!!bool" or tag == "!!str") and ((tostring | downcase) == "true"))] | length | tostring) + " " +
         ([.value | select(tag == "!!map") | select(has("default")) | .default |
-          select(tag != "!!null") | select((tag == "!!str" and length == 0) | not)] | length | tostring))
+          select(tag != "!!null") | select((tag == "!!str" and length == 0) | not)] | length | tostring) + " " +
+        ([.value | select(tag == "!!map") | select(has("type"))] | length | tostring) + " " +
+        ([.value | select(tag == "!!map") | select(has("type")) | .type |
+          select(tag == "!!str") | select(test("^[A-Za-z0-9_-]+$"))] | join("")))
     ] | .[]
   '
 }
@@ -178,16 +194,20 @@ require_dispatchable() {
   fi
   # Read once. `seen` holds the trigger lines as printed; inputs keep their
   # declaration order so the messages below list them the same way.
-  local -A seen=() required=() has_default=()
+  local -A seen=() required=() has_default=() input_type=()
   local -a inputs=()
-  local kind name req def merges=0 dups=0 bad=0 bad_triggers=0
-  while read -r kind name req def; do
+  local kind name req def has_type typ merges=0 dups=0 bad=0 bad_triggers=0
+  while read -r kind name req def has_type typ; do
     case "$kind" in
       merge_keys) merges="$name" ;;
       duplicate_keys) dups="$name" ;;
       bad_inputs) bad="$name" ;;
       bad_triggers) bad_triggers="$name" ;;
-      input) inputs+=("$name"); required["$name"]="$req"; has_default["$name"]="$def" ;;
+      input)
+        inputs+=("$name"); required["$name"]="$req"; has_default["$name"]="$def"
+        # GitHub reads an input with no type as a string.
+        input_type["$name"]="string"
+        [[ "$has_type" == "1" ]] && input_type["$name"]="$typ" ;;
       ?*) seen["$kind $name"]=1 ;;
     esac
   done <<<"$facts"
@@ -258,15 +278,40 @@ require_dispatchable() {
     fi
     exit 1
   fi
+  # Decided here, once, so the type check below covers exactly what the
+  # dispatch sends.
+  FORWARD_SOURCE_BRANCH=""
+  if [[ -n "${required[source_branch]+x}" ]]; then
+    if [[ -z "${SOURCE_BRANCH_UNKNOWN}" ||
+          ( "${required[source_branch]}" == "1" && "${has_default[source_branch]}" == "0" ) ]]; then
+      FORWARD_SOURCE_BRANCH=1
+    else
+      echo "::notice::not passing source_branch: ${tag} may have been tagged on ${DEFAULT_BRANCH} before its release line existed, so the release notification detects the branch from git history."
+    fi
+  fi
+  # Every input the cut passes gets a free-form name. Any type but string can
+  # reject it, which 422s after the tag exists.
+  local passed=() declared
+  [[ -n "${TRIGGERED_BY}" ]] && passed+=(triggered_by)
+  [[ -n "${FORWARD_SOURCE_BRANCH}" ]] && passed+=(source_branch)
+  for name in ${passed[@]+"${passed[@]}"}; do
+    [[ "${input_type[$name]}" == "string" ]] && continue
+    declared="type '${input_type[$name]}'"
+    [[ -n "${input_type[$name]}" ]] || declared="a type that is not a plain word"
+    echo "::error::${wf} at '${label}' in ${repo} declares '${name}' under workflow_dispatch with ${declared}, but this cut passes it a name, which only 'type: string' is sure to accept. Make it 'type: string' (lowercase) in that line's ${wf}. Nothing was tagged." >&2
+    exit 1
+  done
   # The mirror image: an input this cut does NOT pass, declared required with no
   # default, 422s with "Required input not provided" - again after the tag
-  # exists. The dispatch sends triggered_by and nothing else. A required input
-  # that has a default is fine; the API fills it in. An empty-string default is
-  # not counted, since an empty value may itself read as not provided.
+  # exists. The dispatch sends triggered_by and source_branch and nothing else.
+  # A required input that has a default is fine; the API fills it in. An
+  # empty-string default is not counted, since an empty value may itself read
+  # as not provided.
   local unsatisfiable=""
   for name in "${inputs[@]}"; do
     [[ "${required[$name]}" == "1" && "${has_default[$name]}" == "0" ]] || continue
     [[ -n "${TRIGGERED_BY}" && "$name" == "triggered_by" ]] && continue
+    [[ "$name" == "source_branch" ]] && continue
     unsatisfiable+="${unsatisfiable:+, }${name}"
   done
   if [[ -n "$unsatisfiable" ]]; then
@@ -729,10 +774,16 @@ cut_release() {
   # by then.
   check_release_state "$REPO" "$version"
   local sha label
+  SOURCE_BRANCH_UNKNOWN=""
   if [[ -n "$EXISTING_TAG_SHA" ]]; then
     # A resumed cut builds the commit the tag already points at, so that is the
     # release.yaml the preflight has to read, whatever the branch head is now.
     require_tag_on_target "$REPO" "$target" "$version" "$EXISTING_TAG_SHA"
+    # A resumed rc on its line may have been tagged on main before the line was
+    # branched from a newer main, and the cut cannot tell.
+    if [[ "$target" != "$DEFAULT_BRANCH" && "$(classify_suffix "$version")" == rc ]]; then
+      SOURCE_BRANCH_UNKNOWN=1
+    fi
     echo "::notice::tag ${version} already exists at ${EXISTING_TAG_SHA} on ${target} with no release and no build running or passed; resuming at the dispatch without re-tagging."
     sha="$EXISTING_TAG_SHA" label="$version"
   else
@@ -751,6 +802,7 @@ cut_release() {
   fi
   local dispatch_args=()
   [[ -n "${TRIGGERED_BY}" ]] && dispatch_args=(-f "triggered_by=${TRIGGERED_BY}")
+  [[ -n "${FORWARD_SOURCE_BRANCH}" ]] && dispatch_args+=(-f "source_branch=${target}")
   dispatch "$REPO" "$version" "$sha" "${dispatch_args[@]}"
 }
 
