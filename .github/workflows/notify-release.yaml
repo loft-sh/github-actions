@@ -30,6 +30,11 @@ on:
         required: false
         type: string
         default: 'success'
+      base_branch:
+        description: 'Branch the release was cut from, shown in the banner. Pass it when the caller knows it (a dispatcher that picked the branch). It is checked against the tag while the branch exists. A ref-shaped name (refs/, heads/, tags/, remotes/, origin/), HEAD or another pseudo-ref, origin, the release tag, another tag or a commit SHA when a checkout can tell (with none, any 7 to 64 hex characters), or an empty value is replaced by detection from git history. So is a branch the tag is not on, unless it may have been rebased: a feature branch for a -next, or the release line of the version for an rc or a stable.'
+        required: false
+        type: string
+        default: ''
       ref:
         description: 'The git ref to checkout (defaults to github.ref)'
         required: false
@@ -92,14 +97,23 @@ jobs:
             fi
           done
           echo "All required inputs are valid"
+      # A failed checkout must not lose the banner: branch detection then falls
+      # back to the given branch or main. The post itself still fails the job,
+      # which is what callers' failure banners listen for.
       - name: Checkout repository
         if: ${{ !inputs.dry-run && inputs.status == 'success' }}
+        continue-on-error: true
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ inputs.target_repo }}
           ref: ${{ inputs.ref || github.ref }}
+          # Branch detection walks commits only and nothing reads the target's
+          # files, so history comes without trees or blobs, and checkout fetches
+          # just what the root and .github need.
           fetch-depth: 0
           fetch-tags: true
+          filter: tree:0
+          sparse-checkout: .github
           persist-credentials: false
       - name: Notify #product-releases Slack channel
         if: ${{ !inputs.dry-run }}
@@ -111,6 +125,7 @@ jobs:
           target_repo: ${{ inputs.target_repo }}
           paired_repo: ${{ inputs.paired_repo }}
           product: ${{ inputs.product }}
+          base_branch: ${{ inputs.base_branch }}
           status: ${{ inputs.status }}
           is_prerelease: ${{ inputs.is_prerelease }}
           needs_promotion: ${{ inputs.needs_promotion }}

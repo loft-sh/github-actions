@@ -42,7 +42,7 @@ inputs:
     description: 'Product name (vCluster or vCluster Platform)'
     required: true
   base_branch:
-    description: 'Source branch from which the release was cut (auto-detected from git history when omitted)'
+    description: 'Source branch from which the release was cut. Used when the tag commit is on it, or when that cannot be checked (no checkout, branch deleted, history missing). A ref-shaped name (refs/, heads/, tags/, remotes/, origin/), HEAD or another pseudo-ref, origin, the release tag, another tag or a commit SHA when a checkout can tell (with none, any 7 to 64 hex characters), or an empty value is replaced by detection from git history, which needs a checkout with full history and tags. So is a branch the tag is not on, unless it may have been rebased: a feature branch for a -next, or the release line of the version for an rc or a stable.'
     required: false
     default: ''
   status:
@@ -71,6 +71,9 @@ outputs:
   release_text:
     description: 'Resolved release link text.'
     value: ${{ steps.release_text.outputs.release_text }}
+  base_branch:
+    description: 'Source branch shown in the banner.'
+    value: ${{ steps.detect_branch.outputs.base_branch }}
 
 runs:
   using: "composite"
@@ -86,12 +89,21 @@ runs:
         esac
     - name: Detect base branch
       id: detect_branch
-      if: inputs.status == 'success' && inputs.base_branch == ''
+      if: inputs.status == 'success'
       shell: bash
       env:
         RELEASE_VERSION: ${{ inputs.version }}
+        BASE_BRANCH: ${{ inputs.base_branch }}
+        # Pinned so a DEFAULT_BRANCH the caller sets for its own steps cannot
+        # reorder detection.
+        DEFAULT_BRANCH: main
       run: |
-        BRANCH=$("${{ github.action_path }}/detect-branch.sh")
+        # The banner is advisory: a branch it cannot name must not block it.
+        # Not base_branch, which only the script validates for the payload.
+        if ! BRANCH=$("${{ github.action_path }}/detect-branch.sh"); then
+          echo "::warning::source branch detection failed, so the banner shows 'main'"
+          BRANCH=main
+        fi
         echo "base_branch=$BRANCH" >> "$GITHUB_OUTPUT"
     - name: Resolve release label and links
       id: release_text
@@ -134,7 +146,7 @@ runs:
             - type: section
               fields:
                 - type: mrkdwn
-                  text: "*Source Branch:*\n${{ inputs.base_branch || steps.detect_branch.outputs.base_branch || 'main' }}"
+                  text: "*Source Branch:*\n${{ steps.detect_branch.outputs.base_branch }}"
                 # Empty when neither state flag is set, which omits the element
                 # and preserves the banner shape for existing callers.
                 ${{ steps.release_text.outputs.label_field }}

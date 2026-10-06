@@ -115,12 +115,20 @@ direct invocation.
   It refuses a workflow with no `workflow_dispatch` trigger; one that declares
   no `triggered_by` input *under `workflow_dispatch`* while one is being passed
   (a declaration under a `workflow_call` sibling is for that workflow's callers,
-  not for `gh workflow run`); and one that declares any other input `required:
-  true` with no `default`, which the dispatch cannot fill and the API rejects
-  with *Required input not provided*. An empty-string `default` is not counted
-  as a default, since an empty value may itself read as not provided. It also
-  asks GitHub whether `release.yaml` is a registered, `active` workflow, since a
-  disabled one fails the dispatch whatever the file says. The tag is created
+  not for `gh workflow run`); one that declares a `triggered_by` or
+  `source_branch` input the cut passes with any type but `string`; and one that
+  declares any other input `required: true` with no `default`, which the
+  dispatch cannot fill and the API rejects with *Required input not provided*.
+  An empty-string `default` is not counted as a default, since an empty value
+  may itself read as not provided. It also asks GitHub whether `release.yaml`
+  is a registered, `active` workflow, since a disabled one fails the dispatch
+  whatever the file says. A line whose `release.yaml` declares `source_branch`
+  gets the branch the cut tagged in it, for `notify-release`'s `base_branch`;
+  a line without it is dispatched without one. A resumed rc on its release line
+  is dispatched without it, unless `release.yaml` requires it with no default:
+  the tag may have been cut from `main` before the line was branched, which the
+  cut cannot tell, so the notifier reads the branch from git history instead.
+  The tag is created
   *before* the dispatch and starts the repo's tag-push workflows, so a cut that
   cannot build is stopped before it makes one. The check is read-only, so a
   dry-run catches it too, which the dispatch itself cannot, because dry-run
@@ -156,7 +164,8 @@ direct invocation.
   repeated in the same mapping.
 - **Branch shape:** `source-branch` is validated as a branch name (letters,
   digits, `.`, `_`, `-`, `/`; no leading `-` or `.`, no leading or trailing `/`,
-  no path segment starting with `.`, no `..`) before anything reads it. Every consumer puts it in a `gh api` path,
+  no path segment starting with `.`, no `..`; not `HEAD`, another git pseudo-ref
+  such as `FETCH_HEAD`, or a `refs/` path) before anything reads it. Every consumer puts it in a `gh api` path,
   and gh treats `?` as the start of a query string, so `main?` compared as
   "not main" to the feature-branch guard while resolving to `main` at every
   endpoint, which would have put a `-next` tag on the default branch. A dot

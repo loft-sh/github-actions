@@ -166,14 +166,19 @@ is_feature_branch() {
 # default branch. An allowlist, since only branch-shaped values should reach a URL.
 # A path segment starting with `.` goes too: git refuses it in a ref name, and a
 # `main/.` that some hop normalizes to `main` is the same bypass as `main?`.
+# HEAD, git's other pseudo-refs (FETCH_HEAD, ORIG_HEAD, ...) and refs/ paths
+# are names git resolves to something other than a branch, so they go as well.
+# Listed by name: AHEAD or FIX_HEAD are ordinary branches.
 validate_branch() {
   local b="$1"
   if [[ "$b" =~ ^[A-Za-z0-9._/-]+$ ]] &&
-     [[ "$b" != -* && "$b" != .* && "$b" != /* && "$b" != */ && "$b" != *".."* && "$b" != *"/."* ]]; then
+     [[ "$b" != -* && "$b" != .* && "$b" != /* && "$b" != */ && "$b" != *".."* && "$b" != *"/."* ]] &&
+     [[ "$b" != refs/* &&
+        ! "$b" =~ ^(HEAD|FETCH_HEAD|ORIG_HEAD|MERGE_HEAD|CHERRY_PICK_HEAD|REVERT_HEAD|BISECT_HEAD|REBASE_HEAD|AUTO_MERGE)$ ]]; then
     return 0
   fi
   # Already flattened where it was read, so it cannot forge a second command.
-  echo "::error::source-branch '${b}' is not a valid branch name. Expected letters, digits and '.', '_', '-', '/' only, with no leading '-' or '.', no leading or trailing '/', no path segment starting with '.', and no '..'." >&2
+  echo "::error::source-branch '${b}' is not a valid branch name. Expected letters, digits and '.', '_', '-', '/' only, with no leading '-' or '.', no leading or trailing '/', no path segment starting with '.', no '..', and not HEAD, another pseudo-ref such as FETCH_HEAD, or a refs/ path." >&2
   return 1
 }
 

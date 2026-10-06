@@ -5,10 +5,14 @@ on:
     branches: [main]
     paths:
       - '.github/actions/release-notification/**'
+      - '.github/actions/release-lib/**'
+      - '.github/workflows/notify-release.yaml'
       - '.github/workflows/test-release-notification.yaml'
   pull_request:
     paths:
       - '.github/actions/release-notification/**'
+      - '.github/actions/release-lib/**'
+      - '.github/workflows/notify-release.yaml'
       - '.github/workflows/test-release-notification.yaml'
 
 permissions:
@@ -45,7 +49,7 @@ jobs:
           target_repo: example-org/private-product
           paired_repo: example-org/public-product
           product: smoke-test
-          base_branch: main
+          base_branch: release-9.9
           needs_promotion: 'true'
           promote_workflow: ship-stable.yaml
           webhook_url: unused-in-dry-run
@@ -55,8 +59,72 @@ jobs:
           LABEL_FIELD: ${{ steps.notification.outputs.label_field }}
           CHANGELOG_TEXT: ${{ steps.notification.outputs.changelog_text }}
           RELEASE_TEXT: ${{ steps.notification.outputs.release_text }}
+          BASE_BRANCH: ${{ steps.notification.outputs.base_branch }}
         run: |
+          # v9.9.9 is not a tag here, so the given branch is trusted unchecked.
+          # Not main, which is also the fallback, so a broken wiring shows.
+          [[ "$BASE_BRANCH" == release-9.9 ]]
           [[ "$LABEL_FIELD" == *'ship-stable.yaml|Promote it>'* ]]
           [[ "$CHANGELOG_TEXT" == *'example-org/private-product'* ]]
           [[ "$CHANGELOG_TEXT" == *'example-org/public-product'* ]]
           [[ "$RELEASE_TEXT" == Releases:* ]]
+      - uses: dcarbone/install-yq-action@4075b4dca348d74bd83f2bf82d30f25d7c54539b # v1.3.1
+        with:
+          # renovate: datasource=github-releases depName=mikefarah/yq
+          version: v4.53.6
+      - name: Check the notifier-shaped checkout still matches notify-release.yaml
+        run: |
+          # JSON with sorted keys and string values, so comments, key order
+          # and quoting in either file do not count as a difference.
+          shape='{"uses": .uses, "with": (.with | del(.repository, .ref, .path) | with_entries(.value |= tostring) | sort_keys(.))}'
+          want=$(yq -o=json ".jobs.notify_release.steps[] | select(.name == \"Checkout repository\") | $shape" .github/workflows/notify-release.yaml)
+          got=$(yq -o=json ".jobs.smoke.steps[] | select(.id == \"notifier_checkout\") | $shape" .github/workflows/test-release-notification.yaml)
+          [[ -n "$want" && -n "$got" ]]
+          diff <(echo "$want") <(echo "$got")
+          # path is left out above, since the copy needs its own, so the
+          # notifier's checkout is held to the workspace root here. It may
+          # also fail without failing the release.
+          step='.jobs.notify_release.steps[] | select(.name == "Checkout repository")'
+          [[ "$(yq "$step | .with.path" .github/workflows/notify-release.yaml)" == null ]]
+          [[ "$(yq "$step | .[\"continue-on-error\"]" .github/workflows/notify-release.yaml)" == true ]]
+      # The same checkout notify-release.yaml makes, so detection is proven
+      # against treeless, sparse history. v1.0.0 is on main here.
+      - id: notifier_checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: v1.0.0
+          path: target
+          fetch-depth: 0
+          fetch-tags: true
+          filter: tree:0
+          sparse-checkout: .github
+          persist-credentials: false
+      - name: Detect the branch in a notifier-shaped checkout
+        working-directory: target
+        env:
+          # This repo is public, so git would quietly fetch missing trees and
+          # blobs without credentials. Private targets cannot.
+          GIT_NO_LAZY_FETCH: '1'
+        run: |
+          # main is also the fallback, so the reason proves the tag was read.
+          # Kept on failure too, so the log below shows why.
+          LOG=$(RELEASE_VERSION=v1.0.0 "$GITHUB_WORKSPACE/.github/actions/release-notification/detect-branch.sh" 2>&1) || true
+          echo "$LOG"
+          [[ "$LOG" == *"Detected source branch: main (contains the tag)"* ]]
+      # Last, since it breaks the script for the rest of the job.
+      - name: Break branch detection
+        run: chmod -x .github/actions/release-notification/detect-branch.sh
+      - name: Exercise the detection fallback
+        id: fallback
+        uses: ./.github/actions/release-notification
+        with:
+          version: v9.9.9
+          target_repo: example-org/private-product
+          product: smoke-test
+          base_branch: release-9.9
+          webhook_url: unused-in-dry-run
+          dry-run: 'true'
+      - name: Verify the banner falls back to main
+        env:
+          BASE_BRANCH: ${{ steps.fallback.outputs.base_branch }}
+        run: '[[ "$BASE_BRANCH" == main ]]'
