@@ -273,6 +273,7 @@ fi
 
 # The app opens the check only when the workflow that will finish it can close
 # it too: GitHub lets only the identity that opened a check-run complete it.
+# TODO(DEVOPS-1629): drop this check once no caller can dispatch a finish without the app key.
 check_token="${GH_TOKEN:-}"
 if [[ -n "${INPUT_APP_TOKEN:-}" ]]; then
   finish_workflow="${INPUT_FINISH_WORKFLOW:-e2e-ginkgo.yaml}"
