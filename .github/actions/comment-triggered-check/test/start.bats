@@ -484,3 +484,31 @@ created() { calls_matching "POST"; }
   [ "$(kv reason)" = "not-a-pull-request" ]
   [ "$(call_count)" -eq 0 ]
 }
+
+# --- check token -------------------------------------------------------------
+
+@test "a check token opens the check-run while the pull request read keeps the job token" {
+  export INPUT_CHECK_TOKEN="app"
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv check-run-id)" = "4242" ]
+  [ "$(tokens_for "POST")" = "app" ]
+  [ "$(tokens_for "/pulls/")" = "x" ]
+}
+
+@test "a fork permission lookup keeps the job token when a check token is set" {
+  export INPUT_CHECK_TOKEN="app"
+  export INPUT_ALLOW_FORKS="true"
+  export GH_MOCK_PR_JSON='{"head":{"sha":"abc123","ref":"feature/x","repo":{"full_name":"someone/demo"}},"base":{"ref":"main"},"state":"open"}'
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv is-fork)" = "true" ]
+  [ "$(tokens_for "/permission")" = "x" ]
+  [ "$(tokens_for "POST")" = "app" ]
+}
+
+@test "without a check token the check-run is opened with the job token" {
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(tokens_for "POST")" = "x" ]
+}

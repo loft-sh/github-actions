@@ -360,3 +360,28 @@ creates() { calls_matching "method POST repos/loft-sh/demo/check-runs"; }
   run bash "$SCRIPT"
   [ "$(creates)" -eq 1 ]
 }
+
+# --- check token -------------------------------------------------------------
+
+@test "a check token completes, reads and lists the check-run" {
+  export INPUT_CHECK_TOKEN="app"
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(patches)" -eq 1 ]
+  [ "$(tokens_for "")" = "app" ]
+}
+
+@test "a check token also republishes a hidden check-run" {
+  export INPUT_CHECK_TOKEN="app"
+  export GH_MOCK_LATEST_IDS="99"
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(creates)" -eq 1 ]
+  [ "$(tokens_for "POST")" = "app" ]
+}
+
+@test "without a check token every call uses the job token" {
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(tokens_for "")" = "x" ]
+}

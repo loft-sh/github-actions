@@ -43,3 +43,10 @@ START="$BATS_TEST_DIRNAME/../src/start.sh"
   grep -Fq 'is-fork:' "$ACTION"
   grep -Fq 'value: ${{ steps.start.outputs.is-fork }}' "$ACTION"
 }
+
+@test "the check token is optional and reaches both modes" {
+  run grep -A3 '^  check-token:' "$ACTION"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"default: ''"* ]]
+  [ "$(grep -Fc 'INPUT_CHECK_TOKEN: ${{ inputs.check-token }}' "$ACTION")" -eq 2 ]
+}

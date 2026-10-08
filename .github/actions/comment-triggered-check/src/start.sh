@@ -28,6 +28,7 @@
 #   INPUT_RUN_ID              github.run_id, used for the details link
 #   INPUT_SERVER_URL          github.server_url
 #   GH_TOKEN                  token for gh
+#   INPUT_CHECK_TOKEN         optional token for the check-run create only
 set -euo pipefail
 
 # shellcheck source=.github/actions/comment-triggered-check/src/lib.sh
@@ -101,6 +102,12 @@ gh_json() {
   local body
   body="$(gh api "$@" 2>/dev/null)" || return 1
   printf '%s' "$body"
+}
+
+# check_json <path> — gh_json as the check token, so a GitHub App can own the
+# check-run while the pull request reads keep the job token.
+check_json() {
+  GH_TOKEN="${INPUT_CHECK_TOKEN:-${GH_TOKEN:-}}" gh_json "$@"
 }
 
 # --- 1. Is this a command at all? -------------------------------------------
@@ -268,7 +275,7 @@ if [[ -n "$run_id" ]]; then
   summary="${summary}"$'\n\n'"[View the run](${server_url}/${repo}/actions/runs/${run_id})"
 fi
 
-if ! created="$(gh_json --method POST "repos/${repo}/check-runs" \
+if ! created="$(check_json --method POST "repos/${repo}/check-runs" \
   -f "name=${name}" \
   -f "head_sha=${head_sha}" \
   -f "status=in_progress" \

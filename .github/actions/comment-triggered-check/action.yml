@@ -91,9 +91,13 @@ inputs:
     required: false
     default: ''
   github-token:
-    description: 'Token for gh. The calling job must grant checks: write and pull-requests: read.'
+    description: 'Token for gh. The calling job must grant pull-requests: read, and checks: write unless check-token is set.'
     required: false
     default: ${{ github.token }}
+  check-token:
+    description: 'Optional token for the check-run calls only, e.g. a GitHub App token with checks: write. A check-run created this way gets its own check suite instead of joining another workflow''s. Pass the same identity to start and finish: only the identity that opened a check-run can complete it. Empty uses github-token.'
+    required: false
+    default: ''
 outputs:
   matched:
     description: '"true" when the comment opened with the command word.'
@@ -177,6 +181,7 @@ runs:
         INPUT_TARGET_NAME: ${{ inputs.target-name }}
         INPUT_RUN_ID: ${{ inputs.run-id }}
         INPUT_SERVER_URL: ${{ inputs.server-url }}
+        INPUT_CHECK_TOKEN: ${{ inputs.check-token }}
         GH_TOKEN: ${{ inputs.github-token }}
       run: ${{ github.action_path }}/src/start.sh
 
@@ -192,6 +197,7 @@ runs:
         INPUT_SUITE_RESULT: ${{ inputs.suite-result }}
         INPUT_SUMMARY: ${{ inputs.summary }}
         INPUT_DETAILS_URL: ${{ inputs.details-url }}
+        INPUT_CHECK_TOKEN: ${{ inputs.check-token }}
         GH_TOKEN: ${{ inputs.github-token }}
       run: ${{ github.action_path }}/src/finish.sh
 branding:
