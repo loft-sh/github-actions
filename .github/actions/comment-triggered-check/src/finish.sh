@@ -14,6 +14,8 @@
 #   INPUT_SUMMARY            markdown for the check-run body
 #   INPUT_DETAILS_URL        where the check-run should link
 #   GH_TOKEN                 token for gh
+#   INPUT_APP_TOKEN          optional GitHub App token, used when the app
+#                            opened the check-run
 #
 # Output: conclusion — what was published, so the caller can reuse it in a
 # comment without recomputing the matrix.
@@ -39,6 +41,23 @@ if [[ -z "$check_run_id" ]]; then
   emit "conclusion" ""
   exit 0
 fi
+
+# GitHub lets only the identity that opened a check-run complete it. A check
+# opened with a job token belongs to github-actions; anything else is the app.
+# An unreadable owner tries the app, which is the only token passed for it.
+check_token="${GH_TOKEN:-}"
+if [[ -n "${INPUT_APP_TOKEN:-}" ]]; then
+  owner="$(gh api "repos/${repo}/check-runs/${check_run_id}" 2>/dev/null |
+    jq -r '.app.slug // ""' 2>/dev/null)" || owner=""
+  if [[ "$owner" != "github-actions" ]]; then
+    check_token="$INPUT_APP_TOKEN"
+  fi
+fi
+
+# check_api <args> — gh api as the identity that opened the check-run.
+check_api() {
+  GH_TOKEN="$check_token" gh api "$@"
+}
 
 conclusion="$(resolve_conclusion "$report" "$build_result" "$suite_result")"
 
@@ -79,8 +98,10 @@ fi
 attempts="${INPUT_PATCH_ATTEMPTS:-3}"
 delay="${INPUT_PATCH_DELAY_SECONDS:-2}"
 published=0
+patch_error=""
 for ((attempt = 1; attempt <= attempts; attempt++)); do
-  if gh api "${args[@]}" >/dev/null 2>&1; then
+  # Keep stderr: a token that did not open the check-run is refused every time.
+  if patch_error="$(check_api "${args[@]}" 2>&1 >/dev/null)"; then
     published=1
     break
   fi
@@ -100,7 +121,7 @@ if [[ "$published" -eq 0 ]]; then
   # only this job, and the check-run id it needs comes from a successful job
   # whose outputs are preserved, so the same check is closed. Re-running ALL
   # jobs would run start again and open a second check-run for the same filter.
-  echo "::error::could not complete check-run ${check_run_id} after ${attempts} attempts; it is stuck in progress and will block anything waiting on this commit's checks. Use \"Re-run failed jobs\" to retry just this job, not \"Re-run all jobs\" which would open a second check-run, or close the check by hand."
+  echo "::error::could not complete check-run ${check_run_id} after ${attempts} attempts; it is stuck in progress and will block anything waiting on this commit's checks. Use \"Re-run failed jobs\" to retry just this job, not \"Re-run all jobs\" which would open a second check-run, or close the check by hand. Last API error: ${patch_error//$'\n'/ }"
   exit 1
 fi
 
@@ -110,7 +131,7 @@ fi
 republish_if_hidden() {
   local detail name head_sha app_id create_args
 
-  detail="$(gh api "repos/${repo}/check-runs/${check_run_id}" 2>/dev/null)" || return 0
+  detail="$(check_api "repos/${repo}/check-runs/${check_run_id}" 2>/dev/null)" || return 0
   printf '%s' "$detail" | jq -e '
     type == "object"
     and (((.name // "") | type) == "string")
@@ -131,7 +152,7 @@ republish_if_hidden() {
   # exit, and republishing on the last two would create a duplicate without ever
   # establishing the original is hidden.
   local listing ids
-  if ! listing="$(gh api "repos/${repo}/commits/${head_sha}/check-runs?per_page=100" 2>/dev/null)"; then
+  if ! listing="$(check_api "repos/${repo}/commits/${head_sha}/check-runs?per_page=100" 2>/dev/null)"; then
     echo "::warning::could not list the check-runs on ${head_sha}; leaving check-run ${check_run_id} as published"
     return 0
   fi
@@ -172,7 +193,7 @@ republish_if_hidden() {
     -f "output[summary]=${summary}")
   [[ -n "$details_url" ]] && create_args+=(-f "details_url=${details_url}")
 
-  gh api "${create_args[@]}" >/dev/null 2>&1 ||
+  check_api "${create_args[@]}" >/dev/null 2>&1 ||
     echo "::warning::could not republish check-run ${check_run_id}"
 }
 

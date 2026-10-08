@@ -16,11 +16,14 @@
 #   GH_MOCK_CREATE_FAIL  non-empty → the create call fails
 #   GH_MOCK_PATCH_FAIL   non-empty → a PATCH fails
 #   GH_MOCK_CALLS        path; each invocation appends one line of args
+#   GH_MOCK_TOKENS       path; each invocation appends its GH_TOKEN and args
 #   GH_MOCK_CHECKRUN_JSON  body for GET .../check-runs/<id>
 #   GH_MOCK_CHECKRUN_FAIL  non-empty → that lookup fails
 #   GH_MOCK_LATEST_IDS     space-separated ids the commit listing reports as displayed
 #   GH_MOCK_LIST_FAIL      non-empty → the commit check-runs listing request fails
 #   GH_MOCK_LIST_JSON      raw body for that listing, for malformed-response cases
+#   GH_MOCK_WORKFLOW       YAML served by .../contents/... (base64, like the API)
+#   GH_MOCK_CONTENTS_FAIL  non-empty → the contents read fails
 
 setup_gh_mock() {
   MOCK_DIR="$(mktemp -d)"
@@ -36,6 +39,7 @@ set -o pipefail
 # than recorded. A check-run summary is markdown and contains them; without this
 # a single call is counted as three.
 [ -n "${GH_MOCK_CALLS:-}" ] && printf '%s\n' "${*//$'\n'/\\n}" >> "$GH_MOCK_CALLS"
+[ -n "${GH_MOCK_TOKENS:-}" ] && printf '%s %s\n' "${GH_TOKEN:-<unset>}" "${*//$'\n'/\\n}" >> "$GH_MOCK_TOKENS"
 
 all="$*"
 
@@ -48,6 +52,10 @@ default_checkrun='{"id":4242,"name":"e2e-pro: snapshots","head_sha":"abc123","ap
 default_permission='{"permission":"write"}'
 
 case "$all" in
+  *"/contents/"*)
+    [ -n "${GH_MOCK_CONTENTS_FAIL:-}" ] && { echo "mock: contents failed" >&2; exit 1; }
+    printf '{"content":"%s"}\n' "$(printf '%s' "${GH_MOCK_WORKFLOW:-}" | base64 | tr -d '\n')"
+    ;;
   *"--method POST"*"check-runs"*)
     [ -n "${GH_MOCK_CREATE_FAIL:-}" ] && { echo "mock: create failed" >&2; exit 1; }
     printf '%s\n' "${GH_MOCK_CREATE_JSON:-$default_create}"
@@ -87,6 +95,13 @@ EOF
 
   export GH_MOCK_CALLS="$MOCK_DIR/calls.log"
   : > "$GH_MOCK_CALLS"
+  export GH_MOCK_TOKENS="$MOCK_DIR/tokens.log"
+  : > "$GH_MOCK_TOKENS"
+}
+
+# tokens_for <pattern> — the distinct GH_TOKEN values of matching calls.
+tokens_for() {
+  grep -- "$1" "$GH_MOCK_TOKENS" | cut -d' ' -f1 | sort -u
 }
 
 teardown_gh_mock() {

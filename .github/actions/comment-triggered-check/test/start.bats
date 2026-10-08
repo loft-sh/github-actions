@@ -484,3 +484,61 @@ created() { calls_matching "POST"; }
   [ "$(kv reason)" = "not-a-pull-request" ]
   [ "$(call_count)" -eq 0 ]
 }
+
+# --- GitHub App identity -----------------------------------------------------
+
+app_finish_workflow() {
+  printf '%s\n' 'jobs:' '  finish:' '    steps:' \
+    '      - uses: loft-sh/github-actions/.github/actions/comment-triggered-check@comment-triggered-check/v1' \
+    '        with:' '          mode: finish' '          app-client-id: i' '          app-private-key: k'
+}
+
+@test "the app opens the check when the dispatched workflow finishes with it" {
+  export INPUT_APP_TOKEN="app"
+  GH_MOCK_WORKFLOW="$(app_finish_workflow)"; export GH_MOCK_WORKFLOW
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv check-run-id)" = "4242" ]
+  [ "$(tokens_for "POST")" = "app" ]
+  [ "$(tokens_for "/pulls/")" = "x" ]
+  [ "$(tokens_for "/contents/")" = "x" ]
+  [ "$(calls_matching "contents/.github/workflows/e2e-ginkgo.yaml.*ref=feature/x")" -eq 1 ]
+}
+
+@test "a workflow that finishes without the app keeps the job token" {
+  export INPUT_APP_TOKEN="app"
+  export GH_MOCK_WORKFLOW=$'jobs:\n  finish:\n    steps:\n      - uses: x/comment-triggered-check@v1\n        with:\n          mode: finish\n'
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv should-run)" = "true" ]
+  [ "$(tokens_for "POST")" = "x" ]
+}
+
+@test "a fork is checked against the target branch's workflow" {
+  export INPUT_APP_TOKEN="app"
+  export INPUT_ALLOW_FORKS="true"
+  export INPUT_FINISH_WORKFLOW="e2e.yaml"
+  export GH_MOCK_PR_JSON='{"head":{"sha":"abc123","ref":"feature/x","repo":{"full_name":"someone/demo"}},"base":{"ref":"release-1"},"state":"open"}'
+  GH_MOCK_WORKFLOW="$(app_finish_workflow)"; export GH_MOCK_WORKFLOW
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(calls_matching "contents/.github/workflows/e2e.yaml.*ref=release-1")" -eq 1 ]
+  [ "$(tokens_for "/permission")" = "x" ]
+  [ "$(tokens_for "POST")" = "app" ]
+}
+
+@test "an unreadable workflow keeps the job token and still runs" {
+  export INPUT_APP_TOKEN="app"
+  export GH_MOCK_CONTENTS_FAIL=1
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv should-run)" = "true" ]
+  [ "$(tokens_for "POST")" = "x" ]
+}
+
+@test "without an app token nothing extra is read and the job token opens the check" {
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(calls_matching "/contents/")" -eq 0 ]
+  [ "$(tokens_for "POST")" = "x" ]
+}

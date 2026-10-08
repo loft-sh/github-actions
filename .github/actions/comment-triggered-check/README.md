@@ -25,6 +25,30 @@ branch rather than the commit, which a caller needs when it hands the real work
 to a separate, non-privileged run: `gh workflow run --ref` takes a branch or a
 tag and never a SHA.
 
+## Giving the check its own group
+
+A check-run created with `github-token` joins the oldest `github-actions` check
+suite on the commit, so the pull request lists it under an unrelated workflow,
+for example "CodeQL / e2e-platform: …". The API cannot choose the suite. A
+check-run created by a GitHub App gets that app's own suite and is listed under
+its own name.
+
+Pass `app-client-id` and `app-private-key` for an app with `checks: write`, to
+both `start` and `finish`. The action mints the token itself and uses it for the
+check-run calls only; the pull request and permission reads keep `github-token`.
+
+Only the identity that opened a check-run can complete it, so the action
+decides per command:
+
+- `start` reads `finish-workflow` (default `e2e-ginkgo.yaml`) on the ref the
+  caller will dispatch: the pull request's branch, or the target branch for a
+  fork. It opens the check with the app only when that file passes
+  both app inputs to `finish`. Older branches keep `github-token`.
+- `finish` reads the check-run's owner and completes it with the matching
+  token.
+
+Without the app inputs, or when the token cannot be minted, nothing changes.
+
 ## Handing the work to a non-privileged run
 
 This section describes same-repository pull requests (`is-fork: "false"`). A
@@ -204,7 +228,9 @@ Every value in `allowed-targets` needs a matching invocation.
 
 The calling job needs `checks: write` to create and complete the check-run, and
 `pull-requests: read` to resolve the head SHA and base ref. Fork mode also reads
-the commenter's repository permission through repository metadata.
+the commenter's repository permission through repository metadata. With the app
+inputs, `start` also reads `finish-workflow`, which needs `contents: read`;
+without it the check opens with `github-token`.
 
 ## Inputs
 
@@ -214,6 +240,8 @@ the commenter's repository permission through repository metadata.
 |--------------------|--------|----------|------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 |    allow-forks     | string |  false   |          `"false"`           |                                       start mode. Allow fork pull requests <br>only when the commenter has write, <br>maintain, or admin repository permission. Disabled <br>by default.                                         |
 |  allowed-targets   | string |  false   |         `"pro oss"`          |                                             start mode. Whitespace-separated target values accepted <br>when target-name is set. Each value <br>needs a matching action invocation.                                              |
+|   app-client-id    | string |  false   |                              |             Optional client ID of a GitHub <br>App with checks: write. With app-private-key, <br>the check-run gets its own check <br>suite. Pass the same pair to <br>start and finish. Empty keeps github-token.               |
+|  app-private-key   | string |  false   |                              |                                                                                             Optional private key for app-client-id.                                                                                              |
 | author-association | string |  false   |                              | start mode. How the commenter relates <br>to the repository. Pass the github.event.comment.author_association <br>context. OWNER, MEMBER and COLLABORATOR may <br>run the command; anything else, including <br>empty, may not.  |
 |    build-result    | string |  false   |                              |                                                                            finish mode. Result of the build <br>job. Pass the matching needs result.                                                                             |
 | check-name-prefix  | string |  false   |           `"e2e"`            |                                                            start mode. Prefix for the check-run <br>name; the filter and optional target <br>and focus are appended.                                                             |
@@ -222,6 +250,7 @@ the commenter's repository permission through repository metadata.
 |   comment-author   | string |  false   |                              |                                                                    start mode. Login of the commenter. <br>Pass the github.event.comment.user.login context.                                                                     |
 |    comment-body    | string |  false   |                              |                                                                          start mode. The comment text. Pass <br>the github.event.comment.body context.                                                                           |
 |    details-url     | string |  false   |                              |                                                                                    finish mode. Link target for the <br>completed check-run.                                                                                     |
+|  finish-workflow   | string |  false   |     `"e2e-ginkgo.yaml"`      |                                               start mode. Workflow file that runs <br>finish. The app opens the check <br>only if that file passes both <br>app inputs to finish.                                                |
 |    github-token    | string |  false   |   `"${{ github.token }}"`    |                                                                     Token for gh. The calling job <br>must grant checks: write and pull-requests: <br>read.                                                                      |
 |        mode        | string |   true   |                              |                                                                                                   Either "start" or "finish".                                                                                                    |
 |    parse-focus     | string |  false   |          `"false"`           |                                        start mode. Set to true to <br>split an optional trailing --focus expression <br>from the filter. Disabled by default <br>for existing consumers.                                         |
