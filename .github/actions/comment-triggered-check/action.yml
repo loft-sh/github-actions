@@ -103,7 +103,7 @@ inputs:
     required: false
     default: ''
   finish-workflow:
-    description: 'start mode. Workflow file that runs finish for this command. The app opens the check only when that file, on the ref the caller dispatches, passes app-private-key to finish.'
+    description: 'start mode. Workflow file that runs finish. The app opens the check only if that file passes both app inputs to finish.'
     required: false
     default: 'e2e-ginkgo.yaml'
 outputs:

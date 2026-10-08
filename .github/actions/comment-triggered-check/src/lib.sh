@@ -423,14 +423,16 @@ dispatch_ref_for() {
 }
 
 # finishes_with_app <workflow-yaml> — true when a finish step of this action in
-# the workflow receives app-private-key. Only then can that workflow complete a
-# check-run the app opened. Unparseable YAML or no yq is false.
+# the workflow receives both app credentials, the pair the mint step needs. Only
+# then can that workflow complete a check-run the app opened. Unparseable YAML or
+# no yq is false.
 finishes_with_app() {
   command -v yq >/dev/null 2>&1 || return 1
   yq -e '[.. | select(tag == "!!map" and has("uses"))
           | select(.uses | test("comment-triggered-check"))
           | select(.with.mode == "finish")
-          | select(.with | has("app-private-key"))] | length > 0' \
+          | select((.with["app-client-id"] // "") != "" and (.with["app-private-key"] // "") != "")]
+          | length > 0' \
     <<< "${1-}" >/dev/null 2>&1
 }
 

@@ -620,7 +620,7 @@ setup() {
 }
 
 @test "finishes_with_app needs a finish step that receives the app key" {
-  finishes_with_app $'jobs:\n  f:\n    steps:\n      - uses: o/r/.github/actions/comment-triggered-check@v1\n        with:\n          mode: finish\n          app-private-key: k\n'
+  finishes_with_app $'jobs:\n  f:\n    steps:\n      - uses: o/r/.github/actions/comment-triggered-check@v1\n        with:\n          mode: finish\n          app-client-id: i\n          app-private-key: k\n'
   run finishes_with_app $'jobs:\n  f:\n    steps:\n      - uses: o/r/.github/actions/comment-triggered-check@v1\n        with:\n          mode: start\n          app-private-key: k\n'
   [ "$status" -ne 0 ]
   run finishes_with_app $'jobs:\n  f:\n    steps:\n      - uses: o/r/.github/actions/comment-triggered-check@v1\n        with:\n          mode: finish\n'
@@ -628,5 +628,18 @@ setup() {
   run finishes_with_app 'on: ['
   [ "$status" -ne 0 ]
   run finishes_with_app ''
+  [ "$status" -ne 0 ]
+}
+
+@test "finishes_with_app needs both credentials, each non-empty" {
+  step() { printf 'jobs:\n  f:\n    steps:\n      - uses: o/r/.github/actions/comment-triggered-check@v1\n        with:\n          mode: finish\n%s' "$1"; }
+  finishes_with_app "$(step $'          app-client-id: ${{ vars.ID }}\n          app-private-key: ${{ secrets.KEY }}\n')"
+  run finishes_with_app "$(step $'          app-private-key: ${{ secrets.KEY }}\n')"
+  [ "$status" -ne 0 ]
+  run finishes_with_app "$(step $'          app-client-id: ${{ vars.ID }}\n')"
+  [ "$status" -ne 0 ]
+  run finishes_with_app "$(step $'          app-client-id: \'\'\n          app-private-key: ${{ secrets.KEY }}\n')"
+  [ "$status" -ne 0 ]
+  run finishes_with_app "$(step $'          app-client-id: ${{ vars.ID }}\n          app-private-key: ""\n')"
   [ "$status" -ne 0 ]
 }

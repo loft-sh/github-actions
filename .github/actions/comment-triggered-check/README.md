@@ -43,7 +43,7 @@ decides per command:
 - `start` reads `finish-workflow` (default `e2e-ginkgo.yaml`) on the ref the
   caller will dispatch: the pull request's branch, or the target branch for a
   fork. It opens the check with the app only when that file passes
-  `app-private-key` to `finish`. Older branches keep `github-token`.
+  both app inputs to `finish`. Older branches keep `github-token`.
 - `finish` reads the check-run's owner and completes it with the matching
   token.
 
@@ -250,7 +250,7 @@ without it the check opens with `github-token`.
 |   comment-author   | string |  false   |                              |                                                                    start mode. Login of the commenter. <br>Pass the github.event.comment.user.login context.                                                                     |
 |    comment-body    | string |  false   |                              |                                                                          start mode. The comment text. Pass <br>the github.event.comment.body context.                                                                           |
 |    details-url     | string |  false   |                              |                                                                                    finish mode. Link target for the <br>completed check-run.                                                                                     |
-|  finish-workflow   | string |  false   |     `"e2e-ginkgo.yaml"`      |                  start mode. Workflow file that runs <br>finish for this command. The app <br>opens the check only when that <br>file, on the ref the caller <br>dispatches, passes app-private-key to finish.                   |
+|  finish-workflow   | string |  false   |     `"e2e-ginkgo.yaml"`      |                                               start mode. Workflow file that runs <br>finish. The app opens the check <br>only if that file passes both <br>app inputs to finish.                                                |
 |    github-token    | string |  false   |   `"${{ github.token }}"`    |                                                                     Token for gh. The calling job <br>must grant checks: write and pull-requests: <br>read.                                                                      |
 |        mode        | string |   true   |                              |                                                                                                   Either "start" or "finish".                                                                                                    |
 |    parse-focus     | string |  false   |          `"false"`           |                                        start mode. Set to true to <br>split an optional trailing --focus expression <br>from the filter. Disabled by default <br>for existing consumers.                                         |

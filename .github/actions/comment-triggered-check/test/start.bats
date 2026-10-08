@@ -490,7 +490,7 @@ created() { calls_matching "POST"; }
 app_finish_workflow() {
   printf '%s\n' 'jobs:' '  finish:' '    steps:' \
     '      - uses: loft-sh/github-actions/.github/actions/comment-triggered-check@comment-triggered-check/v1' \
-    '        with:' '          mode: finish' '          app-private-key: k'
+    '        with:' '          mode: finish' '          app-client-id: i' '          app-private-key: k'
 }
 
 @test "the app opens the check when the dispatched workflow finishes with it" {
