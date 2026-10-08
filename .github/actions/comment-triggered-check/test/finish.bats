@@ -131,6 +131,14 @@ patches() { calls_matching "PATCH"; }
   [[ "$output" == *"stuck in progress"* ]]
 }
 
+@test "the error carries the API's reason from the last attempt" {
+  export GH_MOCK_PATCH_FAIL=1
+  export INPUT_PATCH_ATTEMPTS="1"
+  run bash "$SCRIPT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"::error::"*"mock: patch failed"* ]]
+}
+
 @test "the error names a recovery path rather than a removed mechanism" {
   export GH_MOCK_PATCH_FAIL=1
   export INPUT_PATCH_ATTEMPTS="1"

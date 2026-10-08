@@ -87,8 +87,10 @@ fi
 attempts="${INPUT_PATCH_ATTEMPTS:-3}"
 delay="${INPUT_PATCH_DELAY_SECONDS:-2}"
 published=0
+patch_error=""
 for ((attempt = 1; attempt <= attempts; attempt++)); do
-  if check_api "${args[@]}" >/dev/null 2>&1; then
+  # Keep stderr: a token that did not open the check-run is refused every time.
+  if patch_error="$(check_api "${args[@]}" 2>&1 >/dev/null)"; then
     published=1
     break
   fi
@@ -108,7 +110,7 @@ if [[ "$published" -eq 0 ]]; then
   # only this job, and the check-run id it needs comes from a successful job
   # whose outputs are preserved, so the same check is closed. Re-running ALL
   # jobs would run start again and open a second check-run for the same filter.
-  echo "::error::could not complete check-run ${check_run_id} after ${attempts} attempts; it is stuck in progress and will block anything waiting on this commit's checks. Use \"Re-run failed jobs\" to retry just this job, not \"Re-run all jobs\" which would open a second check-run, or close the check by hand."
+  echo "::error::could not complete check-run ${check_run_id} after ${attempts} attempts; it is stuck in progress and will block anything waiting on this commit's checks. Use \"Re-run failed jobs\" to retry just this job, not \"Re-run all jobs\" which would open a second check-run, or close the check by hand. Last API error: ${patch_error//$'\n'/ }"
   exit 1
 fi
 

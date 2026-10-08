@@ -36,11 +36,10 @@ its own name.
 Set `check-token` to a token for an app with `checks: write`. It is used for the
 check-run calls only; the pull request and permission reads keep `github-token`.
 
-Only the identity that opened a check-run can complete it. Pass the same
-identity to `finish` that `start` used. A caller whose `finish` runs from the
-pull request's branch must fall back to `github-token` when that branch's
-workflow does not pass `check-token`, or older branches leave the check stuck
-in progress.
+Only the identity that opened a check-run can complete it, so `finish` must
+receive the same identity `start` used. When `finish` runs from a branch whose
+workflow may not pass `check-token`, `start` must not use it either, or the
+check stays in progress.
 
 ## Handing the work to a non-privileged run
 
