@@ -91,13 +91,21 @@ inputs:
     required: false
     default: ''
   github-token:
-    description: 'Token for gh. The calling job must grant pull-requests: read, and checks: write unless check-token is set.'
+    description: 'Token for gh. The calling job must grant checks: write and pull-requests: read.'
     required: false
     default: ${{ github.token }}
-  check-token:
-    description: 'Optional token for check-run calls, e.g. a GitHub App token with checks: write, so the check gets its own suite. Use the same identity in start and finish. Empty uses github-token.'
+  app-client-id:
+    description: 'Optional client ID of a GitHub App with checks: write. With app-private-key, the check-run gets its own check suite. Pass the same pair to start and finish. Empty keeps github-token.'
     required: false
     default: ''
+  app-private-key:
+    description: 'Optional private key for app-client-id.'
+    required: false
+    default: ''
+  finish-workflow:
+    description: 'start mode. Workflow file that runs finish for this command. The app opens the check only when that file, on the ref the caller dispatches, passes app-private-key to finish.'
+    required: false
+    default: 'e2e-ginkgo.yaml'
 outputs:
   matched:
     description: '"true" when the comment opened with the command word.'
@@ -162,6 +170,18 @@ runs:
         echo "::error::mode must be 'start' or 'finish', got '${INPUT_MODE}'"
         exit 1
 
+    # Only the identity that opened a check-run can complete it; start and
+    # finish decide whether to use this token.
+    - name: Mint app token
+      id: app-token
+      if: inputs.app-client-id != '' && inputs.app-private-key != ''
+      continue-on-error: true
+      uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+      with:
+        client-id: ${{ inputs.app-client-id }}
+        private-key: ${{ inputs.app-private-key }}
+        permission-checks: write
+
     - name: Start
       id: start
       if: inputs.mode == 'start'
@@ -181,7 +201,8 @@ runs:
         INPUT_TARGET_NAME: ${{ inputs.target-name }}
         INPUT_RUN_ID: ${{ inputs.run-id }}
         INPUT_SERVER_URL: ${{ inputs.server-url }}
-        INPUT_CHECK_TOKEN: ${{ inputs.check-token }}
+        INPUT_APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        INPUT_FINISH_WORKFLOW: ${{ inputs.finish-workflow }}
         GH_TOKEN: ${{ inputs.github-token }}
       run: ${{ github.action_path }}/src/start.sh
 
@@ -197,7 +218,7 @@ runs:
         INPUT_SUITE_RESULT: ${{ inputs.suite-result }}
         INPUT_SUMMARY: ${{ inputs.summary }}
         INPUT_DETAILS_URL: ${{ inputs.details-url }}
-        INPUT_CHECK_TOKEN: ${{ inputs.check-token }}
+        INPUT_APP_TOKEN: ${{ steps.app-token.outputs.token }}
         GH_TOKEN: ${{ inputs.github-token }}
       run: ${{ github.action_path }}/src/finish.sh
 branding:

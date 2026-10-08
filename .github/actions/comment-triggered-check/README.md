@@ -33,13 +33,21 @@ for example "CodeQL / e2e-platform: …". The API cannot choose the suite. A
 check-run created by a GitHub App gets that app's own suite and is listed under
 its own name.
 
-Set `check-token` to a token for an app with `checks: write`. It is used for the
+Pass `app-client-id` and `app-private-key` for an app with `checks: write`, to
+both `start` and `finish`. The action mints the token itself and uses it for the
 check-run calls only; the pull request and permission reads keep `github-token`.
 
-Only the identity that opened a check-run can complete it, so `finish` must
-receive the same identity `start` used. When `finish` runs from a branch whose
-workflow may not pass `check-token`, `start` must not use it either, or the
-check stays in progress.
+Only the identity that opened a check-run can complete it, so the action
+decides per command:
+
+- `start` reads `finish-workflow` (default `e2e-ginkgo.yaml`) on the ref the
+  caller will dispatch: the pull request's branch, or the target branch for a
+  fork. It opens the check with the app only when that file passes
+  `app-private-key` to `finish`. Older branches keep `github-token`.
+- `finish` reads the check-run's owner and completes it with the matching
+  token.
+
+Without the app inputs, or when the token cannot be minted, nothing changes.
 
 ## Handing the work to a non-privileged run
 
@@ -219,9 +227,10 @@ Every value in `allowed-targets` needs a matching invocation.
 ## Permissions
 
 The calling job needs `checks: write` to create and complete the check-run, and
-`pull-requests: read` to resolve the head SHA and base ref. With `check-token`
-set, the app needs `checks: write` instead and the job no longer does. Fork mode also reads
-the commenter's repository permission through repository metadata.
+`pull-requests: read` to resolve the head SHA and base ref. Fork mode also reads
+the commenter's repository permission through repository metadata. With the app
+inputs, `start` also reads `finish-workflow`, which needs `contents: read`;
+without it the check opens with `github-token`.
 
 ## Inputs
 
@@ -231,16 +240,18 @@ the commenter's repository permission through repository metadata.
 |--------------------|--------|----------|------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 |    allow-forks     | string |  false   |          `"false"`           |                                       start mode. Allow fork pull requests <br>only when the commenter has write, <br>maintain, or admin repository permission. Disabled <br>by default.                                         |
 |  allowed-targets   | string |  false   |         `"pro oss"`          |                                             start mode. Whitespace-separated target values accepted <br>when target-name is set. Each value <br>needs a matching action invocation.                                              |
+|   app-client-id    | string |  false   |                              |             Optional client ID of a GitHub <br>App with checks: write. With app-private-key, <br>the check-run gets its own check <br>suite. Pass the same pair to <br>start and finish. Empty keeps github-token.               |
+|  app-private-key   | string |  false   |                              |                                                                                             Optional private key for app-client-id.                                                                                              |
 | author-association | string |  false   |                              | start mode. How the commenter relates <br>to the repository. Pass the github.event.comment.author_association <br>context. OWNER, MEMBER and COLLABORATOR may <br>run the command; anything else, including <br>empty, may not.  |
 |    build-result    | string |  false   |                              |                                                                            finish mode. Result of the build <br>job. Pass the matching needs result.                                                                             |
 | check-name-prefix  | string |  false   |           `"e2e"`            |                                                            start mode. Prefix for the check-run <br>name; the filter and optional target <br>and focus are appended.                                                             |
 |    check-run-id    | string |  false   |                              |                                                          finish mode. The id returned by <br>start mode. Empty is not an <br>error; it means no check was <br>opened.                                                            |
-|    check-token     | string |  false   |                              |            Optional token for check-run calls, e.g. <br>a GitHub App token with checks: <br>write, so the check gets its <br>own suite. Use the same identity <br>in start and finish. Empty uses <br>github-token.              |
 |      command       | string |  false   |        `"/test-e2e"`         |                                                                               Command word that must open the <br>comment, on its own first line.                                                                                |
 |   comment-author   | string |  false   |                              |                                                                    start mode. Login of the commenter. <br>Pass the github.event.comment.user.login context.                                                                     |
 |    comment-body    | string |  false   |                              |                                                                          start mode. The comment text. Pass <br>the github.event.comment.body context.                                                                           |
 |    details-url     | string |  false   |                              |                                                                                    finish mode. Link target for the <br>completed check-run.                                                                                     |
-|    github-token    | string |  false   |   `"${{ github.token }}"`    |                                                       Token for gh. The calling job <br>must grant pull-requests: read, and checks: <br>write unless check-token is set.                                                         |
+|  finish-workflow   | string |  false   |     `"e2e-ginkgo.yaml"`      |                  start mode. Workflow file that runs <br>finish for this command. The app <br>opens the check only when that <br>file, on the ref the caller <br>dispatches, passes app-private-key to finish.                   |
+|    github-token    | string |  false   |   `"${{ github.token }}"`    |                                                                     Token for gh. The calling job <br>must grant checks: write and pull-requests: <br>read.                                                                      |
 |        mode        | string |   true   |                              |                                                                                                   Either "start" or "finish".                                                                                                    |
 |    parse-focus     | string |  false   |          `"false"`           |                                        start mode. Set to true to <br>split an optional trailing --focus expression <br>from the filter. Disabled by default <br>for existing consumers.                                         |
 |     pr-number      | string |  false   |                              |                                                                        start mode. Pull request number. Pass <br>the github.event.issue.number context.                                                                          |

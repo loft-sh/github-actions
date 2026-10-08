@@ -28,7 +28,8 @@
 #   INPUT_RUN_ID              github.run_id, used for the details link
 #   INPUT_SERVER_URL          github.server_url
 #   GH_TOKEN                  token for gh
-#   INPUT_CHECK_TOKEN         optional token for the check-run create only
+#   INPUT_APP_TOKEN           optional GitHub App token for the check-run create
+#   INPUT_FINISH_WORKFLOW     workflow file that runs finish for this command
 set -euo pipefail
 
 # shellcheck source=.github/actions/comment-triggered-check/src/lib.sh
@@ -104,11 +105,6 @@ gh_json() {
   printf '%s' "$body"
 }
 
-# check_json <path> — gh_json as the check token, so a GitHub App can own the
-# check-run while the pull request reads keep the job token.
-check_json() {
-  GH_TOKEN="${INPUT_CHECK_TOKEN:-${GH_TOKEN:-}}" gh_json "$@"
-}
 
 # --- 1. Is this a command at all? -------------------------------------------
 # The workflow fires on every comment in the repository, so this is the path
@@ -275,7 +271,25 @@ if [[ -n "$run_id" ]]; then
   summary="${summary}"$'\n\n'"[View the run](${server_url}/${repo}/actions/runs/${run_id})"
 fi
 
-if ! created="$(check_json --method POST "repos/${repo}/check-runs" \
+# The app opens the check only when the workflow that will finish it can close
+# it too: GitHub lets only the identity that opened a check-run complete it.
+check_token="${GH_TOKEN:-}"
+if [[ -n "${INPUT_APP_TOKEN:-}" ]]; then
+  finish_workflow="${INPUT_FINISH_WORKFLOW:-e2e-ginkgo.yaml}"
+  dispatch_ref="$(dispatch_ref_for "$is_fork" "$head_ref" "$base_ref")"
+  workflow_yaml=""
+  if workflow_json="$(gh_json --method GET "repos/${repo}/contents/.github/workflows/${finish_workflow}" -f "ref=${dispatch_ref}")"; then
+    workflow_yaml="$(printf '%s' "$workflow_json" | jq -r '.content // ""' 2>/dev/null | base64 -d 2>/dev/null)" || workflow_yaml=""
+  fi
+  if finishes_with_app "$workflow_yaml"; then
+    check_token="$INPUT_APP_TOKEN"
+    echo "::notice::opening the check with the GitHub App; ${finish_workflow} on ${dispatch_ref} finishes with it"
+  else
+    echo "::notice::opening the check with github-token; ${finish_workflow} on ${dispatch_ref} does not finish with the GitHub App"
+  fi
+fi
+
+if ! created="$(GH_TOKEN="$check_token" gh_json --method POST "repos/${repo}/check-runs" \
   -f "name=${name}" \
   -f "head_sha=${head_sha}" \
   -f "status=in_progress" \

@@ -44,9 +44,11 @@ START="$BATS_TEST_DIRNAME/../src/start.sh"
   grep -Fq 'value: ${{ steps.start.outputs.is-fork }}' "$ACTION"
 }
 
-@test "the check token is optional and reaches both modes" {
-  run grep -A3 '^  check-token:' "$ACTION"
-  [ "$status" -eq 0 ]
+@test "the app inputs are optional, mint once, and reach both modes" {
+  run grep -A3 '^  app-client-id:' "$ACTION"
   [[ "$output" == *"default: ''"* ]]
-  [ "$(grep -Fc 'INPUT_CHECK_TOKEN: ${{ inputs.check-token }}' "$ACTION")" -eq 2 ]
+  run grep -A3 '^  app-private-key:' "$ACTION"
+  [[ "$output" == *"default: ''"* ]]
+  grep -Fq "if: inputs.app-client-id != '' && inputs.app-private-key != ''" "$ACTION"
+  [ "$(grep -Fc 'INPUT_APP_TOKEN: ${{ steps.app-token.outputs.token }}' "$ACTION")" -eq 2 ]
 }

@@ -22,6 +22,8 @@
 #   GH_MOCK_LATEST_IDS     space-separated ids the commit listing reports as displayed
 #   GH_MOCK_LIST_FAIL      non-empty → the commit check-runs listing request fails
 #   GH_MOCK_LIST_JSON      raw body for that listing, for malformed-response cases
+#   GH_MOCK_WORKFLOW       YAML served by .../contents/... (base64, like the API)
+#   GH_MOCK_CONTENTS_FAIL  non-empty → the contents read fails
 
 setup_gh_mock() {
   MOCK_DIR="$(mktemp -d)"
@@ -50,6 +52,10 @@ default_checkrun='{"id":4242,"name":"e2e-pro: snapshots","head_sha":"abc123","ap
 default_permission='{"permission":"write"}'
 
 case "$all" in
+  *"/contents/"*)
+    [ -n "${GH_MOCK_CONTENTS_FAIL:-}" ] && { echo "mock: contents failed" >&2; exit 1; }
+    printf '{"content":"%s"}\n' "$(printf '%s' "${GH_MOCK_WORKFLOW:-}" | base64 | tr -d '\n')"
+    ;;
   *"--method POST"*"check-runs"*)
     [ -n "${GH_MOCK_CREATE_FAIL:-}" ] && { echo "mock: create failed" >&2; exit 1; }
     printf '%s\n' "${GH_MOCK_CREATE_JSON:-$default_create}"

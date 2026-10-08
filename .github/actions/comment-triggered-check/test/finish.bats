@@ -369,18 +369,33 @@ creates() { calls_matching "method POST repos/loft-sh/demo/check-runs"; }
   [ "$(creates)" -eq 1 ]
 }
 
-# --- check token -------------------------------------------------------------
+# --- GitHub App identity -----------------------------------------------------
 
-@test "a check token completes, reads and lists the check-run" {
-  export INPUT_CHECK_TOKEN="app"
+@test "a check opened by the app is completed with the app token" {
+  export INPUT_APP_TOKEN="app"
+  export GH_MOCK_CHECKRUN_JSON='{"id":4242,"name":"e2e: x","head_sha":"abc123","app":{"id":7,"slug":"ci-app"}}'
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
-  [ "$(patches)" -eq 1 ]
-  [ "$(tokens_for "")" = "app" ]
+  [ "$(tokens_for "PATCH")" = "app" ]
 }
 
-@test "a check token also republishes a hidden check-run" {
-  export INPUT_CHECK_TOKEN="app"
+@test "a check opened by github-actions is completed with the job token" {
+  export INPUT_APP_TOKEN="app"
+  export GH_MOCK_CHECKRUN_JSON='{"id":4242,"name":"e2e: x","head_sha":"abc123","app":{"id":15368,"slug":"github-actions"}}'
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(tokens_for "PATCH")" = "x" ]
+}
+
+@test "an unreadable owner tries the app token" {
+  export INPUT_APP_TOKEN="app"
+  export GH_MOCK_CHECKRUN_FAIL=1
+  run bash "$SCRIPT"
+  [ "$(tokens_for "PATCH")" = "app" ]
+}
+
+@test "the app also republishes a hidden check it opened" {
+  export INPUT_APP_TOKEN="app"
   export GH_MOCK_LATEST_IDS="99"
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
@@ -388,7 +403,7 @@ creates() { calls_matching "method POST repos/loft-sh/demo/check-runs"; }
   [ "$(tokens_for "POST")" = "app" ]
 }
 
-@test "without a check token every call uses the job token" {
+@test "without an app token every call uses the job token" {
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   [ "$(tokens_for "")" = "x" ]

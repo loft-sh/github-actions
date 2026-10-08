@@ -416,6 +416,24 @@ refusal_details() {
 }
 
 # emit <name> <value> — write a step output and echo it for the log.
+# dispatch_ref_for <is-fork> <head-ref> <base-ref> — the ref whose workflow a
+# caller dispatches: the target branch for forks, the pull request's otherwise.
+dispatch_ref_for() {
+  if [[ "${1-}" == "true" ]]; then printf '%s' "${3-}"; else printf '%s' "${2-}"; fi
+}
+
+# finishes_with_app <workflow-yaml> — true when a finish step of this action in
+# the workflow receives app-private-key. Only then can that workflow complete a
+# check-run the app opened. Unparseable YAML or no yq is false.
+finishes_with_app() {
+  command -v yq >/dev/null 2>&1 || return 1
+  yq -e '[.. | select(tag == "!!map" and has("uses"))
+          | select(.uses | test("comment-triggered-check"))
+          | select(.with.mode == "finish")
+          | select(.with | has("app-private-key"))] | length > 0' \
+    <<< "${1-}" >/dev/null 2>&1
+}
+
 emit() {
   printf '%s=%s\n' "$1" "$2" >> "${GITHUB_OUTPUT:?GITHUB_OUTPUT required}"
   printf '%s=%s\n' "$1" "$2"
