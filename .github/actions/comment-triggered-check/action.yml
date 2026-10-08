@@ -95,7 +95,7 @@ inputs:
     required: false
     default: ${{ github.token }}
   check-token:
-    description: 'Optional token for the check-run calls only, e.g. a GitHub App token with checks: write. A check-run created this way gets its own check suite instead of joining another workflow''s. Pass the same identity to start and finish: only the identity that opened a check-run can complete it. Empty uses github-token.'
+    description: 'Optional token for check-run calls, e.g. a GitHub App token with checks: write, so the check gets its own suite. Use the same identity in start and finish. Empty uses github-token.'
     required: false
     default: ''
 outputs:
