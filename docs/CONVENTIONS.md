@@ -35,6 +35,12 @@ requirements. The table below captures current status and guidance:
 | **Python** | Supported | Well-represented in AI training data, good for AI-assisted development. Adds runtime dependency overhead — use when it fits the problem best. |
 | **Bash** | Glue, and wrappers over a released binary | Scripts under ~50 lines, or any length when they install and drive a versioned CLI (see the tier table above). Must pass shellcheck. |
 
+> **Exception:** `release-notification/detect-branch.sh` is longer, because it
+> shares release-lib's branch and version rules with `platform-release`, which
+> is Bash too. Most of it guesses the branch a release was cut from, for
+> releases whose dispatcher does not pass it. It shrinks once every dispatcher
+> passes the branch it tagged, tracked in the DEVOPS-1598 Linear issue.
+
 > **Note:** Evaluate [Dagger](https://dagger.io/) as a potential standardization
 > layer — tracked in the DEVOPS-595 Linear issue.
 

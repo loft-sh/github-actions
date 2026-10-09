@@ -369,6 +369,19 @@ if [[ "$sub" == "api" ]]; then
       if [[ "${GH_STUB_WF_NO_TRIGGERED_BY:-}" == "1" ]]; then
         printf 'on:\n  workflow_dispatch:\n'; exit 0
       fi
+      # A line whose banner takes the branch from the cut. Required with no
+      # default, the strictest shape, which the cut must still satisfy.
+      if [[ "${GH_STUB_WF_SOURCE_BRANCH:-}" == "1" ]]; then
+        printf 'on:\n  workflow_dispatch:\n    inputs:\n      triggered_by:\n        type: string\n      source_branch:\n        required: true\n%b%b' \
+          "${GH_STUB_WF_SOURCE_BRANCH_TYPE:+        type: ${GH_STUB_WF_SOURCE_BRANCH_TYPE}\n}" \
+          "${GH_STUB_WF_SOURCE_BRANCH_DEFAULT:+        default: ${GH_STUB_WF_SOURCE_BRANCH_DEFAULT}\n}"; exit 0
+      fi
+      if [[ -n "${GH_STUB_WF_TRIGGERED_BY_TYPE:-}" ]]; then
+        printf 'on:\n  workflow_dispatch:\n    inputs:\n      triggered_by:\n        type: %s\n' "$GH_STUB_WF_TRIGGERED_BY_TYPE"; exit 0
+      fi
+      if [[ -n "${GH_STUB_WF_SOURCE_BRANCH_TYPE:-}" ]]; then
+        printf 'on:\n  workflow_dispatch:\n    inputs:\n      triggered_by:\n        type: string\n      source_branch:\n        type: %s\n' "$GH_STUB_WF_SOURCE_BRANCH_TYPE"; exit 0
+      fi
       # The declaration is gone but the job plumbing that PASSES it remains - the
       # shape that satisfied an unscoped grep and then 422'd after the tag.
       if [[ "${GH_STUB_WF_TRIGGERED_BY_IN_JOB:-}" == "1" ]]; then
@@ -1481,6 +1494,160 @@ EOF
   [[ "$output" != *"triggered_by"* ]]
 }
 
+@test "main: a real cut forwards the branch it tagged when release.yaml declares source_branch" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_WF_SOURCE_BRANCH=1
+  TRIGGERED_BY="dmytrosydorov" INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"-f triggered_by=dmytrosydorov -f source_branch=release-4.11"* ]]
+}
+
+@test "main: an alpha cut names main as its source branch" {
+  # Once main moves past the tag, git history alone cannot tell main from a
+  # branch forked at the tag.
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:main"
+  export GH_STUB_WF_SOURCE_BRANCH=1
+  TRIGGERED_BY="" INPUT_VERSION="v4.13.0-alpha.20" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"--ref refs/tags/v4.13.0-alpha.20 -f source_branch=main"* ]]
+}
+
+@test "main: a -next cut names its feature branch as the source branch" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:feature/foo"
+  export GH_STUB_WF_SOURCE_BRANCH=1
+  TRIGGERED_BY="" INPUT_VERSION="v4.12.0-next.1" INPUT_SOURCE_BRANCH="feature/foo" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"-f source_branch=feature/foo"* ]]
+}
+
+@test "main: a declared string source_branch is forwarded" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_WF_SOURCE_BRANCH_TYPE=string
+  TRIGGERED_BY="dmytrosydorov" INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"-f source_branch=release-4.11"* ]]
+}
+
+@test "main: a resumed rc on its line leaves source_branch to the notifier" {
+  # The tag may predate the line, and only the notifier's history can tell.
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.0-rc.2"
+  export GH_STUB_WF_SOURCE_BRANCH_TYPE=string
+  TRIGGERED_BY="" INPUT_VERSION="v4.11.0-rc.2" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"resuming at the dispatch"* ]]
+  [[ "$output" == *"not passing source_branch"* ]]
+  [[ "$output" != *"-f source_branch"* ]]
+}
+
+@test "main: a resumed rc still passes source_branch when release.yaml requires it" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.0-rc.2"
+  export GH_STUB_WF_SOURCE_BRANCH=1
+  TRIGGERED_BY="" INPUT_VERSION="v4.11.0-rc.2" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"-f source_branch=release-4.11"* ]]
+}
+
+@test "main: a resumed rc on its line is not refused over a choice source_branch it does not pass" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.0-rc.2"
+  export GH_STUB_WF_SOURCE_BRANCH_TYPE=choice
+  TRIGGERED_BY="" INPUT_VERSION="v4.11.0-rc.2" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"not passing source_branch"* ]]
+  [[ "$output" != *"-f source_branch"* ]]
+}
+
+@test "main: a resumed rc on its line is not refused over a boolean source_branch it does not pass" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.0-rc.2"
+  export GH_STUB_WF_SOURCE_BRANCH_TYPE=boolean
+  TRIGGERED_BY="" INPUT_VERSION="v4.11.0-rc.2" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"not passing source_branch"* ]]
+  [[ "$output" != *"-f source_branch"* ]]
+}
+
+@test "main: a resumed rc still type-checks a source_branch it has to pass" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.0-rc.2"
+  export GH_STUB_WF_SOURCE_BRANCH=1
+  export GH_STUB_WF_SOURCE_BRANCH_TYPE=choice
+  TRIGGERED_BY="" INPUT_VERSION="v4.11.0-rc.2" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"declares 'source_branch' under workflow_dispatch with type 'choice'"* ]]
+}
+
+@test "main: a resumed rc leaves out a required source_branch that has a default" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.0-rc.2"
+  export GH_STUB_WF_SOURCE_BRANCH=1
+  export GH_STUB_WF_SOURCE_BRANCH_DEFAULT=main
+  TRIGGERED_BY="" INPUT_VERSION="v4.11.0-rc.2" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"not passing source_branch"* ]]
+  [[ "$output" != *"-f source_branch"* ]]
+}
+
+@test "main: a resumed stable still type-checks source_branch" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_WF_SOURCE_BRANCH_TYPE=choice
+  TRIGGERED_BY="" INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"declares 'source_branch' under workflow_dispatch with type 'choice'"* ]]
+}
+
+@test "main: a resumed stable passes the line as source_branch" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.11.3"
+  export GH_STUB_WF_SOURCE_BRANCH_TYPE=string
+  TRIGGERED_BY="" INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"resuming at the dispatch"* ]]
+  [[ "$output" == *"-f source_branch=release-4.11"* ]]
+}
+
+@test "main: a source_branch input that is not a string is refused before tagging" {
+  # A choice or boolean input can reject the branch name, failing the
+  # dispatch after the tag exists.
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  for t in choice boolean String false '~' '"Str ing"'; do
+    export GH_STUB_WF_SOURCE_BRANCH_TYPE="$t"
+    TRIGGERED_BY="dmytrosydorov" INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"declares 'source_branch' under workflow_dispatch with "*"Nothing was tagged"* ]]
+    [[ "$output" != *"ref=refs/tags/v4.11.3 -f sha="* ]]
+  done
+}
+
+@test "main: the refusal names the declared type" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_WF_SOURCE_BRANCH_TYPE=String
+  TRIGGERED_BY="dmytrosydorov" INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"with type 'String'"* ]]
+}
+
+@test "main: a triggered_by input that is not a string is refused before tagging" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_WF_TRIGGERED_BY_TYPE=choice
+  TRIGGERED_BY="dmytrosydorov" INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"declares 'triggered_by' under workflow_dispatch with type 'choice'"* ]]
+  [[ "$output" != *"ref=refs/tags/v4.11.3 -f sha="* ]]
+}
+
+@test "main: a real cut omits source_branch when release.yaml does not declare it" {
+  # Lines cut before the input existed must keep dispatching: gh workflow run
+  # rejects an undeclared input.
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  TRIGGERED_BY="dmytrosydorov" INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"source_branch"* ]]
+}
+
 @test "main: a guarded version never reaches the dispatch on a real cut" {
   export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
   export GH_STUB_RELEASES="loft-sh/loft-enterprise:v4.11.3"
@@ -2248,6 +2415,31 @@ fake_yq() {
   [ "$status" -ne 0 ]
   run validate_branch "trailing/"
   [ "$status" -ne 0 ]
+}
+
+@test "validate_branch: HEAD, other pseudo-refs and refs/ paths are rejected" {
+  # Each resolves in git, or names a ref outright, rather than naming a branch.
+  for b in HEAD FETCH_HEAD ORIG_HEAD MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD BISECT_HEAD REBASE_HEAD AUTO_MERGE refs/heads/main refs/tags/v1.2.3; do
+    run validate_branch "$b"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"not a valid branch name"* ]]
+  done
+}
+
+@test "validate_branch: names that only contain HEAD or refs pass" {
+  for b in feature/HEAD HEADS head feature/refs/x release/refs-fix AHEAD OVERHEAD FIX_HEAD; do
+    run validate_branch "$b"
+    [ "$status" -eq 0 ]
+  done
+}
+
+@test "main: a -next source-branch of HEAD is refused before any API call" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:main"
+  export GH_STUB_CALL_LOG="${STUB_DIR}/calls"
+  INPUT_VERSION="v4.12.0-next.1" INPUT_SOURCE_BRANCH="HEAD" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"not a valid branch name"* ]]
+  [ ! -s "${STUB_DIR}/calls" ]
 }
 
 @test "main: a query marker cannot smuggle main past the feature-branch guard" {
