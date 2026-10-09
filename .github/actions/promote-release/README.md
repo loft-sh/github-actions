@@ -49,7 +49,7 @@ Only acts on a stable `vX.Y.Z` version (no prerelease suffix); any other shape
 is a no-op, since moving tags and "latest" promotion aren't meaningful for
 `-rc`/`-alpha`/`-next` cuts.
 
-**Backport-safe:** before advancing `:latest`/`:{major}` (or `--latest` on
+**Backport-safe:** before advancing `:latest` (or `--latest` on
 `oss-repo` / the caller's own release), the action checks whether `version` is
 newer than the release currently flagged **Latest** on the caller's own repo
 (`GITHUB_REPOSITORY`, set automatically by Actions) / on `oss-repo`. That Latest
@@ -58,7 +58,7 @@ pointer is the baseline, *not* "newest non-prerelease": under
 non-prerelease, so the Latest flag is the only durable record of what `:latest`
 actually tracks — reading the prerelease flag instead would strand `:latest`
 behind any newer un-promoted cut. Promoting an older line's patch after a newer
-stable is already `:latest` skips `:latest`/`:{major}`, so they never move
+stable is already `:latest` skips `:latest`, so it never moves
 backwards. Re-promoting the release that is already Latest is allowed, so a
 partially failed promotion can simply be re-run.
 
@@ -75,7 +75,7 @@ rejects is invisible to the ordering rather than merely mis-sorted.
 
 One consequence to know about: a tag that is not a version at all (`stable`,
 `nightly`) outranks every release, so flagging one Latest makes every promotion
-withhold `:latest`/`:{major}` while `:{major}.{minor}` keeps advancing. The run
+withhold `:latest` while `:{major}` and `:{major}.{minor}` follow their own gates. The run
 emits a `::warning::` naming the tag and stays green. **Re-running does not clear
 it** — move the Latest flag onto a released version.
 
@@ -103,6 +103,12 @@ stable-shaped tag can carry it (every cut did under the legacy
 `release.prerelease: true` config, and re-running such a build re-flags an
 already-promoted tag), and filtering on it would drop the newer sibling from the
 comparison and permit exactly the regression the check exists to stop.
+
+`:{major}` advances whenever `:latest` does, and also when `version` is the
+newest stable-shaped tag *within its own major*, using the same tag-shape rules
+as the line check. So after `v5.0.0` is Latest, promoting `v4.13.2` still moves
+`:4` (and `:4.13`), while `:latest` stays on 5.x. A late `v4.12.9` promoted after
+`v4.13.0` leaves `:4` alone.
 
 A failure to even list releases fails the run closed rather than risk a silent
 downgrade.
@@ -314,8 +320,9 @@ listed here but not built for this version fails the pre-flight below, and one
 built but not listed here is simply never promoted.
 
 Which of the three destinations actually move depends on the backport gates
-above: `:latest`/`:{major}` only when `version` is at or ahead of the caller's
-Latest pointer, `:{major}.{minor}` only when it is newest within its own line.
+above: `:latest` only when `version` is at or ahead of the caller's Latest
+pointer, `:{major}` when that holds or `version` is newest within its own major,
+and `:{major}.{minor}` only when it is newest within its own line.
 
 ### Source-manifest pre-flight
 

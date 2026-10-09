@@ -70,10 +70,12 @@
 #
 # GITHUB_REPOSITORY (owner/repo of the caller, set automatically by Actions)
 # is used to detect a backport/patch promotion: if VERSION is older than the
-# release currently flagged Latest on that repo, :latest/:{major} are left
+# release currently flagged Latest on that repo, :latest is left
 # alone so promoting an older line's patch can never move :latest backwards. :{major}.{minor} is
 # scoped to VERSION's own line, so it advances on its own gate: only when
-# VERSION is the newest stable *within its own {major}.{minor} line*. That
+# VERSION is the newest stable *within its own {major}.{minor} line*. :{major}
+# moves with :latest, and also whenever VERSION is the newest stable in its own
+# major, so :4 keeps following 4.x patches after a 5.x release is Latest. That
 # keeps a same-line out-of-order promotion (e.g. promoting v9.9.5 after
 # v9.9.6 already moved :9.9) from regressing the line tag too.
 #
@@ -259,7 +261,7 @@ fetch_release_list() {
 # One caveat this creates: dropping the v means a Latest-flagged tag that is not a
 # version at all ('stable', 'nightly') now sorts ABOVE any release, since its
 # first character beats a digit, where the prefixed form sorted below. Every
-# promotion then withholds :latest/:{major} until the flag is moved. That is the
+# promotion then withholds :latest until the flag is moved. That is the
 # conservative direction and the notice names the baseline, but no re-run clears
 # it - moving the flag is the only remedy.
 semver_key() {
@@ -360,10 +362,10 @@ is_at_or_after_latest_pointer() {
     # A warning rather than a notice, and rather than an error: the run below is
     # otherwise correct and still moves :{major}.{minor}, so failing would block a
     # promotion that partly succeeds. But a non-version baseline outranks every
-    # release, so this repo withholds :latest/:{major} on every promotion from now
+    # release, so this repo withholds :latest on every promotion from now
     # on, and re-running is the one thing that cannot fix it.
     if ! is_version_shaped "${max}"; then
-      echo "::warning::the release flagged Latest on ${repo} is tagged '${max}', which is not a version, so nothing can be ordered against it. :latest/:${MAJOR} will be withheld on every promotion until the Latest flag is moved to a released version - a re-run will not clear this."
+      echo "::warning::the release flagged Latest on ${repo} is tagged '${max}', which is not a version, so nothing can be ordered against it. :latest will be withheld on every promotion until the Latest flag is moved to a released version - a re-run will not clear this."
     fi
   fi
 
@@ -389,18 +391,39 @@ is_newest_in_line() {
   version_at_or_after "${max}"
 }
 
+# True if VERSION is the newest stable-shaped tag in its own major, using the
+# release-list JSON snapshot in $2. Same tag-shape rules as is_newest_in_line.
+is_newest_in_major() {
+  local major="$1" releases="$2" max
+  max=$(jq -r '.[].tagName' <<<"${releases}" \
+    | grep -E "^v?${major}\.[0-9]+\.[0-9]+(\+[0-9A-Za-z.-]+)?$" \
+    | semver_max) || true
+
+  version_at_or_after "${max}"
+}
+
 # The 1000-release window is intentionally much larger than the repository's
 # lifetime count. An empty line-scoped result means "first release in line", so
 # truncating older siblings out of the window would otherwise fail open.
 fetch_release_list "${GITHUB_REPOSITORY}" "hard"
 CALLER_RELEASE_LIST="${RELEASE_LIST}"
 
-ADVANCE_LATEST_MAJOR=true
+ADVANCE_LATEST=true
 if ! is_at_or_after_latest_pointer "${GITHUB_REPOSITORY}" "${CALLER_RELEASE_LIST}"; then
-  ADVANCE_LATEST_MAJOR=false
-  echo "::notice::${VERSION} is older than the promotion baseline on ${GITHUB_REPOSITORY} (${LATEST_BASELINE_NOTE}); skipping :latest/:${MAJOR} so they aren't moved backwards."
+  ADVANCE_LATEST=false
+  echo "::notice::${VERSION} is older than the promotion baseline on ${GITHUB_REPOSITORY} (${LATEST_BASELINE_NOTE}); skipping :latest so it isn't moved backwards."
 fi
 CALLER_BASELINE_NOTE="${LATEST_BASELINE_NOTE}"
+
+# :{major} also advances when VERSION is newest in its own major, even if a
+# newer major holds Latest. Otherwise :4 would freeze the day 5.0 ships.
+ADVANCE_MAJOR="${ADVANCE_LATEST}"
+if [[ "${ADVANCE_MAJOR}" != "true" ]] && is_newest_in_major "${MAJOR}" "${CALLER_RELEASE_LIST}"; then
+  ADVANCE_MAJOR=true
+fi
+if [[ "${ADVANCE_MAJOR}" != "true" ]]; then
+  echo "::notice::${VERSION} is not the newest stable release in major ${MAJOR} on ${GITHUB_REPOSITORY}; skipping :${MAJOR} so it isn't moved backwards."
+fi
 
 # :{major}.{minor} gets its own, line-scoped gate. When VERSION is newest
 # overall this is necessarily also true, so the happy path is unchanged; the
@@ -644,13 +667,13 @@ promote_gh_release() {
 # release exists, is not a pre-release, and is not Latest, so promoting it is
 # an explicit act rather than a human un-checking a box. Both edits are safe to
 # repeat:
-#   --latest         gated by ADVANCE_LATEST_MAJOR, the same gate as :latest,
+#   --latest         gated by ADVANCE_LATEST, the same gate as :latest,
 #                    so a backport promotion never moves the repo's Latest
 #                    pointer backwards while its line tag still advances.
 #   --prerelease=false  a no-op for an auto-classified stable cut; it is what
 #                    promotes a legacy tag still built under prerelease: true.
 if [[ "${PROMOTE_SELF}" == "true" ]]; then
-  if [[ "${ADVANCE_LATEST_MAJOR}" == "true" ]]; then
+  if [[ "${ADVANCE_LATEST}" == "true" ]]; then
     promote_gh_release "${GITHUB_REPOSITORY}" true required true
   else
     promote_gh_release "${GITHUB_REPOSITORY}" false advisory true "" "${VERSION} is behind ${CALLER_BASELINE_NOTE}" || true
@@ -668,7 +691,8 @@ for ((i = 0; i < IMAGE_COUNT; i++)); do
 
   src="${image}:${DOCKER_TAG}${suffix}"
   moving_tags=()
-  [[ "${ADVANCE_LATEST_MAJOR}" == "true" ]] && moving_tags+=(latest "${MAJOR}")
+  [[ "${ADVANCE_LATEST}" == "true" ]] && moving_tags+=(latest)
+  [[ "${ADVANCE_MAJOR}" == "true" ]] && moving_tags+=("${MAJOR}")
   [[ "${ADVANCE_MINOR}" == "true" ]] && moving_tags+=("${MAJOR}.${MINOR}")
   if [[ "${#moving_tags[@]}" -eq 0 ]]; then
     echo "::notice::${src}: no moving tags to advance (VERSION is superseded both overall and within its own line); nothing to retag."
@@ -715,7 +739,7 @@ if [[ -n "${OSS_REPO}" ]]; then
   fetch_release_list "${OSS_REPO}" soft || oss_rc=$?
   if [[ "${oss_rc}" -eq 0 ]] && is_at_or_after_latest_pointer "${OSS_REPO}" "${RELEASE_LIST}"; then
     OSS_BASELINE_NOTE="${LATEST_BASELINE_NOTE}"
-    if [[ "${ADVANCE_LATEST_MAJOR}" == "true" ]]; then
+    if [[ "${ADVANCE_LATEST}" == "true" ]]; then
       OSS_IS_LATEST=true
       OSS_ADVANCE_LATEST=true
     else
