@@ -132,10 +132,13 @@ GitHub can leave auto-merge enabled after a later push by an actor with write
 permission; any eventual merge then relies on the repository's required checks
 and stale-approval settings for the new head, not on this run's original SHA.
 
-The approval is submitted immediately after the second head check, but the
-approval action does not bind its review to that SHA. Repositories that require
-approvals to be invalidated after a push must enforce that through their branch
-protection or ruleset settings.
+The approval step checks the current head again and submits the review with
+`commit_id` set to the event head SHA that passed CI. A push between that check
+and the API call cannot attach this run's approval to the new commit. The step
+reports success only when GitHub returns an approved review for the tested SHA.
+The merge step runs only after that approval has been confirmed.
+Repositories that require approvals to be invalidated after a later push must
+still enforce that through their branch protection or ruleset settings.
 
 The merge step uses `merge-token` when supplied, otherwise it keeps the existing
 behavior and uses `github-token`. This lets a caller approve with an identity

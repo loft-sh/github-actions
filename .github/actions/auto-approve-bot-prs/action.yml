@@ -96,18 +96,18 @@ runs:
       run: ${{ github.action_path }}/src/check-pr-after-ci.sh
 
     - name: Approve PR
+      id: approve
       if: steps.recheck.outputs.proceed == 'true'
       continue-on-error: true
-      uses: hmarr/auto-approve-action@f0939ea97e9205ef24d872e76833fa908a770363 # v4.0.0
-      with:
-        github-token: ${{ inputs.github-token }}
-        review-message: |
-          Approved by the shared auto-approve workflow because this PR matched the approval criteria.
-
-          For more information, see https://github.com/loft-sh/github-actions?tab=readme-ov-file#auto-approve-bot-prs.
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      run: ${{ github.action_path }}/src/approve-pr.sh
 
     - name: Merge PR
-      if: steps.recheck.outputs.proceed == 'true' && inputs.auto-merge == 'true'
+      if: steps.recheck.outputs.proceed == 'true' && steps.approve.outputs.approved == 'true' && inputs.auto-merge == 'true'
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.merge-token || inputs.github-token }}
