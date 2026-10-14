@@ -25,7 +25,7 @@ inputs:
     required: false
     default: ''
   slack-bot-token:
-    description: 'Slack bot token with chat:write and channels:history (groups:history for a private channel) in the banner channel. Empty skips the post with a warning.'
+    description: 'Slack bot token with chat:write and channels:history (groups:history for a private channel) in the banner channel. chat:write also lets a re-run edit the summary the bot posted earlier. Empty skips the post with a warning.'
     required: false
     default: ''
   slack-channel-id:
@@ -51,7 +51,7 @@ inputs:
 
 outputs:
   conclusion:
-    description: 'posted, dry-run, skipped or failed. A summary already in the thread is skipped.'
+    description: 'posted, updated, dry-run, skipped or failed. updated means a summary an earlier run posted in the thread was replaced in place.'
     value: ${{ steps.conclude.outputs.conclusion }}
   reason:
     description: 'One-line reason when conclusion is skipped or failed.'
@@ -87,10 +87,16 @@ runs:
       id: ai
       if: steps.collect.outputs.proceed == 'true'
       continue-on-error: true
-      uses: loft-sh/github-actions/.github/actions/ai-step@ai-step/v1 # zizmor: ignore[unpinned-uses] -- internal loft-sh/github-actions ref, floating per-action tag
+      # Pinned by SHA like every internal composite (docs/CONVENTIONS.md):
+      # input-file and max-tokens are newer than the commit ai-step/v1
+      # points at. Merge this PR with a merge commit so the SHA stays on main.
+      uses: loft-sh/github-actions/.github/actions/ai-step@1a7ec2e6e10f817e093444a22445e913bb1eedd5 # ai-step/v1
       with:
         provider: anthropic
         effort: ${{ inputs.effort }}
+        # A summary of 55 to 90 PRs outgrows the 4096 default; 21333 is the
+        # most the Anthropic SDK allows without streaming.
+        max-tokens: '16000'
         anthropic-api-key: ${{ inputs.anthropic-api-key }}
         input-file: ${{ steps.collect.outputs.input_file }}
         prompt: |
@@ -100,7 +106,7 @@ runs:
           Summarize the changes introduced in ${{ inputs.version }}. Group summaries into features, bug fixes, tech debt and tests. Within each group, sort by greatest to least customer impact. Refer both to the merged PR changes and the Linear issues they address or close.
 
           Rules:
-          - Each item lists in prs the PR numbers it covers, taken only from the input. Merge closely related PRs into one item.
+          - Each item lists in prs the PR numbers it covers, taken only from the number field of each pull request. Backport descriptions cite the original main-branch PR, for example "(#8606)" or "Original PR Nr.: #8606"; never use a number from a title or description. Merge closely related PRs into one item.
           - Write each summary as one or two plain sentences for a technical reader: what changed and why it matters to a user or operator. Name concrete API fields, annotations, flags and defaults when a description gives them.
           - Leave links, PR numbers and Linear ids out of the summary text; they are added from the data.
           - CI, build, dependency and refactoring changes are tech debt. Collapse dependency bumps into one item.
@@ -131,7 +137,6 @@ runs:
         LINEAR_WORKSPACE: ${{ inputs.linear-workspace }}
         CHANNEL_ID: ${{ inputs.slack-channel-id }}
         THREAD_TS: ${{ steps.collect.outputs.thread_ts }}
-        PRODUCT: ${{ inputs.product }}
         PAYLOAD_FILE: ${{ runner.temp }}/release-summary-payload.json
       run: python3 "${{ github.action_path }}/src/render.py"
 
@@ -156,6 +161,7 @@ runs:
         PROCEED: ${{ steps.collect.outputs.proceed }}
         SKIP_REASON: ${{ steps.collect.outputs.reason }}
         AI_CONCLUSION: ${{ steps.ai.outputs.conclusion }}
+        AI_REASON: ${{ steps.ai.outputs.reason }}
         RENDERED: ${{ steps.render.outputs.rendered }}
         POST_RESULT: ${{ steps.post.outputs.result }}
         POST_REASON: ${{ steps.post.outputs.reason }}

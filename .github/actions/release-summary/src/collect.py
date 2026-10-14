@@ -25,6 +25,8 @@ Env:
 """
 from __future__ import annotations
 
+import fnmatch
+import http.client
 import json
 import os
 import re
@@ -46,20 +48,34 @@ COMMIT_LIMIT = 500
 SLACK_TS = re.compile(r"\d{9,}\.\d{6}")
 SLACK_LINK = re.compile(r"/p(\d{10})(\d{6})(?:\D|$)")
 GRAPHQL_BATCH = 40
+GRAPHQL_ATTEMPTS = 3
+# URLError, timeouts and resets (RemoteDisconnected, IncompleteRead) are all
+# one family: the request may succeed on another try.
+NETWORK_ERRORS = (OSError, http.client.HTTPException)
 PATHS_PER_PR = 30
 # Fits comfortably inside the model's context; the env var limit does not
 # apply because ai-step reads this through input-file.
 MAX_INPUT_BYTES = 400_000
 MIN_BODY_CHARS = 400
 
-LINEAR_ID = r"[A-Z][A-Z0-9]{1,9}-\d+"
-NOT_LINEAR = {"CVE", "GHSA", "RFC", "ISO", "UTF", "SHA", "TLS", "X509"}
-LINEAR_PATTERNS = [
-    re.compile(r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|part of|refs?|references?|related to)\s*:?\s+(" + LINEAR_ID + r")\b"),
-    re.compile(r"linear\.app/[\w-]+/issue/(" + LINEAR_ID + r")", re.I),
-]
-TITLE_PREFIX = re.compile(r"^\[?(" + LINEAR_ID + r")\b")
-BRANCH_PREFIX = re.compile(r"^([a-z][a-z0-9]{1,9}-\d+)(?:/|$)", re.I)
+# An id is uppercase and not followed by "-<digits>": "GO-2026-5932" is a Go
+# advisory, not issue 2026 of team GO. Only the closing keywords are
+# case-insensitive, so "related to helm-3" names no issue.
+LINEAR_KEY = r"[A-Z][A-Z0-9]{1,9}-\d+\b(?!-\d)"
+LINEAR_ID = r"(?<![\w-])" + LINEAR_KEY
+# BUMP: branches such as "bump-3/golang", which look exactly like team-n.
+NOT_LINEAR = {"CVE", "GHSA", "RFC", "ISO", "UTF", "SHA", "TLS", "X509", "BUMP"}
+ID_SEP = r"(?:\s*,\s*(?:(?i:and)\s+)?|\s+(?i:and)\s+|\s*&\s*)"
+# A closing keyword takes the whole comma or "and" separated list after it.
+CLOSING = re.compile(
+    r"\b(?i:close[sd]?|fix(?:e[sd])?|resolve[sd]?|part of|refs?|references?|related to)"
+    r"\s*:?\s+(" + LINEAR_ID + r"(?:" + ID_SEP + LINEAR_ID + r")*)")
+LINEAR_URL = re.compile(r"linear\.app/[\w-]+/issue/(" + LINEAR_KEY + r")", re.I)
+# Leading "[release-4.12]" backport tags and "[ENG-1]" groups.
+TITLE_BRACKETS = re.compile(r"\s*((?:\[[^\]]*\]\s*)*)")
+# Conventional-commit scope: "fix(ENGCP-1606)!: x".
+TITLE_SCOPE = re.compile(r"\w+\(([^)]*)\)!?:")
+BRANCH_TEAM_N = re.compile(r"([a-z][a-z0-9]{1,9}-\d+)", re.I)
 HTML_COMMENT = re.compile(r"<!--.*?-->", re.S)
 
 
@@ -88,20 +104,65 @@ def tag_exists(tag: str) -> bool:
                            f"refs/tags/{tag}"], capture_output=True).returncode == 0
 
 
+def is_shallow() -> bool:
+    return git("rev-parse", "--is-shallow-repository") == "true"
+
+
+SEMVER = re.compile(r"v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?")
+
+
+def semver_key(tag: str) -> tuple | None:
+    """Sort key in semver precedence order, None for a tag that is not semver.
+    A prerelease sorts below its release and rc.10 above rc.9."""
+    m = SEMVER.fullmatch(tag)
+    if not m:
+        return None
+    major, minor, patch, pre = m.groups()
+    # Numeric identifiers compare as numbers and sort below alphanumeric ones;
+    # (kind, number, text) keeps the three tuple positions comparable.
+    ids = tuple((0, int(i), "") if i.isdigit() else (1, 0, i)
+                for i in pre.split(".")) if pre else ()
+    return (int(major), int(minor), int(patch), 0 if pre else 1, ids)
+
+
+def release_tags_at(tag: str) -> list[str]:
+    """TAG_MATCH tags, minus TAG_EXCLUDE, on the commit tag points at."""
+    out = git("tag", "--list", TAG_MATCH, "--points-at", f"refs/tags/{tag}^{{commit}}")
+    return [t for t in out.splitlines() if not fnmatch.fnmatchcase(t, TAG_EXCLUDE)]
+
+
+def nearest_below(version: str, tags: list[str]) -> str:
+    """The semver-highest of tags that sorts below version, or ''."""
+    limit = semver_key(version)
+    if limit is None:
+        return ""
+    below = [(key, t) for t in tags
+             if t != version and (key := semver_key(t)) is not None and key < limit]
+    return max(below)[1] if below else ""
+
+
 def resolve_previous_tag(version: str, override: str) -> str:
-    """The override when given, else the nearest non -next tag before version."""
+    """The override when given, else the nearest non -next tag before version.
+    A release is cut from the commit of its last rc, so tags on version's own
+    commit come first; `describe version^` steps past all of them."""
     if override:
         if not tag_exists(override):
             skip(f"previous tag '{override}' is not in the checkout; pass an "
                  "existing tag or leave previous-tag empty to derive it")
         return override
+    shared = nearest_below(version, release_tags_at(version))
+    if shared:
+        return shared
     try:
-        return git("describe", "--tags", "--abbrev=0", f"--match={TAG_MATCH}",
-                   f"--exclude={TAG_EXCLUDE}", f"{version}^")
+        found = git("describe", "--tags", "--abbrev=0", f"--match={TAG_MATCH}",
+                    f"--exclude={TAG_EXCLUDE}", f"{version}^")
     except subprocess.CalledProcessError:
         skip(f"no earlier {TAG_MATCH} tag is reachable from {version}, so there "
              "is nothing to compare against; pass previous-tag to set one")
-    return ""
+        return ""
+    # describe picks arbitrarily among tags sharing a commit (v4.12.0 or its
+    # v4.12.0-rc.12), so settle that by semver too.
+    return nearest_below(version, release_tags_at(found)) or found
 
 
 def list_commits(prev: str, version: str) -> list[tuple[str, str]]:
@@ -114,19 +175,37 @@ def list_commits(prev: str, version: str) -> list[tuple[str, str]]:
     return commits
 
 
+def title_ids(title: str) -> list[str]:
+    """Ids a title names up front: in a leading [..] group (a "[release-4.12]"
+    backport tag may come first), right after those groups ("ENG-12838 redfish
+    explorer"), or in a conventional-commit scope ("fix(ENGCP-1606): x")."""
+    brackets = TITLE_BRACKETS.match(title)
+    found = re.findall(LINEAR_ID, brackets.group(1))
+    rest = title[brackets.end():]
+    lead = re.match(r"\[?(" + LINEAR_ID + r")", rest)
+    if lead:
+        found.append(lead.group(1))
+    scope = TITLE_SCOPE.match(rest)
+    if scope:
+        found.extend(re.findall(LINEAR_ID, scope.group(1)))
+    return found
+
+
+def branch_ids(branch: str) -> list[str]:
+    """The id a branch named for an issue carries: only a first path segment
+    that is exactly team-n, as in "devops-1641/slug"."""
+    m = BRANCH_TEAM_N.fullmatch((branch or "").split("/", 1)[0])
+    return [m.group(1).upper()] if m else []
+
+
 def linear_ids(title: str, body: str, branch: str) -> list[str]:
-    """Linear ids a PR names: closing keywords and links in the body, a title
-    prefix such as "ENG-12838 redfish explorer", or a branch such as
-    "devops-1641/slug". Ordered, deduplicated."""
-    found: list[str] = []
-    m = TITLE_PREFIX.match(title or "")
-    if m:
-        found.append(m.group(1))
-    m = BRANCH_PREFIX.match(branch or "")
-    if m:
-        found.append(m.group(1).upper())
-    for pattern in LINEAR_PATTERNS:
-        found.extend(i.upper() for i in pattern.findall(body or ""))
+    """Linear ids a PR names: title, branch, then closing keywords and links
+    in the body. Ordered, deduplicated, without ids that are not issues."""
+    body = body or ""
+    found = title_ids(title or "") + branch_ids(branch)
+    for m in CLOSING.finditer(body):
+        found.extend(re.findall(LINEAR_ID, m.group(1)))
+    found.extend(i.upper() for i in LINEAR_URL.findall(body))
     seen: list[str] = []
     for i in found:
         if i.split("-")[0] not in NOT_LINEAR and i not in seen:
@@ -148,6 +227,37 @@ files(first: %d) { nodes { path } }
 """ % PATHS_PER_PR
 
 
+def retryable_http(err: urllib.error.HTTPError) -> bool:
+    """429 and 5xx pass on their own. A 403 only when GitHub says it is a rate
+    limit (Retry-After, an empty X-RateLimit-Remaining, or the secondary limit
+    message). Any other 4xx, a bad token or a missing repository, would answer
+    the same on every try."""
+    if err.code == 429 or err.code >= 500:
+        return True
+    if err.code != 403:
+        return False
+    headers = err.headers
+    if headers is not None and (headers.get("Retry-After")
+                                or headers.get("X-RateLimit-Remaining") == "0"):
+        return True
+    try:
+        return b"rate limit" in err.read().lower()
+    except NETWORK_ERRORS:
+        return False
+
+
+def usable_partial(payload: dict) -> bool:
+    """GitHub answers a batch alias that does not resolve, such as a (#N)
+    subject naming an issue instead of a PR, with a null node plus a NOT_FOUND
+    error, and still fills in the rest. That is usable unless the root field
+    itself is null: a repository the token cannot see is a real failure."""
+    errors = payload.get("errors") or []
+    data = payload.get("data")
+    return (bool(errors) and isinstance(data, dict) and bool(data)
+            and all(v is not None for v in data.values())
+            and all(isinstance(e, dict) and e.get("type") == "NOT_FOUND" for e in errors))
+
+
 def graphql(query: str, variables: dict, token: str) -> dict:
     url = os.environ.get("GITHUB_GRAPHQL_URL", "https://api.github.com/graphql")
     data = json.dumps({"query": query, "variables": variables}).encode()
@@ -156,17 +266,24 @@ def graphql(query: str, variables: dict, token: str) -> dict:
         "Content-Type": "application/json",
     })
     last = None
-    for attempt in range(3):
+    for attempt in range(GRAPHQL_ATTEMPTS):
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
                 payload = json.load(resp)
-            if payload.get("errors"):
+            if payload.get("errors") and not usable_partial(payload):
                 raise RuntimeError(f"GraphQL errors: {payload['errors']}")
             return payload["data"]
-        except (urllib.error.URLError, RuntimeError, TimeoutError) as e:
+        except urllib.error.HTTPError as e:
+            if not retryable_http(e):
+                raise RuntimeError(
+                    f"GraphQL request failed with HTTP {e.code} {e.reason}; check "
+                    "that github-token is valid and can read the repository") from e
             last = e
+        except (RuntimeError, *NETWORK_ERRORS) as e:
+            last = e
+        if attempt < GRAPHQL_ATTEMPTS - 1:
             time.sleep(2 * (attempt + 1))
-    raise RuntimeError(f"GraphQL request failed after 3 attempts: {last}")
+    raise RuntimeError(f"GraphQL request failed after {GRAPHQL_ATTEMPTS} attempts: {last}")
 
 
 def fetch_prs(repository: str, shas: list[str], token: str) -> dict[str, dict | None]:
@@ -295,6 +412,10 @@ def main() -> None:
     if not version or "/" not in repository:
         skip("VERSION and REPOSITORY (owner/name) are required")
     emit("thread_ts", gate())
+    if is_shallow():
+        skip("the checkout is shallow, so tags and the commit range are "
+             "incomplete; check out the released repository with "
+             "actions/checkout fetch-depth: 0 and fetch-tags: true")
     if not tag_exists(version):
         skip(f"tag {version} is not in the checkout; check out the released "
              "repository with fetch-depth: 0 and fetch-tags: true")
@@ -351,6 +472,10 @@ def main() -> None:
     emit("input_file", str(input_file))
     emit("prs_file", str(prs_file))
     emit("pr_count", str(len(prs)))
+    if not prs:
+        # commits_without_pr never reaches the summary, so the model would
+        # have nothing to cite and render would end the run failed.
+        skip(f"no merged pull requests between {prev} and {version}")
     if os.environ.get("HAS_ANTHROPIC_KEY") != "true":
         skip("no Anthropic API key; pass anthropic-api-key to generate the summary")
     emit("proceed", "true")

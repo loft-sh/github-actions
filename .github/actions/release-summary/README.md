@@ -26,21 +26,26 @@ any failure-notification job's `needs`.
 3. `src/render.py` builds the Slack blocks. PR and Linear links come only from
    the collected data: a PR number the model invents is dropped, and Linear
    ids in the model's text are never linked.
-4. `src/post.py` reads the banner thread first and skips when a summary for
-   this version is already there (it carries a `release_summary` metadata
-   marker), so a re-run or a manual dispatch never posts twice. If the thread
-   cannot be read, it skips rather than risk a duplicate. Slack calls retry
-   twice on rate limits and server errors.
-5. `src/conclude.sh` reports `posted`, `dry-run`, `skipped` or `failed` with a
-   reason that names the remedy, and writes counts to the job summary.
+4. `src/post.py` reads the banner thread first. When a summary for this
+   version is already there (it carries a `release_summary` metadata marker),
+   it edits that reply in place, so a re-run or a manual dispatch replaces a
+   thin or wrong summary and never posts a second one. If the thread cannot be
+   read, it skips rather than risk a duplicate. A new post retries only on
+   rate limits, because a timeout or server error may follow a post that
+   landed; an edit retries on any transient error.
+5. `src/conclude.sh` reports `posted`, `updated`, `dry-run`, `skipped` or
+   `failed` with a reason that names the remedy, and writes counts to the job
+   summary.
 
 The banner must be posted with a bot token to have a `ts`: see the
 `slack_bot_token` input of [`release-notification`](../release-notification/README.md)
 and the `message_ts` output of `notify-release.yaml`.
 
-The bot needs `chat:write` to post and `channels:history` (`groups:history`
-for a private channel) to read the thread. Without the read scope every
-summary skips with a warning.
+The bot needs `chat:write` to post and to edit its own reply, and
+`channels:history` (`groups:history` for a private channel) to read the
+thread. Without the read scope every summary skips with a warning. The bot
+can only edit replies it posted itself: to replace a summary posted some
+other way, delete it in Slack and re-run.
 
 ## Usage
 
@@ -90,8 +95,9 @@ summary without posting; it needs no Slack inputs.
 
 For a manual re-run, give the caller a `workflow_dispatch` workflow that
 takes the version and the banner's Slack link: `thread-ts` accepts a message
-ts or a Copy link URL. Share the `concurrency` group with the release job so
-two runs never race to post.
+ts or a Copy link URL. A re-run posts the summary if the thread has none and
+replaces it if it does. Share the `concurrency` group with the release job
+so two runs never race to post.
 
 ## Inputs
 

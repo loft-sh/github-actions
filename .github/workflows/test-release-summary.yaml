@@ -21,10 +21,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install pytest
-        run: python3 -m pip install --quiet --disable-pip-version-check pytest==8.3.3
+      - name: Install uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
       - name: Run release-summary pytest
-        run: python3 -m pytest .github/actions/release-summary/test/ -q
+        run: uv run --with pytest==8.3.3 pytest .github/actions/release-summary/test/ -q
 
   bats:
     runs-on: ubuntu-latest
@@ -52,7 +52,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 2
+          # collect.py skips a shallow checkout, so the smoke needs full history
+          fetch-depth: 0
           persist-credentials: false
       - name: Tag the last two commits
         run: |

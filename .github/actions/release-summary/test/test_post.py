@@ -26,6 +26,7 @@ VERSION = "v1.2.3"
 BANNER = {"type": "message", "ts": THREAD, "text": "banner"}
 REPLIES = "conversations.replies"
 POST = "chat.postMessage"
+UPDATE = "chat.update"
 
 
 def load():
@@ -208,24 +209,31 @@ def test_other_metadata_and_plain_replies_do_not_block(mod, slack, env):
     assert run_main(mod, env)["result"] == "posted"
 
 
-# idempotency
+# idempotency: a summary already in the thread is edited in place
 
-def test_exists_when_matching_reply_is_in_the_thread(mod, slack, env, capsys):
+def test_existing_summary_is_replaced_in_place(mod, slack, env, capsys):
     slack.queue(REPLIES, page(BANNER, summary_msg("1700000005.000300")))
+    slack.queue(UPDATE, {"ok": True, "ts": "1700000005.000300"})
     o = run_main(mod, env)
-    assert o == {"result": "exists", "message_ts": "1700000005.000300",
-                 "reason": f"a summary for {VERSION} is already in this thread"}
+    assert o == {"result": "updated", "reason": "", "message_ts": "1700000005.000300"}
     assert slack.calls(POST) == []
+    (edit,) = slack.calls(UPDATE)
+    payload = make_payload()
+    assert edit["method"] == "POST"
+    assert edit["body"] == {"channel": CHANNEL, "ts": "1700000005.000300",
+                            "text": payload["text"], "blocks": payload["blocks"],
+                            "metadata": payload["metadata"]}
     out = capsys.readouterr().out
-    assert "already in this thread" in out
+    assert "replaced the summary" in out
     assert "::warning::" not in out
 
 
 def test_match_on_second_page(mod, slack, env):
     cursor = "dGVhbTpDMDYx=="
     slack.queue(REPLIES, page(BANNER, cursor=cursor), page(summary_msg("1700000009.000900")))
+    slack.queue(UPDATE, {"ok": True})
     o = run_main(mod, env)
-    assert (o["result"], o["message_ts"]) == ("exists", "1700000009.000900")
+    assert (o["result"], o["message_ts"]) == ("updated", "1700000009.000900")
     first, second = slack.calls(REPLIES)
     assert "cursor" not in first["query"]
     assert second["query"]["cursor"] == [cursor]
@@ -234,8 +242,36 @@ def test_match_on_second_page(mod, slack, env):
 
 def test_match_on_first_page_stops_paging(mod, slack, env):
     slack.queue(REPLIES, page(summary_msg("1700000005.000300"), cursor="more"))
-    assert run_main(mod, env)["result"] == "exists"
+    slack.queue(UPDATE, {"ok": True})
+    assert run_main(mod, env)["result"] == "updated"
     assert len(slack.calls(REPLIES)) == 1
+
+
+def test_transient_update_failure_is_retried(mod, slack, env):
+    """An edit leaves the same message however often it runs, so unlike a
+    post it is retried on server errors too."""
+    slack.queue(REPLIES, page(summary_msg("1700000005.000300")))
+    slack.queue(UPDATE, (500, {"ok": False}, {}), {"ok": False, "error": "internal_error"},
+                {"ok": True})
+    assert run_main(mod, env)["result"] == "updated"
+    assert len(slack.calls(UPDATE)) == 3
+
+
+@pytest.mark.parametrize("error,remedy", [
+    ("cant_update_message", "posted by another app; delete the old summary"),
+    ("edit_window_closed", "delete the old summary in Slack and re-run"),
+    ("message_not_found", "re-run to post"),
+    ("missing_scope", "chat:write"),
+])
+def test_update_failure_names_the_remedy_and_never_posts(mod, slack, env, capsys, error, remedy):
+    slack.queue(REPLIES, page(summary_msg("1700000005.000300")))
+    slack.queue(UPDATE, {"ok": False, "error": error})
+    o = run_main(mod, env)
+    assert o["result"] == "failed"
+    assert o["reason"].startswith(f"chat.update failed ({error})")
+    assert remedy in o["reason"]
+    assert slack.calls(POST) == []
+    assert "::warning::" in capsys.readouterr().out
 
 
 def test_thread_longer_than_the_page_cap_is_skipped(mod, slack, env):

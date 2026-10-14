@@ -2,10 +2,11 @@
 """Post the rendered release summary as a Slack thread reply, once.
 
 The banner thread is read first. When a reply from an earlier run already
-carries the release_summary metadata for this repository and version, nothing
-is posted, so re-running the release workflow cannot post twice. When the
-thread cannot be read the post is skipped as well: without the lookup a re-run
-could not be told apart from a first run.
+carries the release_summary metadata for this repository and version, that
+reply is edited in place with chat.update, so a re-run replaces a thin or
+wrong summary and never adds a second one. When the thread cannot be read the
+post is skipped: without the lookup a re-run could not be told apart from a
+first run.
 
 The action is advisory-only and must never fail the release: every path,
 including an unexpected exception, writes its outputs and exits 0, with a
@@ -13,8 +14,9 @@ including an unexpected exception, writes its outputs and exits 0, with a
 or written; any text that reaches stdout or $GITHUB_OUTPUT has it masked.
 
 Env in:
-  SLACK_BOT_TOKEN   bot token; chat:write to post, plus channels:history
-                    (groups:history for a private channel) to read the thread
+  SLACK_BOT_TOKEN   bot token; chat:write to post and to edit its own reply,
+                    plus channels:history (groups:history for a private
+                    channel) to read the thread
   CHANNEL_ID        channel the banner was posted to
   THREAD_TS         banner message ts
   PAYLOAD_FILE      JSON written by render.py, posted as is: {channel,
@@ -27,9 +29,9 @@ Env in:
                     4 s backoff and any Retry-After; set it to 0 in tests
                     and local runs so a dead endpoint fails fast
 Env out ($GITHUB_OUTPUT, skipped when unset):
-  result            posted | exists | skipped | failed
-  reason            one line, empty when posted
-  message_ts        ts of the posted or existing reply, empty otherwise
+  result            posted | updated | skipped | failed
+  reason            one line, empty when posted or updated
+  message_ts        ts of the posted or updated reply, empty otherwise
 
 result is skipped when the post was not attempted (a missing input, an
 unusable payload, or a thread that could not be read) and failed when it was
@@ -81,10 +83,18 @@ POST_REMEDIES = {
     "not_in_channel": "invite the bot to the channel",
     "channel_not_found": CHANNEL_REMEDY,
 }
+DELETE_REMEDY = "delete the old summary in Slack and re-run to post a fresh one"
+UPDATE_REMEDIES = {
+    **POST_REMEDIES,
+    "cant_update_message": ("the old summary was posted by another app; "
+                            + DELETE_REMEDY),
+    "edit_window_closed": "the workspace no longer allows editing it; " + DELETE_REMEDY,
+    "message_not_found": "the old summary was deleted while this ran; re-run to post",
+}
 
 
 class Outcome(NamedTuple):
-    result: str  # posted | exists | skipped | failed
+    result: str  # posted | updated | skipped | failed
     reason: str = ""
     message_ts: str = ""
 
@@ -291,14 +301,30 @@ def find_existing(token: str, channel: str, thread_ts: str,
                "posted, so a re-run cannot post twice")
 
 
+def failure(method: str, resp: dict, remedies: dict) -> Outcome:
+    error = error_of(resp)
+    remedy = remedies.get(error)
+    reason = f"{method} failed ({error})"
+    return Outcome("failed", f"{reason}; {remedy}" if remedy else reason)
+
+
 def post(token: str, payload: dict) -> Outcome:
     resp = call("chat.postMessage", token, payload=payload, only_rate_limits=True)
     if resp.get("ok") is True:
         return Outcome("posted", "", str(resp.get("ts") or ""))
-    error = error_of(resp)
-    remedy = POST_REMEDIES.get(error)
-    reason = f"chat.postMessage failed ({error})"
-    return Outcome("failed", f"{reason}; {remedy}" if remedy else reason)
+    return failure("chat.postMessage", resp, POST_REMEDIES)
+
+
+def update(token: str, payload: dict, ts: str) -> Outcome:
+    """Replace the text of the summary an earlier run posted. Unlike a post,
+    an edit is safe to retry on any transient failure: running it twice
+    leaves the same message."""
+    body = {"channel": payload["channel"], "ts": ts, "text": payload.get("text", ""),
+            "blocks": payload.get("blocks", []), "metadata": payload["metadata"]}
+    resp = call("chat.update", token, payload=body)
+    if resp.get("ok") is True:
+        return Outcome("updated", "", ts)
+    return failure("chat.update", resp, UPDATE_REMEDIES)
 
 
 def deliver(token: str) -> Outcome:
@@ -316,9 +342,8 @@ def deliver(token: str) -> Outcome:
     payload = load_payload(env("PAYLOAD_FILE"), channel, thread_ts)
     key = summary_key(payload["metadata"])
     existing = find_existing(token, channel, thread_ts, key)
-    if existing is not None:
-        return Outcome("exists", f"a summary for {key[1]} is already in this "
-                       "thread", existing)
+    if existing:
+        return update(token, payload, existing)
     return post(token, payload)
 
 
@@ -337,8 +362,8 @@ def report(outcome: Outcome, token: str) -> None:
     result, reason, ts = outcome.result, clean(outcome.reason), clean(outcome.message_ts)
     if result in ("skipped", "failed"):
         warn(reason)
-    elif result == "exists":
-        info(reason)
+    elif result == "updated":
+        info(f"replaced the summary already in the thread (ts {ts})")
     else:
         info(f"posted the summary as a thread reply (ts {ts})")
     emit("result", result)

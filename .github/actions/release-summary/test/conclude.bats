@@ -44,6 +44,21 @@ out() { sed -n "s/^$1=//p" "$GITHUB_OUTPUT"; }
   [[ "$output" == *"::warning::release-summary: ai-step ended with 'failed'"* ]]
 }
 
+@test "failed AI step carries ai-step's reason" {
+  AI_CONCLUSION=failed AI_REASON="response truncated at max-tokens 16000; raise max-tokens" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(out conclusion)" = failed ]
+  [[ "$(out reason)" == *"truncated at max-tokens 16000"* ]]
+}
+
+@test "skipped AI step is a skip with ai-step's reason, not a failure" {
+  AI_CONCLUSION=skipped AI_REASON="unknown effort 'max'" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(out conclusion)" = skipped ]
+  [ "$(out reason)" = "ai-step skipped: unknown effort 'max'" ]
+  [[ "$output" != *"::warning::"* ]]
+}
+
 @test "missing render warns and exits 0" {
   RENDERED=false run bash "$SCRIPT"
   [ "$status" -eq 0 ]
@@ -65,11 +80,11 @@ out() { sed -n "s/^$1=//p" "$GITHUB_OUTPUT"; }
   [[ "$output" == *"invite the bot"* ]]
 }
 
-@test "a summary already in the thread is a skip, not a failure" {
-  POST_RESULT=exists POST_REASON="a summary for v1.1.0 is already in this thread" run bash "$SCRIPT"
+@test "a summary replaced in place is updated, not a failure" {
+  POST_RESULT=updated run bash "$SCRIPT"
   [ "$status" -eq 0 ]
-  [ "$(out conclusion)" = skipped ]
-  [ "$(out reason)" = "a summary for v1.1.0 is already in this thread" ]
+  [ "$(out conclusion)" = updated ]
+  [ "$(out reason)" = "" ]
   [[ "$output" != *"::warning::"* ]]
 }
 
