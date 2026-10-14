@@ -573,3 +573,15 @@ def test_script_exits_zero_on_unexpected_error(repo, env):
     assert proc.returncode == 0
     assert "collecting changes failed" in proc.stdout
     assert outputs(env)["proceed"] == "false"
+
+
+def test_script_exits_zero_when_github_output_is_unwritable(repo, env, tmp_path):
+    """The top-level handler writes outputs too, so a write failure there
+    must not turn into a traceback and exit 1."""
+    proc = subprocess.run(["python3", str(SRC)], capture_output=True, text=True,
+                          env={**__import__("os").environ,
+                               "GITHUB_OUTPUT": str(tmp_path),  # a directory
+                               "GITHUB_GRAPHQL_URL": "http://127.0.0.1:9/graphql"},
+                          timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    assert "could not write output" in proc.stdout

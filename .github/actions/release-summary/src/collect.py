@@ -83,8 +83,13 @@ def emit(key: str, value: str) -> None:
     path = os.environ.get("GITHUB_OUTPUT")
     if not path:
         return
-    with open(path, "a") as f:
-        f.write(f"{key}={value}\n")
+    # A full disk or an unwritable path must not raise: the top-level handler
+    # calls emit too, and a raise there would exit 1.
+    try:
+        with open(path, "a") as f:
+            f.write(f"{key}={value}\n")
+    except OSError as e:
+        print(f"::warning::release-summary: could not write output {key}: {e}")
 
 
 def skip(reason: str) -> None:

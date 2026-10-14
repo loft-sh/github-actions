@@ -90,7 +90,7 @@ runs:
       # Pinned by SHA like every internal composite (docs/CONVENTIONS.md):
       # input-file and max-tokens are newer than the commit ai-step/v1
       # points at. Merge this PR with a merge commit so the SHA stays on main.
-      uses: loft-sh/github-actions/.github/actions/ai-step@1a7ec2e6e10f817e093444a22445e913bb1eedd5 # ai-step/v1
+      uses: loft-sh/github-actions/.github/actions/ai-step@e36ead5fbb77c6fff66720215288783c6471d37d # ai-step/v1
       with:
         provider: anthropic
         effort: ${{ inputs.effort }}
