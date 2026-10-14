@@ -72,7 +72,7 @@ git tag -f <action-name>/v2 origin/main   # the merged commit
 git push origin <action-name>/v2 --force
 ```
 
-For `release-notification`, the `notify-release.yaml` wrapper and its inner composite both resolve at `@release-notification/v2` (see PR #147), so advancing that one tag moves the wrapper and composite together.
+For `release-notification`, the `notify-release.yaml` wrapper and its inner composite both resolve at the same coordination tag (see PR #147), so advancing that one tag moves the wrapper and composite together. `v3` added the bot-token banner post and the `message_ts` output (DEVOPS-1641); `v2` stays on the webhook-only code for callers that have not moved.
 
 ### The other half: do NOT advance a tag when the new code asks more of the caller
 

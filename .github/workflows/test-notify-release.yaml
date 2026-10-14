@@ -29,8 +29,8 @@ jobs:
       product: 'smoke-test'
       dry-run: true
     secrets:
-      # Required: this secret must exist in the repo even though dry-run
-      # never uses it — notify-release.yaml declares it as required.
+      # Optional since release-notification/v3; passed to keep the webhook
+      # wiring exercised.
       SLACK_WEBHOOK_URL_PRODUCT_RELEASES: ${{ secrets.SLACK_WEBHOOK_URL_PRODUCT_RELEASES }}
 
   notify-release-failure:
