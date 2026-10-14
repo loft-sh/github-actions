@@ -891,6 +891,20 @@ workspace session key).
 See [ai-step README](./.github/actions/ai-step/README.md) for inputs,
 outputs, and provider asymmetries.
 
+### Release summary
+
+Posts an AI summary of what a release changed since the previous tag as a
+Slack thread reply under its #product-releases banner. Collects merged PRs
+between the tags, summarizes them with `ai-step` into features, bug fixes,
+tech debt and tests, and links each item to its PR and Linear issue from the
+collected data. Advisory: it never fails the release that calls it.
+
+**Location:** `.github/actions/release-summary`
+
+**Usage:** needs the banner posted with a bot token so it has a message ts;
+see the [release-summary README](./.github/actions/release-summary/README.md)
+for the caller job and the `notify-release.yaml` inputs it pairs with.
+
 ### Actionlint
 
 Lints GitHub Actions workflow files using actionlint with reviewdog integration.
