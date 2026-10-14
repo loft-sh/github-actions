@@ -163,7 +163,16 @@ def test_run_without_session_warns(tmp_path):
     assert output == ""
 
 
-def test_unrecognised_boolean_uses_the_safe_default(tmp_path):
+def test_unrecognised_enabled_disables(tmp_path):
+    with FakeAnthropic() as server:
+        result, output = run_action(tmp_path, server, enabled="maybe")
+    assert result.returncode == 0
+    assert "unrecognised enabled='maybe'; using the safe default 'false'" in result.stdout
+    assert server.calls == []
+    assert output == ""
+
+
+def test_unrecognised_dry_run_stays_dry(tmp_path):
     with FakeAnthropic() as server:
         result, _ = run_action(tmp_path, server, dry_run="maybe")
     assert result.returncode == 0

@@ -16,6 +16,8 @@ also set `continue-on-error: true` and keep it in a job no release job needs.
 
 Set `enabled: false` to skip every API call. Set `dry-run: true` to resolve the
 deployment by name and log it without starting a run.
+An unrecognised `enabled` value disables the action, and an unrecognised `dry-run`
+value keeps it dry, so a typo never starts a run.
 
 ## Usage
 
@@ -46,12 +48,12 @@ overrides the base URL for tests.
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-|       INPUT       |  TYPE  | REQUIRED |  DEFAULT  |                                                  DESCRIPTION                                                  |
-|-------------------|--------|----------|-----------|---------------------------------------------------------------------------------------------------------------|
-| anthropic-api-key | string |  false   |           |                       Anthropic API key of the workspace <br>that holds the deployment                        |
-|  deployment-name  | string |   true   |           |              Name of the deployment to run, <br>for example scheduled-routines-cve-remediation                |
-|      dry-run      | string |  false   | `"false"` |                     Resolve the deployment by name and <br>log it without starting a run                      |
-|      enabled      | string |  false   | `"true"`  | Kill switch. Explicit falsey values skip <br>every API call; unrecognised values warn <br>and remain enabled  |
+|       INPUT       |  TYPE  | REQUIRED |  DEFAULT  |                                              DESCRIPTION                                               |
+|-------------------|--------|----------|-----------|--------------------------------------------------------------------------------------------------------|
+| anthropic-api-key | string |  false   |           |                   Anthropic API key of the workspace <br>that holds the deployment                     |
+|  deployment-name  | string |   true   |           |           Name of the deployment to run, <br>for example scheduled-routines-cve-remediation            |
+|      dry-run      | string |  false   | `"false"` |                 Resolve the deployment by name and <br>log it without starting a run                   |
+|      enabled      | string |  false   | `"true"`  | Kill switch. Explicit falsey values skip <br>every API call; unrecognised values warn <br>and disable  |
 
 <!-- AUTO-DOC-INPUT:END -->
 

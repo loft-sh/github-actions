@@ -32,7 +32,7 @@ def set_output(name, value):
             output.write(f"{name}={value}\n")
 
 
-def resolve_bool(name, raw_value, default):
+def resolve_bool(name, raw_value, default, safe_default):
     value = raw_value.strip().lower()
     if not value:
         return default
@@ -40,8 +40,8 @@ def resolve_bool(name, raw_value, default):
         return True
     if value in ("false", "no", "0", "off"):
         return False
-    warn(f"unrecognised {name}='{raw_value}'; using the safe default 'true'")
-    return True
+    warn(f"unrecognised {name}='{raw_value}'; using the safe default '{str(safe_default).lower()}'")
+    return safe_default
 
 
 def request(api_key, method, path, query=None):
@@ -77,8 +77,9 @@ def find_deployment(api_key, name):
 def run():
     api_key = os.getenv("INPUT_ANTHROPIC_API_KEY", "").strip()
     name = os.getenv("INPUT_DEPLOYMENT_NAME", "").strip()
-    enabled = resolve_bool("enabled", os.getenv("INPUT_ENABLED", "true"), True)
-    dry_run = resolve_bool("dry-run", os.getenv("INPUT_DRY_RUN", "false"), False)
+    # Unrecognised values fail safe: never start a run, and never a non-dry run.
+    enabled = resolve_bool("enabled", os.getenv("INPUT_ENABLED", "true"), True, False)
+    dry_run = resolve_bool("dry-run", os.getenv("INPUT_DRY_RUN", "false"), False, True)
 
     if not enabled:
         warn("disabled; skipping the managed agent run")
