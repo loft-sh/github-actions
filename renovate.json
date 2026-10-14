@@ -45,8 +45,11 @@
     },
     {
       "customType": "regex",
-      "description": "Update the semstat release pinned in the setup-semstat installer",
-      "managerFilePatterns": ["/^\\.github/actions/setup-semstat/src/install-semstat\\.sh$/"],
+      "description": "Update releases pinned as DEFAULT_VERSION in action scripts (setup-semstat installer, cve-scan snyk adapter)",
+      "managerFilePatterns": [
+        "/^\\.github/actions/setup-semstat/src/install-semstat\\.sh$/",
+        "/^\\.github/actions/cve-scan/src/scanners/snyk\\.sh$/"
+      ],
       "matchStrings": ["# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\s+DEFAULT_VERSION=(?<currentValue>\\S+)"]
     },
     {

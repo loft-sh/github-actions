@@ -1143,7 +1143,7 @@ jobs:
 - `dockerfile-path` (optional, default: empty): passed to the scanner as `--file` for base-image remediation advice; it does not change which vulnerabilities are found
 - `scanner` (optional, default: `snyk`): selects `src/scanners/<scanner>.sh`
 - `scanner-token` (required by the snyk adapter): named generically so a tool swap never renames this input
-- `scanner-version` (optional, renovate-pinned): scanner CLI version to install and checksum-verify
+- `scanner-version` (optional, default: empty): scanner CLI version to install and checksum-verify; empty uses the Renovate-managed pin in the adapter script
 - `severity-threshold` (optional, default: `high`)
 - `enabled` (optional, default: `true`): kill switch; resolves toward scanning on an unrecognised value
 - `block-on-findings` (optional, default: `false`): advisory vs. blocking posture
