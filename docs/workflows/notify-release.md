@@ -17,6 +17,7 @@ Sends a Slack notification to #product-releases when a new version is published.
 | promote_workflow | string  |  false   | `"promote-release.yaml"` |                                                                        Workflow file in target_repo that performs <br>the promotion, linked from the banner <br>when needs_promotion is true.                                                                         |
 |       ref        | string  |  false   |                          |                                                                                                           The git ref to checkout (defaults to github.ref)                                                                                                            |
 | release_version  | string  |   true   |                          |                                                                                                                 The release version tag (e.g. v1.2.3)                                                                                                                 |
+| slack_channel_id | string  |  false   |                          |                    Channel id of #product-releases. With SLACK_BOT_TOKEN_PRODUCT_RELEASES, <br>the success banner is posted through <br>the bot and its message ts <br>is returned as message_ts, so a <br>later job can reply in its <br>thread.                     |
 |      status      | string  |  false   |       `"success"`        |                                                                                            Release status: success, failure, cancelled, or <br>skipped (default: success)                                                                                             |
 |   target_repo    | string  |   true   |                          |                                                                                                               Target repository (e.g. loft-sh/vcluster)                                                                                                               |
 |   triggered_by   | string  |  false   |                          |                                Human who triggered the release; forwarded <br>to the Slack banner. Leave empty <br>to fall back to github.actor (the run actor, which is the bot PAT when the release was dispatched cross-workflow).                                 |
@@ -27,8 +28,9 @@ Sends a Slack notification to #product-releases when a new version is published.
 
 <!-- AUTO-DOC-SECRETS:START - Do not remove or modify this section -->
 
-|               SECRET               | REQUIRED |                   DESCRIPTION                    |
-|------------------------------------|----------|--------------------------------------------------|
-| SLACK_WEBHOOK_URL_PRODUCT_RELEASES |   true   | Slack incoming webhook URL for #product-releases |
+|               SECRET               | REQUIRED |                                                                                                 DESCRIPTION                                                                                                  |
+|------------------------------------|----------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|  SLACK_BOT_TOKEN_PRODUCT_RELEASES  |  false   | Slack bot token with chat:write and <br>channels:history in slack_channel_id. channels:history lets the <br>action confirm a post that ended <br>without a clear result instead of <br>risking a duplicate.  |
+| SLACK_WEBHOOK_URL_PRODUCT_RELEASES |  false   | Slack incoming webhook URL for #product-releases. <br>Required for failure notifications, for success <br>banners without a bot token, and <br>by dry-run; the fallback when the <br>bot post did not land.  |
 
 <!-- AUTO-DOC-SECRETS:END -->

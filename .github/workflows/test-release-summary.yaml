@@ -1,0 +1,84 @@
+name: Test release-summary
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/actions/release-summary/**'
+      - '.github/workflows/test-release-summary.yaml'
+  pull_request:
+    paths:
+      - '.github/actions/release-summary/**'
+      - '.github/workflows/test-release-summary.yaml'
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Run release-summary pytest
+        run: uv run --with pytest==8.3.3 pytest .github/actions/release-summary/test/ -q
+
+  bats:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: bats-core/bats-action@77d6fb60505b4d0d1d73e48bd035b55074bbfb43 # 4.0.0
+        with:
+          support-install: false
+          assert-install: false
+          detik-install: false
+          file-install: false
+      - name: Run release-summary bats tests
+        run: bats .github/actions/release-summary/test/*.bats
+
+  # Drives the composite end to end against this repository: two throwaway
+  # tags around one merged PR on main, a real GraphQL lookup, no Anthropic
+  # key. The action must collect, then skip with a reason, and the step must
+  # stay green.
+  smoke:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # collect.py skips a shallow checkout, so the smoke needs full history
+          fetch-depth: 0
+          persist-credentials: false
+      # HEAD^1 is the base branch tip on a pull request and the previous main
+      # commit on a push; either way it is a merged PR, so the range holds
+      # one PR and collection reaches the Anthropic key check.
+      - name: Tag one merged PR on main
+        run: |
+          git tag v0.0.0-smoke.1 HEAD^1~1
+          git tag v0.0.0-smoke.2 HEAD^1
+      - name: Run release-summary without an Anthropic key
+        id: summary
+        uses: ./.github/actions/release-summary
+        with:
+          version: v0.0.0-smoke.2
+          repository: ${{ github.repository }}
+          product: smoke-test
+          github-token: ${{ github.token }}
+          dry-run: 'true'
+      - name: Verify it collected, then skipped
+        env:
+          CONCLUSION: ${{ steps.summary.outputs.conclusion }}
+          REASON: ${{ steps.summary.outputs.reason }}
+          PREVIOUS_TAG: ${{ steps.summary.outputs.previous-tag }}
+        run: |
+          echo "conclusion=$CONCLUSION previous=$PREVIOUS_TAG reason=$REASON"
+          [ "$CONCLUSION" = skipped ]
+          [ "$PREVIOUS_TAG" = v0.0.0-smoke.1 ]
+          [[ "$REASON" == *"Anthropic API key"* ]]

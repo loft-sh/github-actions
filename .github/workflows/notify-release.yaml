@@ -60,14 +60,32 @@ on:
         required: false
         type: string
         default: 'promote-release.yaml'
+      slack_channel_id:
+        description: 'Channel id of #product-releases. With SLACK_BOT_TOKEN_PRODUCT_RELEASES, the success banner is posted through the bot and its message ts is returned as message_ts, so a later job can reply in its thread.'
+        required: false
+        type: string
+        default: ''
     secrets:
       SLACK_WEBHOOK_URL_PRODUCT_RELEASES:
-        description: 'Slack incoming webhook URL for #product-releases'
-        required: true
+        description: 'Slack incoming webhook URL for #product-releases. Required for failure notifications, for success banners without a bot token, and by dry-run; the fallback when the bot post did not land.'
+        required: false
+      SLACK_BOT_TOKEN_PRODUCT_RELEASES:
+        description: 'Slack bot token with chat:write and channels:history in slack_channel_id. channels:history lets the action confirm a post that ended without a clear result instead of risking a duplicate.'
+        required: false
+    outputs:
+      message_ts:
+        description: 'Message ts of the success banner when the bot token posted it; empty after a webhook post.'
+        value: ${{ jobs.notify_release.outputs.message_ts }}
+      channel_id:
+        description: 'Channel id of the bot token banner post; empty after a webhook post.'
+        value: ${{ jobs.notify_release.outputs.channel_id }}
 
 jobs:
   notify_release:
     runs-on: ubuntu-latest
+    outputs:
+      message_ts: ${{ steps.notify.outputs.message_ts }}
+      channel_id: ${{ steps.notify.outputs.channel_id }}
     steps:
       - name: Validate required inputs are non-empty (dry-run)
         if: inputs.dry-run
@@ -77,6 +95,9 @@ jobs:
           TARGET_REPO: ${{ inputs.target_repo }}
           PRODUCT: ${{ inputs.product }}
           STATUS: ${{ inputs.status }}
+          # v2 required the webhook secret at load time; v3 makes it optional
+          # for bot token banners, but failure notices still need it.
+          HAS_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL_PRODUCT_RELEASES != '' }} # zizmor: ignore[secrets-outside-env] -- presence check only, the value never reaches the step
         run: |
           echo "dry-run: validating notify-release inputs"
           echo "  release_version=$RELEASE_VERSION"
@@ -91,6 +112,10 @@ jobs:
               exit 1
             fi
           done
+          if [ "$HAS_WEBHOOK" != true ]; then
+            echo "::error::SLACK_WEBHOOK_URL_PRODUCT_RELEASES is empty. Failure notifications post through it, so a failed release would go unannounced."
+            exit 1
+          fi
           echo "All required inputs are valid"
       - name: Checkout repository
         if: ${{ !inputs.dry-run && inputs.status == 'success' }}
@@ -102,8 +127,9 @@ jobs:
           fetch-tags: true
           persist-credentials: false
       - name: Notify #product-releases Slack channel
+        id: notify
         if: ${{ !inputs.dry-run }}
-        uses: loft-sh/github-actions/.github/actions/release-notification@release-notification/v2 # zizmor: ignore[unpinned-uses] -- internal loft-sh/github-actions ref; @v2 is the floating coordination tag that keeps wrapper and composite atomically aligned (see DEVOPS-923 pin-drift class)
+        uses: loft-sh/github-actions/.github/actions/release-notification@release-notification/v3 # zizmor: ignore[unpinned-uses] -- internal loft-sh/github-actions ref; @v3 is the floating coordination tag that keeps wrapper and composite atomically aligned (see DEVOPS-923 pin-drift class)
         with:
           version: ${{ inputs.release_version }}
           previous_tag: ${{ inputs.previous_tag }}
@@ -120,3 +146,5 @@ jobs:
           # don't pass it, keeping existing behavior unchanged.
           triggered_by: ${{ inputs.triggered_by || github.actor }}
           webhook_url: ${{ secrets.SLACK_WEBHOOK_URL_PRODUCT_RELEASES }} # zizmor: ignore[secrets-outside-env] -- webhook URL passed via workflow_call
+          slack_bot_token: ${{ secrets.SLACK_BOT_TOKEN_PRODUCT_RELEASES }} # zizmor: ignore[secrets-outside-env] -- bot token passed via workflow_call
+          slack_channel_id: ${{ inputs.slack_channel_id }}

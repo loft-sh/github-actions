@@ -1,0 +1,175 @@
+name: Release summary
+description: |
+  Post an AI summary of the PRs merged since the previous tag as a Slack
+  thread reply under a release banner. Advisory: every failure path warns
+  and exits 0, so it never fails the release that calls it.
+inputs:
+  version:
+    description: 'Release tag to summarize. Must exist in the checkout.'
+    required: true
+  previous-tag:
+    description: 'Tag to compare against. Leave empty to use the nearest earlier v* tag that is not a -next tag.'
+    required: false
+    default: ''
+  repository:
+    description: 'Repository the release belongs to (owner/name). The checkout must be this repository with full history and tags.'
+    required: true
+  product:
+    description: 'Product name shown in the summary, e.g. vCluster Platform.'
+    required: true
+  github-token:
+    description: 'Token that can read the repository pull requests through GraphQL.'
+    required: true
+  anthropic-api-key:
+    description: 'Anthropic API key. Empty skips the summary with a warning.'
+    required: false
+    default: ''
+  slack-bot-token:
+    description: 'Slack bot token with chat:write and channels:history (groups:history for a private channel) in the banner channel. chat:write also lets a re-run edit the summary the bot posted earlier. Empty skips the post with a warning.'
+    required: false
+    default: ''
+  slack-channel-id:
+    description: 'Slack channel id the banner was posted to.'
+    required: false
+    default: ''
+  thread-ts:
+    description: 'Message ts of the release banner, or its Slack message link (Copy link); the summary is posted as a reply to it.'
+    required: false
+    default: ''
+  effort:
+    description: 'ai-step effort level (low, medium, high).'
+    required: false
+    default: 'medium'
+  linear-workspace:
+    description: 'Linear workspace slug used to link issue ids.'
+    required: false
+    default: 'loft'
+  dry-run:
+    description: 'Collect, summarize and render into the job summary without posting to Slack.'
+    required: false
+    default: 'false'
+
+outputs:
+  conclusion:
+    description: 'posted, updated, dry-run, skipped or failed. updated means a summary an earlier run posted in the thread was replaced in place.'
+    value: ${{ steps.conclude.outputs.conclusion }}
+  reason:
+    description: 'One-line reason when conclusion is skipped or failed.'
+    value: ${{ steps.conclude.outputs.reason }}
+  previous-tag:
+    description: 'Tag the release was compared against.'
+    value: ${{ steps.collect.outputs.previous_tag }}
+
+runs:
+  using: composite
+  steps:
+    # Every step continues on error: a summary is advisory and must never
+    # fail the job that calls this action. The scripts already exit 0 on
+    # every path they control; this covers the rest (a missing interpreter,
+    # a pip failure inside ai-step).
+    - name: Collect merged PRs
+      id: collect
+      continue-on-error: true
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+        PREVIOUS_TAG: ${{ inputs.previous-tag }}
+        REPOSITORY: ${{ inputs.repository }}
+        GH_TOKEN: ${{ inputs.github-token }}
+        HAS_ANTHROPIC_KEY: ${{ inputs.anthropic-api-key != '' }}
+        HAS_SLACK_TOKEN: ${{ inputs.slack-bot-token != '' }}
+        CHANNEL_ID: ${{ inputs.slack-channel-id }}
+        THREAD_TS: ${{ inputs.thread-ts }}
+        DRY_RUN: ${{ inputs.dry-run }}
+      run: python3 "${{ github.action_path }}/src/collect.py"
+
+    - name: Summarize changes
+      id: ai
+      if: steps.collect.outputs.proceed == 'true'
+      continue-on-error: true
+      # Pinned by SHA like every internal composite (docs/CONVENTIONS.md):
+      # input-file and max-tokens are newer than the commit ai-step/v1
+      # points at. Merge this PR with a merge commit so the SHA stays on main.
+      uses: loft-sh/github-actions/.github/actions/ai-step@e36ead5fbb77c6fff66720215288783c6471d37d # ai-step/v1
+      with:
+        provider: anthropic
+        effort: ${{ inputs.effort }}
+        # A summary of 55 to 90 PRs outgrows the 4096 default; 21333 is the
+        # most the Anthropic SDK allows without streaming.
+        max-tokens: '16000'
+        anthropic-api-key: ${{ inputs.anthropic-api-key }}
+        input-file: ${{ steps.collect.outputs.input_file }}
+        prompt: |
+          You are writing the release notes thread for ${{ inputs.product }} ${{ inputs.version }} in Slack.
+          The JSON below lists every pull request merged into ${{ inputs.repository }} between ${{ steps.collect.outputs.previous_tag }} and ${{ inputs.version }}: title, description, labels, changed paths, line counts, the Linear issues each PR references, and the overall diffstat.
+
+          Summarize the changes introduced in ${{ inputs.version }}. Group summaries into features, bug fixes, tech debt and tests. Within each group, sort by greatest to least customer impact. Refer both to the merged PR changes and the Linear issues they address or close.
+
+          Rules:
+          - Each item lists in prs the PR numbers it covers, taken only from the number field of each pull request. Backport descriptions cite the original main-branch PR, for example "(#8606)" or "Original PR Nr.: #8606"; never use a number from a title or description. Merge closely related PRs into one item.
+          - Write each summary as one or two plain sentences for a technical reader: what changed and why it matters to a user or operator. Name concrete API fields, annotations, flags and defaults when a description gives them.
+          - Leave links, PR numbers and Linear ids out of the summary text; they are added from the data.
+          - CI, build, dependency and refactoring changes are tech debt. Collapse dependency bumps into one item.
+          - New or changed e2e and unit tests go under tests.
+          - headline is one sentence on the release as a whole, and mentions anything that dominates the diffstat, such as vendored code.
+          - Describe only changes the input supports.
+        output-schema: |
+          {
+            "type": "object",
+            "required": ["headline", "features", "bug_fixes", "tech_debt", "tests"],
+            "properties": {
+              "headline": {"type": "string"},
+              "features": {"type": "array", "items": {"type": "object", "required": ["summary", "prs"], "properties": {"summary": {"type": "string"}, "prs": {"type": "array", "items": {"type": "integer"}}}}},
+              "bug_fixes": {"type": "array", "items": {"type": "object", "required": ["summary", "prs"], "properties": {"summary": {"type": "string"}, "prs": {"type": "array", "items": {"type": "integer"}}}}},
+              "tech_debt": {"type": "array", "items": {"type": "object", "required": ["summary", "prs"], "properties": {"summary": {"type": "string"}, "prs": {"type": "array", "items": {"type": "integer"}}}}},
+              "tests": {"type": "array", "items": {"type": "object", "required": ["summary", "prs"], "properties": {"summary": {"type": "string"}, "prs": {"type": "array", "items": {"type": "integer"}}}}}
+            }
+          }
+
+    - name: Render Slack reply
+      id: render
+      if: steps.collect.outputs.proceed == 'true' && steps.ai.outputs.conclusion == 'success'
+      continue-on-error: true
+      shell: bash
+      env:
+        AI_RESULT: ${{ steps.ai.outputs.result }}
+        PRS_FILE: ${{ steps.collect.outputs.prs_file }}
+        LINEAR_WORKSPACE: ${{ inputs.linear-workspace }}
+        CHANNEL_ID: ${{ inputs.slack-channel-id }}
+        THREAD_TS: ${{ steps.collect.outputs.thread_ts }}
+        PAYLOAD_FILE: ${{ runner.temp }}/release-summary-payload.json
+      run: python3 "${{ github.action_path }}/src/render.py"
+
+    - name: Post thread reply
+      id: post
+      if: steps.render.outputs.rendered == 'true' && inputs.dry-run != 'true'
+      continue-on-error: true
+      shell: bash
+      env:
+        SLACK_BOT_TOKEN: ${{ inputs.slack-bot-token }}
+        CHANNEL_ID: ${{ inputs.slack-channel-id }}
+        THREAD_TS: ${{ steps.collect.outputs.thread_ts }}
+        PAYLOAD_FILE: ${{ runner.temp }}/release-summary-payload.json
+      run: python3 "${{ github.action_path }}/src/post.py"
+
+    - name: Report outcome
+      id: conclude
+      if: always()
+      continue-on-error: true
+      shell: bash
+      env:
+        PROCEED: ${{ steps.collect.outputs.proceed }}
+        SKIP_REASON: ${{ steps.collect.outputs.reason }}
+        AI_CONCLUSION: ${{ steps.ai.outputs.conclusion }}
+        AI_REASON: ${{ steps.ai.outputs.reason }}
+        RENDERED: ${{ steps.render.outputs.rendered }}
+        POST_RESULT: ${{ steps.post.outputs.result }}
+        POST_REASON: ${{ steps.post.outputs.reason }}
+        DRY_RUN: ${{ inputs.dry-run }}
+        VERSION: ${{ inputs.version }}
+        PREVIOUS_TAG: ${{ steps.collect.outputs.previous_tag }}
+        PR_COUNT: ${{ steps.collect.outputs.pr_count }}
+        ITEM_COUNT: ${{ steps.render.outputs.item_count }}
+        DROPPED_REFS: ${{ steps.render.outputs.dropped_refs }}
+        PAYLOAD_FILE: ${{ runner.temp }}/release-summary-payload.json
+      run: bash "${{ github.action_path }}/src/conclude.sh"

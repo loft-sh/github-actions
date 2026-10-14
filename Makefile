@@ -1,4 +1,4 @@
-.PHONY: test test-secret-broker-request test-secret-broker-response test-semver-validation test-setup-semstat test-linear-pr-commenter test-link-backport-prs test-select-backport-source-prs test-release-notification test-linear-release-sync test-linear-cve-summary test-aws-test-infra test-cleanup-head-charts test-ci-test-notify test-auto-approve-bot-prs test-ai-pr-review test-ai-step test-publish-helm-chart test-govulncheck test-go-licenses test-run-ginkgo test-sticky-pr-comment test-repository-dispatch test-parse-label-filter test-release-branch-freeze test-prerelease-setup test-vcluster-release test-platform-release test-release-lib test-subtree-mirror test-oss-commit-sync test-oss-mirror-staleness test-backport-legacy-allowlist test-backport-legacy-split test-promote-release test-wait-for-release test-cve-scan test-commitlint test-resolve-github-release test-comment-triggered-check build-linear-release-sync lint check-bats-jobs install-auto-doc generate-docs check-docs help
+.PHONY: test test-secret-broker-request test-secret-broker-response test-semver-validation test-setup-semstat test-linear-pr-commenter test-link-backport-prs test-select-backport-source-prs test-release-notification test-linear-release-sync test-linear-cve-summary test-aws-test-infra test-cleanup-head-charts test-ci-test-notify test-auto-approve-bot-prs test-ai-pr-review test-ai-step test-release-summary test-publish-helm-chart test-govulncheck test-go-licenses test-run-ginkgo test-sticky-pr-comment test-repository-dispatch test-parse-label-filter test-release-branch-freeze test-prerelease-setup test-vcluster-release test-platform-release test-release-lib test-subtree-mirror test-oss-commit-sync test-oss-mirror-staleness test-backport-legacy-allowlist test-backport-legacy-split test-promote-release test-wait-for-release test-cve-scan test-commitlint test-resolve-github-release test-comment-triggered-check build-linear-release-sync lint check-bats-jobs install-auto-doc generate-docs check-docs help
 
 ACTIONS_DIR := .github/actions
 WORKFLOWS_DIR := .github/workflows
@@ -93,7 +93,7 @@ check-docs: generate-docs ## verify docs are up to date (fails if drift detected
 help: ## show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-30s %s\n", $$1, $$2}'
 
-test: test-secret-broker-request test-secret-broker-response test-semver-validation test-setup-semstat test-linear-pr-commenter test-link-backport-prs test-select-backport-source-prs test-release-notification test-linear-release-sync test-linear-cve-summary test-aws-test-infra test-cleanup-head-charts test-auto-approve-bot-prs test-ai-pr-review test-ai-step test-ci-test-notify test-go-licenses test-publish-helm-chart test-govulncheck test-run-ginkgo test-sticky-pr-comment test-repository-dispatch test-parse-label-filter test-release-branch-freeze test-prerelease-setup test-vcluster-release test-platform-release test-release-lib test-subtree-mirror test-oss-commit-sync test-oss-mirror-staleness test-backport-legacy-allowlist test-backport-legacy-split test-promote-release test-wait-for-release test-cve-scan test-commitlint test-resolve-github-release test-comment-triggered-check ## run all action tests
+test: test-secret-broker-request test-secret-broker-response test-semver-validation test-setup-semstat test-linear-pr-commenter test-link-backport-prs test-select-backport-source-prs test-release-notification test-linear-release-sync test-linear-cve-summary test-aws-test-infra test-cleanup-head-charts test-auto-approve-bot-prs test-ai-pr-review test-ai-step test-release-summary test-ci-test-notify test-go-licenses test-publish-helm-chart test-govulncheck test-run-ginkgo test-sticky-pr-comment test-repository-dispatch test-parse-label-filter test-release-branch-freeze test-prerelease-setup test-vcluster-release test-platform-release test-release-lib test-subtree-mirror test-oss-commit-sync test-oss-mirror-staleness test-backport-legacy-allowlist test-backport-legacy-split test-promote-release test-wait-for-release test-cve-scan test-commitlint test-resolve-github-release test-comment-triggered-check ## run all action tests
 
 test-secret-broker-request: ## run secret-broker-request pytest tests
 	uv run --with pytest==8.3.3 pytest $(ACTIONS_DIR)/secret-broker-request/test/ -q
@@ -116,7 +116,8 @@ test-link-backport-prs: ## run link-backport-prs unit tests
 test-select-backport-source-prs: ## run select-backport-source-prs bats tests
 	bats $(ACTIONS_DIR)/select-backport-source-prs/test/*.bats
 
-test-release-notification: ## run release-notification tests
+test-release-notification: ## run release-notification pytest + bats tests
+	uv run --with pytest==8.3.3 pytest $(ACTIONS_DIR)/release-notification/test/ -q
 	bats $(ACTIONS_DIR)/release-notification/test/*.bats
 
 test-linear-release-sync: ## run linear-release-sync unit tests
@@ -141,6 +142,10 @@ test-ai-pr-review: ## run ai-pr-review bats tests
 test-ai-step: ## run ai-step bats + python tests (python needs: pip install pytest jsonschema)
 	bats $(ACTIONS_DIR)/ai-step/test/*.bats
 	python3 -m pytest $(ACTIONS_DIR)/ai-step/test/ -q
+
+test-release-summary: ## run release-summary pytest + bats tests
+	uv run --with pytest==8.3.3 pytest $(ACTIONS_DIR)/release-summary/test/ -q
+	bats $(ACTIONS_DIR)/release-summary/test/*.bats
 
 test-ci-test-notify: ## run ci-test-notify bats tests
 	bats $(ACTIONS_DIR)/ci-test-notify/test

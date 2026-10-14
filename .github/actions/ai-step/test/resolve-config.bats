@@ -40,6 +40,17 @@ run_script_session() {
     GITHUB_OUTPUT="$GITHUB_OUTPUT" "$SCRIPT"
 }
 
+# max-tokens rows: single-call mode with an explicit INPUT_MAX_TOKENS.
+run_script_tokens() {
+  local provider="$1" tokens="$2"
+  run env \
+    INPUT_PROVIDER="$provider" \
+    INPUT_EFFORT=medium \
+    INPUT_OUTPUT_SCHEMA="$SCHEMA" \
+    INPUT_MAX_TOKENS="$tokens" \
+    GITHUB_OUTPUT="$GITHUB_OUTPUT" "$SCRIPT"
+}
+
 assert_kv() {
   local want="$1=$2" actual
   actual=$(grep "^$1=" "$GITHUB_OUTPUT" | tail -n1)
@@ -264,6 +275,126 @@ assert_kv() {
   grep -q 'reason=.*output-schema is required' "$GITHUB_OUTPUT" || {
     cat "$GITHUB_OUTPUT"; return 1;
   }
+}
+
+# --- max-tokens (single-call mode) -------------------------------------------
+# 21333 is the largest max_tokens the Anthropic SDK accepts without streaming:
+# 3600 s * max_tokens / 128000 must stay at or under 600 s.
+
+@test "max-tokens unset → proceed=true (default applies)" {
+  run_script anthropic medium
+  [ "$status" -eq 0 ]
+  assert_kv proceed true
+}
+
+@test "max-tokens empty → proceed=true (default applies)" {
+  run_script_tokens anthropic ""
+  [ "$status" -eq 0 ]
+  assert_kv proceed true
+}
+
+@test "max-tokens 4096 and 16000 → proceed=true" {
+  run_script_tokens anthropic 4096
+  [ "$status" -eq 0 ]
+  assert_kv proceed true
+  run_script_tokens anthropic 16000
+  [ "$status" -eq 0 ]
+  assert_kv proceed true
+}
+
+@test "max-tokens at the SDK bound (21333) → proceed=true" {
+  run_script_tokens anthropic 21333
+  [ "$status" -eq 0 ]
+  assert_kv proceed true
+}
+
+@test "max-tokens above the SDK bound (21334) on anthropic → proceed=false, reason names the bound" {
+  run_script_tokens anthropic 21334
+  [ "$status" -eq 0 ]
+  assert_kv proceed false
+  grep -q 'reason=.*max-tokens.*above 21333' "$GITHUB_OUTPUT" || {
+    cat "$GITHUB_OUTPUT"; return 1;
+  }
+}
+
+@test "max-tokens far above the bound does not overflow shell arithmetic" {
+  run_script_tokens anthropic 99999999999999999999999999
+  [ "$status" -eq 0 ]
+  assert_kv proceed false
+  grep -q 'reason=.*above 21333' "$GITHUB_OUTPUT" || {
+    cat "$GITHUB_OUTPUT"; return 1;
+  }
+}
+
+@test "max-tokens with leading zeros is compared as a number" {
+  run_script_tokens anthropic 0008192
+  [ "$status" -eq 0 ]
+  assert_kv proceed true
+  run_script_tokens anthropic 0021334
+  [ "$status" -eq 0 ]
+  assert_kv proceed false
+}
+
+@test "max-tokens zero → proceed=false, reason says positive integer" {
+  run_script_tokens anthropic 0
+  [ "$status" -eq 0 ]
+  assert_kv proceed false
+  grep -q 'reason=.*max-tokens.*positive integer' "$GITHUB_OUTPUT" || {
+    cat "$GITHUB_OUTPUT"; return 1;
+  }
+  run_script_tokens anthropic 000
+  [ "$status" -eq 0 ]
+  assert_kv proceed false
+}
+
+@test "max-tokens non-numeric, negative, fractional or padded → proceed=false" {
+  local bad
+  for bad in lots -5 4096.5 "4096 " " 4096" 1e3; do
+    : > "$GITHUB_OUTPUT"
+    run_script_tokens anthropic "$bad"
+    [ "$status" -eq 0 ]
+    assert_kv proceed false
+    grep -q 'reason=.*invalid max-tokens' "$GITHUB_OUTPUT" || {
+      echo "value: '$bad'"; cat "$GITHUB_OUTPUT"; return 1;
+    }
+  done
+}
+
+@test "max-tokens invalid on openai → proceed=false" {
+  run_script_tokens openai lots
+  [ "$status" -eq 0 ]
+  assert_kv proceed false
+  grep -q 'reason=.*invalid max-tokens' "$GITHUB_OUTPUT" || {
+    cat "$GITHUB_OUTPUT"; return 1;
+  }
+}
+
+@test "max-tokens above 21333 is fine on openai (the SDK bound is anthropic-only)" {
+  run_script_tokens openai 50000
+  [ "$status" -eq 0 ]
+  assert_kv proceed true
+  assert_kv model gpt-5.3-codex
+}
+
+@test "max-tokens is ignored in session mode" {
+  run env -u ANTHROPIC_FEDERATION_RULE_ID \
+    INPUT_PROVIDER=anthropic \
+    INPUT_EFFORT=medium \
+    INPUT_OUTPUT_SCHEMA="$SCHEMA" \
+    INPUT_AGENT=pr-review-lead \
+    INPUT_ANTHROPIC_SESSION_KEY=sk-test-key \
+    INPUT_MAX_TOKENS=lots \
+    GITHUB_OUTPUT="$GITHUB_OUTPUT" "$SCRIPT"
+  [ "$status" -eq 0 ]
+  assert_kv proceed true
+  assert_kv mode session
+}
+
+@test "a newline in a rejected input cannot add outputs through the reason" {
+  run_script_tokens anthropic $'1\nproceed=true'
+  [ "$status" -eq 0 ]
+  assert_kv proceed false
+  [ "$(grep -c '^proceed=' "$GITHUB_OUTPUT")" -eq 1 ]
 }
 
 # --- missing required envs ---------------------------------------------------
