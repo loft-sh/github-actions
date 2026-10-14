@@ -29,9 +29,10 @@ jobs:
       product: 'smoke-test'
       dry-run: true
     secrets:
-      # Optional since release-notification/v3; passed to keep the webhook
-      # wiring exercised.
-      SLACK_WEBHOOK_URL_PRODUCT_RELEASES: ${{ secrets.SLACK_WEBHOOK_URL_PRODUCT_RELEASES }}
+      # A dry run requires the webhook, because failure notices only post
+      # through it. Dry runs never post, so a placeholder satisfies the check
+      # without a real secret in this repository.
+      SLACK_WEBHOOK_URL_PRODUCT_RELEASES: unused-in-dry-run
 
   notify-release-failure:
     permissions:
@@ -44,7 +45,7 @@ jobs:
       status: 'failure'
       dry-run: true
     secrets:
-      SLACK_WEBHOOK_URL_PRODUCT_RELEASES: ${{ secrets.SLACK_WEBHOOK_URL_PRODUCT_RELEASES }}
+      SLACK_WEBHOOK_URL_PRODUCT_RELEASES: unused-in-dry-run
 
   verify:
     needs: [notify-release-success, notify-release-failure]

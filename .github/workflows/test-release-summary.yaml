@@ -42,8 +42,9 @@ jobs:
         run: bats .github/actions/release-summary/test/*.bats
 
   # Drives the composite end to end against this repository: two throwaway
-  # tags, a real GraphQL lookup, no Anthropic key. The action must collect,
-  # then skip with a reason, and the step must stay green.
+  # tags around one merged PR on main, a real GraphQL lookup, no Anthropic
+  # key. The action must collect, then skip with a reason, and the step must
+  # stay green.
   smoke:
     runs-on: ubuntu-latest
     permissions:
@@ -55,10 +56,13 @@ jobs:
           # collect.py skips a shallow checkout, so the smoke needs full history
           fetch-depth: 0
           persist-credentials: false
-      - name: Tag the last two commits
+      # HEAD^1 is the base branch tip on a pull request and the previous main
+      # commit on a push; either way it is a merged PR, so the range holds
+      # one PR and collection reaches the Anthropic key check.
+      - name: Tag one merged PR on main
         run: |
-          git tag v0.0.0-smoke.1 HEAD~1
-          git tag v0.0.0-smoke.2 HEAD
+          git tag v0.0.0-smoke.1 HEAD^1~1
+          git tag v0.0.0-smoke.2 HEAD^1
       - name: Run release-summary without an Anthropic key
         id: summary
         uses: ./.github/actions/release-summary
