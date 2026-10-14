@@ -26,6 +26,14 @@ inputs:
       the contents of a file read in a prior step.
     required: false
     default: ''
+  input-file:
+    description: |
+      Optional path to a file whose contents are appended after input.
+      Use it for data too large for an input: inputs reach the script
+      through environment variables, and Linux refuses to start a
+      process when one variable exceeds 128 KiB.
+    required: false
+    default: ''
   output-schema:
     description: |
       JSON Schema (string) the model output must conform to. Required.
@@ -128,6 +136,7 @@ runs:
         INPUT_MODEL: ${{ steps.cfg.outputs.model }}
         INPUT_PROMPT: ${{ inputs.prompt }}
         INPUT_INPUT: ${{ inputs.input }}
+        INPUT_INPUT_FILE: ${{ inputs.input-file }}
         INPUT_OUTPUT_SCHEMA: ${{ inputs.output-schema }}
         INPUT_ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
         INPUT_OPENAI_API_KEY: ${{ inputs.openai-api-key }}

@@ -88,6 +88,22 @@ def fail_soft(msg: str, body: str = "") -> None:
     sys.exit(0)
 
 
+def read_input() -> str:
+    """Inline input followed by the contents of input-file.
+
+    input-file exists because inputs travel as env vars, and a single
+    env var over 128 KiB stops the step from starting at all."""
+    parts = [os.environ.get("INPUT_INPUT", "")]
+    path = os.environ.get("INPUT_INPUT_FILE", "").strip()
+    if path:
+        try:
+            with open(path, encoding="utf-8") as f:
+                parts.append(f.read())
+        except OSError as e:
+            fail_soft(f"input-file could not be read: {e}")
+    return "\n\n".join(p for p in parts if p)
+
+
 def require(name: str) -> str:
     v = os.environ.get(name, "")
     if not v:
@@ -331,7 +347,7 @@ def main() -> None:
     mode = os.environ.get("INPUT_MODE", "") or "single"
     prompt = require("INPUT_PROMPT")
     schema_raw = require("INPUT_OUTPUT_SCHEMA")
-    input_text = os.environ.get("INPUT_INPUT", "")
+    input_text = read_input()
 
     try:
         schema = json.loads(schema_raw)
