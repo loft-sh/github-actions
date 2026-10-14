@@ -67,6 +67,13 @@
 #                     to preview can't accidentally fire a real retag/release
 #                     flip. It still READS - it resolves every source manifest,
 #                     which is what makes the printed plan trustworthy.
+#   INPUT_SCOPE      Which moving pointers this run owns. "all" (default)
+#                     moves every one. "latest" moves only what tracks the
+#                     newest promoted release: :latest, the GitHub Latest flag
+#                     (promote-self, oss-repo) and the Homebrew tap. "line"
+#                     moves only :{major} and :{major}.{minor}, touches no
+#                     release or tap, and needs VERSION's caller release to be
+#                     published. Anything else, '' included, fails the run.
 #
 # GITHUB_REPOSITORY (owner/repo of the caller, set automatically by Actions)
 # is used to detect a backport/patch promotion: if VERSION is older than the
@@ -74,10 +81,11 @@
 # alone so promoting an older line's patch can never move :latest backwards. :{major}.{minor} is
 # scoped to VERSION's own line, so it advances on its own gate: only when
 # VERSION is the newest stable *within its own {major}.{minor} line*. :{major}
-# moves with :latest, and also whenever VERSION is the newest stable in its own
-# major, so :4 keeps following 4.x patches after a 5.x release is Latest. That
-# keeps a same-line out-of-order promotion (e.g. promoting v9.9.5 after
-# v9.9.6 already moved :9.9) from regressing the line tag too.
+# moves with :latest under scope=all, and whenever VERSION is the newest stable
+# in its own major, so :4 keeps following 4.x patches after a 5.x release is
+# Latest. That keeps a same-line out-of-order promotion (e.g. promoting v9.9.5
+# after v9.9.6 already moved :9.9) from regressing the line tag too.
+# scope=latest checks only :latest, and scope=line only the other two.
 #
 # Homebrew promotion is a metadata patch, not a rebuild: a formula's per-
 # platform sha256 values are exactly what's already in oss-repo's <version>
@@ -120,6 +128,19 @@ case "${raw_dry_run,,}" in
   *)
     echo "::warning::unrecognized dry-run value '${raw_dry_run}'; defaulting to dry-run (no mutations). Pass exactly 'false' to promote for real." >&2
     DRY_RUN="true"
+    ;;
+esac
+
+# Unlike dry-run there is no safe default to fall back to: every scope writes
+# something, so a typo fails instead of guessing which pointers to move. Only an
+# unset value means all; action.yml always sets it, so '' is a caller expression
+# that resolved empty, and widening that to all would move :latest unasked.
+SCOPE="${INPUT_SCOPE-all}"
+case "${SCOPE}" in
+  all | latest | line) ;;
+  *)
+    echo "::error::scope must be one of all, latest, line; got '${SCOPE}'" >&2
+    exit 1
     ;;
 esac
 
@@ -211,7 +232,7 @@ RELEASE_LIST=""
 fetch_release_list() {
   local repo="$1" failure_mode="${2:-hard}" raw
 
-  if raw=$(gh release list --repo "${repo}" --json tagName,isLatest --limit 1000 2>&1); then
+  if raw=$(gh release list --repo "${repo}" --exclude-drafts --json tagName,isLatest --limit 1000 2>&1); then
     if jq -e '
       type == "array" and
       all(.[];
@@ -315,8 +336,8 @@ version_at_or_after() {
 }
 
 # True if VERSION is at or after the GitHub Latest pointer in $1, using the
-# release-list JSON snapshot in $2. This gates :latest, :{major}, and the
-# repository's GitHub Latest pointer.
+# release-list JSON snapshot in $2. This gates :latest and the repository's
+# GitHub Latest pointer, and under scope=all :{major} too.
 #
 # The baseline is the release currently flagged isLatest: the last release a
 # human actually promoted. It cannot be "newest non-prerelease", because with
@@ -360,10 +381,10 @@ is_at_or_after_latest_pointer() {
   else
     LATEST_BASELINE_NOTE="Latest-flagged release ${max}"
     # A warning rather than a notice, and rather than an error: the run below is
-    # otherwise correct and still moves :{major}.{minor}, so failing would block a
-    # promotion that partly succeeds. But a non-version baseline outranks every
-    # release, so this repo withholds :latest on every promotion from now
-    # on, and re-running is the one thing that cannot fix it.
+    # otherwise correct and, under scope=all, still moves the line tags, so
+    # failing would block a promotion that partly succeeds. But a non-version
+    # baseline outranks every release, so this repo withholds :latest on every
+    # promotion from now on, and re-running is the one thing that cannot fix it.
     if ! is_version_shaped "${max}"; then
       echo "::warning::the release flagged Latest on ${repo} is tagged '${max}', which is not a version, so nothing can be ordered against it. :latest will be withheld on every promotion until the Latest flag is moved to a released version - a re-run will not clear this."
     fi
@@ -408,32 +429,66 @@ is_newest_in_major() {
 fetch_release_list "${GITHUB_REPOSITORY}" "hard"
 CALLER_RELEASE_LIST="${RELEASE_LIST}"
 
-ADVANCE_LATEST=true
-if ! is_at_or_after_latest_pointer "${GITHUB_REPOSITORY}" "${CALLER_RELEASE_LIST}"; then
-  ADVANCE_LATEST=false
-  echo "::notice::${VERSION} is older than the promotion baseline on ${GITHUB_REPOSITORY} (${LATEST_BASELINE_NOTE}); skipping :latest so it isn't moved backwards."
-fi
-CALLER_BASELINE_NOTE="${LATEST_BASELINE_NOTE}"
+ADVANCE_LATEST=false
+ADVANCE_MAJOR=false
+ADVANCE_MINOR=false
+CALLER_BASELINE_NOTE=""
 
-# :{major} also advances when VERSION is newest in its own major, even if a
-# newer major holds Latest. Otherwise :4 would freeze the day 5.0 ships.
-ADVANCE_MAJOR="${ADVANCE_LATEST}"
-if [[ "${ADVANCE_MAJOR}" != "true" ]] && is_newest_in_major "${MAJOR}" "${CALLER_RELEASE_LIST}"; then
-  ADVANCE_MAJOR=true
-fi
-if [[ "${ADVANCE_MAJOR}" != "true" ]]; then
-  echo "::notice::${VERSION} is not the newest stable release in major ${MAJOR} on ${GITHUB_REPOSITORY}; skipping :${MAJOR} so it isn't moved backwards."
+if [[ "${SCOPE}" != "line" ]]; then
+  ADVANCE_LATEST=true
+  if ! is_at_or_after_latest_pointer "${GITHUB_REPOSITORY}" "${CALLER_RELEASE_LIST}"; then
+    ADVANCE_LATEST=false
+    echo "::notice::${VERSION} is older than the promotion baseline on ${GITHUB_REPOSITORY} (${LATEST_BASELINE_NOTE}); skipping :latest so it isn't moved backwards."
+  fi
+  CALLER_BASELINE_NOTE="${LATEST_BASELINE_NOTE}"
 fi
 
-# :{major}.{minor} gets its own, line-scoped gate. When VERSION is newest
-# overall this is necessarily also true, so the happy path is unchanged; the
-# case it guards is a same-line out-of-order promotion where VERSION is NOT
-# the newest patch in its own {major}.{minor} line - advancing :{major}.{minor}
-# there would silently regress it to an older patch.
-ADVANCE_MINOR=true
-if ! is_newest_in_line "${MAJOR}.${MINOR}" "${CALLER_RELEASE_LIST}"; then
-  ADVANCE_MINOR=false
-  echo "::notice::${VERSION} is not the newest stable release in the ${MAJOR}.${MINOR} line on ${GITHUB_REPOSITORY}; skipping :${MAJOR}.${MINOR} so it isn't moved backwards within its own line."
+if [[ "${SCOPE}" != "latest" ]]; then
+  # :{major} also advances when VERSION is newest in its own major, even if a
+  # newer major holds Latest. Otherwise :4 would freeze the day 5.0 ships.
+  #
+  # Under scope=line ADVANCE_LATEST is false, so only the newest-in-major check
+  # counts. That is on purpose: a line run follows the build, while Latest is
+  # moved by hand and lags it, so a backport cut after an unpromoted newer minor
+  # is still ahead of Latest and would drag :{major} back onto the older line.
+  ADVANCE_MAJOR="${ADVANCE_LATEST}"
+  if [[ "${ADVANCE_MAJOR}" != "true" ]] && is_newest_in_major "${MAJOR}" "${CALLER_RELEASE_LIST}"; then
+    ADVANCE_MAJOR=true
+  fi
+  if [[ "${ADVANCE_MAJOR}" != "true" ]]; then
+    echo "::notice::${VERSION} is not the newest stable release in major ${MAJOR} on ${GITHUB_REPOSITORY}; skipping :${MAJOR} so it isn't moved backwards."
+  fi
+
+  # :{major}.{minor} gets its own, line-scoped gate. When VERSION is newest
+  # overall this is necessarily also true, so the happy path is unchanged; the
+  # case it guards is a same-line out-of-order promotion where VERSION is NOT
+  # the newest patch in its own {major}.{minor} line - advancing :{major}.{minor}
+  # there would silently regress it to an older patch.
+  ADVANCE_MINOR=true
+  if ! is_newest_in_line "${MAJOR}.${MINOR}" "${CALLER_RELEASE_LIST}"; then
+    ADVANCE_MINOR=false
+    echo "::notice::${VERSION} is not the newest stable release in the ${MAJOR}.${MINOR} line on ${GITHUB_REPOSITORY}; skipping :${MAJOR}.${MINOR} so it isn't moved backwards within its own line."
+  fi
+fi
+
+# A line run follows a build rather than a person, and touches no release, so
+# nothing else would notice that the build never published one. Images pushed by
+# a build that failed before publishing must not become :{major}.{minor}.
+if [[ "${SCOPE}" == "line" ]] && ! jq -e --arg v "${VERSION}" 'any(.[]; .tagName == $v)' >/dev/null <<<"${CALLER_RELEASE_LIST}"; then
+  if [[ "${DRY_RUN}" == "true" ]]; then
+    echo "::warning::no published ${VERSION} release on ${GITHUB_REPOSITORY}; a real scope=line run would abort." >&2
+  else
+    echo "::error::no published ${VERSION} release on ${GITHUB_REPOSITORY}, so its build did not finish. Refusing to move :${MAJOR} or :${MAJOR}.${MINOR}." >&2
+    exit 1
+  fi
+fi
+
+if [[ "${ADVANCE_LATEST}${ADVANCE_MAJOR}${ADVANCE_MINOR}" != *true* ]]; then
+  if [[ "${SCOPE}" == "latest" ]]; then
+    echo "::notice::no moving tags to advance: ${VERSION} is behind ${CALLER_BASELINE_NOTE}, so :latest stays. scope=latest does not look at :${MAJOR} or :${MAJOR}.${MINOR}; run scope=line for ${VERSION} if those are behind."
+  else
+    echo "::notice::no moving tags to advance for scope=${SCOPE}: ${VERSION} is not the newest release anywhere this scope checks."
+  fi
 fi
 
 # Validate every entry - and that its source manifest actually exists at
@@ -669,10 +724,12 @@ promote_gh_release() {
 # repeat:
 #   --latest         gated by ADVANCE_LATEST, the same gate as :latest,
 #                    so a backport promotion never moves the repo's Latest
-#                    pointer backwards while its line tag still advances.
+#                    pointer backwards.
 #   --prerelease=false  a no-op for an auto-classified stable cut; it is what
 #                    promotes a legacy tag still built under prerelease: true.
-if [[ "${PROMOTE_SELF}" == "true" ]]; then
+if [[ "${SCOPE}" == "line" ]]; then
+  echo "scope=line; leaving ${GITHUB_REPOSITORY}'s own release to a scope=latest run"
+elif [[ "${PROMOTE_SELF}" == "true" ]]; then
   if [[ "${ADVANCE_LATEST}" == "true" ]]; then
     promote_gh_release "${GITHUB_REPOSITORY}" true required true
   else
@@ -694,10 +751,7 @@ for ((i = 0; i < IMAGE_COUNT; i++)); do
   [[ "${ADVANCE_LATEST}" == "true" ]] && moving_tags+=(latest)
   [[ "${ADVANCE_MAJOR}" == "true" ]] && moving_tags+=("${MAJOR}")
   [[ "${ADVANCE_MINOR}" == "true" ]] && moving_tags+=("${MAJOR}.${MINOR}")
-  if [[ "${#moving_tags[@]}" -eq 0 ]]; then
-    echo "::notice::${src}: no moving tags to advance (VERSION is superseded both overall and within its own line); nothing to retag."
-    continue
-  fi
+  [[ "${#moving_tags[@]}" -eq 0 ]] && continue
   # Mark the plan lines whose source the pre-flight already failed to resolve, so
   # the printed plan carries its own verdict and survives being read on its own.
   # Only reachable under dry-run; a real run has already aborted by here.
@@ -712,6 +766,11 @@ for ((i = 0; i < IMAGE_COUNT; i++)); do
     run crane tag "${src}" "${moving}${suffix}"
   done
 done
+
+if [[ "${SCOPE}" == "line" ]]; then
+  echo "Line tags for ${VERSION} done; scope=line leaves the paired release and the Homebrew tap to a scope=latest run."
+  exit 0
+fi
 
 # --- Paired public release ----------------------------------------------
 
@@ -732,36 +791,34 @@ done
 #   ""        - never computed (no oss-repo configured).
 OSS_IS_LATEST=""
 if [[ -n "${OSS_REPO}" ]]; then
-  oss_rc=0
   OSS_ADVANCE_LATEST=false
   OSS_BASELINE_NOTE="release ordering could not be confirmed"
   OSS_SKIP_REASON="release ordering could not be confirmed"
-  fetch_release_list "${OSS_REPO}" soft || oss_rc=$?
-  if [[ "${oss_rc}" -eq 0 ]] && is_at_or_after_latest_pointer "${OSS_REPO}" "${RELEASE_LIST}"; then
+  # The caller's Latest pointer is also the Docker moving-tag baseline and
+  # therefore the authoritative upper bound for this coordinated release.
+  # Requiring both repositories to pass prevents a stale OSS pointer (for
+  # example after an earlier advisory edit failure) from promoting a caller
+  # backport as OSS Latest or moving the Homebrew formula backwards. A caller
+  # backport is decided without listing OSS_REPO at all, so a failed list there
+  # cannot turn it into an invitation to set Latest by hand.
+  if [[ "${ADVANCE_LATEST}" != "true" ]]; then
+    OSS_IS_LATEST=false
+    OSS_BASELINE_NOTE="caller ${CALLER_BASELINE_NOTE}"
+    OSS_SKIP_REASON="${VERSION} is behind ${CALLER_BASELINE_NOTE} on ${GITHUB_REPOSITORY}"
+    echo "::notice::${VERSION} is behind the caller's promotion baseline (${CALLER_BASELINE_NOTE}); unsetting pre-release on ${OSS_REPO} but not moving Latest."
+  elif ! fetch_release_list "${OSS_REPO}" soft; then
+    # The list warning was already emitted. Keep this distinct from a confirmed
+    # backport so the Homebrew gate reports a retryable lookup failure.
+    OSS_IS_LATEST=unknown
+  elif is_at_or_after_latest_pointer "${OSS_REPO}" "${RELEASE_LIST}"; then
     OSS_BASELINE_NOTE="${LATEST_BASELINE_NOTE}"
-    if [[ "${ADVANCE_LATEST}" == "true" ]]; then
-      OSS_IS_LATEST=true
-      OSS_ADVANCE_LATEST=true
-    else
-      # The caller's Latest pointer is also the Docker moving-tag baseline and
-      # therefore the authoritative upper bound for this coordinated release.
-      # Requiring both repositories to pass prevents a stale OSS pointer (for
-      # example after an earlier advisory edit failure) from promoting a caller
-      # backport as OSS Latest or moving the Homebrew formula backwards.
-      OSS_IS_LATEST=false
-      OSS_BASELINE_NOTE="caller ${CALLER_BASELINE_NOTE}"
-      OSS_SKIP_REASON="${VERSION} is behind ${CALLER_BASELINE_NOTE} on ${GITHUB_REPOSITORY}"
-      echo "::notice::${VERSION} is behind the caller's promotion baseline (${CALLER_BASELINE_NOTE}); unsetting pre-release on ${OSS_REPO} but not moving Latest."
-    fi
-  elif [[ "${oss_rc}" -eq 0 ]]; then
+    OSS_IS_LATEST=true
+    OSS_ADVANCE_LATEST=true
+  else
     OSS_IS_LATEST=false
     OSS_BASELINE_NOTE="${LATEST_BASELINE_NOTE}"
     OSS_SKIP_REASON="${VERSION} is behind ${LATEST_BASELINE_NOTE}"
     echo "::notice::${VERSION} is older than the promotion baseline on ${OSS_REPO} (${LATEST_BASELINE_NOTE}); unsetting pre-release but not moving Latest."
-  else
-    # The list warning was already emitted. Keep this distinct from a confirmed
-    # backport so the Homebrew gate reports a retryable lookup failure.
-    OSS_IS_LATEST=unknown
   fi
 
   promote_rc=0
