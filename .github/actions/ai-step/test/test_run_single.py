@@ -185,6 +185,24 @@ def test_invalid_max_tokens_fails_soft_before_calling_the_api(run_mod, monkeypat
     assert client.calls == []
 
 
+def test_huge_zero_padded_max_tokens_fails_soft(run_mod, monkeypatch):
+    """resolve-config.sh strips leading zeros and lets "000...0004096" pass;
+    int() on the raw 5004-digit string would raise ValueError (exit 1)."""
+    client = FakeAnthropic()
+    _main_anthropic(run_mod, monkeypatch, client, INPUT_MAX_TOKENS="0" * 5000 + "4096")
+    assert client.calls[0]["max_tokens"] == 4096
+    assert _kv(run_mod, "conclusion") == "success"
+
+
+def test_huge_max_tokens_fails_soft_instead_of_raising(run_mod, monkeypatch):
+    client = FakeAnthropic()
+    with pytest.raises(SystemExit) as e:
+        _main_anthropic(run_mod, monkeypatch, client, INPUT_MAX_TOKENS="9" * 5000)
+    assert e.value.code == 0
+    _assert_failed(run_mod, "max-tokens must be a positive integer")
+    assert client.calls == []
+
+
 # --- truncation --------------------------------------------------------------
 
 

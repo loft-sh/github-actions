@@ -148,9 +148,12 @@ def parse_max_tokens(provider: str) -> int:
     line of defense for a direct run. The SDK's non-streaming bound only
     applies to anthropic."""
     raw = os.environ.get("INPUT_MAX_TOKENS", "") or str(DEFAULT_MAX_TOKENS)
-    if not (raw.isascii() and raw.isdigit()) or int(raw) < 1:
-        fail_soft(f"max-tokens must be a positive integer, got '{raw}'")
-    n = int(raw)
+    # Strip leading zeros the way resolve-config.sh does; int() on the raw
+    # string raises past 4300 digits, which would end the step with exit 1.
+    digits = raw.lstrip("0")
+    if not (raw.isascii() and raw.isdigit()) or not digits or len(digits) > 9:
+        fail_soft(f"max-tokens must be a positive integer below 10^9, got '{one_line(raw)[:40]}'")
+    n = int(digits)
     if provider == "anthropic" and n > ANTHROPIC_MAX_TOKENS_CAP:
         fail_soft(f"max-tokens {n} is above {ANTHROPIC_MAX_TOKENS_CAP}, the "
                   "largest value the Anthropic SDK accepts without streaming; "
