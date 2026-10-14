@@ -1189,7 +1189,7 @@ for its inputs, lookup contract, and non-blocking failure behavior.
 
 ### Managed Agent Run
 
-Starts one run of a Claude Managed Agents deployment, looked up by name, so a CI
+Starts one run of any Claude Managed Agents deployment, looked up by name, so a CI
 event can wake an agent right away instead of waiting for its schedule. Advisory:
 failures warn and exit successfully.
 

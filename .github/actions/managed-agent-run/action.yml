@@ -6,7 +6,7 @@ inputs:
     required: false
     default: ""
   deployment-name:
-    description: Name of the deployment to run, for example scheduled-routines-cve-remediation
+    description: Exact name of the deployment to run
     required: true
   enabled:
     description: Kill switch. Explicit falsey values skip every API call; unrecognised values warn and disable

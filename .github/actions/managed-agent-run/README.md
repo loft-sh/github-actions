@@ -1,10 +1,8 @@
 # Managed agent run
 
-Starts one run of a Claude Managed Agents deployment, looked up by name, and returns
-the run and session IDs. Use it when a CI event should wake an agent right away
-instead of waiting for the deployment's own schedule. The first caller is the
-release-candidate CVE scan, which starts the `scheduled-routines-cve-remediation`
-routine in `loft-sh/ai-agents` after `linear-cve-summary` posts its summary.
+Starts one run of any Claude Managed Agents deployment, looked up by name, and
+returns the run and session IDs. Use it when a CI event should wake an agent right
+away instead of waiting for the deployment's own schedule.
 
 The action only starts the run. It does not wait for the session to finish; the
 agent delivers its own output (pull requests, Linear or Slack posts), and the
@@ -22,18 +20,19 @@ value keeps it dry, so a typo never starts a run.
 ## Usage
 
 ```yaml
-- name: Start CVE remediation
+- name: Start my agent
   continue-on-error: true
   uses: loft-sh/github-actions/.github/actions/managed-agent-run@managed-agent-run/v1
   with:
-    anthropic-api-key: ${{ secrets.ANTHROPIC_OPS_SERVICES_API_KEY }}
-    deployment-name: scheduled-routines-cve-remediation
-    enabled: ${{ vars.CVE_REMEDIATION_ENABLED == 'true' }}
+    anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY_FOR_THE_WORKSPACE }}
+    deployment-name: my-product-my-routine
+    enabled: ${{ vars.MY_AGENT_ENABLED == 'true' }}
 ```
 
 The key must belong to the Anthropic workspace that holds the deployment. A
 deployment run replays the deployment's own initial message, so the agent decides
-what to work on; the action passes no input.
+what to work on; the action passes no input. An agent that needs context from the
+caller, such as a PR number, is not supported yet.
 
 ## API
 
@@ -51,7 +50,7 @@ overrides the base URL for tests.
 |       INPUT       |  TYPE  | REQUIRED |  DEFAULT  |                                              DESCRIPTION                                               |
 |-------------------|--------|----------|-----------|--------------------------------------------------------------------------------------------------------|
 | anthropic-api-key | string |  false   |           |                   Anthropic API key of the workspace <br>that holds the deployment                     |
-|  deployment-name  | string |   true   |           |           Name of the deployment to run, <br>for example scheduled-routines-cve-remediation            |
+|  deployment-name  | string |   true   |           |                                Exact name of the deployment to <br>run                                 |
 |      dry-run      | string |  false   | `"false"` |                 Resolve the deployment by name and <br>log it without starting a run                   |
 |      enabled      | string |  false   | `"true"`  | Kill switch. Explicit falsey values skip <br>every API call; unrecognised values warn <br>and disable  |
 
