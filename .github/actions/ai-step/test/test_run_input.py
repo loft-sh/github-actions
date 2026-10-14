@@ -66,3 +66,23 @@ def test_missing_file_fails_soft(run, monkeypatch, tmp_path):
     out = run.github_output.read_text()
     assert "conclusion=failed" in out
     assert "result<<AISTEP_EOF\n\nAISTEP_EOF" in out
+    # the reason output carries the cause so a caller need not read the log
+    assert "reason=input-file could not be read" in out
+
+
+def test_invalid_utf8_file_is_read_with_replacement(run, monkeypatch, tmp_path):
+    # a stray non-UTF-8 byte must not end the step with a traceback and
+    # exit 1: the bytes decode to U+FFFD and the model reads the rest
+    f = tmp_path / "latin1.txt"
+    f.write_bytes(b"caf\xe9 and \xff\xfe tail")
+    monkeypatch.setenv("INPUT_INPUT_FILE", str(f))
+    assert run.read_input() == "caf\ufffd and \ufffd\ufffd tail"
+    assert "conclusion=failed" not in run.github_output.read_text()
+
+
+def test_invalid_utf8_file_keeps_inline_input(run, monkeypatch, tmp_path):
+    f = tmp_path / "bad.bin"
+    f.write_bytes(b"\x80\x81")
+    monkeypatch.setenv("INPUT_INPUT", "inline")
+    monkeypatch.setenv("INPUT_INPUT_FILE", str(f))
+    assert run.read_input() == "inline\n\n\ufffd\ufffd"

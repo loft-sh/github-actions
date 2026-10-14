@@ -34,6 +34,17 @@ inputs:
       process when one variable exceeds 128 KiB.
     required: false
     default: ''
+  max-tokens:
+    description: |
+      Most tokens the model may generate (positive integer). A response
+      that hits the limit ends the step with conclusion=failed and a
+      reason that names this input, so raise it when the output is long
+      (for example a summary of dozens of items). Anthropic single-call
+      mode only: the Anthropic SDK refuses non-streaming requests above
+      21333, so larger values skip the step. OpenAI calls use the model's
+      own output limit and session mode ignores this input.
+    required: false
+    default: '4096'
   output-schema:
     description: |
       JSON Schema (string) the model output must conform to. Required.
@@ -93,11 +104,11 @@ outputs:
       downstream `if:` conditions. Empty when `conclusion` is not `success`.
     value: ${{ steps.run.outputs.result }}
   conclusion:
-    description: '`success` when the AI step ran and returned JSON; `skipped` when the resolver vetoed the input; `failed` when the provider errored or returned non-JSON.'
+    description: '`success` when the AI step ran and returned JSON; `skipped` when the resolver vetoed the input; `failed` when the provider errored, returned non-JSON, or cut the response off at max-tokens.'
     value: ${{ steps.conclusion.outputs.conclusion }}
   reason:
-    description: 'One-line explanation when conclusion=skipped.'
-    value: ${{ steps.cfg.outputs.reason }}
+    description: 'One-line explanation when conclusion is skipped or failed (for example a response truncated at max-tokens). Empty on success.'
+    value: ${{ steps.cfg.outputs.reason || steps.run.outputs.reason }}
 
 runs:
   using: composite
@@ -108,6 +119,7 @@ runs:
       env:
         INPUT_PROVIDER: ${{ inputs.provider }}
         INPUT_EFFORT: ${{ inputs.effort }}
+        INPUT_MAX_TOKENS: ${{ inputs.max-tokens }}
         INPUT_OUTPUT_SCHEMA: ${{ inputs.output-schema }}
         INPUT_AGENT: ${{ inputs.agent }}
         INPUT_ANTHROPIC_SESSION_KEY: ${{ inputs.anthropic-session-key }}
@@ -137,6 +149,7 @@ runs:
         INPUT_PROMPT: ${{ inputs.prompt }}
         INPUT_INPUT: ${{ inputs.input }}
         INPUT_INPUT_FILE: ${{ inputs.input-file }}
+        INPUT_MAX_TOKENS: ${{ inputs.max-tokens }}
         INPUT_OUTPUT_SCHEMA: ${{ inputs.output-schema }}
         INPUT_ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
         INPUT_OPENAI_API_KEY: ${{ inputs.openai-api-key }}

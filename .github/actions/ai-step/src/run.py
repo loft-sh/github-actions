@@ -16,6 +16,8 @@ Env in:
   INPUT_PROMPT            instructions
   INPUT_OUTPUT_SCHEMA     JSON Schema string
   INPUT_INPUT             optional data appended to the prompt
+  INPUT_INPUT_FILE        optional file appended after INPUT_INPUT
+  INPUT_MAX_TOKENS        output token limit, anthropic single mode (default 4096)
   INPUT_ANTHROPIC_API_KEY required when provider=anthropic (single mode)
   INPUT_OPENAI_API_KEY    required when provider=openai
   INPUT_AGENT             deployed agent name (session mode)
@@ -25,6 +27,7 @@ Env in:
 Env out ($GITHUB_OUTPUT):
   result                  the schema-conforming JSON string (or empty)
   conclusion              success | failed
+  reason                  one-line explanation when conclusion=failed
 """
 from __future__ import annotations
 
@@ -42,6 +45,17 @@ POLL_INTERVAL_S = 10
 # smoke, ai-agents run 32252874325), so the stop_reason lookup retries for
 # a bounded grace window instead of failing on the first empty read.
 STOP_REASON_GRACE_S = 60
+DEFAULT_MAX_TOKENS = 4096
+# The Anthropic SDK refuses a non-streaming messages.create when the
+# request implies more than 10 minutes of generation: 3600 s * max_tokens
+# / 128000 > 600, i.e. max_tokens > 21333 (BaseClient.
+# _calculate_nonstreaming_timeout in anthropic/_base_client.py, identical
+# from 0.52.0 through 1.13.0). resolve-config.sh enforces the same bound
+# as a skip; change both together.
+ANTHROPIC_MAX_TOKENS_CAP = 21333
+# `reason` is a single-line GITHUB_OUTPUT value; keep it short enough to
+# post in a chat message.
+REASON_MAX_LEN = 500
 
 
 def enforce_strict(node):
@@ -77,6 +91,16 @@ def emit_kv(key: str, value: str) -> None:
         f.write(f"{key}={value}\n")
 
 
+def one_line(msg: str) -> str:
+    """Collapse all whitespace so the text is safe as a `key=value`
+    GITHUB_OUTPUT line (a newline would start a new output), and cap its
+    length."""
+    flat = " ".join(msg.split())
+    if len(flat) > REASON_MAX_LEN:
+        flat = flat[: REASON_MAX_LEN - 3] + "..."
+    return flat
+
+
 def fail_soft(msg: str, body: str = "") -> None:
     print(f"::warning::ai-step: {msg}")
     if body:
@@ -85,6 +109,9 @@ def fail_soft(msg: str, body: str = "") -> None:
         print("--- end ---")
     emit_block("result", "")
     emit_kv("conclusion", "failed")
+    # surfaced as the action's `reason` output so a caller can show why
+    # without reading the log
+    emit_kv("reason", one_line(msg))
     sys.exit(0)
 
 
@@ -97,7 +124,10 @@ def read_input() -> str:
     path = os.environ.get("INPUT_INPUT_FILE", "").strip()
     if path:
         try:
-            with open(path, encoding="utf-8") as f:
+            # errors="replace": a stray non-UTF-8 byte becomes U+FFFD,
+            # which the model tolerates, instead of a UnicodeDecodeError
+            # that would end the step with a traceback and exit 1
+            with open(path, encoding="utf-8", errors="replace") as f:
                 parts.append(f.read())
         except OSError as e:
             fail_soft(f"input-file could not be read: {e}")
@@ -112,7 +142,24 @@ def require(name: str) -> str:
     return v
 
 
-def call_anthropic(model: str, user_content: str, schema: dict, api_key: str) -> str:
+def parse_max_tokens(provider: str) -> int:
+    """INPUT_MAX_TOKENS as a positive integer; empty means the default.
+    resolve-config.sh already skips invalid values, so this is the second
+    line of defense for a direct run. The SDK's non-streaming bound only
+    applies to anthropic."""
+    raw = os.environ.get("INPUT_MAX_TOKENS", "") or str(DEFAULT_MAX_TOKENS)
+    if not (raw.isascii() and raw.isdigit()) or int(raw) < 1:
+        fail_soft(f"max-tokens must be a positive integer, got '{raw}'")
+    n = int(raw)
+    if provider == "anthropic" and n > ANTHROPIC_MAX_TOKENS_CAP:
+        fail_soft(f"max-tokens {n} is above {ANTHROPIC_MAX_TOKENS_CAP}, the "
+                  "largest value the Anthropic SDK accepts without streaming; "
+                  "lower max-tokens")
+    return n
+
+
+def call_anthropic(model: str, user_content: str, schema: dict, api_key: str,
+                   max_tokens: int = DEFAULT_MAX_TOKENS) -> str:
     try:
         from anthropic import Anthropic, APIError  # type: ignore
     except ImportError:
@@ -122,7 +169,7 @@ def call_anthropic(model: str, user_content: str, schema: dict, api_key: str) ->
     try:
         resp = client.messages.create(
             model=model,
-            max_tokens=4096,
+            max_tokens=max_tokens,
             messages=[{"role": "user", "content": user_content}],
             output_config={"format": {"type": "json_schema", "schema": schema}},
         )
@@ -131,6 +178,12 @@ def call_anthropic(model: str, user_content: str, schema: dict, api_key: str) ->
     except Exception as e:
         fail_soft(f"anthropic request failed: {e}")
 
+    # A response cut off at the limit is partial JSON; say so instead of
+    # letting it surface as a confusing JSON parse failure.
+    if getattr(resp, "stop_reason", None) == "max_tokens":
+        partial = resp.content[0].text if resp.content else ""
+        fail_soft(f"response truncated at max-tokens {max_tokens}; raise "
+                  "max-tokens", partial)
     if not resp.content:
         fail_soft("empty content from anthropic", json.dumps(resp.model_dump(), indent=2))
     # Structured-output responses still land in content[0].text — the
@@ -163,7 +216,13 @@ def call_openai(model: str, user_content: str, schema: dict, api_key: str) -> st
     except Exception as e:
         fail_soft(f"openai request failed: {e}")
 
-    text = resp.choices[0].message.content
+    choice = resp.choices[0]
+    text = choice.message.content
+    # No token limit is set on this call (max-tokens is anthropic-only), so
+    # "length" means the model's own output limit was hit.
+    if getattr(choice, "finish_reason", None) == "length":
+        fail_soft("response truncated at the model's output limit "
+                  "(finish_reason=length)", text or "")
     if text is None:
         fail_soft("empty content from openai", json.dumps(resp.model_dump(), indent=2))
     return text
@@ -385,13 +444,14 @@ def main() -> None:
         return
 
     model = require("INPUT_MODEL")
+    max_tokens = parse_max_tokens(provider)
     enforce_strict(schema)
 
     if provider == "anthropic":
         api_key = os.environ.get("INPUT_ANTHROPIC_API_KEY", "")
         if not api_key:
             fail_soft("anthropic-api-key required when provider=anthropic")
-        text = call_anthropic(model, user_content, schema, api_key)
+        text = call_anthropic(model, user_content, schema, api_key, max_tokens)
     elif provider == "openai":
         api_key = os.environ.get("INPUT_OPENAI_API_KEY", "")
         if not api_key:

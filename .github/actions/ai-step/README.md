@@ -10,7 +10,8 @@ The contract is the schema. When the model returns schema-conforming
 JSON, the action exposes it on `result` and sets `conclusion=success`.
 The action never hard-fails the pipeline: provider errors, timeouts,
 and non-JSON output all degrade to `conclusion=failed` with an empty
-`result`, a `::warning::` in the log, and exit code 0. The caller knows
+`result`, a one-line `reason` output, a `::warning::` in the log, and
+exit code 0. The caller knows
 what a failed or empty result means for their pipeline, and decides
 whether to continue or `exit 1`.
 
@@ -107,6 +108,25 @@ Structured output guarantees the **shape** of the result (fields
 present, types match, enums respected). It does NOT guarantee semantic
 correctness of the values — that's the model's reasoning. Validate
 ranges and business rules in your downstream step, not in the schema.
+
+### Output length
+
+The Anthropic call generates at most `max-tokens` tokens (default
+`4096`). A response that hits the limit is partial JSON, so the action
+does not pass it on: it sets `conclusion=failed`, leaves `result` empty,
+and sets `reason` to `response truncated at max-tokens N; raise
+max-tokens`. A caller summarizing dozens of items should raise the
+input.
+
+The Anthropic SDK refuses a non-streaming request that could run longer
+than 10 minutes (`_calculate_nonstreaming_timeout` in
+`anthropic/_base_client.py`: 3600 s x `max_tokens` / 128000 must not
+exceed 600 s). That caps `max-tokens` at `21333`; a larger value skips
+the step with a reason.
+
+OpenAI calls use the model's own output limit and ignore `max-tokens`;
+a response cut off there (`finish_reason=length`) fails soft the same
+way. Session mode ignores `max-tokens`.
 
 ### Tool use / MCP
 
@@ -206,6 +226,7 @@ Read this before wiring it into a pipeline:
 |         effort          | string |  false   | `"medium"` |                                                                                                                                                                                                                     Effort level (low | medium | high) — maps to <br>a provider-specific model.                                                                                                                                                                                                                      |
 |          input          | string |  false   |            |                                                                                                                                                            Optional data the model should act <br>on, appended to the prompt. Caller <br>sources it — a literal string, <br>a prior step output, or the <br>contents of a file read in <br>a prior step.                                                                                                                                                             |
 |       input-file        | string |  false   |            |                                                                                                                           Optional path to a file whose <br>contents are appended after input. Use <br>it for data too large for <br>an input: inputs reach the script <br>through environment variables, and Linux refuses <br>to start a process when one <br>variable exceeds 128 KiB.                                                                                                                            |
+|       max-tokens        | string |  false   |  `"4096"`  |      Most tokens the model may generate <br>(positive integer). A response that hits the <br>limit ends the step with conclusion=failed <br>and a reason that names this <br>input, so raise it when the <br>output is long (for example a summary of dozens of items). Anthropic single-call <br>mode only: the Anthropic SDK refuses <br>non-streaming requests above 21333, so larger <br>values skip the step. OpenAI calls <br>use the model's own output limit <br>and session mode ignores this input.        |
 |     openai-api-key      | string |  false   |            |                                                                                                                                                                                                                                    OpenAI API key. Required when provider=openai.                                                                                                                                                                                                                                    |
 |      output-schema      | string |   true   |            |                                                                                                          JSON Schema (string) the model output <br>must conform to. Required. Structured output <br>is the contract — without a <br>schema the action skips. For `anthropic` this <br>becomes `output_format.schema` on the Messages API; for <br>`openai` it becomes `response_format.json_schema.schema`                                                                                                           |
 |                         |        |          |            |                                                                                                                                                                                                                                          on the Chat Completions <br>API.                                                                                                                                                                                                                                            |
@@ -220,11 +241,11 @@ Read this before wiring it into a pipeline:
 
 <!-- AUTO-DOC-OUTPUT:START - Do not remove or modify this section -->
 
-|   OUTPUT   |  TYPE  |                                                                              DESCRIPTION                                                                              |
-|------------|--------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| conclusion | string | `success` when the AI step ran <br>and returned JSON; `skipped` when the <br>resolver vetoed the input; `failed` when <br>the provider errored or returned non-JSON.  |
-|   reason   | string |                                                             One-line explanation when conclusion=skipped.                                                             |
-|   result   | string |             Schema-conforming JSON string. Parse with `fromJSON(...)` <br>in downstream `if:` conditions. Empty when <br>`conclusion` is not `success`.               |
+|   OUTPUT   |  TYPE  |                                                                                                  DESCRIPTION                                                                                                   |
+|------------|--------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| conclusion | string | `success` when the AI step ran <br>and returned JSON; `skipped` when the <br>resolver vetoed the input; `failed` when <br>the provider errored, returned non-JSON, or <br>cut the response off at max-tokens.  |
+|   reason   | string |                                       One-line explanation when conclusion is skipped <br>or failed (for example a response truncated at max-tokens). Empty on success.                                        |
+|   result   | string |                                  Schema-conforming JSON string. Parse with `fromJSON(...)` <br>in downstream `if:` conditions. Empty when <br>`conclusion` is not `success`.                                   |
 
 <!-- AUTO-DOC-OUTPUT:END -->
 

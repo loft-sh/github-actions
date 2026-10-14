@@ -5,7 +5,8 @@
 # action lives here — YAML only dispatches on outputs.
 #
 # Required env: INPUT_PROVIDER, INPUT_EFFORT, INPUT_OUTPUT_SCHEMA
-# Optional env: INPUT_AGENT, INPUT_ANTHROPIC_SESSION_KEY, INPUT_SESSION_TIMEOUT
+# Optional env: INPUT_AGENT, INPUT_ANTHROPIC_SESSION_KEY, INPUT_SESSION_TIMEOUT,
+#               INPUT_MAX_TOKENS (single-call mode; empty means 4096)
 # Writes to $GITHUB_OUTPUT:
 #   proceed=true|false  — whether the AI step should run
 #   reason=<string>     — one-line explanation (populated on skip)
@@ -25,6 +26,13 @@ set -euo pipefail
 INPUT_AGENT="${INPUT_AGENT:-}"
 INPUT_ANTHROPIC_SESSION_KEY="${INPUT_ANTHROPIC_SESSION_KEY:-}"
 INPUT_SESSION_TIMEOUT="${INPUT_SESSION_TIMEOUT:-1200}"
+INPUT_MAX_TOKENS="${INPUT_MAX_TOKENS:-4096}"
+
+# The Anthropic SDK refuses a non-streaming request whose max_tokens implies
+# more than 10 minutes of generation (3600 s * max_tokens / 128000 > 600), so
+# anything above 21333 never reaches the API. Keep in step with
+# ANTHROPIC_MAX_TOKENS_CAP in run.py.
+ANTHROPIC_MAX_TOKENS_CAP=21333
 
 emit() {
   local k="$1" v="$2"
@@ -33,7 +41,9 @@ emit() {
 }
 
 skip() {
-  local reason="$1"
+  # flatten newlines: reasons can echo caller input, and a newline in a
+  # `key=value` GITHUB_OUTPUT line would start another output
+  local reason="${1//[$'\n\r']/ }"
   echo "::notice::ai-step: $reason"
   emit proceed false
   emit reason  "$reason"
@@ -93,6 +103,19 @@ case "$INPUT_PROVIDER:$INPUT_EFFORT" in
   openai:*)         skip "invalid effort '$INPUT_EFFORT' — valid: low, medium, high" ;;
   *)                skip "invalid provider '$INPUT_PROVIDER' — valid: anthropic, openai" ;;
 esac
+
+# max-tokens: a positive integer. Session mode ignores it, like effort.
+case "$INPUT_MAX_TOKENS" in
+  *[!0-9]*) skip "invalid max-tokens '$INPUT_MAX_TOKENS': must be a positive integer" ;;
+esac
+# strip leading zeros so '0', '00' and '0100' compare as numbers
+max_tokens="${INPUT_MAX_TOKENS#"${INPUT_MAX_TOKENS%%[!0]*}"}"
+[ -n "$max_tokens" ] || skip "invalid max-tokens '$INPUT_MAX_TOKENS': must be a positive integer"
+# the length test keeps bash arithmetic away from values that would overflow
+if [ "$INPUT_PROVIDER" = "anthropic" ] &&
+   { [ "${#max_tokens}" -gt 5 ] || [ "$max_tokens" -gt "$ANTHROPIC_MAX_TOKENS_CAP" ]; }; then
+  skip "max-tokens '$INPUT_MAX_TOKENS' is above $ANTHROPIC_MAX_TOKENS_CAP, the largest value the Anthropic SDK accepts without streaming"
+fi
 
 emit proceed true
 emit reason  ""
