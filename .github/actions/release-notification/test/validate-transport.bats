@@ -3,7 +3,7 @@
 SCRIPT="$BATS_TEST_DIRNAME/../validate-transport.sh"
 
 setup() {
-  export STATUS=success HAS_WEBHOOK=false HAS_BOT_TOKEN=false HAS_CHANNEL=false
+  export STATUS=success DRY_RUN=false HAS_WEBHOOK=false HAS_BOT_TOKEN=false HAS_CHANNEL=false
 }
 
 @test "webhook alone is enough for a success banner" {
@@ -37,5 +37,13 @@ setup() {
   [ "$status" -eq 1 ]
   [[ "$output" == *"webhook_url"* ]]
   STATUS=failure HAS_WEBHOOK=true run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+}
+
+@test "a dry run of a success banner checks the failure path too" {
+  DRY_RUN=true HAS_BOT_TOKEN=true HAS_CHANNEL=true run bash "$SCRIPT"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Failure notifications post through webhook_url"* ]]
+  DRY_RUN=true HAS_WEBHOOK=true run bash "$SCRIPT"
   [ "$status" -eq 0 ]
 }

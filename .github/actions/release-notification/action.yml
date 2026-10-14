@@ -50,11 +50,11 @@ inputs:
     required: false
     default: 'success'
   webhook_url:
-    description: 'Slack incoming webhook URL. Required for failure notifications, and for success banners unless slack_bot_token and slack_channel_id are set. With a bot token it is the fallback when the bot post fails.'
+    description: 'Slack incoming webhook URL. Required for failure notifications, and for success banners unless slack_bot_token and slack_channel_id are set. With a bot token it is the fallback when the bot post did not land.'
     required: false
     default: ''
   slack_bot_token:
-    description: 'Slack bot token with chat:write in slack_channel_id. When set with slack_channel_id, the success banner is posted through chat.postMessage and its message ts is exposed for thread replies.'
+    description: 'Slack bot token with chat:write in slack_channel_id, plus channels:history (groups:history for a private channel) to confirm a post that ended without a clear result. When set with slack_channel_id, the success banner is posted through chat.postMessage and its message ts is exposed for thread replies.'
     required: false
     default: ''
   slack_channel_id:
@@ -82,10 +82,10 @@ outputs:
     value: ${{ steps.release_text.outputs.release_text }}
   message_ts:
     description: 'Message ts of the success banner when it was posted with the bot token; empty after a webhook post. Thread replies use it as thread_ts.'
-    value: ${{ steps.post_bot.outputs.ts }}
+    value: ${{ steps.banner.outputs.ts }}
   channel_id:
     description: 'Channel id of the bot token banner post; empty after a webhook post.'
-    value: ${{ steps.post_bot.outputs.channel_id }}
+    value: ${{ steps.banner.outputs.channel_id }}
 
 runs:
   using: "composite"
@@ -100,9 +100,9 @@ runs:
           *) echo "::error::Invalid status '$STATUS'. Must be one of: success, failure, cancelled, skipped."; exit 1 ;;
         esac
     - name: Validate Slack transport
-      if: inputs.dry-run != 'true'
       shell: bash
       env:
+        DRY_RUN: ${{ inputs.dry-run }}
         STATUS: ${{ inputs.status }}
         HAS_WEBHOOK: ${{ inputs.webhook_url != '' }}
         HAS_BOT_TOKEN: ${{ inputs.slack_bot_token != '' }}
@@ -131,21 +131,28 @@ runs:
         PROMOTE_WORKFLOW: ${{ inputs.promote_workflow }}
       run: bash "${{ github.action_path }}/resolve-release-text.sh"
     # The bot post exposes the banner's ts so a later job can reply in its
-    # thread. It continues on error because the webhook post below is the
-    # fallback: a bot scope or channel-membership problem must not cost the
-    # banner itself.
+    # thread. errors: false keeps a rejection out of the run's annotations,
+    # and retries are off because a resend after a timeout or a 5xx can
+    # duplicate a banner that landed. banner-result.py then decides whether
+    # it posted and whether the webhook below posts it instead.
     - name: Post release notification (bot token)
       id: post_bot
       if: inputs.status == 'success' && inputs.dry-run != 'true' && inputs.slack_bot_token != '' && inputs.slack_channel_id != ''
       continue-on-error: true
       uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d  # v4.0.0
       with:
-        errors: true
+        errors: false
+        retries: '0'
         method: chat.postMessage
         token: ${{ inputs.slack_bot_token }}
         payload: |
           channel: "${{ inputs.slack_channel_id }}"
           text: "New ${{ inputs.product }} Release: ${{ inputs.version }}"
+          metadata:
+            event_type: release_banner
+            event_payload:
+              repository: "${{ inputs.target_repo }}"
+              version: "${{ inputs.version }}"
           blocks:
             - type: header
               text:
@@ -177,20 +184,22 @@ runs:
               elements:
                 - type: mrkdwn
                   text: ${{ steps.release_text.outputs.release_json }}
-    - name: Warn about bot token post failure
-      if: steps.post_bot.outcome == 'failure'
+    - name: Check bot token banner
+      id: banner
+      if: inputs.status == 'success' && inputs.dry-run != 'true' && inputs.slack_bot_token != '' && inputs.slack_channel_id != ''
       shell: bash
       env:
+        POST_OK: ${{ steps.post_bot.outputs.ok }}
+        POST_RESPONSE: ${{ steps.post_bot.outputs.response }}
+        POST_TS: ${{ steps.post_bot.outputs.ts }}
+        SLACK_BOT_TOKEN: ${{ inputs.slack_bot_token }}
+        CHANNEL_ID: ${{ inputs.slack_channel_id }}
+        REPOSITORY: ${{ inputs.target_repo }}
+        VERSION: ${{ inputs.version }}
         HAS_WEBHOOK: ${{ inputs.webhook_url != '' }}
-      run: |
-        if [ "$HAS_WEBHOOK" = true ]; then
-          echo "::warning::Bot token banner post failed; falling back to the webhook. The banner gets no thread reply. Check the bot is in the channel and has chat:write."
-        else
-          echo "::error::Bot token banner post failed and no webhook_url is set to fall back on. Check the bot is in the channel and has chat:write."
-          exit 1
-        fi
+      run: python3 "${{ github.action_path }}/banner-result.py"
     - name: Post release notification
-      if: inputs.status == 'success' && inputs.dry-run != 'true' && steps.post_bot.outcome != 'success' && inputs.webhook_url != ''
+      if: inputs.status == 'success' && inputs.dry-run != 'true' && steps.banner.outputs.posted != 'true' && inputs.webhook_url != ''
       uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d  # v4.0.0
       with:
         errors: true

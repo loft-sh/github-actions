@@ -67,10 +67,10 @@ on:
         default: ''
     secrets:
       SLACK_WEBHOOK_URL_PRODUCT_RELEASES:
-        description: 'Slack incoming webhook URL for #product-releases. Required for failure notifications and for success banners without a bot token; the fallback when the bot post fails.'
+        description: 'Slack incoming webhook URL for #product-releases. Required for failure notifications, for success banners without a bot token, and by dry-run; the fallback when the bot post did not land.'
         required: false
       SLACK_BOT_TOKEN_PRODUCT_RELEASES:
-        description: 'Slack bot token with chat:write in slack_channel_id.'
+        description: 'Slack bot token with chat:write and channels:history in slack_channel_id. channels:history lets the action confirm a post that ended without a clear result instead of risking a duplicate.'
         required: false
     outputs:
       message_ts:
@@ -95,6 +95,9 @@ jobs:
           TARGET_REPO: ${{ inputs.target_repo }}
           PRODUCT: ${{ inputs.product }}
           STATUS: ${{ inputs.status }}
+          # v2 required the webhook secret at load time; v3 makes it optional
+          # for bot token banners, but failure notices still need it.
+          HAS_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL_PRODUCT_RELEASES != '' }} # zizmor: ignore[secrets-outside-env] -- presence check only, the value never reaches the step
         run: |
           echo "dry-run: validating notify-release inputs"
           echo "  release_version=$RELEASE_VERSION"
@@ -109,6 +112,10 @@ jobs:
               exit 1
             fi
           done
+          if [ "$HAS_WEBHOOK" != true ]; then
+            echo "::error::SLACK_WEBHOOK_URL_PRODUCT_RELEASES is empty. Failure notifications post through it, so a failed release would go unannounced."
+            exit 1
+          fi
           echo "All required inputs are valid"
       - name: Checkout repository
         if: ${{ !inputs.dry-run && inputs.status == 'success' }}

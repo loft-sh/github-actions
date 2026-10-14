@@ -116,7 +116,8 @@ test-link-backport-prs: ## run link-backport-prs unit tests
 test-select-backport-source-prs: ## run select-backport-source-prs bats tests
 	bats $(ACTIONS_DIR)/select-backport-source-prs/test/*.bats
 
-test-release-notification: ## run release-notification tests
+test-release-notification: ## run release-notification pytest + bats tests
+	uv run --with pytest==8.3.3 pytest $(ACTIONS_DIR)/release-notification/test/ -q
 	bats $(ACTIONS_DIR)/release-notification/test/*.bats
 
 test-linear-release-sync: ## run linear-release-sync unit tests

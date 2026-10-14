@@ -4,7 +4,11 @@
 # which returns a ts for thread replies) or the incoming webhook; failure
 # notifications only go through the webhook.
 #
-# Env: STATUS, HAS_WEBHOOK, HAS_BOT_TOKEN, HAS_CHANNEL ("true"/"false")
+# A dry run checks the failure path as well, whatever STATUS it was given:
+# a caller wired with only the bot token posts success banners, then loses
+# its first failure notice, so a dry run is where that must show.
+#
+# Env: STATUS, DRY_RUN, HAS_WEBHOOK, HAS_BOT_TOKEN, HAS_CHANNEL ("true"/"false")
 set -euo pipefail
 
 if [ "${HAS_BOT_TOKEN:-false}" = true ] && [ "${HAS_CHANNEL:-false}" != true ]; then
@@ -16,7 +20,9 @@ if [ "${STATUS:-success}" = success ]; then
     echo "::error::No Slack transport: pass webhook_url, or slack_bot_token with slack_channel_id."
     exit 1
   fi
-elif [ "${HAS_WEBHOOK:-false}" != true ]; then
+fi
+
+if { [ "${STATUS:-success}" != success ] || [ "${DRY_RUN:-false}" = true ]; } && [ "${HAS_WEBHOOK:-false}" != true ]; then
   echo "::error::Failure notifications post through webhook_url, which is empty."
   exit 1
 fi

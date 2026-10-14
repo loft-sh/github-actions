@@ -76,12 +76,25 @@ banner's thread. Pass `slack_bot_token` and `slack_channel_id` to post the
 success banner through `chat.postMessage` instead; the `message_ts` and
 `channel_id` outputs then identify it, and
 [`release-summary`](../release-summary/README.md) replies under it. The bot
-needs `chat:write` and membership in the channel.
+needs `chat:write`, `channels:history` (`groups:history` for a private
+channel) and membership in the channel.
 
-The bot post continues on error. When it fails and `webhook_url` is set, the
-banner goes out through the webhook with a warning, so a scope or
-membership problem never costs the banner; `message_ts` stays empty and the
-summary skips. Failure notifications always post through `webhook_url`.
+The bot post never resends: a retry after a timeout or a 5xx can duplicate a
+banner that already landed. `banner-result.py` then settles the outcome:
+
+| Bot post outcome | Banner | Webhook fallback |
+|---|---|---|
+| ok | posted, `message_ts` set | no |
+| rejected by Slack (`not_in_channel`, `invalid_auth`, `missing_scope`, `ratelimited`, ...) | not posted | yes, with a warning naming the remedy |
+| ambiguous (timeout, 5xx, `internal_error`, no response), banner found in the channel | posted, `message_ts` set | no |
+| ambiguous, banner not in the channel | not posted | yes, with a warning |
+| ambiguous, channel unreadable | unknown | yes, with a warning that it may duplicate |
+
+The banner carries `release_banner` message metadata (repository and
+version), which is how the channel read recognizes it. Without `webhook_url`
+a banner that did not post fails the step. After a webhook post
+`message_ts` stays empty and the summary skips. Failure notifications always
+post through `webhook_url`, so a dry run fails without it.
 
 ```yaml
       - id: banner
@@ -102,4 +115,4 @@ This action requires no special GitHub permissions. Supply `webhook_url` and `sl
 | Secret | Description |
 |--------|-------------|
 | `SLACK_RELEASE_WEBHOOK_URL` | Incoming webhook URL for the target Slack channel |
-| `SLACK_BOT_TOKEN_PRODUCT_RELEASES` | Optional bot token with `chat:write` for the bot token banner post |
+| `SLACK_BOT_TOKEN_PRODUCT_RELEASES` | Optional bot token with `chat:write` and `channels:history` for the bot token banner post |
