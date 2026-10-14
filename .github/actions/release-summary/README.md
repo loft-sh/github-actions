@@ -26,14 +26,21 @@ any failure-notification job's `needs`.
 3. `src/render.py` builds the Slack blocks. PR and Linear links come only from
    the collected data: a PR number the model invents is dropped, and Linear
    ids in the model's text are never linked.
-4. `slackapi/slack-github-action` posts the reply with `thread_ts` set to the
-   banner's `ts`.
+4. `src/post.py` reads the banner thread first and skips when a summary for
+   this version is already there (it carries a `release_summary` metadata
+   marker), so a re-run or a manual dispatch never posts twice. If the thread
+   cannot be read, it skips rather than risk a duplicate. Slack calls retry
+   twice on rate limits and server errors.
 5. `src/conclude.sh` reports `posted`, `dry-run`, `skipped` or `failed` with a
    reason that names the remedy, and writes counts to the job summary.
 
 The banner must be posted with a bot token to have a `ts`: see the
 `slack_bot_token` input of [`release-notification`](../release-notification/README.md)
 and the `message_ts` output of `notify-release.yaml`.
+
+The bot needs `chat:write` to post and `channels:history` (`groups:history`
+for a private channel) to read the thread. Without the read scope every
+summary skips with a warning.
 
 ## Usage
 
@@ -55,6 +62,8 @@ and the `message_ts` output of `notify-release.yaml`.
     runs-on: ubuntu-latest
     continue-on-error: true
     timeout-minutes: 15
+    concurrency:
+      group: release-summary-${{ needs.get_version.outputs.version }}
     permissions:
       contents: read
       pull-requests: read
@@ -79,24 +88,29 @@ and the `message_ts` output of `notify-release.yaml`.
 `dry-run: 'true'` collects, summarizes and renders the reply into the job
 summary without posting; it needs no Slack inputs.
 
+For a manual re-run, give the caller a `workflow_dispatch` workflow that
+takes the version and the banner's Slack link: `thread-ts` accepts a message
+ts or a Copy link URL. Share the `concurrency` group with the release job so
+two runs never race to post.
+
 ## Inputs
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-|       INPUT       |  TYPE  | REQUIRED |  DEFAULT   |                                                        DESCRIPTION                                                        |
-|-------------------|--------|----------|------------|---------------------------------------------------------------------------------------------------------------------------|
-| anthropic-api-key | string |  false   |            |                              Anthropic API key. Empty skips the <br>summary with a warning.                               |
-|      dry-run      | string |  false   | `"false"`  |                     Collect, summarize and render into the <br>job summary without posting to Slack.                      |
-|      effort       | string |  false   | `"medium"` |                                         ai-step effort level (low, medium, high).                                         |
-|   github-token    | string |   true   |            |                          Token that can read the repository <br>pull requests through GraphQL.                            |
-| linear-workspace  | string |  false   |  `"loft"`  |                                    Linear workspace slug used to link <br>issue ids.                                      |
-|   previous-tag    | string |  false   |            |        Tag to compare against. Leave empty <br>to use the nearest earlier v* <br>tag that is not a -next <br>tag.         |
-|      product      | string |   true   |            |                              Product name shown in the summary, <br>e.g. vCluster Platform.                               |
-|    repository     | string |   true   |            | Repository the release belongs to (owner/name). <br>The checkout must be this repository <br>with full history and tags.  |
-|  slack-bot-token  | string |  false   |            |           Slack bot token with chat:write in <br>the banner channel. Empty skips the <br>post with a warning.             |
-| slack-channel-id  | string |  false   |            |                                      Slack channel id the banner was <br>posted to.                                       |
-|     thread-ts     | string |  false   |            |                    Message ts of the release banner; <br>the summary is posted as a <br>reply to it.                      |
-|      version      | string |   true   |            |                                Release tag to summarize. Must exist <br>in the checkout.                                  |
+|       INPUT       |  TYPE  | REQUIRED |  DEFAULT   |                                                                             DESCRIPTION                                                                              |
+|-------------------|--------|----------|------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| anthropic-api-key | string |  false   |            |                                                   Anthropic API key. Empty skips the <br>summary with a warning.                                                     |
+|      dry-run      | string |  false   | `"false"`  |                                          Collect, summarize and render into the <br>job summary without posting to Slack.                                            |
+|      effort       | string |  false   | `"medium"` |                                                              ai-step effort level (low, medium, high).                                                               |
+|   github-token    | string |   true   |            |                                                Token that can read the repository <br>pull requests through GraphQL.                                                 |
+| linear-workspace  | string |  false   |  `"loft"`  |                                                          Linear workspace slug used to link <br>issue ids.                                                           |
+|   previous-tag    | string |  false   |            |                             Tag to compare against. Leave empty <br>to use the nearest earlier v* <br>tag that is not a -next <br>tag.                               |
+|      product      | string |   true   |            |                                                   Product name shown in the summary, <br>e.g. vCluster Platform.                                                     |
+|    repository     | string |   true   |            |                      Repository the release belongs to (owner/name). <br>The checkout must be this repository <br>with full history and tags.                        |
+|  slack-bot-token  | string |  false   |            | Slack bot token with chat:write and <br>channels:history (groups:history for a private channel) in the banner channel. <br>Empty skips the post with a <br>warning.  |
+| slack-channel-id  | string |  false   |            |                                                           Slack channel id the banner was <br>posted to.                                                             |
+|     thread-ts     | string |  false   |            |                    Message ts of the release banner, <br>or its Slack message link (Copy link); <br>the summary is posted as a <br>reply to it.                      |
+|      version      | string |   true   |            |                                                      Release tag to summarize. Must exist <br>in the checkout.                                                       |
 
 <!-- AUTO-DOC-INPUT:END -->
 
@@ -104,10 +118,10 @@ summary without posting; it needs no Slack inputs.
 
 <!-- AUTO-DOC-OUTPUT:START - Do not remove or modify this section -->
 
-|    OUTPUT    |  TYPE  |                        DESCRIPTION                         |
-|--------------|--------|------------------------------------------------------------|
-|  conclusion  | string |            posted, dry-run, skipped or failed.             |
-| previous-tag | string |           Tag the release was compared against.            |
-|    reason    | string | One-line reason when conclusion is skipped <br>or failed.  |
+|    OUTPUT    |  TYPE  |                                       DESCRIPTION                                        |
+|--------------|--------|------------------------------------------------------------------------------------------|
+|  conclusion  | string | posted, dry-run, skipped or failed. A <br>summary already in the thread is <br>skipped.  |
+| previous-tag | string |                          Tag the release was compared against.                           |
+|    reason    | string |                One-line reason when conclusion is skipped <br>or failed.                 |
 
 <!-- AUTO-DOC-OUTPUT:END -->

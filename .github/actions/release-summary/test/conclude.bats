@@ -7,7 +7,7 @@ setup() {
   export GITHUB_STEP_SUMMARY="$BATS_TEST_TMPDIR/summary"
   export PAYLOAD_FILE="$BATS_TEST_TMPDIR/payload.json"
   export PROCEED=true SKIP_REASON="" AI_CONCLUSION=success RENDERED=true
-  export POST_OUTCOME=success DRY_RUN=false VERSION=v1.1.0 PREVIOUS_TAG=v1.0.0
+  export POST_RESULT=posted POST_REASON="" DRY_RUN=false VERSION=v1.1.0 PREVIOUS_TAG=v1.0.0
   export PR_COUNT=3 ITEM_COUNT=2 DROPPED_REFS=0
   : > "$GITHUB_OUTPUT"
   : > "$GITHUB_STEP_SUMMARY"
@@ -52,17 +52,38 @@ out() { sed -n "s/^$1=//p" "$GITHUB_OUTPUT"; }
 
 @test "dry run writes the payload to the job summary" {
   echo '{"text":"hello"}' > "$PAYLOAD_FILE"
-  DRY_RUN=true POST_OUTCOME="" run bash "$SCRIPT"
+  DRY_RUN=true POST_RESULT="" run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   [ "$(out conclusion)" = dry-run ]
   grep -q '"text":"hello"' "$GITHUB_STEP_SUMMARY"
 }
 
-@test "rejected Slack post names the bot remedy and exits 0" {
-  POST_OUTCOME=failure run bash "$SCRIPT"
+@test "rejected Slack post carries the poster's remedy and exits 0" {
+  POST_RESULT=failed POST_REASON="Slack rejected the reply (not_in_channel); invite the bot" run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   [ "$(out conclusion)" = failed ]
-  [[ "$output" == *"chat:write"* ]]
+  [[ "$output" == *"invite the bot"* ]]
+}
+
+@test "a summary already in the thread is a skip, not a failure" {
+  POST_RESULT=exists POST_REASON="a summary for v1.1.0 is already in this thread" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(out conclusion)" = skipped ]
+  [ "$(out reason)" = "a summary for v1.1.0 is already in this thread" ]
+  [[ "$output" != *"::warning::"* ]]
+}
+
+@test "an unreadable thread is a skip" {
+  POST_RESULT=skipped POST_REASON="could not read the banner thread (missing_scope)" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(out conclusion)" = skipped ]
+}
+
+@test "a post step that never reported is a failure, still exit 0" {
+  POST_RESULT="" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(out conclusion)" = failed ]
+  [[ "$(out reason)" == *"Post thread reply"* ]]
 }
 
 @test "exits 0 with no environment at all" {

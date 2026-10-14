@@ -20,7 +20,7 @@ Env:
   HAS_ANTHROPIC_KEY   "true" when an Anthropic key was passed
   HAS_SLACK_TOKEN     "true" when a Slack bot token was passed
   CHANNEL_ID          Slack channel the banner went to
-  THREAD_TS           banner message ts to reply under
+  THREAD_TS           banner message ts, or its Slack link, to reply under
   DRY_RUN             "true" to collect and summarize without posting
 """
 from __future__ import annotations
@@ -33,6 +33,7 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -42,6 +43,8 @@ TAG_MATCH = "v*"
 TAG_EXCLUDE = "*-next*"
 
 COMMIT_LIMIT = 500
+SLACK_TS = re.compile(r"\d{9,}\.\d{6}")
+SLACK_LINK = re.compile(r"/p(\d{10})(\d{6})(?:\D|$)")
 GRAPHQL_BATCH = 40
 PATHS_PER_PR = 30
 # Fits comfortably inside the model's context; the env var limit does not
@@ -251,10 +254,27 @@ def fit_budget(doc: dict, limit: int = MAX_INPUT_BYTES) -> dict:
     return doc
 
 
-def gate() -> None:
-    """Skip before any work when the summary could not be delivered."""
+def thread_ts(value: str) -> str:
+    """Message ts from a ts or a Slack message link (Copy link). A link to a
+    reply carries its thread's ts in the thread_ts query parameter. Empty when
+    neither form matches."""
+    value = value.strip()
+    if SLACK_TS.fullmatch(value):
+        return value
+    query = urllib.parse.parse_qs(urllib.parse.urlsplit(value).query)
+    for candidate in query.get("thread_ts", []):
+        if SLACK_TS.fullmatch(candidate):
+            return candidate
+    m = SLACK_LINK.search(value)
+    return f"{m.group(1)}.{m.group(2)}" if m else ""
+
+
+def gate() -> str:
+    """Skip before any work when the summary could not be delivered. Returns
+    the banner ts to reply under."""
+    ts = thread_ts(os.environ.get("THREAD_TS", ""))
     if os.environ.get("DRY_RUN") == "true":
-        return
+        return ts
     if os.environ.get("HAS_SLACK_TOKEN") != "true":
         skip("no Slack bot token, so the banner went out through the webhook and "
              "has no thread; pass slack-bot-token to post the summary")
@@ -263,6 +283,10 @@ def gate() -> None:
     if not os.environ.get("THREAD_TS"):
         skip("the banner returned no message ts, so there is no thread to reply "
              "in; check that the bot token post succeeded in the notify job")
+    if not ts:
+        skip("thread-ts is neither a message ts nor a Slack message link; pass "
+             "the banner's ts or its Copy link URL")
+    return ts
 
 
 def main() -> None:
@@ -270,7 +294,7 @@ def main() -> None:
     repository = os.environ.get("REPOSITORY", "").strip()
     if not version or "/" not in repository:
         skip("VERSION and REPOSITORY (owner/name) are required")
-    gate()
+    emit("thread_ts", gate())
     if not tag_exists(version):
         skip(f"tag {version} is not in the checkout; check out the released "
              "repository with fetch-depth: 0 and fetch-tags: true")

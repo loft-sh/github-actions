@@ -3,7 +3,7 @@
 # names the remedy, and a job summary line. Always exits 0: the summary is
 # advisory and must never fail the release.
 #
-# Env: PROCEED SKIP_REASON AI_CONCLUSION RENDERED POST_OUTCOME DRY_RUN VERSION
+# Env: PROCEED SKIP_REASON AI_CONCLUSION RENDERED POST_RESULT POST_REASON DRY_RUN VERSION
 #      PREVIOUS_TAG PR_COUNT ITEM_COUNT DROPPED_REFS PAYLOAD_FILE
 set -uo pipefail
 
@@ -22,11 +22,18 @@ elif [ "${RENDERED:-}" != "true" ]; then
   reason="the AI result rendered no items; see the Render Slack reply step"
 elif [ "${DRY_RUN:-}" = "true" ]; then
   conclusion=dry-run
-elif [ "${POST_OUTCOME:-}" = "success" ]; then
-  conclusion=posted
 else
-  conclusion=failed
-  reason="Slack rejected the thread reply; check the bot is in the channel and has chat:write"
+  # post.py reports posted, exists (a summary is already in the thread),
+  # skipped (the thread could not be read) or failed (Slack rejected it).
+  case "${POST_RESULT:-}" in
+    posted) conclusion=posted ;;
+    exists|skipped)
+      conclusion=skipped
+      reason="${POST_REASON:-the post step skipped}" ;;
+    *)
+      conclusion=failed
+      reason="${POST_REASON:-the post step did not finish; see the Post thread reply step}" ;;
+  esac
 fi
 
 emit conclusion "$conclusion"

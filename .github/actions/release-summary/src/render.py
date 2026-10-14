@@ -223,6 +223,13 @@ def build_payload(channel: str, thread_ts: str, collector: dict,
         "blocks": build_blocks(title, headline, groups, footer),
         "unfurl_links": False,
         "unfurl_media": False,
+        # post.py finds an earlier reply by this marker, so a re-run never
+        # posts a second summary into the same thread.
+        "metadata": {
+            "event_type": "release_summary",
+            "event_payload": {"repository": collector["repository"],
+                              "version": version},
+        },
     }
 
 

@@ -25,7 +25,7 @@ inputs:
     required: false
     default: ''
   slack-bot-token:
-    description: 'Slack bot token with chat:write in the banner channel. Empty skips the post with a warning.'
+    description: 'Slack bot token with chat:write and channels:history (groups:history for a private channel) in the banner channel. Empty skips the post with a warning.'
     required: false
     default: ''
   slack-channel-id:
@@ -33,7 +33,7 @@ inputs:
     required: false
     default: ''
   thread-ts:
-    description: 'Message ts of the release banner; the summary is posted as a reply to it.'
+    description: 'Message ts of the release banner, or its Slack message link (Copy link); the summary is posted as a reply to it.'
     required: false
     default: ''
   effort:
@@ -51,7 +51,7 @@ inputs:
 
 outputs:
   conclusion:
-    description: 'posted, dry-run, skipped or failed.'
+    description: 'posted, dry-run, skipped or failed. A summary already in the thread is skipped.'
     value: ${{ steps.conclude.outputs.conclusion }}
   reason:
     description: 'One-line reason when conclusion is skipped or failed.'
@@ -63,10 +63,10 @@ outputs:
 runs:
   using: composite
   steps:
-    # Every step but the last continues on error: a summary is advisory and
-    # must never fail the release job that calls this action. The scripts
-    # already exit 0 on every path they control; this covers the rest
-    # (a missing interpreter, a pip failure inside ai-step).
+    # Every step continues on error: a summary is advisory and must never
+    # fail the job that calls this action. The scripts already exit 0 on
+    # every path they control; this covers the rest (a missing interpreter,
+    # a pip failure inside ai-step).
     - name: Collect merged PRs
       id: collect
       continue-on-error: true
@@ -130,7 +130,7 @@ runs:
         PRS_FILE: ${{ steps.collect.outputs.prs_file }}
         LINEAR_WORKSPACE: ${{ inputs.linear-workspace }}
         CHANNEL_ID: ${{ inputs.slack-channel-id }}
-        THREAD_TS: ${{ inputs.thread-ts }}
+        THREAD_TS: ${{ steps.collect.outputs.thread_ts }}
         PRODUCT: ${{ inputs.product }}
         PAYLOAD_FILE: ${{ runner.temp }}/release-summary-payload.json
       run: python3 "${{ github.action_path }}/src/render.py"
@@ -139,23 +139,26 @@ runs:
       id: post
       if: steps.render.outputs.rendered == 'true' && inputs.dry-run != 'true'
       continue-on-error: true
-      uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4.0.0
-      with:
-        errors: true
-        method: chat.postMessage
-        token: ${{ inputs.slack-bot-token }}
-        payload-file-path: ${{ runner.temp }}/release-summary-payload.json
+      shell: bash
+      env:
+        SLACK_BOT_TOKEN: ${{ inputs.slack-bot-token }}
+        CHANNEL_ID: ${{ inputs.slack-channel-id }}
+        THREAD_TS: ${{ steps.collect.outputs.thread_ts }}
+        PAYLOAD_FILE: ${{ runner.temp }}/release-summary-payload.json
+      run: python3 "${{ github.action_path }}/src/post.py"
 
     - name: Report outcome
       id: conclude
       if: always()
+      continue-on-error: true
       shell: bash
       env:
         PROCEED: ${{ steps.collect.outputs.proceed }}
         SKIP_REASON: ${{ steps.collect.outputs.reason }}
         AI_CONCLUSION: ${{ steps.ai.outputs.conclusion }}
         RENDERED: ${{ steps.render.outputs.rendered }}
-        POST_OUTCOME: ${{ steps.post.outcome }}
+        POST_RESULT: ${{ steps.post.outputs.result }}
+        POST_REASON: ${{ steps.post.outputs.reason }}
         DRY_RUN: ${{ inputs.dry-run }}
         VERSION: ${{ inputs.version }}
         PREVIOUS_TAG: ${{ steps.collect.outputs.previous_tag }}

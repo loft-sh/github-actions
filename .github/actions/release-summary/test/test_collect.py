@@ -61,7 +61,7 @@ def env(tmp_path, monkeypatch):
     for k, v in {"VERSION": "v1.1.0-alpha.2", "REPOSITORY": "o/r",
                  "GH_TOKEN": "t", "HAS_ANTHROPIC_KEY": "true",
                  "HAS_SLACK_TOKEN": "true", "CHANNEL_ID": "C1",
-                 "THREAD_TS": "1.2", "DRY_RUN": "false"}.items():
+                 "THREAD_TS": "1700000000.000100", "DRY_RUN": "false"}.items():
         monkeypatch.setenv(k, v)
     monkeypatch.delenv("PREVIOUS_TAG", raising=False)
     return out
@@ -168,6 +168,33 @@ def test_gate_skips_without_delivery_path(env, monkeypatch, unset, needle):
     assert needle in outputs(env)["reason"]
 
 
+@pytest.mark.parametrize("value,want", [
+    ("1791973854.515449", "1791973854.515449"),
+    (" 1791973854.515449 ", "1791973854.515449"),
+    ("https://x.slack.com/archives/C068ZLG3QJY/p1791973854515449", "1791973854.515449"),
+    ("https://x.slack.com/archives/C068ZLG3QJY/p1791973854515449?thread_ts=1791922221.968419&cid=C1",
+     "1791922221.968419"),
+    ("https://x.slack.com/archives/C1/p1791973854515449?cid=C1", "1791973854.515449"),
+    ("not a ts", ""),
+    ("", ""),
+])
+def test_thread_ts(value, want):
+    assert load().thread_ts(value) == want
+
+
+def test_gate_returns_ts_from_link(env, monkeypatch):
+    monkeypatch.setenv("THREAD_TS", "https://x.slack.com/archives/C1/p1791973854515449")
+    assert load().gate() == "1791973854.515449"
+
+
+def test_gate_skips_unreadable_thread_ts(env, monkeypatch):
+    monkeypatch.setenv("THREAD_TS", "yesterday's banner")
+    with pytest.raises(SystemExit) as exc:
+        load().gate()
+    assert exc.value.code == 0
+    assert "Copy link" in outputs(env)["reason"]
+
+
 def test_gate_open_in_dry_run(env, monkeypatch):
     monkeypatch.setenv("DRY_RUN", "true")
     monkeypatch.setenv("THREAD_TS", "")
@@ -197,6 +224,7 @@ def test_main_collects_and_proceeds(repo, env):
     o = outputs(env)
     assert o["proceed"] == "true"
     assert o["previous_tag"] == "v1.1.0-alpha.1"
+    assert o["thread_ts"] == "1700000000.000100"
     assert o["pr_count"] == "2"
     doc = json.loads(Path(o["input_file"]).read_text())
     assert [p["number"] for p in doc["pull_requests"]] == [12, 10]

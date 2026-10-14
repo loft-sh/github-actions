@@ -210,6 +210,8 @@ def test_happy_path_all_four_groups(render, monkeypatch, tmp_path):
     assert data["thread_ts"] == "1700000000.000100"
     assert data["text"] == "What changed in v5.0.0-alpha.2 since v5.0.0-alpha.1"
     assert data["unfurl_links"] is False and data["unfurl_media"] is False
+    assert data["metadata"]["event_type"] == "release_summary"
+    assert set(data["metadata"]["event_payload"]) == {"repository", "version"}
 
     blocks = data["blocks"]
     assert [b["type"] for b in blocks] == ["section"] * 5 + ["context"]
