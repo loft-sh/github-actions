@@ -28,9 +28,9 @@ Sends a Slack notification to #product-releases when a new version is published.
 
 <!-- AUTO-DOC-SECRETS:START - Do not remove or modify this section -->
 
-|               SECRET               | REQUIRED |                                                                                       DESCRIPTION                                                                                        |
-|------------------------------------|----------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-|  SLACK_BOT_TOKEN_PRODUCT_RELEASES  |  false   |                                                                Slack bot token with chat:write in <br>slack_channel_id.                                                                  |
-| SLACK_WEBHOOK_URL_PRODUCT_RELEASES |  false   | Slack incoming webhook URL for #product-releases. <br>Required for failure notifications and for <br>success banners without a bot token; <br>the fallback when the bot post <br>fails.  |
+|               SECRET               | REQUIRED |                                                                                                 DESCRIPTION                                                                                                  |
+|------------------------------------|----------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|  SLACK_BOT_TOKEN_PRODUCT_RELEASES  |  false   | Slack bot token with chat:write and <br>channels:history in slack_channel_id. channels:history lets the <br>action confirm a post that ended <br>without a clear result instead of <br>risking a duplicate.  |
+| SLACK_WEBHOOK_URL_PRODUCT_RELEASES |  false   | Slack incoming webhook URL for #product-releases. <br>Required for failure notifications, for success <br>banners without a bot token, and <br>by dry-run; the fallback when the <br>bot post did not land.  |
 
 <!-- AUTO-DOC-SECRETS:END -->
