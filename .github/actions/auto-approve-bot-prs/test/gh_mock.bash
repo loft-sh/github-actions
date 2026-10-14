@@ -68,6 +68,21 @@ read_sequenced() {
 emit_api_response() {
   local path="$1" default_runs='{"check_runs":[]}' default_statuses='{"state":"success","statuses":[]}'
   case "$path" in
+    *"/pulls/"*"/reviews")
+      [ -n "${GH_MOCK_REVIEW_PAYLOAD:-}" ] && cat > "$GH_MOCK_REVIEW_PAYLOAD"
+      if [ "${GH_MOCK_REVIEW_FAIL:-}" = "always" ]; then
+        emit_err "mock: review forced failure"
+        exit 22
+      fi
+      local default_review
+      if [ -n "${GH_MOCK_REVIEW_PAYLOAD:-}" ]; then
+        default_review=$(jq -c --arg sha "${GH_MOCK_REVIEW_HEAD_SHA:-${GH_MOCK_HEAD_SHA:-tested-head-sha}}" \
+          '{commit_id:(.commit_id // $sha),state:"APPROVED"}' "$GH_MOCK_REVIEW_PAYLOAD")
+      else
+        default_review=$(jq -cn --arg sha "${GH_MOCK_HEAD_SHA:-tested-head-sha}" '{commit_id:$sha,state:"APPROVED"}')
+      fi
+      printf '%s\n' "${GH_MOCK_REVIEW_JSON:-$default_review}"
+      ;;
     user)
       printf '{"login":"%s"}\n' "${GH_MOCK_APPROVER:-}"
       ;;

@@ -18,8 +18,10 @@ WORKFLOW="$BATS_TEST_DIRNAME/../../../workflows/auto-approve-bot-prs.yaml"
 }
 
 @test "approval still uses only the approval token" {
-  run grep -F 'github-token: ${{ inputs.github-token }}' "$ACTION"
+  approval_step=$(sed -n '/    - name: Approve PR/,/    - name: Merge PR/p' "$ACTION")
+  run grep -F 'GH_TOKEN: ${{ inputs.github-token }}' <<< "$approval_step"
   [ "$status" -eq 0 ]
+  [[ "$approval_step" != *'inputs.merge-token'* && "$approval_step" != *'inputs.ci-read-token'* ]]
   run grep -F 'github-token: ${{ secrets.gh-access-token }}' "$WORKFLOW"
   [ "$status" -eq 0 ]
 }
