@@ -26,7 +26,7 @@ deployment by name and log it without starting a run.
   with:
     anthropic-api-key: ${{ secrets.ANTHROPIC_OPS_SERVICES_API_KEY }}
     deployment-name: scheduled-routines-cve-remediation
-    enabled: ${{ vars.CVE_REMEDIATION_ENABLED }}
+    enabled: ${{ vars.CVE_REMEDIATION_ENABLED == 'true' }}
 ```
 
 The key must belong to the Anthropic workspace that holds the deployment. A

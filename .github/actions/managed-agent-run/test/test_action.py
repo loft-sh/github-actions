@@ -62,7 +62,10 @@ class FakeAnthropic:
         self.url = f"http://127.0.0.1:{self.server.server_port}"
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
-    def close(self):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
         self.server.shutdown()
 
 
@@ -84,11 +87,8 @@ def run_action(tmp_path, server, **inputs):
 
 
 def test_starts_the_run_and_sets_outputs(tmp_path):
-    server = FakeAnthropic()
-    try:
+    with FakeAnthropic() as server:
         result, output = run_action(tmp_path, server)
-    finally:
-        server.close()
     assert result.returncode == 0
     assert [(c["method"], c["path"]) for c in server.calls] == [
         ("GET", "/v1/deployments"), ("POST", "/v1/deployments/dep_1/run")]
@@ -102,22 +102,16 @@ def test_starts_the_run_and_sets_outputs(tmp_path):
 
 
 def test_follows_pagination(tmp_path):
-    server = FakeAnthropic(pages=[[{"id": "dep_0", "name": "other"}], [{"id": "dep_9", "name": NAME}]])
-    try:
+    with FakeAnthropic(pages=[[{"id": "dep_0", "name": "other"}], [{"id": "dep_9", "name": NAME}]]) as server:
         result, _ = run_action(tmp_path, server)
-    finally:
-        server.close()
     assert result.returncode == 0
     assert [c["query"].get("page") for c in server.calls if c["method"] == "GET"] == [None, "1"]
     assert server.calls[-1]["path"] == "/v1/deployments/dep_9/run"
 
 
 def test_kill_switch_makes_no_requests(tmp_path):
-    server = FakeAnthropic()
-    try:
+    with FakeAnthropic() as server:
         result, output = run_action(tmp_path, server, enabled="false")
-    finally:
-        server.close()
     assert result.returncode == 0
     assert server.calls == []
     assert output == ""
@@ -125,22 +119,16 @@ def test_kill_switch_makes_no_requests(tmp_path):
 
 
 def test_missing_key_makes_no_requests(tmp_path):
-    server = FakeAnthropic()
-    try:
+    with FakeAnthropic() as server:
         result, _ = run_action(tmp_path, server, anthropic_api_key="")
-    finally:
-        server.close()
     assert result.returncode == 0
     assert server.calls == []
     assert "anthropic-api-key is empty" in result.stdout
 
 
 def test_dry_run_resolves_without_running(tmp_path):
-    server = FakeAnthropic()
-    try:
+    with FakeAnthropic() as server:
         result, output = run_action(tmp_path, server, dry_run="true")
-    finally:
-        server.close()
     assert result.returncode == 0
     assert [c["method"] for c in server.calls] == ["GET"]
     assert output == ""
@@ -150,11 +138,8 @@ def test_dry_run_resolves_without_running(tmp_path):
 def test_unknown_or_ambiguous_name_warns_without_running(tmp_path):
     for pages in ([[{"id": "dep_0", "name": "other"}]],
                   [[{"id": "dep_1", "name": NAME}, {"id": "dep_2", "name": NAME}]]):
-        server = FakeAnthropic(pages=pages)
-        try:
+        with FakeAnthropic(pages=pages) as server:
             result, output = run_action(tmp_path, server)
-        finally:
-            server.close()
         assert result.returncode == 0
         assert all(c["method"] == "GET" for c in server.calls)
         assert "::warning::" in result.stdout
@@ -162,11 +147,8 @@ def test_unknown_or_ambiguous_name_warns_without_running(tmp_path):
 
 
 def test_api_failure_never_fails_the_job(tmp_path):
-    server = FakeAnthropic(error_status=500)
-    try:
+    with FakeAnthropic(error_status=500) as server:
         result, output = run_action(tmp_path, server)
-    finally:
-        server.close()
     assert result.returncode == 0
     assert "::warning::" in result.stdout
     assert "the calling job is unaffected" in result.stdout
@@ -174,22 +156,16 @@ def test_api_failure_never_fails_the_job(tmp_path):
 
 
 def test_run_without_session_warns(tmp_path):
-    server = FakeAnthropic(run_result={"id": "run_1", "error": {"type": "agent_archived"}})
-    try:
+    with FakeAnthropic(run_result={"id": "run_1", "error": {"type": "agent_archived"}}) as server:
         result, output = run_action(tmp_path, server)
-    finally:
-        server.close()
     assert result.returncode == 0
     assert "created no session (error: agent_archived)" in result.stdout
     assert output == ""
 
 
 def test_unrecognised_boolean_uses_the_safe_default(tmp_path):
-    server = FakeAnthropic()
-    try:
+    with FakeAnthropic() as server:
         result, _ = run_action(tmp_path, server, dry_run="maybe")
-    finally:
-        server.close()
     assert result.returncode == 0
     assert "unrecognised dry-run='maybe'" in result.stdout
     assert [c["method"] for c in server.calls] == ["GET"]
