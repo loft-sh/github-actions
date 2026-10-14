@@ -1,0 +1,40 @@
+name: Managed agent run
+description: Start one run of a Claude Managed Agents deployment by name, without failing the calling job
+inputs:
+  anthropic-api-key:
+    description: Anthropic API key of the workspace that holds the deployment
+    required: false
+    default: ""
+  deployment-name:
+    description: Name of the deployment to run, for example scheduled-routines-cve-remediation
+    required: true
+  enabled:
+    description: Kill switch. Explicit falsey values skip every API call; unrecognised values warn and remain enabled
+    required: false
+    default: "true"
+  dry-run:
+    description: Resolve the deployment by name and log it without starting a run
+    required: false
+    default: "false"
+outputs:
+  run-id:
+    description: ID of the started deployment run; empty when skipped or on failure
+    value: ${{ steps.run.outputs.run-id }}
+  session-id:
+    description: ID of the session the run started; empty when skipped or on failure
+    value: ${{ steps.run.outputs.session-id }}
+runs:
+  using: composite
+  steps:
+    - name: Start the deployment run
+      id: run
+      shell: bash
+      env:
+        INPUT_ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
+        INPUT_DEPLOYMENT_NAME: ${{ inputs.deployment-name }}
+        INPUT_ENABLED: ${{ inputs.enabled }}
+        INPUT_DRY_RUN: ${{ inputs.dry-run }}
+      run: python3 "${{ github.action_path }}/src/action.py"
+branding:
+  icon: play-circle
+  color: purple
