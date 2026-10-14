@@ -37,6 +37,8 @@ Env out ($GITHUB_OUTPUT):
   ts               banner ts when posted, else empty
   channel_id       channel id when posted, else empty
   fallback         true when the webhook should post the banner
+  webhook_retries  slackapi retries for that webhook post: 0, because a
+                   resend after a lost response would duplicate the banner
 
 Exits 1 only when the banner did not post and there is no webhook to fall
 back on, which is how the webhook-only path has always failed.
@@ -56,7 +58,8 @@ DEFAULT_API_URL = "https://slack.com/api"
 EVENT_TYPE = "release_banner"
 TIMEOUT = 20  # seconds per HTTP request
 LOOKBACK = 900  # seconds of channel history searched for the banner
-HISTORY_LIMIT = 100
+HISTORY_LIMIT = 200
+MAX_PAGES = 5  # an unfinished read after this many pages counts as unreadable
 NETWORK_ERRORS = (OSError, http.client.HTTPException)
 
 # Slack error codes returned without saying whether the message was stored.
@@ -111,10 +114,13 @@ def rejection(response: str) -> str | None:
     return error
 
 
-def history(token: str, channel: str, oldest: float) -> dict:
-    """conversations.history since oldest, as a dict; never raises."""
-    query = urllib.parse.urlencode({"channel": channel, "oldest": f"{oldest:.6f}",
-                                    "limit": HISTORY_LIMIT, "include_all_metadata": "true"})
+def history(token: str, channel: str, oldest: float, cursor: str = "") -> dict:
+    """One page of conversations.history since oldest, as a dict; never raises."""
+    params = {"channel": channel, "oldest": f"{oldest:.6f}",
+              "limit": HISTORY_LIMIT, "include_all_metadata": "true"}
+    if cursor:
+        params["cursor"] = cursor
+    query = urllib.parse.urlencode(params)
     url = f"{env('SLACK_API_URL').rstrip('/') or DEFAULT_API_URL}/conversations.history?{query}"
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
     try:
@@ -129,25 +135,38 @@ def history(token: str, channel: str, oldest: float) -> dict:
     return data if isinstance(data, dict) else {"ok": False, "error": "invalid_response"}
 
 
+def is_banner(msg, repository: str, version: str) -> bool:
+    meta = msg.get("metadata") if isinstance(msg, dict) else None
+    if not isinstance(meta, dict) or meta.get("event_type") != EVENT_TYPE:
+        return False
+    body = meta.get("event_payload")
+    return (isinstance(body, dict) and body.get("repository") == repository
+            and body.get("version") == version and bool(msg.get("ts")))
+
+
 def find_banner(token: str, channel: str, repository: str, version: str) -> tuple[str | None, str]:
-    """(ts of the banner, "") when it is in the channel, (None, "") when it
-    is not, (None, error) when the channel could not be read."""
+    """(ts of the banner, "") when it is in the channel, (None, "") when the
+    whole window was read without it, (None, error) when the channel could
+    not be read in full: absence is only proven by an exhausted read."""
     delay = env("BANNER_CHECK_DELAY")
     time.sleep(float(delay) if delay.replace(".", "", 1).isdigit() else 5)
-    resp = history(token, channel, time.time() - LOOKBACK)
-    if resp.get("ok") is not True:
-        error = resp.get("error")
-        return None, error if isinstance(error, str) and error else "unknown_error"
-    messages = resp.get("messages")
-    for msg in messages if isinstance(messages, list) else []:
-        meta = msg.get("metadata") if isinstance(msg, dict) else None
-        if not isinstance(meta, dict) or meta.get("event_type") != EVENT_TYPE:
-            continue
-        body = meta.get("event_payload")
-        if isinstance(body, dict) and body.get("repository") == repository \
-                and body.get("version") == version and msg.get("ts"):
-            return str(msg["ts"]), ""
-    return None, ""
+    oldest, cursor = time.time() - LOOKBACK, ""
+    for _ in range(MAX_PAGES):
+        resp = history(token, channel, oldest, cursor)
+        if resp.get("ok") is not True:
+            error = resp.get("error")
+            return None, error if isinstance(error, str) and error else "unknown_error"
+        messages = resp.get("messages")
+        for msg in messages if isinstance(messages, list) else []:
+            if is_banner(msg, repository, version):
+                return str(msg["ts"]), ""
+        meta = resp.get("response_metadata")
+        cursor = meta.get("next_cursor") if isinstance(meta, dict) else ""
+        if not cursor or not isinstance(cursor, str):
+            if resp.get("has_more") is True:
+                return None, "history_incomplete"
+            return None, ""
+    return None, f"more than {MAX_PAGES * HISTORY_LIMIT} messages in {LOOKBACK} s"
 
 
 def decide() -> tuple[bool, str, str]:
@@ -185,6 +204,7 @@ def main() -> int:
     emit("ts", ts)
     emit("channel_id", env("CHANNEL_ID") if posted else "")
     emit("fallback", "true" if not posted and has_webhook else "false")
+    emit("webhook_retries", "0")
     if posted:
         return 0
     if has_webhook:

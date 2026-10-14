@@ -88,10 +88,12 @@ banner that already landed. `banner-result.py` then settles the outcome:
 | rejected by Slack (`not_in_channel`, `invalid_auth`, `missing_scope`, `ratelimited`, ...) | not posted | yes, with a warning naming the remedy |
 | ambiguous (timeout, 5xx, `internal_error`, no response), banner found in the channel | posted, `message_ts` set | no |
 | ambiguous, banner not in the channel | not posted | yes, with a warning |
-| ambiguous, channel unreadable | unknown | yes, with a warning that it may duplicate |
+| ambiguous, channel unreadable or not read to the end | unknown | yes, with a warning that it may duplicate |
 
 The banner carries `release_banner` message metadata (repository and
-version), which is how the channel read recognizes it. Without `webhook_url`
+version), which is how the channel read recognizes it. The read follows
+every page of the last 15 minutes; one it cannot finish counts as
+unreadable. The webhook fallback never resends either. Without `webhook_url`
 a banner that did not post fails the step. After a webhook post
 `message_ts` stays empty and the summary skips. Failure notifications always
 post through `webhook_url`, so a dry run fails without it.

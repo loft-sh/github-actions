@@ -108,7 +108,7 @@ def test_ok_post_is_posted_without_reading_the_channel(slack, env, monkeypatch):
     code, out = run(env)
     assert code == 0
     assert out == {"posted": "true", "ts": "1700000001.000100",
-                   "channel_id": CHANNEL, "fallback": "false"}
+                   "channel_id": CHANNEL, "fallback": "false", "webhook_retries": "0"}
     assert slack.requests == []
 
 
@@ -126,7 +126,8 @@ def test_rejected_post_falls_back_without_reading_the_channel(slack, env, monkey
     monkeypatch.setenv("POST_RESPONSE", json.dumps({"ok": False, "error": error}))
     code, out = run(env)
     assert code == 0
-    assert out == {"posted": "false", "ts": "", "channel_id": "", "fallback": "true"}
+    assert out == {"posted": "false", "ts": "", "channel_id": "", "fallback": "true",
+                   "webhook_retries": "0"}
     assert slack.requests == []
     text = capsys.readouterr().out
     assert f"::warning::Slack rejected the bot token banner ({error})" in text
@@ -153,8 +154,8 @@ def test_ambiguous_post_that_landed_is_posted_with_no_fallback(slack, env, monke
                                    banner("1700000001.000100")))
     code, out = run(env)
     assert code == 0
-    assert out == {"posted": "true", "ts": "1700000001.000100",
-                   "channel_id": CHANNEL, "fallback": "false"}
+    assert out["posted"] == "true" and out["ts"] == "1700000001.000100"
+    assert out["fallback"] == "false"
     (req,) = slack.requests
     assert req["path"] == "/api/conversations.history"
     assert req["query"]["channel"] == [CHANNEL]
@@ -197,6 +198,39 @@ def test_unreadable_channel_falls_back_and_says_it_may_duplicate(slack, env, mon
     assert "may duplicate the banner" in text
 
 
+def test_banner_on_a_later_page_is_found(slack, env, monkeypatch):
+    """A busy channel can push the banner past the first page: absence is
+    only proven once the read is exhausted."""
+    monkeypatch.setenv("POST_RESPONSE", json.dumps({"ok": False, "error": "internal_error"}))
+    first = history({"ts": "1700000003.000100", "text": "chatter"})
+    first["response_metadata"] = {"next_cursor": "page2"}
+    first["has_more"] = True
+    slack.responses += [first, history(banner("1700000001.000100"))]
+    code, out = run(env)
+    assert (code, out["posted"], out["fallback"]) == (0, "true", "false")
+    assert out["ts"] == "1700000001.000100"
+    assert "cursor" not in slack.requests[0]["query"]
+    assert slack.requests[1]["query"]["cursor"] == ["page2"]
+
+
+@pytest.mark.parametrize("pages,needle", [
+    # has_more without a cursor: the read stopped short
+    ([{"ok": True, "messages": [], "has_more": True}], "history_incomplete"),
+    # every page points at another one, past the page cap
+    ([{"ok": True, "messages": [], "has_more": True,
+       "response_metadata": {"next_cursor": f"c{i}"}} for i in range(5)], "more than 1000 messages"),
+])
+def test_an_unfinished_read_is_not_proof_of_absence(slack, env, monkeypatch, capsys, pages, needle):
+    monkeypatch.setenv("POST_RESPONSE", json.dumps({"ok": False, "error": "internal_error"}))
+    slack.responses += pages
+    code, out = run(env)
+    assert (code, out["fallback"]) == (0, "true")
+    text = capsys.readouterr().out
+    assert needle in text
+    assert "may duplicate the banner" in text
+    assert "is not in the channel" not in text
+
+
 def test_unreachable_slack_falls_back(env, monkeypatch):
     monkeypatch.setenv("POST_RESPONSE", "")
     code, out = run(env)
@@ -209,7 +243,8 @@ def test_no_webhook_to_fall_back_on_fails_the_step(slack, env, monkeypatch, caps
     monkeypatch.setenv("POST_RESPONSE", json.dumps({"ok": False, "error": "not_in_channel"}))
     code, out = run(env)
     assert code == 1
-    assert out == {"posted": "false", "ts": "", "channel_id": "", "fallback": "false"}
+    assert out == {"posted": "false", "ts": "", "channel_id": "", "fallback": "false",
+                   "webhook_retries": "0"}
     assert "::error::Slack rejected the bot token banner (not_in_channel)" in capsys.readouterr().out
 
 

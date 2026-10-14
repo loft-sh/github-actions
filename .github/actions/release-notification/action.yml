@@ -203,6 +203,10 @@ runs:
       uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d  # v4.0.0
       with:
         errors: true
+        # No resend when the webhook is the bot post's fallback: a retry
+        # after a lost response would post the banner twice. Webhook-only
+        # callers keep the action's default.
+        retries: ${{ steps.banner.outputs.webhook_retries || '5' }}
         webhook-type: incoming-webhook
         webhook: ${{ inputs.webhook_url }}
         payload: |
