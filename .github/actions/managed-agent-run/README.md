@@ -43,6 +43,21 @@ caller, such as a PR number, is not supported yet.
 Both send `anthropic-beta: managed-agents-2026-04-01`. `ANTHROPIC_API_URL`
 overrides the base URL for tests.
 
+## Maintenance
+
+`BETA` (`managed-agents-2026-04-01`) and `anthropic-version` (`2023-06-01`) in
+`src/action.py`, and the two endpoint paths, are copied from the Anthropic Python SDK's
+`beta.deployments` resource (`anthropic/resources/beta/deployments.py`, `anthropic~=0.125.0`,
+the version `loft-sh/ai-agents` pins). When the SDK moves to a new beta header, find it with
+`grep -n anthropic-beta anthropic/resources/beta/deployments.py` in the new version, update
+`BETA` and the header assertion in `test/test_action.py`, then run
+`make test-managed-agent-run`. `ANTHROPIC_API_URL` is Anthropic's standard endpoint; the
+environment override exists for tests.
+
+The API key is the caller's. To rotate it, create a new key in the Anthropic Console for the
+workspace that holds the deployment, update the caller's repository secret, and delete the
+old key.
+
 ## Inputs
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
