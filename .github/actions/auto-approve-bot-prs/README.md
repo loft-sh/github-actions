@@ -118,11 +118,16 @@ the run. It checks that SHA once before polling CI and again after CI passes. If
 Renovate or another actor updates the branch while an older run is still
 polling, that run skips approval.
 
-The post-CI check is deliberately narrower than the preflight. It rejects a
-moved head or a definitive merge conflict, but does not repeat the approver
-identity lookup and does not wait for transient `mergeable: null` metadata.
-Those checks already passed before the CI wait, and repeating them here can
-strand a release on an unrelated API blip after all CI has completed.
+Mergeability is decided last. The preflight before the CI wait rejects only
+what is already definitive: a moved head, a merge conflict GitHub has reported,
+and an approving token that matches the PR author or cannot read the PR (HTTP
+401, 403 or 404 stops at once with the status). Metadata GitHub has not computed
+yet (`mergeable: null`) does not block there. After every other check has
+finished, the post-CI check polls up to 10 times, 3 s apart, for a definitive
+value: a conflict or a moved head discards the run, and a value still `null`
+after that budget does not, because the merge API enforces conflicts and
+stranding a run whose CI already passed on slow metadata is worse. Transient
+read failures are retried at both points.
 
 Both merge calls pass `--match-head-commit`. For a direct merge, GitHub checks
 the SHA atomically when it merges, so that path can only land the commit this
@@ -168,7 +173,7 @@ avoid. So the queued warning names what to check rather than asserting the merge
 will complete on its own.
 
 Each merge call is retried **once** after a short sleep. By this point the run
-has already made up to 90 CI polls, up to 10 mergeability polls and the approval
+has already made up to 90 CI polls, up to 20 pull request reads and the approval
 call, so secondary rate limiting is a live risk, and the two merge attempts would
 otherwise fire back-to-back — one blip could take out both and escalate a
 transient failure as though it were a policy refusal.

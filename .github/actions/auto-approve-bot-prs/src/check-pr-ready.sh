@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Combines two gates: merge-conflict check and approver-identity check.
-# Only writes proceed=true if BOTH pass.
+# Preflight before the CI wait: the PR is still at the event head, has no
+# reported merge conflict, and the approving token is not the PR author.
+# Only writes proceed=true if all pass. Mergeability that is not yet computed
+# does not block here; check-pr-after-ci.sh decides it once CI has finished.
 #
 # Required env: GH_TOKEN, GITHUB_REPOSITORY, PR_NUMBER, PR_AUTHOR,
 #               EXPECTED_HEAD_SHA
@@ -26,59 +28,68 @@ emit() {
   printf '%s=%s\n' "$k" "$v"
 }
 
-# mergeable can be null briefly while GitHub computes metadata. Rerun context
-# makes this worse — observed runs where the first ~9s window returned null
-# even though the PR had been mergeable for hours. Budget ~30s before giving up.
+# This gate runs before the CI wait, so it judges only what is already
+# definitive: the head this run was triggered for, a merge conflict GitHub has
+# already reported, and the approver identity. Mergeability that GitHub has not
+# computed yet is decided after every other check has finished, in
+# check-pr-after-ci.sh. Waiting for it here made the action give up before CI
+# had even run.
 #
 # The filter must NOT be `.mergeable // "null"`: jq's `//` treats false as an
 # empty value, so a genuine `mergeable: false` (a real merge conflict) came back
-# as "null" and was indistinguishable from "GitHub has not computed this yet" —
-# which also meant a conflicted PR burned the whole retry budget re-polling a
-# value that was already definitive.
-mergeable="null"
-mergeable_attempts="${MERGEABLE_MAX_ATTEMPTS:-10}"
-mergeable_sleep="${MERGEABLE_SLEEP_SECONDS:-3}"
-for _ in $(seq 1 "$mergeable_attempts"); do
-  if ! pr_state=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" \
+# as "null" and was indistinguishable from "GitHub has not computed this yet".
+#
+# A failed read is not a null mergeable. A token that cannot see the repository
+# gets 404 on every poll, and reporting that as "mergeability not computed" sent
+# loft-sh/tailscale-acls chasing a GitHub race for an access problem. Access
+# errors stop at once with the status; anything else is retried.
+read_attempts="${READ_MAX_ATTEMPTS:-10}"
+read_sleep="${READ_SLEEP_SECONDS:-3}"
+read_error=""
+for attempt in $(seq 1 "$read_attempts"); do
+  if pr_state=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" \
     --jq '[
       (.mergeable | if . == null then "null" else tostring end),
       (.head.sha // "")
-    ] | @tsv' 2>/dev/null); then
-    mergeable="null"
-    sleep "$mergeable_sleep"
-    continue
+    ] | @tsv' 2>&1); then
+    read_error=""
+    break
   fi
-  IFS=$'\t' read -r mergeable current_head <<< "$pr_state"
-
-  # A synchronize event can move the PR while this workflow is polling. Check
-  # the event SHA before waiting for GitHub to recompute mergeability so a
-  # force-push reports the real reason immediately instead of timing out.
-  if [ -z "$current_head" ]; then
-    echo "::error::could not resolve the current head SHA for PR #${PR_NUMBER}; not approving because the tested commit cannot be verified"
-    emit proceed false
-    exit 0
-  fi
-  if [ "$current_head" != "$EXPECTED_HEAD_SHA" ]; then
-    echo "::error::PR #${PR_NUMBER} head changed from tested SHA '$(safe "$EXPECTED_HEAD_SHA")' to '$(safe "$current_head")'; not approving. The synchronize run for the new head must verify CI instead"
-    emit proceed false
-    exit 0
-  fi
-
-  [ "$mergeable" != "null" ] && break
-  sleep "$mergeable_sleep"
+  read_error=$(grep -oE 'HTTP [0-9]{3}' <<< "$pr_state" | tail -n1 || true)
+  case "$read_error" in
+    "HTTP 401"|"HTTP 403"|"HTTP 404")
+      echo "::error::the approving token cannot read PR #${PR_NUMBER} (${read_error}); not approving. Give gh-access-token read and write access to pull requests in ${GITHUB_REPOSITORY}"
+      emit proceed false
+      exit 0
+      ;;
+  esac
+  read_error="${read_error:-an API error}"
+  [ "$attempt" -lt "$read_attempts" ] && sleep "$read_sleep"
 done
-
-# Both outcomes below stop the run, but they need different responses, so they
-# are reported separately rather than as one notice: a conflict needs someone to
-# rebase the PR, whereas exhausting the metadata budget is transient and a re-run
-# is likely to succeed.
-if [ "$mergeable" = "false" ]; then
-  echo "::warning::PR #${PR_NUMBER} has merge conflicts with its base branch; not approving. It needs a rebase before this can proceed"
+if [ -n "$read_error" ]; then
+  echo "::warning::could not read PR #${PR_NUMBER} within ${read_attempts} attempts (last failure: ${read_error}); not approving. This is usually transient - a re-run should resolve it"
   emit proceed false
   exit 0
 fi
-if [ "$mergeable" != "true" ]; then
-  echo "::warning::GitHub did not report mergeability for PR #${PR_NUMBER} within ${mergeable_attempts} attempts (last value '$(safe "$mergeable")'); not approving. This is usually transient - a re-run should resolve it"
+IFS=$'\t' read -r mergeable current_head <<< "$pr_state"
+
+# A synchronize event can move the PR while this workflow is queued. Check the
+# event SHA first so a force-push reports the real reason.
+if [ -z "$current_head" ]; then
+  echo "::error::could not resolve the current head SHA for PR #${PR_NUMBER}; not approving because the tested commit cannot be verified"
+  emit proceed false
+  exit 0
+fi
+if [ "$current_head" != "$EXPECTED_HEAD_SHA" ]; then
+  echo "::error::PR #${PR_NUMBER} head changed from tested SHA '$(safe "$EXPECTED_HEAD_SHA")' to '$(safe "$current_head")'; not approving. The synchronize run for the new head must verify CI instead"
+  emit proceed false
+  exit 0
+fi
+
+# A reported conflict is definitive, and waiting out the whole CI budget on it
+# would only delay the rebase it needs.
+if [ "$mergeable" = "false" ]; then
+  echo "::warning::PR #${PR_NUMBER} has merge conflicts with its base branch; not approving. It needs a rebase before this can proceed"
   emit proceed false
   exit 0
 fi
