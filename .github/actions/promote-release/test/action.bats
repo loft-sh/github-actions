@@ -268,7 +268,8 @@ teardown() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"Latest-flagged release v10.0.0-rc.1)"* ]]
   run ! grep -qF ':latest ' "$CRANE_MOCK_CALLS"
-  run ! grep -qF ':9 ' "$CRANE_MOCK_CALLS"
+  # 9.9.9 is the newest 9.x, so :9 advances on its own gate.
+  grep -qF ':9 ' "$CRANE_MOCK_CALLS"
   grep -qF ':9.9 ' "$CRANE_MOCK_CALLS"
 }
 
@@ -301,7 +302,8 @@ teardown() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"older than the promotion baseline"* ]]
   run ! grep -qF ':latest ' "$CRANE_MOCK_CALLS"
-  run ! grep -qF ':9 ' "$CRANE_MOCK_CALLS"
+  # 9.9.9 is the newest 9.x, so :9 advances on its own gate.
+  grep -qF ':9 ' "$CRANE_MOCK_CALLS"
   # Withholding is scoped to the two unscoped tags. Without this the test cannot
   # tell a correct withhold from the script short-circuiting after the gate.
   grep -qF ':9.9 ' "$CRANE_MOCK_CALLS"
@@ -343,7 +345,8 @@ teardown() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"newest stable tag v10.0.0+build.7;"* ]]
   run ! grep -qF ':latest ' "$CRANE_MOCK_CALLS"
-  run ! grep -qF ':9 ' "$CRANE_MOCK_CALLS"
+  # 9.9.9 is the newest 9.x, so :9 advances on its own gate.
+  grep -qF ':9 ' "$CRANE_MOCK_CALLS"
 }
 
 @test "a Latest flag on a tag that is not a version warns and withholds" {
@@ -356,7 +359,8 @@ teardown() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"::warning::"*"tagged 'stable', which is not a version"* ]]
   run ! grep -qF ':latest ' "$CRANE_MOCK_CALLS"
-  run ! grep -qF ':9 ' "$CRANE_MOCK_CALLS"
+  # 9.9.9 is the newest 9.x, so :9 advances on its own gate.
+  grep -qF ':9 ' "$CRANE_MOCK_CALLS"
   # No 9.9.x sibling exists, so 9.9.9 is trivially newest in its own line.
   grep -qF ':9.9 ' "$CRANE_MOCK_CALLS"
 }
@@ -384,7 +388,8 @@ teardown() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"newest stable tag 10.0.0;"* ]]
   run ! grep -qF ':latest ' "$CRANE_MOCK_CALLS"
-  run ! grep -qF ':9 ' "$CRANE_MOCK_CALLS"
+  # 9.9.9 is the newest 9.x, so :9 advances on its own gate.
+  grep -qF ':9 ' "$CRANE_MOCK_CALLS"
   # 9.9.9 IS the newest in its own 9.9 line, so the line tag still advances.
   grep -qF ':9.9 ' "$CRANE_MOCK_CALLS"
 }
@@ -429,7 +434,7 @@ teardown() {
   # every run, so re-running the build for the tag that currently holds it
   # leaves the repo with releases but no isLatest. An empty isLatest must
   # therefore NOT read as "first-ever promotion" - doing so would let this
-  # dispatch for the older v9.9.9 drag :latest/:9 back off v10.0.0.
+  # dispatch for the older v9.9.9 drag :latest back off v10.0.0.
   export INPUT_PROMOTE_SELF="true"
   export GH_MOCK_KNOWN_RELEASES="example-org/example-repo:v9.9.9 example-org/example-caller-repo:v9.9.9"
   set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.9.9","isPrerelease":false,"isLatest":false},{"tagName":"v10.0.0","isPrerelease":false,"isLatest":false}]'
@@ -438,7 +443,7 @@ teardown() {
   [[ "$output" == *"no release on example-org/example-caller-repo carries the Latest flag"* ]]
   [[ "$output" == *"newest stable tag (v10.0.0)"* ]]
 
-  # :latest/:9 must stay put; the line tag is still allowed to advance.
+  # :latest must stay put; the line tag is still allowed to advance.
   run ! grep -qF ':latest ' "$CRANE_MOCK_CALLS"
   grep -qF 'CREATE ghcr.io/example-org/example-image:9.9 ghcr.io/example-org/example-image:9.9.9' "$CRANE_MOCK_CALLS"
   # ... and the caller's own release must not be flipped to Latest either.
@@ -542,14 +547,15 @@ teardown() {
 }
 
 @test "promote-self on a backport -> unsets prerelease but does not move Latest" {
-  # Same gate as :latest/:major, so promoting an older line never moves the
-  # repo's Latest pointer backwards.
+  # Same gate as :latest, so promoting an older line never moves the repo's
+  # Latest pointer backwards, even though :9 still advances on its own gate.
   export INPUT_PROMOTE_SELF="true"
   export GH_MOCK_KNOWN_RELEASES="example-org/example-repo:v9.9.9 example-org/example-caller-repo:v9.9.9"
   set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v10.0.0","isPrerelease":false,"isLatest":true}]'
   run "$SCRIPT"
   [ "$status" -eq 0 ]
   [[ "$output" == *"not marking example-org/example-caller-repo@v9.9.9 as Latest"* ]]
+  grep -qF ':9 ' "$CRANE_MOCK_CALLS"
   grep -qF -- 'EDIT example-org/example-caller-repo v9.9.9 --prerelease=false' "$GH_MOCK_CALLS"
   run ! grep -qF -- 'EDIT example-org/example-caller-repo v9.9.9 --prerelease=false --latest' "$GH_MOCK_CALLS"
 }
@@ -722,7 +728,7 @@ teardown() {
   run ! grep -q '^EDIT ' "$GH_MOCK_CALLS"
 }
 
-@test "backport on caller repo -> skips :latest/:major, still advances :major.minor" {
+@test "backport on caller repo -> skips :latest, advances :major and :major.minor" {
   set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v10.0.0","isPrerelease":false,"isLatest":true}]'
   run "$SCRIPT"
   [ "$status" -eq 0 ]
@@ -731,9 +737,10 @@ teardown() {
 
   grep -qF 'CREATE ghcr.io/example-org/example-image:9.9 ghcr.io/example-org/example-image:9.9.9' "$CRANE_MOCK_CALLS"
   grep -qF 'CREATE ghcr.io/example-org/example-image:9.9-fips ghcr.io/example-org/example-image:9.9.9-fips' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9 ghcr.io/example-org/example-image:9.9.9' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9-fips ghcr.io/example-org/example-image:9.9.9-fips' "$CRANE_MOCK_CALLS"
   run ! grep -qF ':latest ' "$CRANE_MOCK_CALLS"
-  run ! grep -qF ':9 ' "$CRANE_MOCK_CALLS"
-  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 2 ]
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 4 ]
 
   # The paired repo may have a stale Latest pointer after an earlier advisory
   # edit failure. The caller is the Docker-tag baseline and therefore the
@@ -773,13 +780,24 @@ teardown() {
   [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 0 ]
 }
 
-@test "newest within its own line but not overall -> advances only :major.minor" {
-  # v9.9.9 is the newest patch in the 9.9 line, but v10.0.0 exists overall.
-  # This is the ordinary backport: :latest/:9 stay put, :9.9 still advances
-  # (it isn't regressing - v9.9.9 IS the newest in its line).
+@test "newest in its own major but not overall -> advances :major and :major.minor, not :latest" {
+  # A 9.x patch after 10.0.0 is Latest: :latest stays on 10.0.0, but :9 keeps
+  # following the 9.x line instead of freezing on the last pre-10 promotion.
   set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.9.8","isPrerelease":false},{"tagName":"v10.0.0","isPrerelease":false,"isLatest":true}]'
   run "$SCRIPT"
   [ "$status" -eq 0 ]
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9.9 ghcr.io/example-org/example-image:9.9.9' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9 ghcr.io/example-org/example-image:9.9.9' "$CRANE_MOCK_CALLS"
+  run ! grep -qF ':latest ' "$CRANE_MOCK_CALLS"
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 4 ]
+}
+
+@test "older patch in a superseded major -> skips :major so it can't regress" {
+  # :9 already follows v9.10.0. A late v9.9.9 patch is newest in 9.9 only.
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.10.0","isPrerelease":false},{"tagName":"v10.0.0","isPrerelease":false,"isLatest":true}]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"is not the newest stable release in major 9"* ]]
   grep -qF 'CREATE ghcr.io/example-org/example-image:9.9 ghcr.io/example-org/example-image:9.9.9' "$CRANE_MOCK_CALLS"
   run ! grep -qF ':latest ' "$CRANE_MOCK_CALLS"
   run ! grep -qF ':9 ' "$CRANE_MOCK_CALLS"
@@ -1404,7 +1422,8 @@ teardown() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"Latest-flagged release 10.0.0)"* ]]
   run ! grep -qF ':latest ' "$CRANE_MOCK_CALLS"
-  run ! grep -qF ':9 ' "$CRANE_MOCK_CALLS"
+  # 9.9.9 is the newest 9.x, so :9 advances on its own gate.
+  grep -qF ':9 ' "$CRANE_MOCK_CALLS"
   grep -qF ':9.9 ' "$CRANE_MOCK_CALLS"
 }
 
@@ -1634,4 +1653,225 @@ RUBY
   grep -qF 'download/not-a-version/vcluster-darwin-amd64' "$put_out"
   run ! grep -qF 'download/v9.9.9/' "$put_out"
   [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 6 ]
+}
+
+@test "scope=latest -> retags only :latest per entry and still promotes the paired release" {
+  export INPUT_SCOPE="latest"
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+
+  grep -qF 'CREATE ghcr.io/example-org/example-image:latest ghcr.io/example-org/example-image:9.9.9' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:latest-fips ghcr.io/example-org/example-image:9.9.9-fips' "$CRANE_MOCK_CALLS"
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 2 ]
+  grep -qF -- 'EDIT example-org/example-repo v9.9.9 --prerelease=false --latest' "$GH_MOCK_CALLS"
+}
+
+@test "scope=latest -> promote-self sets the caller's Latest" {
+  export INPUT_SCOPE="latest"
+  export INPUT_PROMOTE_SELF="true"
+  export GH_MOCK_KNOWN_RELEASES="example-org/example-repo:v9.9.9 example-org/example-caller-repo:v9.9.9"
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+
+  grep -qF -- 'EDIT example-org/example-caller-repo v9.9.9 --prerelease=false --latest' "$GH_MOCK_CALLS"
+}
+
+@test "scope=latest on a backport -> moves nothing, leaves Latest alone, and says once that line tags were not checked" {
+  export INPUT_SCOPE="latest"
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v10.0.0","isPrerelease":false,"isLatest":true}]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+
+  [ "$(grep -c 'no moving tags to advance' <<<"$output")" -eq 1 ]
+  [[ "$output" == *"scope=latest does not look at :9 or :9.9"* ]]
+  [[ "$output" != *"superseded"* ]]
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 0 ]
+  run ! grep -qF -- 'EDIT example-org/example-repo v9.9.9 --prerelease=false --latest' "$GH_MOCK_CALLS"
+}
+
+@test "scope=latest on a backport -> skips the oss-repo list, so a failing list cannot invite a manual Latest" {
+  # The caller gate already decided this is a backport, which is the upper bound
+  # for the paired repo too, so the paired list has nothing left to decide.
+  export INPUT_SCOPE="latest"
+  export GH_MOCK_LIST_FAIL_REPO="example-org/example-repo"
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v10.0.0","isPrerelease":false,"isLatest":true}]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+
+  [[ "$output" != *"set latest manually"* ]]
+  run ! grep -qF 'LIST example-org/example-repo' "$GH_MOCK_CALLS"
+  grep -qxF 'EDIT example-org/example-repo v9.9.9 --prerelease=false' "$GH_MOCK_CALLS"
+}
+
+@test "scope=latest -> still promotes the Homebrew tap" {
+  export INPUT_SCOPE="latest"
+  export INPUT_HOMEBREW_TAP_REPO="example-org/example-tap"
+  export INPUT_HOMEBREW_FORMULA_PATHS='["Formula/vcluster.rb"]'
+  set_checksums_fixture "example-org/example-repo" "$FIXTURES_DIR/checksums.txt"
+  set_contents_fixture "repos/example-org/example-tap/contents/Formula/vcluster.rb" "$FIXTURES_DIR/vcluster.rb"
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+
+  grep -qF 'API PUT repos/example-org/example-tap/contents/Formula/vcluster.rb sha=fakesha' "$GH_MOCK_CALLS"
+}
+
+@test "scope=line -> retags only :major and :major.minor, touches no release or tap" {
+  export INPUT_SCOPE="line"
+  export INPUT_PROMOTE_SELF="true"
+  export INPUT_HOMEBREW_TAP_REPO="example-org/example-tap"
+  export INPUT_HOMEBREW_FORMULA_PATHS='["Formula/vcluster.rb"]'
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.9.9","isPrerelease":false}]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"scope=line"* ]]
+  # The release inputs were passed, so the log must not claim they were not.
+  [[ "$output" != *"promote-self not enabled"* ]]
+  [[ "$output" != *"No oss-repo configured"* ]]
+  [[ "$output" != *"No homebrew-tap-repo configured"* ]]
+
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9 ghcr.io/example-org/example-image:9.9.9' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9.9 ghcr.io/example-org/example-image:9.9.9' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9-fips ghcr.io/example-org/example-image:9.9.9-fips' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9.9-fips ghcr.io/example-org/example-image:9.9.9-fips' "$CRANE_MOCK_CALLS"
+  run ! grep -qF ':latest' "$CRANE_MOCK_CALLS"
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 4 ]
+
+  run ! grep -qE '^(VIEW|EDIT|DOWNLOAD|API) ' "$GH_MOCK_CALLS"
+  run ! grep -qF 'LIST example-org/example-repo' "$GH_MOCK_CALLS"
+}
+
+@test "scope=line -> still validates the release and tap inputs it ignores" {
+  export INPUT_SCOPE="line"
+  export INPUT_OSS_REPO=""
+  export INPUT_HOMEBREW_TAP_REPO="example-org/example-tap"
+  export INPUT_HOMEBREW_FORMULA_PATHS='["Formula/vcluster.rb"]'
+  run "$SCRIPT"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"homebrew-tap-repo requires oss-repo"* ]]
+  [ ! -s "$CRANE_MOCK_CALLS" ]
+}
+
+@test "scope=line -> :major ignores a lagging Latest pointer, so a backport cut can't drag it back" {
+  # v9.10.0 is built (and :9 already moved onto it) but not promoted, so Latest
+  # still sits on v9.9.8. v9.9.9 is ahead of that pointer, which is enough for
+  # scope=all to move :9; here it must stay on 9.10.0.
+  export INPUT_SCOPE="line"
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.10.0","isPrerelease":false},{"tagName":"v9.9.9","isPrerelease":false},{"tagName":"v9.9.8","isPrerelease":false,"isLatest":true}]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9.9 ghcr.io/example-org/example-image:9.9.9' "$CRANE_MOCK_CALLS"
+  run ! grep -qF ':9 ' "$CRANE_MOCK_CALLS"
+  run ! grep -qF ':9-fips ' "$CRANE_MOCK_CALLS"
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 2 ]
+}
+
+@test "scope=line -> a new major moves its own :major and :major.minor before it is promoted" {
+  export INPUT_SCOPE="line"
+  export INPUT_VERSION="v10.0.0"
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v10.0.0","isPrerelease":false},{"tagName":"v9.9.8","isPrerelease":false,"isLatest":true}]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+
+  grep -qF 'CREATE ghcr.io/example-org/example-image:10 ghcr.io/example-org/example-image:10.0.0' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:10.0 ghcr.io/example-org/example-image:10.0.0' "$CRANE_MOCK_CALLS"
+  run ! grep -qF ':latest' "$CRANE_MOCK_CALLS"
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 4 ]
+}
+
+@test "scope=line -> an older patch in its own line moves nothing" {
+  # With Latest on v9.9.8, scope=all would move :latest and :9 here, so this
+  # fails if line ever falls back to the Latest gate.
+  export INPUT_SCOPE="line"
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.9.10","isPrerelease":false},{"tagName":"v9.9.9","isPrerelease":false},{"tagName":"v9.9.8","isPrerelease":false,"isLatest":true}]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(grep -c 'no moving tags to advance' <<<"$output")" -eq 1 ]
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 0 ]
+}
+
+@test "scope=line -> fails before any retag when VERSION has no published release" {
+  # A line run follows a build, and a build that never published its release
+  # did not finish; its images must not become :{major}.{minor}.
+  export INPUT_SCOPE="line"
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.9.8","isPrerelease":false,"isLatest":true}]'
+  run "$SCRIPT"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"no published v9.9.9 release"* ]]
+  [ ! -s "$CRANE_MOCK_CALLS" ]
+}
+
+@test "scope=line -> a draft VERSION counts as unpublished" {
+  export INPUT_SCOPE="line"
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.9.9","isPrerelease":false,"isDraft":true}]'
+  run "$SCRIPT"
+  [ "$status" -eq 1 ]
+  [ ! -s "$CRANE_MOCK_CALLS" ]
+}
+
+@test "scope=line dry-run -> a missing release warns and still prints the plan" {
+  export INPUT_SCOPE="line"
+  export INPUT_DRY_RUN="true"
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"no published v9.9.9 release"* ]]
+  [[ "$output" == *"[dry-run] crane tag ghcr.io/example-org/example-image:9.9.9 9.9"* ]]
+}
+
+@test "scope=line -> a stale newer draft in the major does not freeze :major" {
+  export INPUT_SCOPE="line"
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.10.0","isPrerelease":false,"isDraft":true},{"tagName":"v9.9.9","isPrerelease":false}]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9 ghcr.io/example-org/example-image:9.9.9' "$CRANE_MOCK_CALLS"
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 4 ]
+}
+
+@test "scope=all -> a draft holding no Latest flag is not the fallback baseline" {
+  # Under the no-Latest fallback a newer draft used to become the baseline and
+  # withhold :latest from a published release.
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v10.0.0","isPrerelease":false,"isDraft":true},{"tagName":"v9.9.8","isPrerelease":false}]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+
+  grep -qF 'CREATE ghcr.io/example-org/example-image:latest ghcr.io/example-org/example-image:9.9.9' "$CRANE_MOCK_CALLS"
+}
+
+@test "scope -> an unknown value fails before any call" {
+  export INPUT_SCOPE="lates"
+  run "$SCRIPT"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"scope must be one of all, latest, line"* ]]
+  [ ! -s "$CRANE_MOCK_CALLS" ]
+  [ ! -s "$GH_MOCK_CALLS" ]
+}
+
+@test "scope -> an explicitly empty value fails instead of widening to all" {
+  # action.yml always sets INPUT_SCOPE, and the runner applies the input default
+  # only when the key is absent, so '' means a caller expression resolved empty.
+  export INPUT_SCOPE=""
+  run "$SCRIPT"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"scope must be one of all, latest, line"* ]]
+  [ ! -s "$CRANE_MOCK_CALLS" ]
+  [ ! -s "$GH_MOCK_CALLS" ]
+}
+
+@test "scope -> unset still means all" {
+  unset INPUT_SCOPE
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(grep -c '^CREATE ' "$CRANE_MOCK_CALLS")" -eq 6 ]
+}
+
+@test "scope=all -> a backport ahead of a lagging Latest pointer still moves :major" {
+  # The README warns against mixing all with line runs because of this: all
+  # keeps :{major} on the Latest gate, so it drags :9 back off an unpromoted 9.10.0.
+  set_release_list "$GITHUB_REPOSITORY" '[{"tagName":"v9.10.0","isPrerelease":false},{"tagName":"v9.9.9","isPrerelease":false},{"tagName":"v9.9.8","isPrerelease":false,"isLatest":true}]'
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+
+  grep -qF 'CREATE ghcr.io/example-org/example-image:9 ghcr.io/example-org/example-image:9.9.9' "$CRANE_MOCK_CALLS"
+  grep -qF 'CREATE ghcr.io/example-org/example-image:latest ghcr.io/example-org/example-image:9.9.9' "$CRANE_MOCK_CALLS"
 }

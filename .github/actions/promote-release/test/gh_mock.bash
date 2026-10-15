@@ -11,7 +11,8 @@
 #                 GH_MOCK_VIEW_FAIL_REPO limits that failure to one repository.
 # release edit  - always succeeds unless GH_MOCK_FAIL=1.
 # release list  - prints the JSON array from
-#                 GH_MOCK_RELEASE_LIST_<repo, non-alnum -> _> (default "[]");
+#                 GH_MOCK_RELEASE_LIST_<repo, non-alnum -> _> (default "[]"),
+#                 dropping isDraft entries when --exclude-drafts is passed;
 #                 exits 1 (API failure, not "no releases") if
 #                 GH_MOCK_LIST_FAIL=1.
 # release download - copies the file at GH_MOCK_CHECKSUMS_<repo, sanitized>
@@ -97,7 +98,11 @@ if [ "$subcommand" = "release" ]; then
         exit 1
       fi
       varname="GH_MOCK_RELEASE_LIST_$(sanitize "$repo")"
-      printf '%s\n' "${!varname:-[]}"
+      if [[ " ${extra[*]} " == *" --exclude-drafts "* ]]; then
+        jq -c 'map(select(.isDraft != true))' <<<"${!varname:-[]}"
+      else
+        printf '%s\n' "${!varname:-[]}"
+      fi
       exit 0
       ;;
     download)
