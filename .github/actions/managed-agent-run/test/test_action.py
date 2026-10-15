@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -8,6 +9,7 @@ from urllib.parse import parse_qs, urlparse
 
 
 ACTION = Path(__file__).parents[1] / "src" / "action.py"
+MANIFEST = Path(__file__).parents[1] / "action.yml"
 NAME = "scheduled-routines-cve-remediation"
 
 
@@ -136,14 +138,26 @@ def test_dry_run_resolves_without_running(tmp_path):
 
 
 def test_unknown_or_ambiguous_name_warns_without_running(tmp_path):
-    for pages in ([[{"id": "dep_0", "name": "other"}]],
-                  [[{"id": "dep_1", "name": NAME}, {"id": "dep_2", "name": NAME}]]):
+    for pages, found in (([[{"id": "dep_0", "name": "other"}]], 0),
+                         ([[{"id": "dep_1", "name": NAME}, {"id": "dep_2", "name": NAME}]], 2)):
         with FakeAnthropic(pages=pages) as server:
             result, output = run_action(tmp_path, server)
         assert result.returncode == 0
         assert all(c["method"] == "GET" for c in server.calls)
         assert "::warning::" in result.stdout
+        assert f"found {found}" in result.stdout
         assert "session-id" not in output
+
+
+def test_manifest_maps_every_input_the_script_reads():
+    manifest = MANIFEST.read_text()
+    inputs = set(re.findall(r"^  ([a-z][a-z-]*):$", manifest.split("\noutputs:")[0], re.M))
+    mapped = dict(re.findall(r"^\s+(INPUT_[A-Z_]+): \$\{\{ inputs\.([a-z-]+) \}\}$", manifest, re.M))
+    read = set(re.findall(r'os\.getenv\("(INPUT_[A-Z_]+)"', ACTION.read_text()))
+    assert inputs == set(mapped.values())
+    assert read == set(mapped)
+    for env, name in mapped.items():
+        assert env == "INPUT_" + name.upper().replace("-", "_")
 
 
 def test_api_failure_never_fails_the_job(tmp_path):
