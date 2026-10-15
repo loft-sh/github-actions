@@ -28,7 +28,7 @@ description: |
   shape is a no-op, since moving tags and "latest" promotion aren't meaningful
   for -rc/-alpha/-next cuts.
 
-  Backport-safe: before advancing `:latest`/`:{major}` (or `--latest` on
+  Backport-safe: before advancing `:latest` (or `--latest` on
   oss-repo / the caller's own release), checks whether `version` is newer than
   the release currently flagged Latest on the caller's own repo
   (`GITHUB_REPOSITORY`, set automatically by Actions) / on `oss-repo`
@@ -36,8 +36,9 @@ description: |
   non-prerelease": under `release.prerelease: auto` an un-promoted stable cut is
   already non-prerelease, so only the Latest flag records what `:latest`
   actually tracks. Promoting an older line's patch after a newer stable is
-  already `:latest` only advances `:{major}.{minor}` (scoped to that line),
-  never `:latest`/`:{major}` backwards. A failure to even list releases fails
+  already `:latest` never moves `:latest` backwards; `:{major}` and
+  `:{major}.{minor}` have their own newest-in-major and newest-in-line checks,
+  and the `scope` input decides which run moves which. A failure to even list releases fails
   the run closed rather than risking a silent downgrade. Re-promoting the
   current Latest is allowed, so a partially failed promotion can be re-run.
   If NO release carries the Latest flag the baseline falls back to the newest
@@ -91,6 +92,10 @@ inputs:
     description: 'Fail-closed: a real promotion runs only on an exact "false" (the default, so a plain dispatch still promotes for real). Any other value ("true", a typo, etc.) is a dry-run, which writes nothing but still reads the registry; see the README.'
     required: false
     default: 'false'
+  scope:
+    description: 'Which moving pointers to move. "all" (default) moves every one. "latest" moves only what tracks the newest promoted release: :latest, the GitHub Latest flag (promote-self, oss-repo) and the Homebrew tap. "line" moves only :{major} and :{major}.{minor}, each behind its own newest-in-major or newest-in-line check, touches no release or tap, and requires a published `version` release on the caller, so it is safe to run after every build. Any other value, including an empty one, fails the run.'
+    required: false
+    default: 'all'
 outputs:
   promote-self-enabled:
     description: 'Whether the manifest forwarded an exact "true" promote-self value to the promotion script.'
@@ -163,6 +168,7 @@ runs:
         INPUT_HOMEBREW_TAP_REPO: ${{ inputs.homebrew-tap-repo }}
         INPUT_HOMEBREW_FORMULA_PATHS: ${{ inputs.homebrew-formula-paths }}
         INPUT_DRY_RUN: ${{ inputs.dry-run }}
+        INPUT_SCOPE: ${{ inputs.scope }}
         # So the script can name a failed credential before listing unresolved
         # sources, instead of leaving the operator to infer it. Empty on a real
         # run (that step is skipped there, and a real login failure has already

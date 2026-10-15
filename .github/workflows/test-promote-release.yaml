@@ -55,6 +55,25 @@ jobs:
         env:
           UNRESOLVED: ${{ steps.promote.outputs.unresolved-sources }}
         run: test "$UNRESOLVED" = 1
+      # bats exports INPUT_SCOPE itself, so only this proves action.yml forwards
+      # the caller's value. With a missing or hardcoded mapping this dry-run
+      # exits 0, so the step fails only if the bogus value reached the script,
+      # or if a flaky crane install happens to fail this second time.
+      - name: Exercise local composite scope wiring
+        id: bad-scope
+        continue-on-error: true
+        uses: ./.github/actions/promote-release
+        with:
+          version: v999.999.999
+          images: '[{"image":"ghcr.io/example-org/smoke-test"}]'
+          scope: not-a-scope
+          github-token: ${{ github.token }}
+          docker-username: ${{ github.actor }}
+          dry-run: 'true'
+      - name: Verify scope reached the script
+        env:
+          OUTCOME: ${{ steps.bad-scope.outcome }}
+        run: test "$OUTCOME" = failure
       # The bats suite calls src/action.sh directly with hand-exported INPUT_*,
       # so it cannot exercise a step-level `if:` in action.yml. That left the
       # dry-run GHCR login unguarded: re-gating it on a real run would put the
