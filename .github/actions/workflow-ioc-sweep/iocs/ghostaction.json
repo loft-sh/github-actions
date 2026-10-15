@@ -1,0 +1,32 @@
+{
+  "campaign": "GhostAction",
+  "references": [
+    "https://blog.gitguardian.com/ghostaction-github-actions-supply-chain-attack-returns/",
+    "https://socket.dev/blog/ghostaction-cloud-credentials",
+    "https://thehackernews.com/2026/10/ghostaction-compromises-about-1900.html"
+  ],
+  "history_since": "2025-08-01",
+  "workflow_files": [
+    "security-audit.yml",
+    "github_actions_security.yml",
+    "security-check.yml"
+  ],
+  "workflow_names": [
+    "Security Audit",
+    "Github Actions Security",
+    "Security Check"
+  ],
+  "commit_messages": [
+    "Add Github Actions Security workflow",
+    "Update Github Actions Security workflow",
+    "Add security check workflow"
+  ],
+  "endpoints": [
+    "193.32.204.199",
+    "170.39.218.2",
+    "carte-avantage.com",
+    "45-139-104-115.plesk.page",
+    "oast.fun",
+    "/api/workflow/receive"
+  ]
+}

@@ -1,0 +1,55 @@
+name: Workflow IOC sweep
+description: Sweep every repository of one or more GitHub organizations for indicators of a malicious-workflow campaign
+inputs:
+  github-token:
+    description: Token that can list and clone every repository, read Actions workflows and, for audit-days above 0, read the organization audit log
+    required: true
+  owners:
+    description: Whitespace-separated organizations to sweep
+    required: true
+  iocs-file:
+    description: Indicator JSON file; defaults to the bundled GhostAction indicators
+    required: false
+    default: ""
+  history-since:
+    description: Start date (YYYY-MM-DD) for the endpoint scan of .github/ diffs; defaults to the indicator file's history_since
+    required: false
+    default: ""
+  audit-days:
+    description: Days of enterprise audit-log workflow runs to check, counting back from today; 0 skips the audit check
+    required: false
+    default: "8"
+  jobs:
+    description: Repositories swept in parallel
+    required: false
+    default: "8"
+  report-path:
+    description: Where to write the JSON report
+    required: false
+    default: ioc-sweep-report.json
+outputs:
+  result:
+    description: clean, indicator, or error (sweep incomplete without an indicator)
+    value: ${{ steps.sweep.outputs.result }}
+  report-path:
+    description: Path of the JSON report
+    value: ${{ steps.sweep.outputs.report-path }}
+runs:
+  using: composite
+  steps:
+    - name: Sweep repositories
+      id: sweep
+      shell: bash
+      run: bash "${{ github.action_path }}/src/run.sh"
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        INPUT_OWNERS: ${{ inputs.owners }}
+        INPUT_IOCS_FILE: ${{ inputs.iocs-file }}
+        INPUT_HISTORY_SINCE: ${{ inputs.history-since }}
+        INPUT_AUDIT_DAYS: ${{ inputs.audit-days }}
+        INPUT_JOBS: ${{ inputs.jobs }}
+        INPUT_REPORT_PATH: ${{ inputs.report-path }}
+        SWEEP_PY: ${{ github.action_path }}/src/sweep.py
+branding:
+  icon: shield
+  color: red

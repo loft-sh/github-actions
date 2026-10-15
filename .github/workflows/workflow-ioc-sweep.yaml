@@ -1,0 +1,74 @@
+name: Workflow IOC sweep
+
+# Weekly sweep of every loft-sh and vClusterLabs-Experiments repository for
+# malicious-workflow indicators (GhostAction first, DEVOPS-1665). A red run means
+# an indicator or an incomplete sweep; the job summary and the report artifact
+# say which. Nothing here posts to Slack.
+#
+# Off until the repository variable WORKFLOW_IOC_SWEEP_ENABLED is "true". It
+# also needs the read-only GitHub App described in the action README, with its
+# client ID in the variable WORKFLOW_IOC_SWEEP_APP_CLIENT_ID and its private key
+# in the workflow-ioc-sweep environment secret WORKFLOW_IOC_SWEEP_APP_PRIVATE_KEY.
+
+on:
+  schedule:
+    - cron: '23 5 * * 1'
+  workflow_dispatch:
+    inputs:
+      audit-days:
+        description: Days of audit-log workflow runs to check
+        required: false
+        default: '8'
+
+permissions: {}
+
+concurrency:
+  group: workflow-ioc-sweep
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    name: Sweep ${{ matrix.owner }}
+    if: ${{ vars.WORKFLOW_IOC_SWEEP_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    environment: workflow-ioc-sweep
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        owner: [loft-sh, vClusterLabs-Experiments]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Create read-only org token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.WORKFLOW_IOC_SWEEP_APP_CLIENT_ID }}
+          private-key: ${{ secrets.WORKFLOW_IOC_SWEEP_APP_PRIVATE_KEY }}
+          owner: ${{ matrix.owner }} # zizmor: ignore[github-app] -- the sweep must clone every repository of the org; the token is read-only and lives for one run
+          permission-contents: read
+          permission-actions: read
+          permission-metadata: read
+          permission-organization-administration: read
+
+      - name: Sweep
+        uses: ./.github/actions/workflow-ioc-sweep
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          owners: ${{ matrix.owner }}
+          audit-days: ${{ inputs.audit-days || '8' }}
+          report-path: ioc-sweep-${{ matrix.owner }}.json
+
+      - name: Upload report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ioc-sweep-${{ matrix.owner }}
+          path: ioc-sweep-${{ matrix.owner }}.json
+          if-no-files-found: ignore
+          retention-days: 90

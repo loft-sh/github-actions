@@ -19,6 +19,19 @@ Location: `.github/actions/secret-broker-request`
 See [secret-broker-request README](./.github/actions/secret-broker-request/README.md)
 for the request schema, two-job integration, permissions, and replay policy.
 
+### Workflow IOC Sweep Action
+
+Sweeps every repository of one or more organizations for indicators of a
+malicious-workflow campaign: registered workflows, every branch and tag in
+history, and audit-log workflow runs. Indicators are JSON data per campaign
+(GhostAction bundled). Exits 0 clean, 1 indicator found, 2 sweep incomplete.
+`.github/workflows/workflow-ioc-sweep.yaml` runs it weekly once enabled.
+
+Location: `.github/actions/workflow-ioc-sweep`
+
+See [workflow-ioc-sweep README](./.github/actions/workflow-ioc-sweep/README.md)
+for the checks, token permissions, and indicator file format.
+
 ### Secret Broker Response Action
 
 Resolves an approved alias against a caller-owned 1Password reference map and
