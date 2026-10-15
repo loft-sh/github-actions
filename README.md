@@ -1187,6 +1187,17 @@ per RC on reruns.
 See [linear-cve-summary README](./.github/actions/linear-cve-summary/README.md)
 for its inputs, lookup contract, and non-blocking failure behavior.
 
+### Managed Agent Run
+
+Starts one run of any Claude Managed Agents deployment, looked up by name, so a CI
+event can wake an agent right away instead of waiting for its schedule. Advisory:
+failures warn and exit successfully.
+
+**Location:** `.github/actions/managed-agent-run`
+
+See [managed-agent-run README](./.github/actions/managed-agent-run/README.md)
+for its inputs, the API it calls, and its failure behavior.
+
 ### Checkov
 
 Runs [Checkov](https://www.checkov.io/) against infrastructure as code, open
@@ -1249,6 +1260,7 @@ make test-semver-validation
 make test-linear-pr-commenter
 make test-linear-release-sync
 make test-linear-cve-summary
+make test-managed-agent-run
 ```
 
 Run linters (actionlint + zizmor):
@@ -1274,6 +1286,7 @@ the action's files change:
 - `test-link-backport-prs.yaml` - triggers on `.github/actions/link-backport-prs/**`
 - `test-linear-release-sync.yaml` - triggers on `.github/actions/linear-release-sync/**`
 - `test-linear-cve-summary.yaml` - triggers on `.github/actions/linear-cve-summary/**`
+- `test-managed-agent-run.yaml` - triggers on `.github/actions/managed-agent-run/**`
 - `test-sticky-pr-comment.yaml` - triggers on `.github/actions/sticky-pr-comment/**`
 - `test-comment-triggered-check.yaml` - triggers on `.github/actions/comment-triggered-check/**`
 - `release-linear-release-sync.yaml` - builds and publishes the binary on tag push or `workflow_dispatch`
