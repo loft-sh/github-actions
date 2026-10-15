@@ -13,7 +13,7 @@ needs a new file, not new code. `iocs/ghostaction.json` is the default.
 |---|---|---|
 | `registry` | `repos/{repo}/actions/workflows` | A payload workflow that ran from any branch, including one whose file or branch was deleted later |
 | `history` | Blobless bare clone of every branch and tag | Payload commit subjects and workflow file paths anywhere in history; endpoints in `.github/` diffs since `history_since` |
-| `audit` | Enterprise audit log, `workflows.created_workflow_run` | Payload workflow runs by name over the last `audit-days` days |
+| `audit` | Organization audit log, `workflows.created_workflow_run` | Payload workflow runs by name over the last `audit-days` days |
 
 Names and subjects match exactly, ignoring case and whitespace. File names match
 on the basename under `.github/workflows/`, with `.yml` and `.yaml` treated alike.
@@ -96,7 +96,7 @@ python3 .github/actions/workflow-ioc-sweep/src/sweep.py \
 
 |     INPUT     |  TYPE  | REQUIRED |          DEFAULT          |                                                                   DESCRIPTION                                                                    |
 |---------------|--------|----------|---------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------|
-|  audit-days   | string |  false   |           `"8"`           |                 Days of enterprise audit-log workflow runs <br>to check, counting back from today; <br>0 skips the audit check                   |
+|  audit-days   | string |  false   |           `"8"`           |                Days of organization audit-log workflow runs <br>to check, counting back from today; <br>0 skips the audit check                  |
 | github-token  | string |   true   |                           | Token that can list and clone <br>every repository, read Actions workflows and, <br>for audit-days above 0, read the <br>organization audit log  |
 | history-since | string |  false   |                           |             Start date (YYYY-MM-DD) for the endpoint <br>scan of .github/ diffs; defaults to <br>the indicator file's history_since              |
 |   iocs-file   | string |  false   |                           |                                     Indicator JSON file; defaults to the <br>bundled GhostAction indicators                                      |

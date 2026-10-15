@@ -8,7 +8,7 @@ file, not new code. For every repository of every owner the sweep checks:
             branch, including one whose file or branch was deleted afterwards
   history   a blobless clone of every branch and tag: commit subjects, workflow file
             paths in all history, and endpoints in .github/ diffs since a date
-  audit     per owner, workflow runs in the enterprise audit log over N days
+  audit     per owner, workflow runs in the organization audit log over N days
 
 Exit codes: 0 clean, 1 indicator found, 2 sweep incomplete without an indicator.
 """

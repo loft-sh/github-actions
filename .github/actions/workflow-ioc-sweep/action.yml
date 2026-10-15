@@ -16,7 +16,7 @@ inputs:
     required: false
     default: ""
   audit-days:
-    description: Days of enterprise audit-log workflow runs to check, counting back from today; 0 skips the audit check
+    description: Days of organization audit-log workflow runs to check, counting back from today; 0 skips the audit check
     required: false
     default: "8"
   jobs:
