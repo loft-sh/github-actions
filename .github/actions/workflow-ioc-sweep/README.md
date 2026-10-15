@@ -60,8 +60,12 @@ A GitHub App installation token per organization, read-only:
 | Repository `metadata` | read | list repositories |
 | Organization `administration` | read | audit log, only when `audit-days` is above 0 |
 
-Install the App on all repositories. The token reaches git through an
-`http.extraheader` in the environment, never in a URL or on disk.
+Install the App on all repositories of every swept organization. A private App
+installs only on the account that owns it, so sweeping two organizations with
+one App needs an enterprise-owned App or one installable on any account.
+
+The token reaches git through an `http.extraheader` in the environment, never in
+a URL or on disk.
 
 ## Usage
 
