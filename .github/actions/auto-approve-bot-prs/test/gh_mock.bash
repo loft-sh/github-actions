@@ -16,6 +16,10 @@ set -o pipefail
 # GH_MOCK_MERGEABLE          → response for `gh api ...pulls/N`
 # GH_MOCK_HEAD_SHA           → PR head SHA returned by `gh api ...pulls/N`
 # GH_MOCK_PULL_FAIL          → if 'always', /pulls/N exits non-zero
+# GH_MOCK_PULL_SEQ           → path to file with one mergeable value per line
+#                              (true|false|null); call N reads line N, falling
+#                              through to GH_MOCK_MERGEABLE when exhausted.
+#                              Line value 'ERROR' → exit non-zero (API fail).
 # GH_MOCK_APPROVER           → response for `gh api user`
 # GH_MOCK_CHECK_RUNS_JSON    → response for `gh api .../check-runs` (full object)
 # GH_MOCK_STATUSES_JSON      → response for `gh api .../status` (combined status)
@@ -91,7 +95,13 @@ emit_api_response() {
         emit_err "mock: pull request forced failure"
         exit 22
       fi
-      local m="${GH_MOCK_MERGEABLE:-null}"
+      local seq m
+      seq="$(read_sequenced "${GH_MOCK_PULL_SEQ:-}" "${MOCK_DIR:-/tmp}/pr_n")"
+      if [ "$seq" = "ERROR" ]; then
+        emit_err "mock: sequenced pull request error"
+        exit 22
+      fi
+      m="${seq:-${GH_MOCK_MERGEABLE:-null}}"
       case "$m" in true|false) ;; *) m=null ;; esac
       printf '{"mergeable":%s,"head":{"sha":"%s"}}\n' \
         "$m" "${GH_MOCK_HEAD_SHA:-tested-head-sha}"

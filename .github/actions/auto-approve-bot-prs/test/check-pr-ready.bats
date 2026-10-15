@@ -13,8 +13,8 @@ setup() {
   export EXPECTED_HEAD_SHA="tested-head-sha"
   export GH_MOCK_HEAD_SHA="tested-head-sha"
   # Keep retry budget bounded so tests don't stall the suite.
-  export MERGEABLE_MAX_ATTEMPTS=2
-  export MERGEABLE_SLEEP_SECONDS=0
+  export READ_MAX_ATTEMPTS=2
+  export READ_SLEEP_SECONDS=0
 }
 teardown() { rm -f "$GITHUB_OUTPUT"; teardown_gh_mock; }
 
@@ -36,21 +36,36 @@ kv() { grep "^$1=" "$GITHUB_OUTPUT" | tail -n1; }
 @test "regression: mergeable=false is definitive and must not burn the retry budget" {
   # jq's `//` used to collapse false into "null", so a conflicted PR looked
   # like un-computed metadata and re-polled until the budget ran out.
-  # MERGEABLE_MAX_ATTEMPTS=2 here, so a second poll would prove the regression.
+  # READ_MAX_ATTEMPTS=2 here, so a second poll would prove the regression.
   GH_MOCK_MERGEABLE=false GH_MOCK_APPROVER="loft-bot" run "$SCRIPT"
   [ "$status" -eq 0 ]
   [ "$(grep -c 'pulls/42' "$GH_MOCK_CALLS")" -eq 1 ]
 }
 
-@test "mergeable=null → proceed=false (never treat unknown as clean)" {
+@test "uncomputed mergeability does not block the preflight; it is decided after CI" {
+  # Waiting for it here gave up before the CI wait had even started, so the
+  # action never ran last. check-pr-after-ci.sh owns that wait now.
   GH_MOCK_MERGEABLE=null GH_MOCK_APPROVER="loft-bot" run "$SCRIPT"
   [ "$status" -eq 0 ]
+  [ "$(kv proceed)" = "proceed=true" ]
+  [ "$(grep -c 'pulls/42' "$GH_MOCK_CALLS")" -eq 1 ]
+  [[ "$output" != *"did not report mergeability"* ]]
+}
+
+@test "uncomputed mergeability still runs the approver identity check" {
+  GH_MOCK_MERGEABLE=null GH_MOCK_APPROVER="dependabot[bot]" run "$SCRIPT"
+  [ "$status" -eq 0 ]
   [ "$(kv proceed)" = "proceed=false" ]
-  # Distinct from the conflict case above: transient, so a re-run is advised
-  # rather than a rebase.
-  [[ "$output" == *"did not report mergeability"* ]]
-  [[ "$output" == *"transient"* ]]
-  [[ "$output" != *"merge conflicts"* ]]
+  [[ "$output" == *"self-approval"* ]]
+}
+
+@test "a read that recovers within the budget proceeds" {
+  printf 'ERROR\ntrue\n' > "$BATS_TEST_TMPDIR/pulls"
+  GH_MOCK_PULL_SEQ="$BATS_TEST_TMPDIR/pulls" GH_MOCK_STDERR="gh: Server Error (HTTP 502)" \
+    GH_MOCK_APPROVER="loft-bot" run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv proceed)" = "proceed=true" ]
+  [ "$(grep -c 'pulls/42' "$GH_MOCK_CALLS")" -eq 2 ]
 }
 
 @test "approver == author → proceed=false (self-review guard)" {

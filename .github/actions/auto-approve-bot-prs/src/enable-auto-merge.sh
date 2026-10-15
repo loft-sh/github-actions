@@ -48,7 +48,7 @@ esac
 # then ships confident remediation ("check branch protection…") that is simply
 # wrong for a transient cause. Secondary rate limiting is a live risk here rather
 # than theoretical: by this point the action has already made up to 90 CI polls,
-# up to 10 mergeability polls and the approval call, and both merge attempts
+# up to 20 pull request reads and the approval call, and both merge attempts
 # would otherwise fire back-to-back with no delay, so one blip can take out both.
 # This mirrors the retry discipline the CI wait and the mergeability poll already
 # apply. Never fails: the caller decides what a non-zero merge means.
