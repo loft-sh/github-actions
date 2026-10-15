@@ -38,12 +38,27 @@ emit() {
 mergeable="null"
 mergeable_attempts="${MERGEABLE_MAX_ATTEMPTS:-10}"
 mergeable_sleep="${MERGEABLE_SLEEP_SECONDS:-3}"
+# A failed read is not a null mergeable. A token that cannot see the repository
+# gets 404 on every poll, and reporting that as "mergeability not computed" sent
+# loft-sh/tailscale-acls chasing a GitHub race for an access problem. Access
+# errors stop at once with the status; anything else is retried.
+read_error=""
 for _ in $(seq 1 "$mergeable_attempts"); do
+  read_error=""
   if ! pr_state=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" \
     --jq '[
       (.mergeable | if . == null then "null" else tostring end),
       (.head.sha // "")
-    ] | @tsv' 2>/dev/null); then
+    ] | @tsv' 2>&1); then
+    read_error=$(grep -oE 'HTTP [0-9]{3}' <<< "$pr_state" | tail -n1 || true)
+    case "$read_error" in
+      "HTTP 401"|"HTTP 403"|"HTTP 404")
+        echo "::error::the approving token cannot read PR #${PR_NUMBER} (${read_error}); not approving. Give gh-access-token read and write access to pull requests in ${GITHUB_REPOSITORY}"
+        emit proceed false
+        exit 0
+        ;;
+    esac
+    read_error="${read_error:-an API error}"
     mergeable="null"
     sleep "$mergeable_sleep"
     continue
@@ -74,6 +89,11 @@ done
 # is likely to succeed.
 if [ "$mergeable" = "false" ]; then
   echo "::warning::PR #${PR_NUMBER} has merge conflicts with its base branch; not approving. It needs a rebase before this can proceed"
+  emit proceed false
+  exit 0
+fi
+if [ -n "$read_error" ]; then
+  echo "::warning::could not read PR #${PR_NUMBER} within ${mergeable_attempts} attempts (last failure: ${read_error}); not approving. This is usually transient - a re-run should resolve it"
   emit proceed false
   exit 0
 fi

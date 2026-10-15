@@ -143,3 +143,24 @@ kv() { grep "^$1=" "$GITHUB_OUTPUT" | tail -n1; }
   [ "$status" -ne 0 ]
   assert_no_match 'proceed=true' "$output"
 }
+
+@test "a token that cannot read the PR fails at once with the HTTP status, not as null mergeability" {
+  for code in 401 403 404; do
+    : > "$GH_MOCK_CALLS"
+    GH_MOCK_PULL_FAIL=always GH_MOCK_STDERR="gh: Not Found (HTTP $code)" GH_MOCK_APPROVER="loft-bot" run "$SCRIPT"
+    [ "$status" -eq 0 ]
+    [ "$(kv proceed)" = "proceed=false" ]
+    [[ "$output" == *"::error::the approving token cannot read PR #42 (HTTP $code)"* ]]
+    [[ "$output" != *"did not report mergeability"* ]]
+    [ "$(grep -c 'pulls/42' "$GH_MOCK_CALLS")" -eq 1 ]
+  done
+}
+
+@test "a transient read failure is retried and reported as a read failure" {
+  GH_MOCK_PULL_FAIL=always GH_MOCK_STDERR="gh: Server Error (HTTP 502)" GH_MOCK_APPROVER="loft-bot" run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv proceed)" = "proceed=false" ]
+  [ "$(grep -c 'pulls/42' "$GH_MOCK_CALLS")" -eq 2 ]
+  [[ "$output" == *"could not read PR #42 within 2 attempts (last failure: HTTP 502)"* ]]
+  [[ "$output" != *"did not report mergeability"* ]]
+}
