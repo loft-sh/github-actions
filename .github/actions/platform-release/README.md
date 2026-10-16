@@ -238,13 +238,17 @@ up where the last one stopped:
 To restart a build by hand instead, dispatch the builder directly:
 
 ```bash
-gh workflow run release.yaml --repo loft-sh/loft-enterprise --ref refs/tags/<version>
+gh workflow run release.yaml --repo loft-sh/loft-enterprise --ref refs/tags/<version> \
+  -f source_branch=<branch>
 ```
 
 `--ref` is required: without it the default-branch builder runs and may build a
 different line. Give it the full `refs/tags/` ref, so a branch with the same
-name as the tag cannot be what runs. Settle any draft for the version first, as
-below: goreleaser does not reuse an existing draft, so the build creates and
+name as the tag cannot be what runs. `<branch>` is the branch the tag was cut
+from, which the Slack banner shows. Pass `source_branch` only when that line's
+`release.yaml` declares it: `gh workflow run` rejects an undeclared input, and
+a line that requires it rejects a run without it. Settle any draft for the
+version first, as below: goreleaser does not reuse an existing draft, so the build creates and
 publishes a second release and the old draft stays behind. loft-enterprise's
 `.goreleaser.yaml` sets `replace_existing_draft`, but goreleaser only honours it
 with `draft: true`, which that config does not set.
