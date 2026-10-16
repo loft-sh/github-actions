@@ -1605,6 +1605,18 @@ EOF
   TRIGGERED_BY="" INPUT_VERSION="v4.11.0-rc.2" INPUT_DRY_RUN="false" run main
   [ "$status" -eq 1 ]
   [[ "$output" == *"declares 'source_branch' under workflow_dispatch with type 'choice'"* ]]
+  # A resume reads the file at the tag, so fixing the branch cannot clear it.
+  [[ "$output" == *"The file is read at existing tag v4.11.0-rc.2, which a re-run never moves"* ]]
+}
+
+@test "main: a refusal on a fresh cut does not mention an existing tag" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  export GH_STUB_WF_SOURCE_BRANCH=1
+  export GH_STUB_WF_SOURCE_BRANCH_TYPE=choice
+  TRIGGERED_BY="" INPUT_VERSION="v4.11.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"declares 'source_branch' under workflow_dispatch with type 'choice'"* ]]
+  [[ "$output" != *"existing tag"* ]]
 }
 
 @test "main: a resumed rc leaves out a required source_branch that has a default" {

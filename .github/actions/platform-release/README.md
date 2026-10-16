@@ -239,9 +239,11 @@ up where the last one stopped:
   step. A passed build counts only if it built the version as it went out, at
   any commit and whether or not the tag still exists. One from before the
   version was pulled on purpose and cut again does not.
-- **The tag is not on the target branch** (a stable tag made by hand on
-  `main`, or a `-next` tag re-run with another `source-branch`): the re-run
-  refuses rather than build the wrong branch.
+- **The tag is not on the target branch** (a stable tag made by hand on a
+  `main` commit the line does not have, or a `-next` tag re-run from a branch
+  that does not contain it): the re-run refuses rather than build the wrong
+  branch. The check is ancestry, so a branch that holds the tagged commit
+  passes.
 - **The `-next` feature branch was deleted after tagging:** the re-run warns
   and resumes from the tag. A missing `main` or `release-X.Y` branch is refused.
 - **A build at the tag passed, in any attempt, but there is no published
