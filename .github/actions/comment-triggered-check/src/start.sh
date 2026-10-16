@@ -22,6 +22,8 @@
 #   INPUT_REPO                owner/name
 #   INPUT_CHECK_NAME_PREFIX   prefix for the check-run name
 #   INPUT_PARSE_FOCUS         whether to split an optional --focus argument
+#   INPUT_PARSE_REPEAT        whether to accept --repeat N
+#   INPUT_PARSE_RUNS          whether to accept --runs N
 #   INPUT_ALLOWED_TARGETS     whitespace-separated accepted target values
 #   INPUT_TARGET_NAME         target represented by this action invocation;
 #                             setting it enables --target parsing
@@ -47,6 +49,8 @@ prefix="${INPUT_CHECK_NAME_PREFIX:-e2e}"
 run_id="${INPUT_RUN_ID:-}"
 server_url="${INPUT_SERVER_URL:-https://github.com}"
 parse_focus="${INPUT_PARSE_FOCUS:-false}"
+parse_repeat="${INPUT_PARSE_REPEAT:-false}"
+parse_runs="${INPUT_PARSE_RUNS:-false}"
 allowed_targets="$(normalize_filter "${INPUT_ALLOWED_TARGETS-}")"
 target_name="${INPUT_TARGET_NAME:-}"
 parse_target=false
@@ -59,6 +63,8 @@ args=""
 filter=""
 focus=""
 target=""
+repeat=""
+runs_json="[]"
 should_run=false
 reason=""
 reason_title=""
@@ -81,6 +87,8 @@ finish_and_exit() {
   emit "filter" "$filter"
   emit "focus" "$focus"
   emit "target" "$target"
+  emit "repeat" "$repeat"
+  emit "runs" "$runs_json"
   emit "should-run" "$should_run"
   emit "reason" "$reason"
   emit "reason-title" "$reason_title"
@@ -122,10 +130,12 @@ if [[ -z "$pr_number" ]]; then
   finish_and_exit
 fi
 
-parse_request "$args" "$parse_focus" "$parse_target" "$allowed_targets"
+parse_request "$args" "$parse_focus" "$parse_target" "$allowed_targets" "$parse_repeat" "$parse_runs"
 filter="$REQUEST_FILTER"
 focus="$REQUEST_FOCUS"
 target="$REQUEST_TARGET"
+repeat="$REQUEST_REPEAT"
+run_count="${REQUEST_RUNS:-1}"
 if [[ -n "$REQUEST_ERROR" ]]; then
   reason="$REQUEST_ERROR"
   case "$reason" in
@@ -137,6 +147,9 @@ if [[ -n "$REQUEST_ERROR" ]]; then
       ;;
     invalid-target)
       echo "::notice::${command_word} target '${target}' is not one of: ${allowed_targets}"
+      ;;
+    *repeat*|*runs*)
+      echo "::notice::${command_word} --repeat takes 1 to ${REPEAT_MAX}, --runs 1 to ${RUNS_MAX}, and not both: ${args}"
       ;;
   esac
   finish_and_exit
@@ -248,12 +261,19 @@ else
 fi
 
 should_run=true
+option=""
+if [[ -n "$repeat" ]]; then
+  option="--repeat ${repeat}"
+elif (( run_count > 1 )); then
+  option="--runs ${run_count}"
+fi
 request="$(request_display "$filter" "$focus" "$target")"
-name="$(check_name "$prefix" "$request" 60)"
+base_name="$(check_name "$prefix" "$request" 60)"
 # Scoped to the pull request. A caller that dispatches fork runs from the base
 # branch has no other per-PR value in its concurrency group, so without this two
 # fork PRs sending the same filter would cancel each other.
-concurrency_key="pr-$(sanitize_slug "$pr_number" 20)-$(concurrency_key "$(request_identity "$filter" "$focus" "$target")")"
+base_key="pr-$(sanitize_slug "$pr_number" 20)-$(concurrency_key "$(request_identity "$filter" "$focus" "$target")")"
+request="$(request_display "$filter" "$focus" "$target" "$option")"
 
 # --- 4. Open the check-run ---------------------------------------------------
 # On the resolved head SHA, never on github.sha: for issue_comment that is the
@@ -290,39 +310,69 @@ if [[ -n "${INPUT_APP_TOKEN:-}" ]]; then
   fi
 fi
 
-if ! created="$(GH_TOKEN="$check_token" gh_json --method POST "repos/${repo}/check-runs" \
-  -f "name=${name}" \
-  -f "head_sha=${head_sha}" \
-  -f "status=in_progress" \
-  -f "details_url=${server_url}/${repo}/actions/runs/${run_id}" \
-  -f "output[title]=Running" \
-  -f "output[summary]=${summary}")"; then
-  reason="check-run-not-created"
-  should_run=false
-  echo "::warning::could not create the check-run; not starting a run"
-  finish_and_exit
-fi
+# open_check <name> — creates one check-run and prints its id; fails on anything
+# that would leave a check nothing can close.
+open_check() {
+  local created id
+  if ! created="$(GH_TOKEN="$check_token" gh_json --method POST "repos/${repo}/check-runs" \
+    -f "name=${1}" \
+    -f "head_sha=${head_sha}" \
+    -f "status=in_progress" \
+    -f "details_url=${server_url}/${repo}/actions/runs/${run_id}" \
+    -f "output[title]=Running" \
+    -f "output[summary]=${summary}")"; then
+    echo "::warning::could not create the check-run ${1}; not starting a run" >&2
+    return 1
+  fi
+  if ! id="$(printf '%s' "$created" | jq -r '
+    if type == "object" and ((.id // null) | type) == "number"
+    then .id
+    else ""
+    end
+  ' 2>/dev/null)" || [[ -z "$id" ]]; then
+    echo "::warning::the check-run create for ${1} returned no readable id; not starting a run" >&2
+    return 1
+  fi
+  printf '%s' "$id"
+}
 
-if ! check_run_id="$(printf '%s' "$created" | jq -r '
-  if type == "object" and ((.id // null) | type) == "number"
-  then .id
-  else ""
-  end
-' 2>/dev/null)"; then
-  reason="check-run-not-created"
-  should_run=false
-  echo "::warning::the check-run create returned an unreadable response; not starting a run"
-  finish_and_exit
-fi
+# One check per run, each with its own key, so the runs neither cancel nor hide
+# each other, and a repeated command replaces them one for one.
+opened=()
+for (( k = 1; k <= run_count; k++ )); do
+  run_name="$base_name"
+  run_key="$base_key"
+  if [[ -n "$repeat" ]]; then
+    run_name="${base_name} (repeat ${repeat})"
+    run_key="${base_key}-repeat-${repeat}"
+  elif (( run_count > 1 )); then
+    run_name="${base_name} (run ${k}/${run_count})"
+    run_key="${base_key}-run-${k}-of-${run_count}"
+  fi
 
-# A create that returned no id leaves a check-run nothing can ever close, so
-# treat it as a failed create rather than starting a run that cannot report.
-if [[ -z "$check_run_id" ]]; then
-  reason="check-run-not-created"
-  should_run=false
-  echo "::warning::the check-run create returned no id; not starting a run"
-  finish_and_exit
-fi
+  if ! opened_id="$(open_check "$run_name")"; then
+    # No run starts, so close what this command opened rather than leave it spinning.
+    for id in ${opened[@]+"${opened[@]}"}; do
+      GH_TOKEN="$check_token" gh_json --method PATCH "repos/${repo}/check-runs/${id}" \
+        -f "status=completed" \
+        -f "conclusion=failure" \
+        -f "output[title]=Not started" \
+        -f "output[summary]=Another run of this command could not be opened, so none started. Comment the command again." \
+        >/dev/null || echo "::warning::could not close check-run ${id}"
+    done
+    reason="check-run-not-created"
+    should_run=false
+    runs_json="[]"
+    finish_and_exit
+  fi
+  opened+=("$opened_id")
+  runs_json="$(jq -c --argjson id "$opened_id" --arg key "$run_key" --arg name "$run_name" \
+    '. + [{"check-run-id": $id, "concurrency-key": $key, "check-name": $name}]' <<< "$runs_json")"
+  echo "::notice::started ${run_name} on ${head_sha}"
+done
 
-echo "::notice::started ${name} on ${head_sha}"
+# The single-run outputs keep naming the first run for callers that read only those.
+check_run_id="$(jq -r '.[0]["check-run-id"]' <<< "$runs_json")"
+concurrency_key="$(jq -r '.[0]["concurrency-key"]' <<< "$runs_json")"
+name="$(jq -r '.[0]["check-name"]' <<< "$runs_json")"
 finish_and_exit

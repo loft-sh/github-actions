@@ -281,6 +281,109 @@ setup() {
   [ "$REQUEST_ERROR" = "" ]
 }
 
+# --- parse_request: --repeat and --runs ---------------------------------------
+
+# parse_all <args> — every option parser enabled, as the e2e caller configures it.
+parse_all() { parse_request "$1" "true" "true" "pro oss" "true" "true"; }
+
+@test "parse_request: extracts --runs from a label filter" {
+  parse_all 'feature: containsAny os-image --runs 3'
+  [ "$REQUEST_FILTER" = "feature: containsAny os-image" ]
+  [ "$REQUEST_RUNS" = "3" ]
+  [ "$REQUEST_REPEAT" = "" ]
+  [ "$REQUEST_ERROR" = "" ]
+}
+
+@test "parse_request: extracts --repeat before the focus and leaves the focus literal" {
+  parse_all 'a && b --repeat 5 --focus "x --runs 2"'
+  [ "$REQUEST_FILTER" = "a && b" ]
+  [ "$REQUEST_REPEAT" = "5" ]
+  [ "$REQUEST_RUNS" = "" ]
+  [ "$REQUEST_FOCUS" = "x --runs 2" ]
+  [ "$REQUEST_ERROR" = "" ]
+}
+
+@test "parse_request: --repeat may stand on either side of the target" {
+  parse_all 'snapshots --target pro --repeat 2 --focus y'
+  [ "$REQUEST_FILTER" = "snapshots" ]
+  [ "$REQUEST_TARGET" = "pro" ]
+  [ "$REQUEST_REPEAT" = "2" ]
+  parse_all 'snapshots --repeat 2 --target pro'
+  [ "$REQUEST_TARGET" = "pro" ]
+  [ "$REQUEST_REPEAT" = "2" ]
+  [ "$REQUEST_ERROR" = "" ]
+}
+
+@test "parse_request: leading zeros are read as decimal" {
+  parse_all 'snapshots --repeat 08'
+  [ "$REQUEST_REPEAT" = "8" ]
+  [ "$REQUEST_ERROR" = "" ]
+}
+
+@test "parse_request: one run keeps the plain request" {
+  parse_all 'snapshots --runs 1'
+  [ "$REQUEST_FILTER" = "snapshots" ]
+  [ "$REQUEST_RUNS" = "" ]
+  [ "$REQUEST_ERROR" = "" ]
+}
+
+@test "parse_request: the caps are the accepted maximum" {
+  parse_all "snapshots --repeat ${REPEAT_MAX}"
+  [ "$REQUEST_REPEAT" = "$REPEAT_MAX" ]
+  parse_all "snapshots --runs ${RUNS_MAX}"
+  [ "$REQUEST_RUNS" = "$RUNS_MAX" ]
+  [ "$REQUEST_ERROR" = "" ]
+}
+
+@test "parse_request: rejects malformed and out-of-range counts" {
+  local args want
+  while IFS='|' read -r args want; do
+    parse_all "$args"
+    [ "$REQUEST_ERROR" = "$want" ] || { echo "'$args' gave '$REQUEST_ERROR', want '$want'"; return 1; }
+  done <<CASES
+snapshots --repeat|malformed-repeat
+snapshots --repeat x|malformed-repeat
+snapshots --repeat -1|malformed-repeat
+snapshots --repeat 2 --repeat 3|malformed-repeat
+snapshots --repeat 0|repeat-out-of-range
+snapshots --repeat $((REPEAT_MAX + 1))|repeat-out-of-range
+snapshots --runs 99999999999999999999|runs-out-of-range
+snapshots --runs 0|runs-out-of-range
+snapshots --runs|malformed-runs
+snapshots --repeat 2 --runs 2|repeat-and-runs
+CASES
+}
+
+@test "parse_request: a count without a label still reports an empty filter" {
+  parse_all '--runs 3'
+  [ "$REQUEST_FILTER" = "" ]
+  [ "$REQUEST_RUNS" = "3" ]
+  [ "$REQUEST_ERROR" = "" ]
+}
+
+@test "parse_request: repeat and runs parsing is opt-in for existing consumers" {
+  parse_request 'snapshots --repeat 2 --runs 3' "true" "false" "pro oss"
+  [ "$REQUEST_FILTER" = "snapshots --repeat 2 --runs 3" ]
+  [ "$REQUEST_REPEAT" = "" ]
+  [ "$REQUEST_RUNS" = "" ]
+  [ "$REQUEST_ERROR" = "" ]
+}
+
+@test "refusal_details: count errors name the flag and the bound" {
+  refusal_details "malformed-runs" "/test-e2e" ""
+  [ "$REFUSAL_TITLE" = '`--runs` needs a number' ]
+  [ "$REFUSAL_GUIDANCE" = 'Give it one whole number before `--focus`. For example: `/test-e2e snapshots --runs 3`.' ]
+  refusal_details "repeat-out-of-range" "/test-e2e" ""
+  [ "$REFUSAL_TITLE" = '`--repeat` is out of range' ]
+  [ "$REFUSAL_GUIDANCE" = "Use a number from 1 to ${REPEAT_MAX}." ]
+  refusal_details "repeat-and-runs" "/test-e2e" ""
+  [ "$REFUSAL_TITLE" = '`--repeat` and `--runs` together' ]
+}
+
+@test "request_display: an option stands before the focus" {
+  [ "$(request_display "snapshots" "x" "pro" "--runs 3")" = 'snapshots --target pro --runs 3 --focus "x"' ]
+}
+
 # --- normalize_filter --------------------------------------------------------
 
 @test "normalize_filter: collapses whitespace runs and trims" {

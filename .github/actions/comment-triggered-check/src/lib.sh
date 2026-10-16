@@ -35,17 +35,66 @@ parse_command() {
   trim "${first#"$command"}"
 }
 
-# parse_request <arguments> <parse-focus> <parse-target> <allowed-targets>
+# REPEAT_MAX and RUNS_MAX bound --repeat and --runs, so a typo cannot start a
+# run for hours or fan out across dozens of runners.
+REPEAT_MAX=10
+RUNS_MAX=5
+
+# take_count_option <flag> <string>
+# Removes every standalone `<flag> <value>` pair from string. Sets OPTION_REST
+# to the remaining words, OPTION_FOUND, OPTION_VALUE, and OPTION_ERROR (missing
+# or duplicate). Rejoining words on single spaces is lossless for a label filter.
+# shellcheck disable=SC2034 # OPTION_* are the function's outputs for callers.
+take_count_option() {
+  local flag="${1-}" word expect_value=false
+  local -a words=() kept=()
+  read -r -a words <<< "${2-}"
+  OPTION_FOUND=false
+  OPTION_VALUE=""
+  OPTION_ERROR=""
+  for word in ${words[@]+"${words[@]}"}; do
+    if [[ "$expect_value" == "true" ]]; then
+      OPTION_VALUE="$word"
+      expect_value=false
+      continue
+    fi
+    if [[ "$word" == "$flag" ]]; then
+      [[ "$OPTION_FOUND" == "true" ]] && OPTION_ERROR="duplicate"
+      OPTION_FOUND=true
+      expect_value=true
+      continue
+    fi
+    kept+=("$word")
+  done
+  [[ "$expect_value" == "true" ]] && OPTION_ERROR="missing"
+  OPTION_REST="${kept[*]-}"
+}
+
+# count_error <value> <max> — prints malformed or out-of-range, nothing when the
+# value is a whole number from 1 to max.
+count_error() {
+  local value="${1-}" max="${2-}"
+  if [[ ! "$value" =~ ^[0-9]+$ ]]; then
+    printf 'malformed'
+  elif (( ${#value} > ${#max} )) || (( 10#$value < 1 || 10#$value > max )); then
+    printf 'out-of-range'
+  fi
+}
+
+# parse_request <arguments> <parse-focus> <parse-target> <allowed-targets> [parse-repeat] [parse-runs]
 # Splits an optional trailing `--focus <regex>` and an optional
 # `--target <value>` immediately before it from the required label filter. The
 # focus is the whole remainder: it is never evaluated as shell syntax, and one
 # matching outer quote pair is removed only for comment readability. Targets
 # are single tokens matched exactly against the whitespace-separated allowlist.
+# `--repeat N` and `--runs N` may stand anywhere before the focus, and only one
+# of them at a time.
 # Results are returned in globals because command substitution would run this
 # function in a subshell and lose them.
 # shellcheck disable=SC2034 # REQUEST_* are the function's outputs for callers.
 parse_request() {
   local args filter_part focus target first last inner bare marker_at marker_end i before after allowed_targets
+  local repeat="" runs="" flag error
   args="$(trim "${1-}")"
   filter_part="$args"
   focus=""
@@ -55,6 +104,8 @@ parse_request() {
   REQUEST_FILTER=""
   REQUEST_FOCUS=""
   REQUEST_TARGET=""
+  REQUEST_REPEAT=""
+  REQUEST_RUNS=""
   REQUEST_ERROR=""
 
   if [[ "${2-}" == "true" ]]; then
@@ -103,6 +154,49 @@ parse_request() {
   fi
   REQUEST_FOCUS="$focus"
 
+  for flag in repeat runs; do
+    if [[ "$flag" == "repeat" && "${5-}" != "true" ]] || [[ "$flag" == "runs" && "${6-}" != "true" ]]; then
+      continue
+    fi
+    take_count_option "--${flag}" "$filter_part"
+    filter_part="$OPTION_REST"
+    [[ "$OPTION_FOUND" == "true" ]] || continue
+    error="$OPTION_ERROR"
+    if [[ -z "$error" ]]; then
+      if [[ "$flag" == "repeat" ]]; then
+        error="$(count_error "$OPTION_VALUE" "$REPEAT_MAX")"
+      else
+        error="$(count_error "$OPTION_VALUE" "$RUNS_MAX")"
+      fi
+    fi
+    case "$error" in
+      "") ;;
+      out-of-range)
+        REQUEST_FILTER="$(normalize_filter "$filter_part")"
+        REQUEST_ERROR="${flag}-out-of-range"
+        return 0
+        ;;
+      *)
+        REQUEST_FILTER="$(normalize_filter "$filter_part")"
+        REQUEST_ERROR="malformed-${flag}"
+        return 0
+        ;;
+    esac
+    if [[ "$flag" == "repeat" ]]; then
+      repeat="$((10#$OPTION_VALUE))"
+    else
+      runs="$((10#$OPTION_VALUE))"
+    fi
+  done
+  # Combining them would cost runs x repeat; refused until someone needs it.
+  if [[ -n "$repeat" && -n "$runs" ]]; then
+    REQUEST_FILTER="$(normalize_filter "$filter_part")"
+    REQUEST_ERROR="repeat-and-runs"
+    return 0
+  fi
+  # One run is what a plain command does, so it keeps the plain identity.
+  [[ "$runs" == "1" ]] && runs=""
+
   if [[ "${3-}" == "true" ]]; then
     marker_at=-1
     marker_end=-1
@@ -141,6 +235,8 @@ parse_request() {
   REQUEST_FILTER="$(normalize_filter "$filter_part")"
   REQUEST_FOCUS="$focus"
   REQUEST_TARGET="$target"
+  REQUEST_REPEAT="$repeat"
+  REQUEST_RUNS="$runs"
 }
 
 # request_identity <filter> <focus> <target>
@@ -162,11 +258,15 @@ request_identity() {
   fi
 }
 
-# request_display <filter> <focus> <target> — human-readable command suffix for checks.
+# request_display <filter> <focus> <target> [option] — human-readable command
+# suffix for checks. option, e.g. "--runs 3", goes before the focus like typed.
 request_display() {
   local request="${1-}"
   if [[ -n "${3-}" ]]; then
     request="${request} --target ${3}"
+  fi
+  if [[ -n "${4-}" ]]; then
+    request="${request} ${4}"
   fi
   if [[ -n "${2-}" ]]; then
     request="${request} --focus \"${2}\""
@@ -337,7 +437,7 @@ has_write_permission() {
 # shellcheck disable=SC2034 # REFUSAL_* are outputs for start.sh and tests.
 refusal_details() {
   local reason="${1-}" command_word="${2:-/test-e2e}" allowed_targets="${3-}"
-  local target allowed_display=""
+  local target allowed_display="" flag max
 
   REFUSAL_TITLE=""
   REFUSAL_GUIDANCE=""
@@ -353,6 +453,22 @@ refusal_details() {
     malformed-target)
       REFUSAL_TITLE="Target option is not valid"
       REFUSAL_GUIDANCE="Add one target before \`--focus\`. For example: \`${command_word} snapshots --target pro\`."
+      ;;
+    malformed-repeat|malformed-runs)
+      flag="${reason#malformed-}"
+      REFUSAL_TITLE="\`--${flag}\` needs a number"
+      REFUSAL_GUIDANCE="Give it one whole number before \`--focus\`. For example: \`${command_word} snapshots --${flag} 3\`."
+      ;;
+    repeat-out-of-range|runs-out-of-range)
+      flag="${reason%-out-of-range}"
+      max="$REPEAT_MAX"
+      [[ "$flag" == "runs" ]] && max="$RUNS_MAX"
+      REFUSAL_TITLE="\`--${flag}\` is out of range"
+      REFUSAL_GUIDANCE="Use a number from 1 to ${max}."
+      ;;
+    repeat-and-runs)
+      REFUSAL_TITLE="\`--repeat\` and \`--runs\` together"
+      REFUSAL_GUIDANCE="Use one of them per command: \`--repeat\` repeats the suite within one run, \`--runs\` starts independent runs."
       ;;
     invalid-target)
       REFUSAL_TITLE="Invalid target"
