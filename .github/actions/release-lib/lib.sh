@@ -605,3 +605,121 @@ require_tag_on_target() {
       exit 1 ;;
   esac
 }
+
+# ---------------------------------------------------------------------------
+# Stable releases
+# ---------------------------------------------------------------------------
+
+# is_stable_version <version> - a plain vX.Y.Z, the only kind of version
+# require_rc_commit holds to an rc.
+is_stable_version() {
+  [[ "$1" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+}
+
+# newest_rc <out-var> <repo> <version> - sets <out-var> to the highest N among
+# <repo>'s <version>-rc.N tags, compared as a number so rc.10 beats rc.9, or to
+# -1 when there is none. Returns 1 with gh's stderr in NEWEST_RC_ERR when the
+# listing fails, so the caller can say what it was about to check.
+newest_rc() {
+  local __nr_var="$1" __nr_repo="$2" __nr_version="$3" __nr_refs __nr_ref __nr_n __nr_best=-1
+  # Read by the caller.
+  # shellcheck disable=SC2034
+  NEWEST_RC_ERR=""
+  # The listing is a prefix match, so it also returns v4.12.3-rc.1-foo or
+  # rc.01, which are not rcs of this version and are skipped below.
+  run_captured __nr_refs NEWEST_RC_ERR gh api --paginate "repos/${__nr_repo}/git/matching-refs/tags/${__nr_version}-rc." --jq '.[].ref' || return 1
+  while read -r __nr_ref; do
+    __nr_n="${__nr_ref#"refs/tags/${__nr_version}-rc."}"
+    [[ "$__nr_n" != "$__nr_ref" && "$__nr_n" =~ ^(0|[1-9][0-9]{0,8})$ ]] || continue
+    ((__nr_n > __nr_best)) && __nr_best=$__nr_n
+  done <<<"$__nr_refs"
+  printf -v "$__nr_var" '%s' "$__nr_best"
+}
+
+# require_rc_commit <repo> <version> <sha> [allowed] [mode] - refuse a stable
+# cut unless <sha>, the commit it is about to tag or build, is the commit the
+# version's newest rc was cut from. The rc is what gets tested, so a commit
+# that lands on the line branch after it would otherwise ship untested.
+# A prerelease is not checked.
+#
+# <allowed> accepts that many commits past the rc, for a commit the cut adds
+# itself: the legacy vcluster-pro dependency bump lands between the rc and the
+# stable tag on every cut. Only commits on top of the rc are excused: a commit
+# behind the rc or diverged from it is refused whatever <allowed> says.
+#
+# [mode] says how far the version already got, which decides the advice:
+#   (empty)     a fresh cut: nothing for this version exists yet
+#   resume      <sha> is a tag that already exists, and a re-run never moves it
+#   partial     <sha> is a branch head, but the cut already changed something
+#               else for this version (another repo's tag, a merged bump)
+#   dependency  <sha> is a tag in <repo> that is already out, which another
+#               repo's cut would build on
+# Only a fresh cut with no allowance is told to cut the next rc. Anywhere else
+# that advice can loop, since an rc is cut at the branch head with a bump of
+# its own, so the refusal points at the README's recovery steps instead.
+#
+# A stable with no rc at all is refused too, and so is any read that fails,
+# since an unknown answer cannot show the commit was tested.
+#
+# The rc is compared by its full ref, so a branch sharing its name cannot stand
+# in for it, and the comparison peels an annotated tag on its own.
+require_rc_commit() {
+  local repo="$1" version="$2" sha="$3" allowed="${4:-0}" mode="${5:-}"
+  is_stable_version "$version" || return 0
+  local left="This run created no tag and dispatched no release build in ${repo}."
+  local retry="${left} Re-run the cut once GitHub answers."
+  local best
+  if ! newest_rc best "$repo" "$version"; then
+    echo "::error::could not list the ${version}-rc.N tags in ${repo}, so the cut cannot confirm ${sha} is the commit the last rc was cut from. ${retry} gh said: $(gh_reason "$NEWEST_RC_ERR")" >&2
+    exit 1
+  fi
+  local after="Cut ${version}-rc.$((best < 0 ? 1 : best + 1)), then cut ${version} once it passes."
+  if [[ -n "$mode" ]] || ((allowed)); then
+    after="Another rc alone will not fix this here: read the recovery steps in this action's README before changing any tag."
+  fi
+  local what="the commit to release (${sha})" head="refusing to cut ${version} in ${repo}"
+  case "$mode" in
+    resume) what="tag ${version} (${sha})" head="refusing to resume ${version} in ${repo}" ;;
+    dependency) what="tag ${version} (${sha})" head="refusing to build on ${repo} ${version}" ;;
+  esac
+  if ((best < 0)); then
+    echo "::error::${head}: ${version} has no rc there. A stable release ships the exact commit its last rc was cut from. ${after} ${left}" >&2
+    exit 1
+  fi
+  local rc="${version}-rc.${best}" cmp err state ahead behind
+  # per_page=1: only the counts are read, and the commit list can be long.
+  if ! run_captured cmp err gh api "repos/${repo}/compare/refs/tags/${rc}...${sha}?per_page=1" --jq '"\(.status) \(.ahead_by) \(.behind_by)"'; then
+    echo "::error::could not compare ${sha} with ${rc} in ${repo}, so the cut cannot confirm it is the commit the last rc was cut from. ${retry} gh said: $(gh_reason "$err")" >&2
+    exit 1
+  fi
+  read -r state ahead behind <<<"$cmp"
+  if [[ ! "$ahead" =~ ^[0-9]+$ || ! "$behind" =~ ^[0-9]+$ ]]; then
+    echo "::error::unexpected comparison of ${sha} with ${rc} in ${repo}: '$(flatten "$cmp")'. ${left}" >&2
+    exit 1
+  fi
+  # A compare lists only the head side's commits, so behind is linked the other
+  # way round, or the page would be empty.
+  local drift link="Commits since the rc: https://github.com/${repo}/compare/${rc}...${sha}"
+  case "$state" in
+    identical)
+      echo "::notice::${sha} is the commit ${rc} was cut from."
+      return 0 ;;
+    ahead)
+      if ((ahead <= allowed)); then
+        echo "::notice::${sha} is ${ahead} commit(s) past ${rc}, within the ${allowed} allowed on top of the rc."
+        return 0
+      fi
+      drift="${ahead} commit(s) past ${rc}"
+      ((allowed)) && drift+=" (at most ${allowed} allowed)"
+      ;;
+    behind)
+      drift="${behind} commit(s) behind ${rc}"
+      link="Commits ${sha} lacks: https://github.com/${repo}/compare/${sha}...${rc}" ;;
+    diverged) drift="diverged from ${rc} (${ahead} ahead, ${behind} behind)" ;;
+    *)
+      echo "::error::unexpected comparison status '$(flatten "$state")' for ${sha} against ${rc} in ${repo}. ${left}" >&2
+      exit 1 ;;
+  esac
+  echo "::error::${head}: ${what} is ${drift}, the last rc. A stable release ships the exact commit its last rc was cut from. ${after} ${left} ${link}" >&2
+  exit 1
+}

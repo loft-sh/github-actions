@@ -101,6 +101,15 @@ direct invocation.
   as an exact match, so a prerelease like `v4.11.3-rc.1` does not count as
   `v4.11.3`. A failed listing, tag probe or run listing aborts the cut rather
   than silently skipping the guard.
+- **Stable ships the last rc:** a stable `vX.Y.Z` is refused unless the
+  commit it would tag (or, on a resume, the commit its tag points at) is the
+  commit its newest `vX.Y.Z-rc.N` was cut from. Commits that landed after that
+  rc would otherwise ship untested. The error links the commits between the
+  two, and on a first cut asks for `vX.Y.Z-rc.N+1`. A resume never moves its
+  tag, so another rc rarely helps there and the error points at
+  [Partial-failure recovery](#partial-failure-recovery) instead. A stable with
+  no rc is refused too, and a failed read is refused with a request to re-run.
+  Prereleases are not checked.
 - **Unprepared line:** fails loudly if the target branch is absent (no silent
   fallback), distinguishing a real 404 from a transient API error. A release line
   needs its `release-X.Y` branch (carrying a `workflow_dispatch`-enabled
@@ -208,6 +217,16 @@ up where the last one stopped:
   with no conclusion, check it with
   `gh run view <run-id> --attempt <n> --repo loft-sh/loft-enterprise`, and if
   it did not pass, build by hand (below).
+- **Tag exists, but not at the last rc's commit** (it predates the rc check,
+  was made by hand, or an rc was cut after it, for example to test a fix for a
+  failed build): the re-run refuses before the dispatch, since the build would
+  ship the tagged commit. A new rc helps only if it lands exactly on that
+  commit, which it does only while the branch head is still there. Otherwise
+  delete the tag
+  (`gh api -X DELETE repos/loft-sh/loft-enterprise/git/refs/tags/<version>`)
+  and cut the version again: it then tags the branch head and checks it like a
+  first cut. The cut only gets this far when the version has no release, no
+  draft, no running build and no passed build at the tag.
 - **A build is still queued or running under the version:** the re-run
   refuses. This also holds when the tag was deleted under the running build,
   since re-creating it would start a second build from another commit. With a

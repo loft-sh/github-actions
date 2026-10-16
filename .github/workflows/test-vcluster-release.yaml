@@ -5,6 +5,7 @@ on:
     paths:
       - '.github/workflows/test-vcluster-release.yaml'
       - '.github/actions/vcluster-release/**'
+      - '.github/actions/release-lib/**'
 
 permissions:
   contents: read
