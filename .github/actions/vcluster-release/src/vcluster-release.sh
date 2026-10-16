@@ -29,9 +29,13 @@
 #                         dispatch loft-sh/vcluster-pro only.
 # v0.36 is a legacy line (two-repo dance); v0.37 is the first merged/monorepo line.
 #
+# Before anything is tagged, each repo's release.yaml is read at the commit the
+# dispatch would run and refused if that dispatch could not succeed (see
+# dispatch_preflight).
+#
 # dry_run (default true) performs the read-only checks (branch existence,
-# double-cut guard) so the printed routing decision is validated, but prints the
-# mutating tag/dispatch calls instead of firing them.
+# double-cut guard, the release.yaml preflight) so the printed routing decision
+# is validated, but prints the mutating tag/dispatch calls instead of firing them.
 set -euo pipefail
 
 CUTOVER="${CUTOVER:-v0.37}"
@@ -46,6 +50,11 @@ WORKFLOW="${WORKFLOW:-release.yaml}"
 # suite drives the poll without real sleeps.
 BUMP_WORKFLOW="${BUMP_WORKFLOW:-release-bump-vcluster.yaml}"
 PRO_DEFAULT_BRANCH="${PRO_DEFAULT_BRANCH:-main}"
+# release-lib's routing reads these. vcluster release branches are named `v0.37`,
+# not Platform's `release-4.11`.
+DEFAULT_BRANCH="${PRO_DEFAULT_BRANCH}"
+LINE_BRANCH_FORMAT="v%s.%s"
+LINE_BRANCH_PATTERN='^v[0-9]+\.[0-9]+$'
 PRO_OWNER="${PRO_REPO%%/*}"
 # ~120 min ceiling (480 x 15s). Must exceed the bot's own CI wait: the bump PR
 # triggers e2e and auto-approve-bot-prs only merges once e2e is green, so this
@@ -90,85 +99,16 @@ TAG_REF_JQ='"\(.object.sha // "") \(.object.type // "")"'
 # and gh workflow run rejects undeclared inputs, so legacy dispatches omit it.
 TRIGGERED_BY="${TRIGGERED_BY:-}"
 
-# For require_rc_commit, shared with platform-release so both dispatchers hold
-# a stable to its last rc the same way. Sourced before this script's own
-# helpers, so the ones defined below replace the lib's same-named copies and
-# this script routes by its own rules. A caller pinning vcluster-release/v1 checks
-# out the whole repository at that tag, so the lib read is the one this version
-# was written against.
+# Routing, probes and the dispatch preflight, shared with platform-release so
+# both dispatchers route and refuse the same way. A caller pinning
+# vcluster-release/v1 checks out the whole repository at that tag, so the lib
+# read is the one this version was written against.
 # shellcheck source=.github/actions/release-lib/lib.sh disable=SC1091
 source "$(dirname "${BASH_SOURCE[0]}")/../../release-lib/lib.sh"
 
 # ---------------------------------------------------------------------------
 # Pure helpers (no network) - the routing brain, exhaustively unit-tested.
 # ---------------------------------------------------------------------------
-
-# normalize_version <raw> -> canonical vX.Y.Z[-suffix]
-# Operators paste versions from Linear, Slack and release notes, where the
-# leading v is inconsistent and a stray space survives a copy. The routing
-# helpers below already tolerate both spellings (parse_major_minor strips an
-# optional v), but the raw string is used VERBATIM as the tag name and as the
-# double-cut probe key - so an un-normalized "0.37.1" would create a v-less tag
-# AND sail past the double-cut guard, which probes for "v0.37.1" and gets a 404.
-# That silently re-releases an already-shipped version, and the resulting tag can
-# never be promoted (promote-release requires ^v[0-9]+\.[0-9]+\.[0-9]+$) nor be
-# resolved by the Go module proxy, which requires the v. Normalizing here, before
-# anything reads the value, makes both spellings land on the same canonical tag.
-normalize_version() {
-  local v="$1"
-  v="${v#"${v%%[![:space:]]*}"}"    # strip leading whitespace
-  v="${v%"${v##*[![:space:]]}"}"    # strip trailing whitespace
-  [[ "$v" == V* ]] && v="v${v#V}"   # accept a capitalized V
-  [[ "$v" == v* ]] || v="v${v}"     # supply the leading v when missing
-  printf '%s\n' "$v"
-}
-
-# validate_version <version> - hard-fail anything that is not our tag shape.
-# Runs AFTER normalize_version, so a recoverable paste (missing v, capitalized V,
-# stray whitespace) has already been repaired and only genuinely malformed input
-# reaches here. Deliberately STRICTER than semver, because the value is used
-# verbatim as a git tag and every downstream consumer assumes vMAJOR.MINOR.PATCH:
-#   vX.Y     would create a tag colliding with the vX.Y release BRANCH, leaving an
-#            ambiguous ref that git resolves with a warning.
-#   vX.Y.Z.N is not semver at all.
-#   0.37.1   bare semver is valid to node-semver but cannot be promoted
-#            (promote-release matches ^v[0-9]+\.[0-9]+\.[0-9]+$) nor resolved by
-#            the Go module proxy; normalize_version has already fixed it by here.
-# Build metadata (+meta) is rejected too: no consumer in the pipeline handles it.
-# The prerelease body is only shape-checked here - classify_suffix decides which
-# suffixes are actually routable, and is fail-closed on unknown ones.
-validate_version() {
-  local v="$1"
-  if [[ ! "$v" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-    echo "::error::version '${v}' is not a valid release version. Expected vMAJOR.MINOR.PATCH with an optional prerelease suffix, e.g. v0.37.1, v0.37.0-rc.1, v0.37.0-next.internal.3." >&2
-    return 1
-  fi
-}
-
-# parse_major_minor <version> -> "MAJOR MINOR"
-# Accepts v-prefixed or bare, with or without patch/prerelease:
-#   v0.35.4-rc.1 -> "0 35", v1.0 -> "1 0". Fails loudly on garbage.
-parse_major_minor() {
-  local v="${1#v}" major minor rest
-  major="${v%%.*}"
-  rest="${v#*.}"
-  minor="${rest%%.*}"
-  # Trim any non-numeric suffix on the minor (e.g. "36-rc.1" -> "36").
-  minor="${minor%%[!0-9]*}"
-  if [[ ! "$major" =~ ^[0-9]+$ || ! "$minor" =~ ^[0-9]+$ ]]; then
-    echo "::error::cannot parse major.minor from version '$1'" >&2
-    return 1
-  fi
-  printf '%s %s\n' "$major" "$minor"
-}
-
-# derive_line <version> -> vX.Y
-derive_line() {
-  local mm major minor
-  mm="$(parse_major_minor "$1")" || return 1
-  read -r major minor <<<"$mm"
-  printf 'v%s.%s\n' "$major" "$minor"
-}
 
 # classify_era <version> [cutover] -> "legacy" | "monorepo"
 # (major, minor) >= (cutover major, minor) is monorepo; anything below is legacy.
@@ -185,154 +125,11 @@ classify_era() {
   fi
 }
 
-# classify_suffix <version> -> alpha | beta | rc | next | next-internal | stable
-# Fail-closed: only the prerelease suffixes the dispatcher knows how to route are
-# accepted. Anything else - including a legal-but-unrouted tag such as
-# -devpod.alpha - is rejected so an unhandled release type can never be silently
-# misrouted onto the wrong branch. Order matters: -next.internal is a sub-flavor
-# of -next and must be matched first.
-classify_suffix() {
-  local v="$1"
-  case "$v" in
-    *-next.internal.*) printf 'next-internal\n' ;;
-    *-next.*)          printf 'next\n' ;;
-    *-alpha.*)         printf 'alpha\n' ;;
-    *-beta.*)          printf 'beta\n' ;;
-    *-rc.*)            printf 'rc\n' ;;
-    *-*)
-      echo "::error::version '$v' has an unsupported prerelease suffix; the dispatcher cuts only -alpha/-beta/-rc/-next/-next.internal or a stable vX.Y.Z" >&2
-      return 1 ;;
-    *) printf 'stable\n' ;;
-  esac
-}
-
-# is_feature_branch <branch> -> 0 for a short-lived feature branch, 1 otherwise.
-# A feature branch is anything that is neither main nor a vX.Y release branch.
-is_feature_branch() {
-  local b="$1"
-  [[ "$b" == "main" ]] && return 1
-  [[ "$b" =~ ^v[0-9]+\.[0-9]+$ ]] && return 1
-  return 0
-}
-
-# resolve_target <suffix> <source-branch> <line> -> the branch to tag, or a hard
-# error if <source-branch> violates the matrix. Handles the non-feature suffixes
-# only (alpha/beta/rc/stable); next/next.internal are routed by cut_feature_prerelease.
-#   alpha|beta -> main only
-#   rc         -> main or the line branch vX.Y (main() has already narrowed this
-#                 through resolve_rc_source, which refuses main once vX.Y exists)
-#   stable     -> the line branch vX.Y only
-resolve_target() {
-  local suffix="$1" src="$2" line="$3"
-  case "$suffix" in
-    alpha|beta)
-      if [[ -n "$src" && "$src" != "main" ]]; then
-        echo "::error::${suffix} releases are cut from main only, not '${src}'" >&2
-        return 1
-      fi
-      printf 'main\n' ;;
-    rc)
-      # An empty src reaches here only if main() skipped the probe (it does not
-      # on any live path); main arrives only once resolve_rc_source has confirmed
-      # the line has not branched yet. Kept so this helper stays total and
-      # network-free.
-      if [[ -z "$src" || "$src" == "main" ]]; then
-        printf 'main\n'
-      elif [[ "$src" == "$line" ]]; then
-        printf '%s\n' "$line"
-      else
-        echo "::error::rc releases are cut from main or the ${line} release branch, not '${src}'" >&2
-        return 1
-      fi ;;
-    stable)
-      if [[ -n "$src" && "$src" != "$line" ]]; then
-        echo "::error::stable releases are cut from the ${line} release branch only, not '${src}'" >&2
-        return 1
-      fi
-      printf '%s\n' "$line" ;;
-    *)
-      echo "::error::resolve_target: unexpected suffix '${suffix}'" >&2
-      return 1 ;;
-  esac
-}
 
 # ---------------------------------------------------------------------------
 # Network helpers. Read-only ones always run (they validate the routing, even
 # in dry-run). Mutating ones honour DRY_RUN.
 # ---------------------------------------------------------------------------
-
-# gh_reason <raw> - gh's own words from a `--silent -i` capture, on one line.
-#
-# The capture is a ~25-line response-header block with gh's error appended, so
-# interpolating it whole pushes the sentence that says WHY past the point where
-# GitHub truncates an annotation - measured at byte 1183 of 1273 on a 403. The
-# status line and `Name: value` headers carry nothing the message does not
-# already state, so they go. Flattening \n\r\t keeps a multi-line body from
-# breaking the annotation or forging a second workflow command.
-gh_reason() {
-  local raw="$1" reason
-  [[ -n "$raw" ]] || { printf '<no output>'; return 0; }
-  # `gh: ...` is kept explicitly, because it matches the `Name: value` shape a
-  # response header has and a bare header filter eats the one line worth
-  # printing. Verified against the live API: a 404 comes back as the status
-  # line, 24 headers, a blank line, then `gh: Not Found (HTTP 404)`.
-  reason="$(printf '%s\n' "$raw" | awk '
-      /^gh:/ { print; next }
-      /^HTTP\// { next }
-      /^[A-Za-z][A-Za-z0-9-]*: / { next }
-      { print }
-    ' | LC_ALL=C tr '\n\r\t' '   ' | tr -s ' ' | sed 's/^ *//; s/ *$//' || true)"
-  # Headers but no reason is itself worth saying: it means gh returned a status
-  # and died without explaining, which reads very differently from no output.
-  printf '%s' "${reason:-<no reason in gh output>}"
-}
-
-# api_exists <path> <what> -> 0 if 200, 1 if 404, exits 1 on transient/unexpected.
-# Shared read-only existence probe. Read only the HTTP status line. On a 404 `gh`
-# exits non-zero, so we must capture its output with `|| true` BEFORE parsing -
-# piping gh directly into the status-substitution would let pipefail propagate the
-# non-zero exit and clobber the code to empty, misreading a real 404 as a transient
-# failure. gh writes the "HTTP/2.0 404" status line to stdout even with --silent
-# (only the body is suppressed); a genuine transient error (DNS/auth/rate-limit)
-# yields no status line, so an empty code correctly means "could not reach the API".
-# Distinguishing the two matters to every caller: an unreachable API must never be
-# silently read as "absent" (a missed double-cut guard) or "missing" (a wrong branch).
-api_exists() {
-  local path="$1" what="$2" out http_code
-  # stderr is merged, not discarded. On the no-status path gh's own message is
-  # the only evidence of what went wrong, and dropping it leaves a diagnosis
-  # that names three causes and distinguishes none of them. Merging is safe
-  # because the status line is matched by prefix rather than by position.
-  out="$(gh api "$path" --silent -i 2>&1 || true)"
-  # `|| true` is load-bearing under `set -o pipefail`: on the no-status path grep
-  # matches nothing and exits 1, which would abort here and skip the very
-  # diagnostic this function exists to print.
-  http_code="$(printf '%s\n' "$out" | grep -m1 '^HTTP/' | awk '{print $2}' || true)"
-  case "$http_code" in
-    200) return 0 ;;
-    404) return 1 ;;
-    "")
-      # gh_reason strips the header block and flattens what is left, so the
-      # cause leads the annotation instead of trailing 1.2KB of headers.
-      echo "::error::failed to reach GitHub API for ${what} (no HTTP status - DNS, rate-limit, or auth). Not treating as absent. gh said: $(gh_reason "$out")" >&2
-      exit 1
-      ;;
-    *)
-      # Same treatment as the no-status arm: a 403 is where secondary rate
-      # limits and SSO/scope rejections land, and the status code alone does not
-      # distinguish them. gh's body is already in ${out}; printing the code and
-      # discarding the reason would leave the operator reproducing it by hand.
-      echo "::error::unexpected status ${http_code} from GitHub API for ${what}. gh said: $(gh_reason "$out")" >&2
-      exit 1
-      ;;
-  esac
-}
-
-# branch_exists <repo> <branch> -> 0 if 200, 1 if 404, exits 1 on transient error.
-branch_exists() {
-  local repo="$1" branch="$2"
-  api_exists "repos/${repo}/branches/${branch}" "branch '${branch}' in ${repo}"
-}
 
 # require_branch <repo> <branch> - hard error if the branch is absent.
 require_branch() {
@@ -341,52 +138,6 @@ require_branch() {
     echo "::error::release branch '${branch}' not found in ${repo}. Create it (and its workflow_dispatch-enabled release.yaml) before cutting this line - refusing to guess." >&2
     exit 1
   fi
-}
-
-# resolve_rc_source <repo> <line> <src> -> the branch an rc is cut from, or a
-# hard error when <src> contradicts the line's actual state.
-#
-# rc is the one suffix legal from either branch, and which of the two is right is
-# not a preference - it is decided by whether the line has branched yet:
-#
-#   vX.Y exists      the rc MUST come from vX.Y. main now carries the NEXT line's
-#                    development and is missing the backports that only land on
-#                    vX.Y, so an rc cut from it validates the wrong code. An
-#                    empty source-branch takes vX.Y; an explicit main is refused
-#                    rather than honoured, because at this point it is a mistake
-#                    and nothing downstream would catch it.
-#   vX.Y absent      the rc IS main; that is where the line lives until it
-#                    branches.
-#
-# So the probe is not just a default-filler: it runs on every monorepo rc,
-# including one that named a source branch, because the refusal above depends on
-# it. branch_exists is fail-closed (a transient API error aborts rather than
-# reading as absent), so an unreachable API can neither silently pick main nor
-# silently skip the refusal.
-#
-# A source branch that is neither main nor vX.Y is passed through untouched for
-# resolve_target to reject, keeping that error in one place.
-resolve_rc_source() {
-  local repo="$1" line="$2" src="$3"
-  if branch_exists "$repo" "$line"; then
-    if [[ -z "$src" ]]; then
-      echo "::notice::no source-branch given for an rc and ${line} exists in ${repo}; cutting from ${line}." >&2
-      printf '%s\n' "$line"
-      return 0
-    fi
-    if [[ "$src" == "main" ]]; then
-      echo "::error::${line} exists in ${repo}, so an rc on this line is cut from ${line}, not from main. main carries the next line's development and lacks the fixes backported to ${line}, so this rc would validate the wrong code. Pass source-branch: ${line}, or leave source-branch empty to take it automatically." >&2
-      return 1
-    fi
-    printf '%s\n' "$src"
-    return 0
-  fi
-  if [[ -z "$src" ]]; then
-    echo "::notice::no source-branch given for an rc and ${line} does not exist yet in ${repo}; cutting from main." >&2
-    printf 'main\n'
-    return 0
-  fi
-  printf '%s\n' "$src"
 }
 
 # runs_at_ref <repo> <ref> [head-sha] [quiet] - prints "<total> <active>".
@@ -656,8 +407,10 @@ head_of() {
   printf '%s' "$sha"
 }
 
-# create_tag <repo> <branch> <tag> [rc-allowed] [rc-mode] - tag the branch head. Inert
-# w.r.t. release workflows (they trigger on workflow_dispatch, not tag push).
+# create_tag <repo> <branch> <tag> [rc-allowed] [rc-mode] [sha] - tag the branch
+# head, or [sha] when the preflight already read it, so the commit whose
+# release.yaml was checked is the commit tagged. Inert w.r.t. release workflows
+# (they trigger on workflow_dispatch, not tag push).
 # A stable tag must land on its last rc's commit, plus at most [rc-allowed]
 # commits on top (see require_rc_commit). [rc-allowed] "bump" reads that number
 # off go.mod at the commit itself (see pro_allowance). [rc-mode] is passed on to
@@ -666,12 +419,12 @@ head_of() {
 # A stable's head is read in dry-run too, so a preview hits the rc refusal a
 # real cut would at that head. The preview still prints a placeholder rather
 # than that sha: on the legacy path the pro head moves with the dependency bump
-# before it is tagged. A dry-run prerelease has nothing to check, so it reads
-# nothing.
+# before it is tagged. A dry-run prerelease reads nothing here, since the
+# preflight has already read the head it would tag.
 create_tag() {
-  local repo="$1" branch="$2" tag="$3" rc_allowed="${4:-0}" rc_mode="${5:-}" sha=""
+  local repo="$1" branch="$2" tag="$3" rc_allowed="${4:-0}" rc_mode="${5:-}" sha="${6:-}"
   if [[ "${DRY_RUN:-true}" != "true" ]] || is_stable_version "$tag"; then
-    sha="$(head_of "$repo" "$branch")" || exit 1
+    [[ -n "$sha" ]] || sha="$(head_of "$repo" "$branch")" || exit 1
     if [[ "$rc_allowed" == "bump" ]] && is_stable_version "$tag"; then
       rc_allowed="$(pro_allowance "$sha" "$tag")" || exit 1
     fi
@@ -713,7 +466,17 @@ dispatch() {
     echo "[dry-run] gh workflow run ${WORKFLOW} --repo ${repo} --ref ${tag} ${extra[*]}"
     return 0
   fi
-  gh workflow run "${WORKFLOW}" --repo "${repo}" --ref "${tag}" "${extra[@]}"
+  # Checked rather than bare, so the failure says what is left: the tag exists
+  # with no build, which is the `tagged` state a re-run resumes from.
+  local out err
+  if ! run_captured out err gh workflow run "${WORKFLOW}" --repo "${repo}" --ref "${tag}" "${extra[@]}"; then
+    echo "::error::could not dispatch ${WORKFLOW} in ${repo} at ${tag}, so ${tag} is tagged there with no build. Re-run the cut with the same version: it resumes at this dispatch without re-tagging, and does not dispatch again a build that already started. gh said: $(gh_reason "$err")" >&2
+    exit 1
+  fi
+  # Captured only for the failure message. What gh says on success (the run's
+  # URL, in current gh) still belongs in the log.
+  [[ -z "$out" ]] || printf '%s\n' "$out"
+  [[ -z "$err" ]] || printf '%s\n' "$err" >&2
   echo "dispatched ${WORKFLOW} in ${repo} at ${tag}"
   # Block until the run is visible to the same query release_state uses. Until it
   # registers, a concurrent or immediately-following cut reads this tag as
@@ -742,9 +505,10 @@ dispatch() {
   echo "::warning::${WORKFLOW} was dispatched in ${repo} at ${tag} but the run did not become queryable within $(( DISPATCH_VISIBLE_ATTEMPTS * DISPATCH_VISIBLE_SLEEP_SECONDS ))s. The build is running; just be aware that a cut re-run started right now could dispatch it a second time."
 }
 
-# ensure_tag <repo> <branch> <tag> <state> [rc-allowed] [rc-mode] - create the tag only
-# when this repo has not got one yet, at the branch head and held to its last rc
-# (see create_tag). Skipping on a resume is not just an optimisation: the tag a
+# ensure_tag <repo> <branch> <tag> <state> [rc-allowed] [rc-mode] [sha] - create
+# the tag only when this repo has not got one yet, at the branch head (or [sha])
+# and held to its last rc (see create_tag). On a resume [sha] is the commit the
+# tag was already read at. Skipping on a resume is not just an optimisation: the tag a
 # previous run created is what its already-dispatched build is building, so
 # re-pointing it would change what ships under a version that is already moving.
 #
@@ -755,10 +519,11 @@ dispatch() {
 ensure_tag() {
   local repo="$1" branch="$2" tag="$3" state="$4" rc_allowed="${5:-0}" rc_mode="${6:-}" sha
   case "$state" in
-    absent) create_tag "$repo" "$branch" "$tag" "$rc_allowed" "$rc_mode" ;;
+    absent) create_tag "$repo" "$branch" "$tag" "$rc_allowed" "$rc_mode" "${7:-}" ;;
     *)
       if [[ "$state" == "tagged" ]] && is_stable_version "$tag"; then
-        sha="$(existing_tag_sha "$repo" "$tag")" || exit 1
+        sha="${7:-}"
+        [[ -n "$sha" ]] || sha="$(existing_tag_sha "$repo" "$tag")" || exit 1
         if [[ "$rc_allowed" == "bump" ]]; then
           rc_allowed="$(pro_allowance "$sha" "$tag")" || exit 1
         fi
@@ -790,6 +555,54 @@ ensure_dispatch() {
       dispatch "$repo" "$tag" "$@"
       ;;
   esac
+}
+
+# dispatch_preflight <repo> <branch> <tag> <state> - check the release.yaml a
+# dispatch at <tag> would run (see require_dispatchable) before this cut tags
+# anything, since every tag starts the repo's tag-push workflows and a cut that
+# cannot build should stop before it makes one.
+#
+# Sets PREFLIGHT_SHA to the commit it read: the branch head when the tag is
+# still to be made, which create_tag then tags, or the tag's commit on a resume,
+# which must be on <branch>, the branch the routing chose and the one passed on
+# as source_branch. Also sets FORWARD_SOURCE_BRANCH for this repo's dispatch. A
+# repo whose build is already dispatched or released runs nothing new, so
+# nothing is read.
+dispatch_preflight() {
+  local repo="$1" branch="$2" tag="$3" state="$4" label rc=0
+  PREFLIGHT_SHA="" FORWARD_SOURCE_BRANCH="" SOURCE_BRANCH_UNKNOWN=""
+  local cannot="The cut cannot read the ${WORKFLOW} a dispatch would run, and nothing was dispatched in ${repo}."
+  case "$state" in
+    absent)
+      # Read in dry-run too, so the preview checks the commit it would tag.
+      PREFLIGHT_SHA="$(head_of "$repo" "$branch")" || exit 1
+      label="$branch" ;;
+    tagged)
+      resolve_tag PREFLIGHT_SHA "$repo" "$tag" || rc=$?
+      case "$rc" in
+        0) ;;
+        1)
+          echo "::error::tag ${tag} was in ${repo} a moment ago and is gone now. ${cannot} Re-run the cut, which reads the state again." >&2
+          exit 1 ;;
+        2)
+          echo "::error::${TAG_ERR}. ${cannot} Re-run the cut once GitHub answers." >&2
+          exit 1 ;;
+        *)
+          echo "::error::${TAG_ERR}. ${cannot}" >&2
+          exit 1 ;;
+      esac
+      require_tag_on_target "$repo" "$branch" "$tag" "$PREFLIGHT_SHA"
+      label="$tag"
+      # A monorepo rc resumed on its line may have been tagged on main before
+      # the line was branched from a newer main, and the cut cannot tell.
+      if [[ "$branch" != "$DEFAULT_BRANCH" && "$(classify_suffix "$tag")" == rc &&
+            "$(classify_era "$tag")" == monorepo ]]; then
+        SOURCE_BRANCH_UNKNOWN=1
+      fi ;;
+    *) return 0 ;;
+  esac
+  require_dispatchable "$repo" "$PREFLIGHT_SHA" "$WORKFLOW" "$tag" "$label"
+  require_workflow_active "$repo" "$WORKFLOW"
 }
 
 # ---------------------------------------------------------------------------
@@ -1077,7 +890,7 @@ pro_allowance() {
 }
 
 
-# require_legacy_rcs <version> <line> <oss_state> <pro_state> - the rc checks
+# require_legacy_rcs <version> <line> <oss_state> <pro_state> [pro-sha] - the rc checks
 # a legacy stable needs before anything is touched. OSS is tagged first and the
 # bump lands on pro before pro is tagged, so a pro refusal after either would
 # leave them behind.
@@ -1122,13 +935,18 @@ require_legacy_rcs() {
     require_rc_commit "$OSS_REPO" "$version" "$sha" 0 dependency
   fi
   [[ "$pro_state" == "absent" ]] || return 0
-  sha="$(head_of "$PRO_REPO" "$line")" || exit 1
+  # [pro-sha] is the head the preflight already read.
+  sha="${5:-}"
+  [[ -n "$sha" ]] || sha="$(head_of "$PRO_REPO" "$line")" || exit 1
   allowed="$(pro_allowance "$sha" "$version")" || exit 1
   require_rc_commit "$PRO_REPO" "$version" "$sha" "$allowed" "$mode"
 }
 
 cut_legacy() {
   local version="$1" line="$2" oss_state pro_state advisory=""
+  # Legacy release.yaml's do not declare triggered_by, so their dispatches pass
+  # none and the preflight must not require it. Local, so only this cut sees it.
+  local TRIGGERED_BY=""
   echo "Routing ${version} -> legacy (line ${line}); dispatch order: ${OSS_REPO} then ${PRO_REPO}"
   # Both repos must be ready before we mutate anything.
   require_branch "$OSS_REPO" "$line"
@@ -1143,10 +961,19 @@ cut_legacy() {
   require_oss_not_behind_pro "$version" "$oss_state" "$pro_state"
   announce_state "$OSS_REPO" "$version" "$oss_state"
   announce_state "$PRO_REPO" "$version" "$pro_state"
-  require_legacy_rcs "$version" "$line" "$oss_state" "$pro_state"
+  # Both repos before either is tagged. Pro is read at its head before the
+  # dependency bump, and read again below at the head the bump leaves.
+  local oss_sha pro_sha oss_args=() pro_args=()
+  dispatch_preflight "$OSS_REPO" "$line" "$version" "$oss_state"
+  oss_sha="$PREFLIGHT_SHA"
+  [[ -n "${FORWARD_SOURCE_BRANCH}" ]] && oss_args=(-f "source_branch=${line}")
+  dispatch_preflight "$PRO_REPO" "$line" "$version" "$pro_state"
+  pro_sha="$PREFLIGHT_SHA"
+  [[ -n "${FORWARD_SOURCE_BRANCH}" ]] && pro_args=(-f "source_branch=${line}")
+  require_legacy_rcs "$version" "$line" "$oss_state" "$pro_state" "$pro_sha"
   # Tag OSS first so `go get github.com/loft-sh/vcluster@${version}` resolves the
   # freshly cut tag during the pro dependency bump below.
-  ensure_tag "$OSS_REPO" "$line" "$version" "$oss_state"
+  ensure_tag "$OSS_REPO" "$line" "$version" "$oss_state" 0 "" "$oss_sha"
   if [[ "$pro_state" == "absent" ]]; then
     # Bump the vendored OSS dependency on the pro release branch to the tag just
     # created and wait for the auto-merged PR to land, so the pro tag/build below
@@ -1167,51 +994,73 @@ cut_legacy() {
   # dispatch, preserving the tag-before-dispatch invariant.
   # By now OSS is tagged and the bump merged, so a pro refusal here is past the
   # point where the next rc alone would get the version out.
-  ensure_tag "$PRO_REPO" "$line" "$version" "$pro_state" bump partial
-  ensure_dispatch "$OSS_REPO" "$version" "$oss_state"
+  if [[ "$pro_state" == "absent" && "${DRY_RUN:-true}" != "true" ]]; then
+    # The bump wait can be long, and whatever else lands on the branch in the
+    # meantime is tagged with it, so the head it left is checked too.
+    pro_sha="$(head_of "$PRO_REPO" "$line")" || exit 1
+    require_dispatchable "$PRO_REPO" "$pro_sha" "$WORKFLOW" "$version" "$line" \
+      "${OSS_REPO} is already tagged ${version} and the dependency bump has merged into ${PRO_REPO} ${line}; nothing was tagged in ${PRO_REPO}."
+    pro_args=()
+    [[ -n "${FORWARD_SOURCE_BRANCH}" ]] && pro_args=(-f "source_branch=${line}")
+  fi
+  ensure_tag "$PRO_REPO" "$line" "$version" "$pro_state" bump partial "$pro_sha"
+  ensure_dispatch "$OSS_REPO" "$version" "$oss_state" "${oss_args[@]}"
   # OSS is now building. This sequence is non-atomic, but it is resumable: if the
   # pro dispatch below fails, re-run this action with the same version. It reads
   # the state back, sees OSS dispatched, and picks up at the pro dispatch alone.
   if [[ "${DRY_RUN:-true}" != "true" ]]; then
     echo "::notice::${OSS_REPO} dispatched for ${version}. If the ${PRO_REPO} dispatch below fails, just re-run this action with the same version - it resumes and will not re-dispatch ${OSS_REPO}."
   fi
-  ensure_dispatch "$PRO_REPO" "$version" "$pro_state"
+  ensure_dispatch "$PRO_REPO" "$version" "$pro_state" "${pro_args[@]}"
+}
+
+# cut_pro_only <version> <branch> - tag <branch> in pro and dispatch pro's
+# release.yaml at the tag. The monorepo and feature-prerelease paths differ
+# only in how they chose <branch>.
+cut_pro_only() {
+  local version="$1" branch="$2" state
+  require_branch "$PRO_REPO" "$branch"
+  release_state_of "$PRO_REPO" "$version"; state="$RELEASE_STATE"
+  guard_double_cut "$version" "${PRO_REPO}=${state}"
+  announce_state "$PRO_REPO" "$version" "$state"
+  dispatch_preflight "$PRO_REPO" "$branch" "$version" "$state"
+  ensure_tag "$PRO_REPO" "$branch" "$version" "$state" 0 "" "$PREFLIGHT_SHA"
+  local dispatch_args=()
+  [[ -n "${TRIGGERED_BY}" ]] && dispatch_args=(-f "triggered_by=${TRIGGERED_BY}")
+  [[ -n "${FORWARD_SOURCE_BRANCH}" ]] && dispatch_args+=(-f "source_branch=${branch}")
+  ensure_dispatch "$PRO_REPO" "$version" "$state" "${dispatch_args[@]}"
 }
 
 cut_monorepo() {
-  local version="$1" target="$2" state
+  local version="$1" target="$2"
   echo "Routing ${version} -> monorepo (target ${target}); dispatch: ${PRO_REPO} only"
   # The target is resolved from the suffix matrix, so it must already exist:
   # stable/rc name a vX.Y branch that has to be cut first, alpha/beta name main.
   # Refusing to guess is the point - never fall back to a different branch.
-  require_branch "$PRO_REPO" "$target"
-  release_state_of "$PRO_REPO" "$version"; state="$RELEASE_STATE"
-  guard_double_cut "$version" "${PRO_REPO}=${state}"
-  announce_state "$PRO_REPO" "$version" "$state"
-  ensure_tag "$PRO_REPO" "$target" "$version" "$state"
-  local dispatch_args=()
-  [[ -n "${TRIGGERED_BY}" ]] && dispatch_args=(-f "triggered_by=${TRIGGERED_BY}")
-  ensure_dispatch "$PRO_REPO" "$version" "$state" "${dispatch_args[@]}"
+  cut_pro_only "$version" "$target"
 }
 
 # cut_feature_prerelease <version> <feature-branch> - -next / -next.internal are
 # cut from a short-lived feature branch and only ever build pro (they are
 # prereleases of a future, monorepo-era line). Bypasses the era fan-out.
 cut_feature_prerelease() {
-  local version="$1" feature="$2" state
+  local version="$1" feature="$2"
   echo "Routing ${version} -> feature-branch prerelease (source ${feature}); dispatch: ${PRO_REPO} only"
-  require_branch "$PRO_REPO" "$feature"
-  release_state_of "$PRO_REPO" "$version"; state="$RELEASE_STATE"
-  guard_double_cut "$version" "${PRO_REPO}=${state}"
-  announce_state "$PRO_REPO" "$version" "$state"
-  ensure_tag "$PRO_REPO" "$feature" "$version" "$state"
-  local dispatch_args=()
-  [[ -n "${TRIGGERED_BY}" ]] && dispatch_args=(-f "triggered_by=${TRIGGERED_BY}")
-  ensure_dispatch "$PRO_REPO" "$version" "$state" "${dispatch_args[@]}"
+  cut_pro_only "$version" "$feature"
 }
 
 main() {
-  local raw_version="${INPUT_VERSION:?INPUT_VERSION is required}" version era line raw_dry_run
+  local raw_version version era line raw_dry_run
+  # Checked rather than `${INPUT_VERSION:?}`, whose abort is a bare bash line
+  # with no ::error::. GitHub does not enforce `required: true` on a composite
+  # action input.
+  if [[ -z "${INPUT_VERSION:-}" ]]; then
+    echo "::error::version is required: the release to cut, e.g. v0.37.1. Nothing was tagged." >&2
+    exit 1
+  fi
+  # Flattened where it is read, so no message quoting it back can carry a
+  # forged second workflow command.
+  raw_version="$(flatten "${INPUT_VERSION}")"
   # Canonicalize before ANY consumer sees it: the tag name, the double-cut probe
   # and every routing decision must all agree on one spelling. Echo the rewrite
   # so the run log shows exactly which tag is about to be created.
@@ -1228,7 +1077,7 @@ main() {
   # value (empty, typo, "yes", "1", wrong case, stray whitespace) stays in
   # dry-run, so a misconfigured caller can never accidentally fire a real
   # cross-repo release.
-  raw_dry_run="${INPUT_DRY_RUN:-true}"
+  raw_dry_run="$(flatten "${INPUT_DRY_RUN:-true}")"
   case "${raw_dry_run,,}" in
     false) DRY_RUN="false" ;;
     true)  DRY_RUN="true" ;;
@@ -1241,9 +1090,16 @@ main() {
 
   local suffix source_branch target
   suffix="$(classify_suffix "$version")" || exit 1
-  source_branch="${INPUT_SOURCE_BRANCH:-}"
+  source_branch="$(trim "$(flatten "${INPUT_SOURCE_BRANCH:-}")")"
+  # Gated before anything reads it: the routing guards compare it as a string
+  # and every consumer then puts it in a URL.
+  if [[ -n "$source_branch" ]] && ! validate_branch "$source_branch"; then
+    exit 1
+  fi
   line="$(derive_line "$version")"
   echo "vcluster-release: version=${version} suffix=${suffix} source-branch=${source_branch:-<none>} dry_run=${DRY_RUN} cutover=${CUTOVER}"
+  # Checked before any API call, so a runner without the right yq fails fast.
+  require_yq
 
   # Feature-branch prereleases (-next/-next.internal) short-circuit the era
   # routing: they are cut from a short-lived feature branch and always build pro.

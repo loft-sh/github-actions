@@ -5,6 +5,16 @@
 # and network-free. branch_exists / guard / create_tag / dispatch and main are
 # exercised with a configurable `gh` stub on PATH, so no real API call is made.
 
+# The dispatch preflight reads workflows with the real yq, so a machine with the
+# python yq wrapper first on PATH would fail most of this suite for no clear
+# reason. Stop once, up front, instead.
+setup_file() {
+  if ! (source "${BATS_TEST_DIRNAME}/../src/vcluster-release.sh" && require_yq); then
+    echo "these tests need the same yq the action does (see the error above)" >&2
+    return 1
+  fi
+}
+
 setup() {
   SCRIPT="${BATS_TEST_DIRNAME}/../src/vcluster-release.sh"
   source "$SCRIPT"
@@ -58,6 +68,12 @@ if [[ "$sub" == "api" ]]; then
   # The tag endpoint is used both ways, so the stub has to distinguish them.
   wants_status=0
   for _a in "$@"; do case "$_a" in --silent|-i) wants_status=1 ;; esac; done
+  # release-lib's api_read calls `gh api -i <path> --jq <filter>` without
+  # --silent: the status line, a blank line, then the filtered value.
+  api_read_mode=0
+  if [[ " $* " == *" -i "* && " $* " != *" --silent "* ]]; then api_read_mode=1; fi
+  # value_out <value> - print a read's value the way the caller asked for it.
+  value_out() { if [ "$api_read_mode" -eq 1 ]; then printf 'HTTP/2.0 200 OK\n\n'; fi; echo "$1"; }
   # emit_status <present:0|1> <scope> - print an HTTP status line and exit like
   # real gh. Real gh prints the status line to stdout for 200 AND 404, but exits
   # non-zero on 404. GH_STUB_TRANSIENT=1 simulates a network/auth failure (no
@@ -104,7 +120,7 @@ if [[ "$sub" == "api" ]]; then
     repos/*/git/ref/tags/*)
       # Singular endpoint: exact match, 404 otherwise (mirrors the real API).
       rest="${path#repos/}"; repo="${rest%%/git/ref/tags/*}"; tag="${rest##*/git/ref/tags/}"
-      if [[ "$wants_status" -eq 0 ]]; then
+      if [[ "$wants_status" -eq 0 || "$api_read_mode" -eq 1 ]]; then
         # release_state / the barrier resolving the tag to a commit. Emulates
         # --jq '"\(.object.sha) \(.object.type)"'. GH_STUB_TAG_ANNOTATED makes it
         # a tag OBJECT, which must then be peeled via git/tags/<sha>.
@@ -122,12 +138,23 @@ if [[ "$sub" == "api" ]]; then
         fi
         # Resolvable if the tag pre-existed OR this run just created it - the
         # post-dispatch barrier resolves the tag it has only just written.
+        # GH_STUB_TAG_READ shapes only the preflight's api_read of a tag that
+        # release_state found: "gone" as if deleted in between, "tree" for a
+        # tag that does not lead to a commit.
+        if [ "$api_read_mode" -eq 1 ]; then
+          case "${GH_STUB_TAG_READ:-}" in
+            gone) echo "HTTP/2.0 404 Not Found"; exit 1 ;;
+            tree) value_out "4b825dc642cb6eb9a060e54bf8d69288fbee4904 tree"; exit 0 ;;
+          esac
+        fi
         if contains "${GH_STUB_TAGS:-}" "${repo}:${tag}" || [ -f "$(dirname "$0")/tag_created" ]; then
           if [[ "${GH_STUB_TAG_ANNOTATED:-}" == "1" ]]; then
-            echo "aaaabbbbccccdddd tag"
+            value_out "aaaabbbbccccddddaaaabbbbccccddddaaaabbbb tag"
           else
-            echo "deadbeefcafe1234 commit"
+            value_out "deadbeefcafe1234deadbeefcafe1234deadbeef commit"
           fi
+        elif [ "$api_read_mode" -eq 1 ]; then
+          echo "HTTP/2.0 404 Not Found"; exit 1
         fi
         exit 0
       fi
@@ -175,6 +202,30 @@ if [[ "$sub" == "api" ]]; then
       if [ "$_active" -eq 1 ] && [[ "${GH_STUB_RUN_SHA_MISMATCH:-}" != "1" ]]; then _total=1; fi
       echo "${_total} ${_active}"
       exit 0 ;;
+    repos/*/contents/.github/workflows/*)
+      # The preflight reads the release.yaml a dispatch would run, raw. Unset,
+      # every line's file is dispatchable and declares triggered_by only, which
+      # is what every live line accepts. GH_STUB_WORKFLOW_SOURCE_BRANCH=optional
+      # or required declares source_branch as well. GH_STUB_WORKFLOW_FILE serves
+      # that file instead, GH_STUB_WORKFLOW_READ_FAILS=1 fails the read.
+      if [[ "${GH_STUB_WORKFLOW_READ_FAILS:-}" == "1" ]]; then echo "gh: dial tcp: lookup api.github.com" >&2; exit 1; fi
+      # GH_STUB_WORKFLOW_FILE_REPO limits that file to one repo, and
+      # GH_STUB_WORKFLOW_FILE_REF to one ?ref= value.
+      rest="${path#repos/}"; repo="${rest%%/contents/*}"; wf_ref="${path##*\?ref=}"
+      if [[ -n "${GH_STUB_WORKFLOW_FILE:-}" && "${GH_STUB_WORKFLOW_FILE_REPO:-$repo}" == "$repo" &&
+            "${GH_STUB_WORKFLOW_FILE_REF:-$wf_ref}" == "$wf_ref" ]]; then
+        cat "$GH_STUB_WORKFLOW_FILE"; exit 0
+      fi
+      printf 'on:\n  workflow_dispatch:\n    inputs:\n      triggered_by:\n        type: string\n        required: false\n'
+      case "${GH_STUB_WORKFLOW_SOURCE_BRANCH:-}" in
+        optional) printf '      source_branch:\n        type: string\n        required: false\n' ;;
+        required) printf '      source_branch:\n        type: string\n        required: true\n' ;;
+      esac
+      exit 0 ;;
+    repos/*/actions/workflows/*)
+      # Whether GitHub would run the workflow at all, read through api_get, so
+      # answered with a status line, a blank line and the --jq '.state' value.
+      echo "HTTP/2.0 200 OK"; echo ""; echo "${GH_STUB_WORKFLOW_STATE:-active}"; exit 0 ;;
     repos/*/contents/go.mod*)
       # bump_landed_at_ref reads go.mod off a branch or tag. The script
       # pipes .content through `base64 -d`, so emit base64 like the real API.
@@ -207,8 +258,10 @@ if [[ "$sub" == "api" ]]; then
       esac | base64 -w0
       exit 0 ;;
     repos/*/git/tags/*)
-      # Peeling an annotated tag object to the commit it points at.
-      echo "deadbeefcafe1234"; exit 0 ;;
+      # Peeling an annotated tag object to the commit it points at. api_read
+      # asks for "<sha> <type>", the plain read for the sha alone.
+      if [ "$api_read_mode" -eq 1 ]; then value_out "deadbeefcafe1234deadbeefcafe1234deadbeef commit"; exit 0; fi
+      echo "deadbeefcafe1234deadbeefcafe1234deadbeef"; exit 0 ;;
     repos/*/commits/*)
       # The files a commit changes, as --jq '.files[].filename' prints them.
       # Unset, every commit is a real bump's three files. GH_STUB_COMMIT_FILES
@@ -246,11 +299,22 @@ if [[ "$sub" == "api" ]]; then
         [[ "$c_key" == "$repo" ]] && answer="$c_status $c_ahead $c_behind"
       done
       echo "$answer"; exit 0 ;;
+    repos/*/compare/*)
+      # require_tag_on_target asking whether a resumed tag is on its branch, as
+      # api_read's --jq '.status'. GH_STUB_TARGET_COMPARE sets the answer, for
+      # GH_STUB_TARGET_COMPARE_REPO only when that is set; otherwise the tag is
+      # behind the branch head, i.e. on it.
+      rest="${path#repos/}"; repo="${rest%%/compare/*}"
+      if [[ -n "${GH_STUB_TARGET_COMPARE:-}" && "${GH_STUB_TARGET_COMPARE_REPO:-$repo}" == "$repo" ]]; then
+        value_out "$GH_STUB_TARGET_COMPARE"; exit 0
+      fi
+      value_out "behind"; exit 0 ;;
     repos/*/git/ref/heads/*)
       # Singular endpoint: exact match only, mirroring the real API.
       # GH_STUB_HEAD_MISSING=1 makes only this probe 404, simulating a branch
       # deleted between require_branch and create_tag.
       if [[ "${GH_STUB_HEAD_MISSING:-}" == "1" ]]; then
+        [ "$api_read_mode" -eq 1 ] && echo "HTTP/2.0 404 Not Found"
         echo "gh: Not Found (HTTP 404)" >&2; exit 1
       fi
       # GH_STUB_HEAD_EMPTY=1 succeeds with no sha: `--jq '.object.sha // empty'`
@@ -263,9 +327,9 @@ if [[ "$sub" == "api" ]]; then
       # the bump workflow has been dispatched, as its merged PR does.
       rest="${path#repos/}"; repo="${rest%%/git/ref/heads/*}"
       if [[ -n "${GH_STUB_HEAD_AFTER_BUMP:-}" && -f "$(dirname "$0")/bump_dispatched" && "${GH_STUB_HEAD_AFTER_BUMP%%:*}" == "$repo" ]]; then
-        echo "${GH_STUB_HEAD_AFTER_BUMP#*:}"; exit 0
+        value_out "${GH_STUB_HEAD_AFTER_BUMP#*:}"; exit 0
       fi
-      echo "deadbeefcafe"; exit 0 ;;
+      value_out "deadbeefcafe"; exit 0 ;;
     repos/*/git/refs/heads/*)
       # Plural endpoint: falls back to an array of prefix matches when the exact
       # ref is gone, so `--jq .object.sha` errors out. Kept so a regression from
@@ -318,6 +382,20 @@ fi
 
 if [[ "$sub" == "workflow" && "${1:-}" == "run" ]]; then
   [[ "${2:-}" == "release-bump-vcluster.yaml" ]] && : > "$(dirname "$0")/bump_dispatched"
+  # GH_STUB_DISPATCH_LOG records each dispatch's arguments, one per line, for
+  # the real cuts that print none.
+  if [ -n "${GH_STUB_DISPATCH_LOG:-}" ]; then printf '%s\n' "$*" >>"$GH_STUB_DISPATCH_LOG"; fi
+  # Fails the dispatch in GH_STUB_DISPATCH_FAILS_REPO only, when that is set.
+  if [[ -n "${GH_STUB_DISPATCH_FAILS_REPO:-}" && " $* " != *" --repo ${GH_STUB_DISPATCH_FAILS_REPO} "* ]]; then
+    GH_STUB_DISPATCH_FAILS=""
+  fi
+  # GH_STUB_DISPATCH_FAILS=1 rejects the release.yaml dispatch, as GitHub's 422
+  # does for an input the workflow does not declare.
+  if [[ "${2:-}" == "release.yaml" && "${GH_STUB_DISPATCH_FAILS:-}" == "1" ]]; then
+    echo "could not create workflow dispatch event: HTTP 422: Unexpected inputs provided" >&2; exit 1
+  fi
+  # Current gh prints the started run's URL.
+  [[ "${2:-}" == "release.yaml" ]] && echo "https://github.com/stub/actions/runs/4242"
   exit 0
 fi
 
@@ -1081,7 +1159,7 @@ EOF
 @test "main requires INPUT_VERSION" {
   run main
   [ "$status" -ne 0 ]
-  [[ "$output" == *"INPUT_VERSION is required"* ]]
+  [[ "$output" == *"::error::version is required"* ]]
 }
 
 # ---- main: live (non-dry-run) path ----
@@ -1299,9 +1377,12 @@ EOF
 }
 
 @test "resolve_target: rc accepts main or the line branch, rejects a foreign source" {
-  # The empty case is the network-free fallback; main() has already narrowed an
-  # rc through resolve_rc_source, which refuses main once vX.Y exists.
-  run resolve_target "rc" "" "v0.40";          [ "$output" = "main" ]
+  # main() narrows an rc through resolve_rc_source first, which refuses main
+  # once vX.Y exists. An empty source means that probe was skipped, so it is
+  # refused rather than defaulted to main past the refusal.
+  run resolve_target "rc" "" "v0.40"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"resolve_rc_source first"* ]]
   run resolve_target "rc" "main" "v0.40";      [ "$output" = "main" ]
   run resolve_target "rc" "v0.40" "v0.40";     [ "$output" = "v0.40" ]
   run resolve_target "rc" "my-feature" "v0.40"
@@ -1952,9 +2033,9 @@ JSON
   export GH_STUB_CALL_LOG="${STUB_DIR}/calls"
   INPUT_VERSION="v0.37.3" INPUT_DRY_RUN="false" run main
   [ "$status" -eq 1 ]
-  [[ "$output" == *"(deadbeefcafe1234) is 1 commit(s) past v0.37.3-rc.2"* ]]
+  [[ "$output" == *"(deadbeefcafe1234deadbeefcafe1234deadbeef) is 1 commit(s) past v0.37.3-rc.2"* ]]
   [[ "$output" != *"dispatched release.yaml"* ]]
-  grep -q "\.\.\.deadbeefcafe1234?" "${STUB_DIR}/calls"
+  grep -q "\.\.\.deadbeefcafe1234deadbeefcafe1234deadbeef?" "${STUB_DIR}/calls"
 }
 
 @test "monorepo resume: an already-dispatched stable is not checked" {
@@ -2102,33 +2183,38 @@ JSON
   [ "$(grep -c '/compare/refs/tags/' "${STUB_DIR}/calls")" -eq 2 ]
 }
 
-@test "legacy: an rc cut reads each branch head once, to tag it" {
+@test "legacy: an rc cut reads OSS's head once and pro's before and after the bump" {
+  # OSS is tagged at the head the preflight read. Pro is tagged at its head
+  # after the bump, which moves it.
   export GH_STUB_BRANCHES="loft-sh/vcluster:v0.36 loft-sh/vcluster-pro:v0.36"
   export GH_STUB_GOMOD_VERSION="v0.36.4-rc.1"
   export GH_STUB_CALL_LOG="${STUB_DIR}/calls"
   INPUT_VERSION="v0.36.4-rc.1" INPUT_DRY_RUN="false" run main
   [ "$status" -eq 0 ]
-  [ "$(grep -c '/git/ref/heads/' "${STUB_DIR}/calls")" -eq 2 ]
+  [ "$(grep -c '^repos/loft-sh/vcluster/git/ref/heads/' "${STUB_DIR}/calls")" -eq 1 ]
+  [ "$(grep -c '^repos/loft-sh/vcluster-pro/git/ref/heads/' "${STUB_DIR}/calls")" -eq 2 ]
 }
 
 @test "monorepo resume: an rc resume does not re-read its tag for the stable check" {
   # Only a stable is held to an rc, so one failed read of an rc's tag after
-  # release_state must not stop its resume.
+  # release_state and the preflight must not stop its resume.
   export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.37"
   export GH_STUB_TAGS="loft-sh/vcluster-pro:v0.37.3-rc.3"
-  export GH_STUB_TAG_VALUE_FAIL_AT=2
+  export GH_STUB_TAG_VALUE_FAIL_AT=3
   INPUT_VERSION="v0.37.3-rc.3" INPUT_DRY_RUN="false" run main
   [ "$status" -eq 0 ]
   [[ "$output" == *"dispatched release.yaml in loft-sh/vcluster-pro at v0.37.3-rc.3"* ]]
 }
 
-@test "monorepo: a prerelease dry-run reads no branch head" {
-  # Nothing is tagged and no rc is checked, so a preview has no use for it.
+@test "monorepo: a prerelease dry-run reads the branch head for the preflight" {
+  # The preview checks the release.yaml at the commit it would tag, so a head
+  # it cannot read stops it the way it would stop a real cut.
   export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.37"
   export GH_STUB_HEAD_MISSING=1
   INPUT_VERSION="v0.37.3-rc.3" INPUT_DRY_RUN="true" run main
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"[dry-run] gh api -X POST repos/loft-sh/vcluster-pro/git/refs -f ref=refs/tags/v0.37.3-rc.3"* ]]
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"could not read HEAD of branch 'v0.37'"* ]]
+  [[ "$output" != *"[dry-run] gh api -X POST"* ]]
 }
 
 @test "monorepo resume: a refused stable tag is named as the cause and left in place" {
@@ -2140,9 +2226,9 @@ JSON
   export GH_STUB_RC_COMPARE="loft-sh/vcluster-pro:behind:0:3"
   INPUT_VERSION="v0.37.3" INPUT_DRY_RUN="false" run main
   [ "$status" -eq 1 ]
-  [[ "$output" == *"refusing to resume v0.37.3 in loft-sh/vcluster-pro: tag v0.37.3 (deadbeefcafe1234) is 3 commit(s) behind v0.37.3-rc.2"* ]]
+  [[ "$output" == *"refusing to resume v0.37.3 in loft-sh/vcluster-pro: tag v0.37.3 (deadbeefcafe1234deadbeefcafe1234deadbeef) is 3 commit(s) behind v0.37.3-rc.2"* ]]
   [[ "$output" == *"Another rc alone will not fix this here"* ]]
-  [[ "$output" == *"compare/deadbeefcafe1234...v0.37.3-rc.2"* ]]
+  [[ "$output" == *"compare/deadbeefcafe1234deadbeefcafe1234deadbeef...v0.37.3-rc.2"* ]]
   [[ "$output" != *"Cut v0.37.3-rc."* ]]
   [[ "$output" != *"Cut v0.37.3-rc.3, then"* ]]
 }
@@ -2304,7 +2390,7 @@ JSON
   export GH_STUB_CALL_LOG="${STUB_DIR}/calls"
   INPUT_VERSION="v0.36.3" INPUT_DRY_RUN="false" run main
   [ "$status" -eq 1 ]
-  [[ "$output" == *"refusing to build on loft-sh/vcluster v0.36.3: tag v0.36.3 (deadbeefcafe1234) is 1 commit(s) past v0.36.3-rc.1"* ]]
+  [[ "$output" == *"refusing to build on loft-sh/vcluster v0.36.3: tag v0.36.3 (deadbeefcafe1234deadbeefcafe1234deadbeef) is 1 commit(s) past v0.36.3-rc.1"* ]]
   ! grep -q "pulls" "${STUB_DIR}/calls"
   [ ! -f "${STUB_DIR}/tag_created" ]
 }
@@ -2345,7 +2431,7 @@ JSON
   export GH_STUB_GOMOD_VERSION="v0.36.3"
   INPUT_VERSION="v0.36.3" INPUT_DRY_RUN="false" run main
   [ "$status" -eq 1 ]
-  [[ "$output" == *"refusing to resume v0.36.3 in loft-sh/vcluster-pro: tag v0.36.3 (deadbeefcafe1234) is 2 commit(s) past v0.36.3-rc.1 (at most 1 allowed)"* ]]
+  [[ "$output" == *"refusing to resume v0.36.3 in loft-sh/vcluster-pro: tag v0.36.3 (deadbeefcafe1234deadbeefcafe1234deadbeef) is 2 commit(s) past v0.36.3-rc.1 (at most 1 allowed)"* ]]
   [[ "$output" != *"dispatched release.yaml"* ]]
 }
 
@@ -2418,11 +2504,418 @@ JSON
   export GH_STUB_RC_COMPARE="loft-sh/vcluster:ahead:1:0"
   INPUT_VERSION="v0.36.3" INPUT_DRY_RUN="false" run main
   [ "$status" -eq 1 ]
-  [[ "$output" == *"refusing to build on loft-sh/vcluster v0.36.3: tag v0.36.3 (deadbeefcafe1234) is 1 commit(s) past"* ]]
+  [[ "$output" == *"refusing to build on loft-sh/vcluster v0.36.3: tag v0.36.3 (deadbeefcafe1234deadbeefcafe1234deadbeef) is 1 commit(s) past"* ]]
   [[ "$output" != *"refusing to resume v0.36.3 in loft-sh/vcluster:"* ]]
 }
 
 @test "announce: a version not started says the checks below may still refuse it" {
   run announce_state loft-sh/vcluster-pro v0.37.3 absent
   [[ "$output" == *"will tag and dispatch unless a check below refuses it"* ]]
+}
+
+# ---- dispatch preflight: release.yaml is checked before anything is tagged ----
+
+@test "preflight: a release.yaml with no workflow_dispatch is refused before the tag" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.40"
+  printf 'on:\n  push:\n    tags: ["v*"]\n' >"${STUB_DIR}/release.yaml"
+  export GH_STUB_WORKFLOW_FILE="${STUB_DIR}/release.yaml"
+  INPUT_VERSION="v0.40.1-rc.1" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"has no workflow_dispatch trigger"* ]]
+  [[ "$output" == *"Nothing was tagged"* ]]
+  [ ! -f "${STUB_DIR}/tag_created" ]
+}
+
+@test "preflight: a release.yaml that cannot be read is refused before the tag" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:main"
+  export GH_STUB_WORKFLOW_READ_FAILS=1
+  INPUT_VERSION="v0.40.0-alpha.1" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"could not read .github/workflows/release.yaml at 'main' in loft-sh/vcluster-pro"* ]]
+  [ ! -f "${STUB_DIR}/tag_created" ]
+}
+
+@test "preflight: a disabled release.yaml is refused before the tag" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:main"
+  export GH_STUB_WORKFLOW_STATE="disabled_manually"
+  INPUT_VERSION="v0.40.0-alpha.1" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"is disabled_manually, not active"* ]]
+  [ ! -f "${STUB_DIR}/tag_created" ]
+}
+
+@test "preflight: a monorepo release.yaml without triggered_by is refused before the tag" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:main"
+  printf 'on:\n  workflow_dispatch:\n' >"${STUB_DIR}/release.yaml"
+  export GH_STUB_WORKFLOW_FILE="${STUB_DIR}/release.yaml"
+  TRIGGERED_BY="bob" INPUT_VERSION="v0.40.0-alpha.1" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"declares no 'triggered_by' input"* ]]
+  [ ! -f "${STUB_DIR}/tag_created" ]
+}
+
+@test "preflight: the monorepo cut reads release.yaml at the commit it tags" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:main"
+  export GH_STUB_CALL_LOG="${STUB_DIR}/calls"
+  INPUT_VERSION="v0.40.0-alpha.1" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  grep -q '^repos/loft-sh/vcluster-pro/contents/.github/workflows/release.yaml?ref=deadbeefcafe$' "${STUB_DIR}/calls"
+  # One head read, shared by the preflight and the tag.
+  [ "$(grep -c '/git/ref/heads/' "${STUB_DIR}/calls")" -eq 1 ]
+}
+
+@test "preflight: legacy needs no triggered_by, and checks pro before OSS is tagged" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  printf 'on:\n  workflow_dispatch:\n  release:\n    types: [created]\n' >"${STUB_DIR}/release.yaml"
+  export GH_STUB_WORKFLOW_FILE="${STUB_DIR}/release.yaml" GH_STUB_WORKFLOW_FILE_REPO="loft-sh/vcluster-pro"
+  TRIGGERED_BY="carol" INPUT_VERSION="v0.35.4-rc.1" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"in loft-sh/vcluster-pro triggers on more than workflow_dispatch (release)"* ]]
+  [ ! -f "${STUB_DIR}/tag_created" ]
+  [ ! -f "${STUB_DIR}/bump_dispatched" ]
+}
+
+@test "preflight: a legacy release.yaml with no inputs passes with TRIGGERED_BY set" {
+  # Live legacy lines declare no triggered_by, and their dispatches pass none.
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  printf 'on:\n  workflow_dispatch:\n' >"${STUB_DIR}/release.yaml"
+  export GH_STUB_WORKFLOW_FILE="${STUB_DIR}/release.yaml"
+  TRIGGERED_BY="carol" INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="true" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[dry-run] gh workflow run release.yaml --repo loft-sh/vcluster-pro --ref v0.35.4"* ]]
+}
+
+@test "preflight: a resumed tag whose commit cannot be resolved is not dispatched" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.37"
+  export GH_STUB_TAGS="loft-sh/vcluster-pro:v0.37.3-rc.3"
+  export GH_STUB_TAG_VALUE_FAIL_AT=2
+  INPUT_VERSION="v0.37.3-rc.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"gh said: gh: HTTP 502: Bad Gateway. The cut cannot read the release.yaml a dispatch would run, and nothing was dispatched in loft-sh/vcluster-pro. Re-run the cut once GitHub answers."* ]]
+  [[ "$output" != *"dispatched release.yaml"* ]]
+}
+
+# ---- source_branch: forwarded only where release.yaml declares it ----
+
+@test "source_branch: not passed when the monorepo release.yaml does not declare it" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.40"
+  TRIGGERED_BY="bob" INPUT_VERSION="v0.40.1" INPUT_DRY_RUN="true" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"--ref v0.40.1 -f triggered_by=bob"* ]]
+  [[ "$output" != *"source_branch"* ]]
+}
+
+@test "source_branch: the monorepo dispatch passes the branch it tagged" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.40"
+  export GH_STUB_WORKFLOW_SOURCE_BRANCH="required"
+  TRIGGERED_BY="bob" INPUT_VERSION="v0.40.1" INPUT_DRY_RUN="true" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"--ref v0.40.1 -f triggered_by=bob -f source_branch=v0.40"* ]]
+}
+
+@test "source_branch: an alpha passes main" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:main"
+  export GH_STUB_WORKFLOW_SOURCE_BRANCH="optional"
+  INPUT_VERSION="v0.40.0-alpha.1" INPUT_DRY_RUN="true" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"--ref v0.40.0-alpha.1 -f source_branch=main"* ]]
+}
+
+@test "source_branch: a feature prerelease passes its feature branch" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:feat/x"
+  export GH_STUB_WORKFLOW_SOURCE_BRANCH="optional"
+  INPUT_VERSION="v0.40.0-next.1" INPUT_SOURCE_BRANCH="feat/x" INPUT_DRY_RUN="true" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"--ref v0.40.0-next.1 -f source_branch=feat/x"* ]]
+}
+
+@test "source_branch: a resumed rc on its line leaves out an optional input" {
+  # It may have been tagged on main before v0.37 was branched from a newer main.
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.37"
+  export GH_STUB_TAGS="loft-sh/vcluster-pro:v0.37.3-rc.3"
+  export GH_STUB_WORKFLOW_SOURCE_BRANCH="optional"
+  INPUT_VERSION="v0.37.3-rc.3" INPUT_DRY_RUN="true" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"not passing source_branch: v0.37.3-rc.3 may have been tagged on main"* ]]
+  [[ "$output" != *"-f source_branch"* ]]
+}
+
+@test "source_branch: a resumed rc on its line still passes a required input" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.37"
+  export GH_STUB_TAGS="loft-sh/vcluster-pro:v0.37.3-rc.3"
+  export GH_STUB_WORKFLOW_SOURCE_BRANCH="required"
+  INPUT_VERSION="v0.37.3-rc.3" INPUT_DRY_RUN="true" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"--ref v0.37.3-rc.3 -f source_branch=v0.37"* ]]
+}
+
+@test "source_branch: a legacy line passes it to each repo that declares it" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  export GH_STUB_WORKFLOW_SOURCE_BRANCH="optional"
+  TRIGGERED_BY="carol" INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="true" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"--repo loft-sh/vcluster --ref v0.35.4 -f source_branch=v0.35"* ]]
+  [[ "$output" == *"--repo loft-sh/vcluster-pro --ref v0.35.4 -f source_branch=v0.35"* ]]
+  [[ "$output" != *"triggered_by"* ]]
+}
+
+@test "source_branch: a legacy line passes none when release.yaml does not declare it" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  TRIGGERED_BY="carol" INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="true" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"--repo loft-sh/vcluster --ref v0.35.4"* ]]
+  [[ "$output" == *"--repo loft-sh/vcluster-pro --ref v0.35.4"* ]]
+  [[ "$output" != *"source_branch"* ]]
+}
+
+@test "source_branch: a real legacy cut passes none when release.yaml does not declare it" {
+  # Pro's arguments are rebuilt after the bump, on a path only a real cut takes.
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  export GH_STUB_GOMOD_VERSION="v0.35.5-rc.1"
+  export GH_STUB_DISPATCH_LOG="${STUB_DIR}/dispatches"
+  INPUT_VERSION="v0.35.5-rc.1" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  grep -qx "run release.yaml --repo loft-sh/vcluster --ref v0.35.5-rc.1" "${STUB_DIR}/dispatches"
+  grep -qx "run release.yaml --repo loft-sh/vcluster-pro --ref v0.35.5-rc.1" "${STUB_DIR}/dispatches"
+}
+
+@test "source_branch: a real legacy cut passes it to each repo that declares it" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  export GH_STUB_GOMOD_VERSION="v0.35.5-rc.1"
+  export GH_STUB_WORKFLOW_SOURCE_BRANCH="optional"
+  export GH_STUB_DISPATCH_LOG="${STUB_DIR}/dispatches"
+  INPUT_VERSION="v0.35.5-rc.1" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  grep -qx "run release.yaml --repo loft-sh/vcluster --ref v0.35.5-rc.1 -f source_branch=v0.35" "${STUB_DIR}/dispatches"
+  grep -qx "run release.yaml --repo loft-sh/vcluster-pro --ref v0.35.5-rc.1 -f source_branch=v0.35" "${STUB_DIR}/dispatches"
+}
+
+# ---- a failed dispatch says how to resume ----
+
+@test "dispatch: a failed monorepo dispatch names the tag left behind and the re-run" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:main"
+  export GH_STUB_DISPATCH_FAILS=1
+  INPUT_VERSION="v0.40.0-alpha.1" INPUT_DRY_RUN="false" run bash "$SCRIPT"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"could not dispatch release.yaml in loft-sh/vcluster-pro at v0.40.0-alpha.1, so v0.40.0-alpha.1 is tagged there with no build. Re-run the cut with the same version"* ]]
+  [[ "$output" == *"gh said: could not create workflow dispatch event: HTTP 422"* ]]
+}
+
+@test "dispatch: a failed feature-prerelease dispatch says the same" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:feat/x"
+  export GH_STUB_DISPATCH_FAILS=1
+  INPUT_VERSION="v0.40.0-next.1" INPUT_SOURCE_BRANCH="feat/x" INPUT_DRY_RUN="false" run bash "$SCRIPT"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"could not dispatch release.yaml in loft-sh/vcluster-pro at v0.40.0-next.1"* ]]
+}
+
+@test "dispatch: a failed legacy OSS dispatch does not go on to pro" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  export GH_STUB_GOMOD_VERSION="v0.35.4-rc.1"
+  export GH_STUB_DISPATCH_FAILS=1
+  INPUT_VERSION="v0.35.4-rc.1" INPUT_DRY_RUN="false" run bash "$SCRIPT"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"could not dispatch release.yaml in loft-sh/vcluster at v0.35.4-rc.1"* ]]
+  [[ "$output" != *"in loft-sh/vcluster-pro at v0.35.4-rc.1, so"* ]]
+}
+
+@test "dispatch: a failed legacy pro dispatch names pro, after OSS was dispatched" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  export GH_STUB_TAGS="loft-sh/vcluster:v0.35.4-rc.1 loft-sh/vcluster-pro:v0.35.4-rc.1"
+  export GH_STUB_DISPATCHED="loft-sh/vcluster:v0.35.4-rc.1"
+  export GH_STUB_GOMOD_VERSION="v0.35.4-rc.1"
+  export GH_STUB_DISPATCH_FAILS=1 GH_STUB_DISPATCH_FAILS_REPO="loft-sh/vcluster-pro"
+  INPUT_VERSION="v0.35.4-rc.1" INPUT_DRY_RUN="false" run bash "$SCRIPT"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"already dispatched at v0.35.4-rc.1 in loft-sh/vcluster;"* ]]
+  [[ "$output" == *"could not dispatch release.yaml in loft-sh/vcluster-pro at v0.35.4-rc.1, so v0.35.4-rc.1 is tagged there with no build. Re-run the cut with the same version"* ]]
+}
+
+# ---- inputs shared with platform-release ----
+
+@test "main: a source-branch that is not a branch name is refused before any read" {
+  export GH_STUB_CALL_LOG="${STUB_DIR}/calls"
+  INPUT_VERSION="v0.40.0-next.1" INPUT_SOURCE_BRANCH="main?" INPUT_DRY_RUN="true" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"source-branch 'main?' is not a valid branch name"* ]]
+  [ ! -s "${STUB_DIR}/calls" ]
+}
+
+@test "main: a version with a leading zero is refused" {
+  INPUT_VERSION="v0.37.01" INPUT_DRY_RUN="true" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"version 'v0.37.01' is not a valid release version"* ]]
+}
+
+# ---- review fixes ----
+
+@test "legacy: pro's release.yaml is checked again at the head the bump left" {
+  # The bump wait can be long, and whatever lands on pro meanwhile is tagged.
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  export GH_STUB_GOMOD_VERSION="v0.35.5-rc.1"
+  export GH_STUB_HEAD_AFTER_BUMP="loft-sh/vcluster-pro:c0ffee0000000000000000000000000000000000"
+  printf 'on:\n  workflow_dispatch:\n  push:\n    tags: ["v*"]\n' >"${STUB_DIR}/release.yaml"
+  export GH_STUB_WORKFLOW_FILE="${STUB_DIR}/release.yaml" GH_STUB_WORKFLOW_FILE_REPO="loft-sh/vcluster-pro"
+  export GH_STUB_WORKFLOW_FILE_REF="c0ffee0000000000000000000000000000000000"
+  export GH_STUB_CALL_LOG="${STUB_DIR}/calls"
+  INPUT_VERSION="v0.35.5-rc.1" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"release.yaml at 'v0.35' in loft-sh/vcluster-pro triggers on more than workflow_dispatch (push)"* ]]
+  [[ "$output" == *"loft-sh/vcluster is already tagged v0.35.5-rc.1 and the dependency bump has merged into loft-sh/vcluster-pro v0.35; nothing was tagged in loft-sh/vcluster-pro."* ]]
+  [[ "$output" != *"Nothing was tagged."* ]]
+  ! grep -q '^repos/loft-sh/vcluster-pro/git/refs$' "${STUB_DIR}/calls"
+}
+
+@test "legacy: a clean bump is tagged at the head the check read" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  export GH_STUB_GOMOD_VERSION="v0.35.5-rc.1"
+  export GH_STUB_HEAD_AFTER_BUMP="loft-sh/vcluster-pro:c0ffee0000000000000000000000000000000000"
+  export GH_STUB_CALL_LOG="${STUB_DIR}/calls"
+  INPUT_VERSION="v0.35.5-rc.1" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"created tag v0.35.5-rc.1 in loft-sh/vcluster-pro at v0.35 (c0ffee0000000000000000000000000000000000)"* ]]
+  grep -q '^repos/loft-sh/vcluster-pro/contents/.github/workflows/release.yaml?ref=c0ffee0000000000000000000000000000000000$' "${STUB_DIR}/calls"
+}
+
+@test "resume: a monorepo tag that is not on its branch is not dispatched" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.37"
+  export GH_STUB_TAGS="loft-sh/vcluster-pro:v0.37.3-rc.3"
+  export GH_STUB_TARGET_COMPARE="diverged"
+  INPUT_VERSION="v0.37.3-rc.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"tag v0.37.3-rc.3 in loft-sh/vcluster-pro points at deadbeefcafe1234deadbeefcafe1234deadbeef, which is not on v0.37 (diverged)"* ]]
+  [[ "$output" == *"Nothing was dispatched in loft-sh/vcluster-pro, and a re-run never moves an existing tag."* ]]
+  [[ "$output" != *"delete it by hand"* ]]
+  [[ "$output" != *"dispatched release.yaml"* ]]
+}
+
+@test "resume: a -next tag re-run from another feature branch is not dispatched" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:feat/b"
+  export GH_STUB_TAGS="loft-sh/vcluster-pro:v0.40.0-next.1"
+  export GH_STUB_TARGET_COMPARE="ahead"
+  # Declared, so a resume that got past the check would forward feat/b.
+  export GH_STUB_WORKFLOW_SOURCE_BRANCH="optional"
+  INPUT_VERSION="v0.40.0-next.1" INPUT_SOURCE_BRANCH="feat/b" INPUT_DRY_RUN="true" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"which is not on feat/b (ahead)"* ]]
+  [[ "$output" != *"source_branch=feat/b"* ]]
+}
+
+@test "resume: a legacy pro tag that is not on its line is not dispatched" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  export GH_STUB_TAGS="loft-sh/vcluster:v0.35.5-rc.1 loft-sh/vcluster-pro:v0.35.5-rc.1"
+  export GH_STUB_GOMOD_VERSION="v0.35.5-rc.1"
+  export GH_STUB_TARGET_COMPARE="diverged" GH_STUB_TARGET_COMPARE_REPO="loft-sh/vcluster-pro"
+  INPUT_VERSION="v0.35.5-rc.1" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"tag v0.35.5-rc.1 in loft-sh/vcluster-pro points at"*"which is not on v0.35 (diverged)"* ]]
+  [[ "$output" != *"dispatched release.yaml"* ]]
+}
+
+@test "resume: a tag on its branch resumes" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.37"
+  export GH_STUB_TAGS="loft-sh/vcluster-pro:v0.37.3-rc.3"
+  INPUT_VERSION="v0.37.3-rc.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"dispatched release.yaml in loft-sh/vcluster-pro at v0.37.3-rc.3"* ]]
+}
+
+@test "resume: a refusal at an existing tag says the branch cannot change the file" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.37"
+  export GH_STUB_TAGS="loft-sh/vcluster-pro:v0.37.3-rc.3"
+  printf 'on:\n  workflow_dispatch:\n' >"${STUB_DIR}/release.yaml"
+  export GH_STUB_WORKFLOW_FILE="${STUB_DIR}/release.yaml"
+  TRIGGERED_BY="bob" INPUT_VERSION="v0.37.3-rc.3" INPUT_DRY_RUN="true" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"declares no 'triggered_by' input"* ]]
+  [[ "$output" == *"The file is read at existing tag v0.37.3-rc.3, which a re-run never moves, so a change on the branch does not reach it."* ]]
+}
+
+@test "resume: a refusal on a fresh cut does not mention an existing tag" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.37"
+  printf 'on:\n  workflow_dispatch:\n' >"${STUB_DIR}/release.yaml"
+  export GH_STUB_WORKFLOW_FILE="${STUB_DIR}/release.yaml"
+  TRIGGERED_BY="bob" INPUT_VERSION="v0.37.3-rc.3" INPUT_DRY_RUN="true" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"declares no 'triggered_by' input"* ]]
+  [[ "$output" != *"existing tag"* ]]
+}
+
+@test "resume: a tag read that fails keeps gh's reason" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.37"
+  export GH_STUB_TAGS="loft-sh/vcluster-pro:v0.37.3-rc.3"
+  export GH_STUB_TAG_VALUE_FAIL_AT=2
+  INPUT_VERSION="v0.37.3-rc.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"gh: HTTP 502: Bad Gateway"* ]]
+  [[ "$output" == *"nothing was dispatched in loft-sh/vcluster-pro"* ]]
+}
+
+@test "resume: a tagged stable reads its tag once before the dispatch" {
+  # release_state and the preflight read it; the rc check reuses the second.
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.37"
+  export GH_STUB_TAGS="loft-sh/vcluster-pro:v0.37.3"
+  export GH_STUB_TAG_VALUE_FAIL_AT=3
+  INPUT_VERSION="v0.37.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"dispatched release.yaml in loft-sh/vcluster-pro at v0.37.3"* ]]
+}
+
+@test "legacy: a stable cut reads pro's head once before the bump" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  export GH_STUB_GOMOD_VERSION="v0.35.5"
+  export GH_STUB_CALL_LOG="${STUB_DIR}/calls"
+  INPUT_VERSION="v0.35.5" INPUT_DRY_RUN="true" run main
+  [ "$status" -eq 0 ]
+  [ "$(grep -c '^repos/loft-sh/vcluster-pro/git/ref/heads/' "${STUB_DIR}/calls")" -eq 1 ]
+}
+
+@test "dispatch: a dispatch that starts prints what gh said" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:main"
+  INPUT_VERSION="v0.40.0-alpha.1" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"https://github.com/stub/actions/runs/4242"* ]]
+}
+
+@test "resume: a legacy OSS tag that is not on its line is not dispatched" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  export GH_STUB_TAGS="loft-sh/vcluster:v0.35.5-rc.1 loft-sh/vcluster-pro:v0.35.5-rc.1"
+  export GH_STUB_GOMOD_VERSION="v0.35.5-rc.1"
+  export GH_STUB_TARGET_COMPARE="diverged" GH_STUB_TARGET_COMPARE_REPO="loft-sh/vcluster"
+  INPUT_VERSION="v0.35.5-rc.1" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"tag v0.35.5-rc.1 in loft-sh/vcluster points at"*"which is not on v0.35 (diverged)"* ]]
+  [[ "$output" != *"dispatched release.yaml"* ]]
+}
+
+@test "resume: an unexpected comparison names the repo it came from" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  export GH_STUB_TAGS="loft-sh/vcluster:v0.35.5-rc.1 loft-sh/vcluster-pro:v0.35.5-rc.1"
+  export GH_STUB_RELEASES="loft-sh/vcluster:v0.35.5-rc.1"
+  export GH_STUB_GOMOD_VERSION="v0.35.5-rc.1"
+  export GH_STUB_TARGET_COMPARE="weird" GH_STUB_TARGET_COMPARE_REPO="loft-sh/vcluster-pro"
+  INPUT_VERSION="v0.35.5-rc.1" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"unexpected comparison status 'weird' for v0.35.5-rc.1 against v0.35 in loft-sh/vcluster-pro. Nothing was dispatched in loft-sh/vcluster-pro."* ]]
+}
+
+@test "resume: a tag deleted after the state read is not dispatched" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.37"
+  export GH_STUB_TAGS="loft-sh/vcluster-pro:v0.37.3-rc.3"
+  export GH_STUB_TAG_READ="gone"
+  INPUT_VERSION="v0.37.3-rc.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"tag v0.37.3-rc.3 was in loft-sh/vcluster-pro a moment ago and is gone now. The cut cannot read the release.yaml a dispatch would run, and nothing was dispatched in loft-sh/vcluster-pro. Re-run the cut, which reads the state again."* ]]
+  [[ "$output" != *"dispatched release.yaml"* ]]
+}
+
+@test "resume: a tag that does not lead to a commit is not dispatched" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.37"
+  export GH_STUB_TAGS="loft-sh/vcluster-pro:v0.37.3-rc.3"
+  export GH_STUB_TAG_READ="tree"
+  INPUT_VERSION="v0.37.3-rc.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"does not lead to a commit"*"so no build can run from it. The cut cannot read the release.yaml a dispatch would run, and nothing was dispatched in loft-sh/vcluster-pro."* ]]
+  [[ "$output" != *"Re-run the cut once GitHub answers"* ]]
+  [[ "$output" != *"dispatched release.yaml"* ]]
 }

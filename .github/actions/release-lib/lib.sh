@@ -6,6 +6,9 @@
 #   DEFAULT_BRANCH       the branch alpha/beta (and a pre-branch rc) come from
 #   LINE_BRANCH_FORMAT   printf format over (major, minor) for a line branch
 #   LINE_BRANCH_PATTERN  regex that matches a line branch name
+#   TRIGGERED_BY         the human the dispatch names, or empty to pass none
+#   SOURCE_BRANCH_UNKNOWN  set when the cut cannot name the branch a tag came from
+# require_dispatchable sets FORWARD_SOURCE_BRANCH for the caller's dispatch.
 #
 # The version grammar matches loft-sh/semstat's `validate` and `type` on purpose,
 # with one deliberate difference: build metadata is refused here, since nothing
@@ -581,27 +584,27 @@ require_tag_on_target() {
       echo "::warning::branch '${target}' no longer exists in ${repo}, so the cut cannot check that ${tag} (${sha}) came from it. Resuming at the existing tag."
       return 0
     fi
-    echo "::error::branch '${target}' not found in ${repo}, so the cut cannot check that ${tag} (${sha}) is on it. Nothing was dispatched." >&2
+    echo "::error::branch '${target}' not found in ${repo}, so the cut cannot check that ${tag} (${sha}) is on it. Nothing was dispatched in ${repo}." >&2
     exit 1
   fi
   if [[ -z "$head" ]]; then
-    echo "::error::could not resolve HEAD sha for branch '${target}' in ${repo}. Nothing was dispatched." >&2
+    echo "::error::could not resolve HEAD sha for branch '${target}' in ${repo}. Nothing was dispatched in ${repo}." >&2
     exit 1
   fi
   [[ "$head" == "$sha" ]] && return 0
   # compare/<base>...<head>: "behind" means the tag commit is an ancestor of the
   # branch head.
   if ! api_get status "repos/${repo}/compare/${head}...${sha}" "comparison of ${tag} with ${target} in ${repo}" '.status // empty'; then
-    echo "::error::GitHub could not compare ${tag} (${sha}) with ${target} in ${repo}. Nothing was dispatched." >&2
+    echo "::error::GitHub could not compare ${tag} (${sha}) with ${target} in ${repo}. Nothing was dispatched in ${repo}." >&2
     exit 1
   fi
   case "$status" in
     identical | behind) return 0 ;;
     ahead | diverged)
-      echo "::error::tag ${tag} points at ${sha}, which is not on ${target} (${status}), the branch ${tag} has to be cut from. Resuming would build it from the wrong branch. Nothing was dispatched. If the tag is wrong, delete it by hand and cut again." >&2
+      echo "::error::tag ${tag} in ${repo} points at ${sha}, which is not on ${target} (${status}), the branch ${tag} has to be cut from. Resuming would build it from the wrong branch. Nothing was dispatched in ${repo}, and a re-run never moves an existing tag." >&2
       exit 1 ;;
     *)
-      echo "::error::unexpected comparison status '$(flatten "$status")' for ${tag} against ${target} in ${repo}. Nothing was dispatched." >&2
+      echo "::error::unexpected comparison status '$(flatten "$status")' for ${tag} against ${target} in ${repo}. Nothing was dispatched in ${repo}." >&2
       exit 1 ;;
   esac
 }
@@ -722,4 +725,268 @@ require_rc_commit() {
   esac
   echo "::error::${head}: ${what} is ${drift}, the last rc. A stable release ships the exact commit its last rc was cut from. ${after} ${left} ${link}" >&2
   exit 1
+}
+
+# ---------------------------------------------------------------------------
+# Dispatch preflight
+# ---------------------------------------------------------------------------
+
+# require_yq - hard error unless mikefarah yq v4.46.1 or later is on PATH. The
+# preflight reads the workflow with it, and the python yq wrapper shares the
+# name but not the language, so a wrong yq would misread rather than fail.
+# GitHub-hosted Ubuntu runners ship a current mikefarah yq. 4.46.1 is the oldest
+# release the workflow_facts expression was checked against.
+require_yq() {
+  local out major minor patch
+  if ! command -v yq >/dev/null 2>&1; then
+    echo "::error::yq is not on PATH. This action reads release.yaml with mikefarah yq v4.46.1 or later, which GitHub-hosted Ubuntu runners include. Nothing was tagged." >&2
+    exit 1
+  fi
+  if ! out="$(yq --version 2>&1)"; then
+    echo "::error::yq is on PATH at $(command -v yq) but could not run: $(flatten "$out"). This action needs a working mikefarah yq v4.46.1 or later. Nothing was tagged." >&2
+    exit 1
+  fi
+  out="$(flatten "$out")"
+  if [[ ! "$out" =~ mikefarah/yq.*version\ v?([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
+    echo "::error::yq on PATH is not mikefarah yq (it reports '${out}'). This action needs mikefarah yq v4.46.1 or later. Nothing was tagged." >&2
+    exit 1
+  fi
+  major="${BASH_REMATCH[1]}" minor="${BASH_REMATCH[2]}" patch="${BASH_REMATCH[3]}"
+  if ((major != 4 || minor < 46 || (minor == 46 && patch < 1))); then
+    echo "::error::mikefarah yq ${major}.${minor}.${patch} is on PATH, and this action needs v4.46.1 or later within v4. Nothing was tagged." >&2
+    exit 1
+  fi
+}
+
+# workflow_facts - read a workflow on stdin and print what the preflight needs,
+# one fact per line:
+#   merge_keys <n>                 `<<` merge keys anywhere in the file
+#   duplicate_keys <n>             mappings that repeat a key
+#   trigger <name>                 one per trigger, in any of the three spellings
+#   bad_triggers <n>               triggers whose names cannot be printed
+#   bad_inputs <n>                 workflow_dispatch inputs whose names cannot be printed
+#   input <name> <req> <default> <has_type> [type]
+#                                  one per workflow_dispatch input, flags 0 or 1;
+#                                  a null or empty-string default does not count;
+#                                  type is printed only when it is a word
+# Merge and duplicate keys are counted before aliases are expanded, since
+# expanding hides them. Only string keys shaped like event and input names are
+# printed, which keeps a key carrying a newline from forging a line. The rest
+# are counted instead, so the preflight can refuse what it cannot see.
+#
+# Two yq quirks shape the expression: a string literal after a pipe ignores an
+# empty input (so every line is built from the data it reports, and the flags
+# are array lengths), and a comma branch after `as $var` drops extra results (so
+# the lines are collected into one array first).
+workflow_facts() {
+  # shellcheck disable=SC2016 # $on, $inputs and friends are yq variables
+  yq -r '
+    select(document_index == 0) |
+    ([.. | select(tag == "!!map") | keys | .[] | select(tag == "!!merge")] | length) as $merges |
+    ([.. | select(tag == "!!map") | select((keys | length) != (keys | unique | length))] | length) as $dups |
+    explode(.) | .on as $on |
+    ($on | select(tag == "!!map") | .workflow_dispatch | select(tag == "!!map") | .inputs | select(tag == "!!map")) as $inputs |
+    [
+      ("merge_keys " + ($merges | tostring)),
+      ("duplicate_keys " + ($dups | tostring)),
+      ($on | select(tag == "!!str") | select(test("^[a-z_]+$")) | "trigger " + .),
+      ($on | select(tag == "!!seq") | .[] | select(tag == "!!str") | select(test("^[a-z_]+$")) | "trigger " + .),
+      ($on | select(tag == "!!map") | keys | .[] | select(tag == "!!str") | select(test("^[a-z_]+$")) | "trigger " + .),
+      ("bad_triggers " + ([
+        ($on | select(tag == "!!str") | select(test("^[a-z_]+$") == false)),
+        ($on | select(tag == "!!seq") | .[] | select(tag != "!!str" or (tag == "!!str" and test("^[a-z_]+$") == false))),
+        ($on | select(tag == "!!map") | keys | .[] | select(tag != "!!str" or (tag == "!!str" and test("^[a-z_]+$") == false)))
+      ] | length | tostring)),
+      ("bad_inputs " + ([$inputs | keys | .[] | select(tag != "!!str" or (tag == "!!str" and test("^[A-Za-z0-9_-]+$") == false))] | length | tostring)),
+      ($inputs | to_entries | .[] | select(.key | tag == "!!str") | select(.key | test("^[A-Za-z0-9_-]+$")) |
+        "input " + .key + " " +
+        ([.value | select(tag == "!!map") | .required | select((tag == "!!bool" or tag == "!!str") and ((tostring | downcase) == "true"))] | length | tostring) + " " +
+        ([.value | select(tag == "!!map") | select(has("default")) | .default |
+          select(tag != "!!null") | select((tag == "!!str" and length == 0) | not)] | length | tostring) + " " +
+        ([.value | select(tag == "!!map") | select(has("type"))] | length | tostring) + " " +
+        ([.value | select(tag == "!!map") | select(has("type")) | .type |
+          select(tag == "!!str") | select(test("^[A-Za-z0-9_-]+$"))] | join("")))
+    ] | .[]
+  '
+}
+
+# require_dispatchable <repo> <ref> <workflow> <tag> [label] [left] - refuse to
+# tag when the workflow about to be dispatched cannot be dispatched at that ref,
+# or could start a build of its own. The ref is a commit sha in a real cut, so
+# `label` carries the branch name the operator typed into the messages; it
+# defaults to the ref for a direct call. `left` is what a refusal reports this
+# cut has already done, for a check that runs after another repo was tagged.
+#
+# The tag is created BEFORE the dispatch. A failed dispatch leaves the tag in
+# place for the re-run to resume from, but the repo's tag-push workflows have
+# already fired for it. Dry-run skips the dispatch, and the workflows API
+# answers for the default branch rather than for an arbitrary ref, so reading
+# the file at the ref is the only way to catch it before the tag exists.
+#
+# Read-only, so it runs in dry-run too: a dry-run against an unconverted line
+# fails instead of printing a cut that would strand a tag.
+require_dispatchable() {
+  local repo="$1" ref="$2" wf="$3" tag="$4" label="${5:-$2}" left="${6:-Nothing was tagged.}" body err
+  # Both dispatchers label a resume with the tag itself. There every refusal
+  # below is about a file the tag pins, which no branch fix can change.
+  local at_tag=""
+  [[ "$label" == "$tag" ]] && at_tag=" The file is read at existing tag ${tag}, which a re-run never moves, so a change on the branch does not reach it."
+  # Only the failure branch needs gh's stderr, so it is captured separately
+  # rather than merged in, where a notice would become part of the YAML read.
+  if ! run_captured body err gh api "repos/${repo}/contents/.github/workflows/${wf}?ref=${ref}" -H "Accept: application/vnd.github.raw"; then
+    echo "::error::could not read .github/workflows/${wf} at '${label}' in ${repo}, so the cut cannot confirm the build is dispatchable. ${left} gh said: $(gh_reason "$err")" >&2
+    exit 1
+  fi
+  # A workflow yq cannot parse cannot be dispatched either. Only yq's `Error:`
+  # line is quoted: the warnings it prints first would push the reason past
+  # where GitHub truncates an annotation.
+  local facts reason_line
+  if ! run_captured facts err workflow_facts <<<"$body"; then
+    reason_line="$(grep -m1 '^Error:' <<<"$err" || printf '%s' "$err")"
+    echo "::error::${wf} at '${label}' in ${repo} is not YAML this preflight can parse, so it cannot confirm the dispatch would succeed before the tag is created.${at_tag} ${left} yq said: $(flatten "$reason_line")" >&2
+    exit 1
+  fi
+  # Read once. `seen` holds the trigger lines as printed; inputs keep their
+  # declaration order so the messages below list them the same way.
+  local -A seen=() required=() has_default=() input_type=()
+  local -a inputs=()
+  local kind name req def has_type typ merges=0 dups=0 bad=0 bad_triggers=0
+  while read -r kind name req def has_type typ; do
+    case "$kind" in
+      merge_keys) merges="$name" ;;
+      duplicate_keys) dups="$name" ;;
+      bad_inputs) bad="$name" ;;
+      bad_triggers) bad_triggers="$name" ;;
+      input)
+        inputs+=("$name"); required["$name"]="$req"; has_default["$name"]="$def"
+        # GitHub reads an input with no type as a string.
+        input_type["$name"]="string"
+        [[ "$has_type" == "1" ]] && input_type["$name"]="$typ" ;;
+      ?*) seen["$kind $name"]=1 ;;
+    esac
+  done <<<"$facts"
+  # GitHub's workflow parser supports anchors and aliases but not `<<` merge
+  # keys, and rejects a repeated key, so either one would fail the dispatch
+  # after the tag exists even though yq reads the file happily.
+  if [[ "$merges" != "0" || "$dups" != "0" ]]; then
+    echo "::error::${wf} at '${label}' in ${repo} uses a YAML merge key (<<) or repeats a key, which GitHub Actions does not accept, so the dispatch would fail after the tag was created. Write the keys out in full, once each.${at_tag} ${left}" >&2
+    exit 1
+  fi
+  # All three spellings of `on:` list their triggers, and only the immediate
+  # children of `on:` count: a deeper key named `workflow_dispatch` or `push`
+  # (an input, a choice option) is not a trigger.
+  if [[ -z "${seen[trigger workflow_dispatch]:-}" ]]; then
+    echo "::error::${wf} at '${label}' in ${repo} has no workflow_dispatch trigger, so the dispatch would fail after the tag was created. Convert that line's ${wf} to workflow_dispatch (release-as-output) before cutting it.${at_tag} ${left}" >&2
+    exit 1
+  fi
+  # The tag is an input to ONE build, the dispatched one, and the GitHub Release
+  # is that build's output. Only workflow_dispatch and workflow_call are allowed,
+  # since neither fires on its own. Any other trigger is refused whatever its
+  # filters say: push and create fire for the tag, release fires when the
+  # dispatched build publishes, and the rest have no business in a release
+  # workflow. Reading GitHub's filter rules here would be a second copy of them
+  # to keep in step. release.yaml itself also refuses to build on anything but a
+  # dispatch, so this check is the early warning, not the only guard.
+  local other="" entry
+  for entry in "${!seen[@]}"; do
+    [[ "$entry" == "trigger "* ]] || continue
+    case "${entry#trigger }" in
+      workflow_dispatch | workflow_call) ;;
+      *) other+="${other:+, }${entry#trigger }" ;;
+    esac
+  done
+  if [[ "$bad_triggers" != "0" ]]; then
+    other+="${other:+, }${bad_triggers} whose name is not a GitHub event"
+  fi
+  if [[ -n "$other" ]]; then
+    echo "::error::${wf} at '${label}' in ${repo} triggers on more than workflow_dispatch (${other}), so it could start a second build of the tag racing the dispatched one for the release. Leave only workflow_dispatch (and workflow_call, if other workflows call it) - the dispatched build creates the release.${at_tag} ${left}" >&2
+    exit 1
+  fi
+  # An input whose name cannot be quoted back safely cannot be checked either.
+  # GitHub only allows letters, digits, `-` and `_` there anyway.
+  if [[ "$bad" != "0" ]]; then
+    echo "::error::${wf} at '${label}' in ${repo} declares workflow_dispatch input names outside letters, digits, '-' and '_', which this preflight cannot check, so it cannot confirm the dispatch would succeed before the tag is created.${at_tag} ${left}" >&2
+    exit 1
+  fi
+  # Only workflow_dispatch's own inputs count. A release.yaml that is also
+  # callable declares triggered_by under workflow_call for its callers, and that
+  # says nothing about what `gh workflow run` accepts.
+  #
+  # `gh workflow run` rejects an undeclared input, and the dispatch below passes
+  # triggered_by whenever it is set, so a line that predates that input fails
+  # after the tag exists.
+  #
+  # Matched exactly. Whether the API would accept `-f triggered_by` for an input
+  # declared as `Triggered_By` is not something this preflight can confirm, and
+  # guessing wrong fails the cut after the tag exists, so a differently cased
+  # declaration is refused by name instead.
+  if [[ -n "${TRIGGERED_BY}" && -z "${required[triggered_by]+x}" ]]; then
+    local cased=""
+    for name in "${inputs[@]}"; do
+      [[ "${name,,}" == "triggered_by" ]] && cased="$name"
+    done
+    if [[ -n "$cased" ]]; then
+      echo "::error::${wf} at '${label}' in ${repo} declares '${cased}' under workflow_dispatch, but this cut passes 'triggered_by'. Rename the input to 'triggered_by' in that line's ${wf}.${at_tag} ${left}" >&2
+    else
+      echo "::error::${wf} at '${label}' in ${repo} declares no 'triggered_by' input under workflow_dispatch, and \`gh workflow run\` rejects an undeclared input, so the dispatch would fail after the tag was created. Add the input to that line's ${wf}.${at_tag} ${left}" >&2
+    fi
+    exit 1
+  fi
+  # Decided here, once, so the type check below covers exactly what the
+  # dispatch sends.
+  FORWARD_SOURCE_BRANCH=""
+  if [[ -n "${required[source_branch]+x}" ]]; then
+    if [[ -z "${SOURCE_BRANCH_UNKNOWN}" ||
+          ( "${required[source_branch]}" == "1" && "${has_default[source_branch]}" == "0" ) ]]; then
+      FORWARD_SOURCE_BRANCH=1
+    else
+      echo "::notice::not passing source_branch: ${tag} may have been tagged on ${DEFAULT_BRANCH} before its release line existed, so the release notification detects the branch from git history."
+    fi
+  fi
+  # Every input the cut passes gets a free-form name. Any type but string can
+  # reject it, which 422s after the tag exists.
+  local passed=() declared
+  [[ -n "${TRIGGERED_BY}" ]] && passed+=(triggered_by)
+  [[ -n "${FORWARD_SOURCE_BRANCH}" ]] && passed+=(source_branch)
+  for name in ${passed[@]+"${passed[@]}"}; do
+    [[ "${input_type[$name]}" == "string" ]] && continue
+    declared="type '${input_type[$name]}'"
+    [[ -n "${input_type[$name]}" ]] || declared="a type that is not a plain word"
+    echo "::error::${wf} at '${label}' in ${repo} declares '${name}' under workflow_dispatch with ${declared}, but this cut passes it a name, which only 'type: string' is sure to accept. Make it 'type: string' (lowercase) in that line's ${wf}.${at_tag} ${left}" >&2
+    exit 1
+  done
+  # The mirror image: an input this cut does NOT pass, declared required with no
+  # default, 422s with "Required input not provided" - again after the tag
+  # exists. The dispatch sends triggered_by and source_branch and nothing else.
+  # A required input that has a default is fine; the API fills it in. An
+  # empty-string default is not counted, since an empty value may itself read
+  # as not provided.
+  local unsatisfiable=""
+  for name in "${inputs[@]}"; do
+    [[ "${required[$name]}" == "1" && "${has_default[$name]}" == "0" ]] || continue
+    [[ -n "${TRIGGERED_BY}" && "$name" == "triggered_by" ]] && continue
+    [[ "$name" == "source_branch" ]] && continue
+    unsatisfiable+="${unsatisfiable:+, }${name}"
+  done
+  if [[ -n "$unsatisfiable" ]]; then
+    echo "::error::${wf} at '${label}' in ${repo} declares required workflow_dispatch input(s) with no default that this cut does not pass (${unsatisfiable}), so the dispatch would fail after the tag was created. Give them a default in that line's ${wf}, or make them optional.${at_tag} ${left}" >&2
+    exit 1
+  fi
+}
+
+# require_workflow_active <repo> <workflow> - refuse to tag when GitHub would
+# not run <workflow> at all. A disabled workflow, or one GitHub has not
+# registered, fails the dispatch whatever the file at the ref says, and GitHub
+# keeps that state per workflow rather than per ref, which is why this is a
+# second read next to require_dispatchable.
+require_workflow_active() {
+  local repo="$1" wf="$2" state
+  if ! api_get state "repos/${repo}/actions/workflows/${wf}" "workflow ${wf} in ${repo}" '.state'; then
+    echo "::error::GitHub does not list ${wf} as a workflow in ${repo}, so \`gh workflow run\` cannot dispatch it. Nothing was tagged." >&2
+    exit 1
+  fi
+  if [[ "$state" != "active" ]]; then
+    echo "::error::${wf} in ${repo} is $(flatten "$state"), not active, so the dispatch would fail after the tag was created. Enable it before cutting. Nothing was tagged." >&2
+    exit 1
+  fi
 }

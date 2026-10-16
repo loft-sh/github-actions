@@ -184,7 +184,7 @@ test-release-branch-freeze: ## run release-branch-freeze bats tests
 test-prerelease-setup: ## run prerelease-setup bats tests
 	bats $(ACTIONS_DIR)/prerelease-setup/test
 
-test-vcluster-release: ## run vcluster-release bats tests
+test-vcluster-release: ## run vcluster-release bats tests (requires mikefarah/yq on PATH)
 	bats $(ACTIONS_DIR)/vcluster-release/test/*.bats
 
 test-platform-release: ## run platform-release bats tests (requires mikefarah/yq on PATH)

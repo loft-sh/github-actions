@@ -94,6 +94,37 @@ builds against the OSS code being co-released.
   Prereleases are not checked.
 - **Unprepared line:** fails loudly if a required `vX.Y` branch is absent (no
   silent fallback), distinguishing a real 404 from a transient API error.
+- **Undispatchable line:** before anything is tagged, each repo the cut will
+  dispatch has its `.github/workflows/release.yaml` read at the commit the
+  dispatch would run: the branch head, which is then the commit tagged, or the
+  existing tag on a resume. The cut stops if the file has no `workflow_dispatch`
+  trigger, has a trigger that could start a second build (`push`, `create`,
+  `release`, ...), lacks an input the dispatch passes, or requires one it does
+  not, and if GitHub does not list the workflow as `active`. These are the
+  `require_dispatchable` rules shared with platform-release, listed in
+  [its README](../platform-release/README.md#guards). On a legacy line both
+  repos are checked before OSS is tagged, and pro is checked again at the head
+  the dependency bump leaves, since anything else that lands during the bump
+  wait is tagged with it. A refusal there leaves the OSS tag and the merged bump
+  behind, and says so. Monorepo and `-next` dispatches pass `triggered_by`;
+  legacy ones pass none. On a resume the file is read at the existing tag, so
+  a refusal there says a fix on the branch cannot reach it.
+- **Tag on its branch:** a resumed tag whose commit is not on the branch the
+  routing chose is not dispatched, in either repo: it would build code that
+  branch never had, and name that branch in the banner. The check is
+  ancestry, so it cannot tell which of two branches holding the same commit a
+  tag was cut from.
+- **Source branch:** a line whose `release.yaml` declares a `source_branch`
+  input gets the branch the cut tagged, for `notify-release`'s `base_branch`.
+  A line without it is dispatched without one. A monorepo rc resumed on its
+  `vX.Y` branch is dispatched without it unless `release.yaml` requires it with
+  no default: the tag may have been cut from `main` before the line was
+  branched, which the cut cannot tell, so the notifier reads the branch from
+  git history instead.
+- **Branch shape:** `source-branch` is trimmed and validated as a branch name
+  before anything reads it, since every consumer puts it in a `gh api` path
+  and gh reads `?` as the start of a query string (`main?` would resolve to
+  `main` while comparing as a feature branch).
 - **Dry-run** still performs the read-only checks, so a bad routing decision
   (missing branch, already-released) is caught before anything is dispatched.
   Dry-run is **fail-closed**: only an explicit `false` cuts for real; any other
@@ -193,9 +224,10 @@ Two refusals from the rc check are not cleared by pressing the button again:
   loft-sh/vcluster has not moved past its stable tag; otherwise cut the next
   patch version.
 
-Every other partial failure recovers the same way: fix whatever blocked it (a
-bump PR that would not merge, a missing branch, an expired token), then press
-**Cut release** again with the same version. Use `dry-run: true` first to print
+A dispatch GitHub rejects leaves its tag in the `tagged` state and says so, with
+gh's reason. Every other partial failure recovers the same way: fix whatever
+blocked it (a bump PR that would not merge, a missing branch, an expired token,
+a rejected dispatch), then press **Cut release** again with the same version. Use `dry-run: true` first to print
 the resume plan without mutating anything.
 
 Genuinely re-cutting an already-shipped version is still refused. To force one,
@@ -239,6 +271,11 @@ jobs:
           github-token: ${{ secrets.GH_ACCESS_TOKEN }}
 ```
 
+### Runner
+
+The runner needs mikefarah `yq` v4.46.1 or later on `PATH`, which GitHub-hosted
+Ubuntu runners include. The action checks this before any API call.
+
 ### Auth
 
 `github-token` must be a Personal Access Token or GitHub App token with `repo` +
@@ -260,5 +297,7 @@ make test-vcluster-release
 ```
 
 Runs the bats suite in `test/` against `src/vcluster-release.sh` with a configurable
-`gh` stub on `PATH` (no real API calls). The stub mirrors real `gh` behaviour,
+`gh` stub on `PATH` (no real API calls). The preflight parses workflows with the
+real `yq`, so mikefarah `yq` v4.46.1+ has to be on `PATH`; the suite stops up
+front if it is not. The stub mirrors real `gh` behaviour,
 including exiting non-zero on a 404.

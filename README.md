@@ -494,10 +494,11 @@ See the action README for full details.
 ### Cut vCluster release
 
 Single entry point for cutting a vCluster release on any supported line. The
-version string decides the routing (legacy `< v0.36` fans out to both
-`loft-sh/vcluster` and `loft-sh/vcluster-pro`; monorepo `>= v0.36` dispatches
-`loft-sh/vcluster-pro` only). Creates the tag(s) and dispatches each line's own
-`release.yaml`; the GitHub Release is a pipeline output, not a trigger.
+version string decides the routing (legacy `< v0.37` fans out to both
+`loft-sh/vcluster` and `loft-sh/vcluster-pro`; monorepo `>= v0.37` dispatches
+`loft-sh/vcluster-pro` only). Checks each line's `release.yaml` can be
+dispatched, then creates the tag(s) and dispatches it; the GitHub Release is a
+pipeline output, not a trigger. Needs mikefarah `yq` v4.46.1+ on the runner.
 
 **Location:** `.github/actions/vcluster-release`
 
