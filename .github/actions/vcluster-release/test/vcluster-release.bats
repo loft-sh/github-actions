@@ -113,6 +113,13 @@ if [[ "$sub" == "api" ]]; then
         if [[ "${GH_STUB_TAG_UNRESOLVABLE_AFTER_TAG:-}" == "1" && -f "$(dirname "$0")/tag_created" ]]; then
           exit 0
         fi
+        # GH_STUB_TAG_VALUE_FAIL_AT=<n> fails only the n-th of these reads, the
+        # way one blip on one GET does.
+        if [[ -n "${GH_STUB_TAG_VALUE_FAIL_AT:-}" ]]; then
+          _tf="$(dirname "$0")/tag_value_reads"
+          _tn=0; [ -f "$_tf" ] && _tn="$(cat "$_tf")"; _tn=$(( _tn + 1 )); echo "$_tn" > "$_tf"
+          if [ "$_tn" -eq "$GH_STUB_TAG_VALUE_FAIL_AT" ]; then echo "gh: HTTP 502: Bad Gateway" >&2; exit 1; fi
+        fi
         # Resolvable if the tag pre-existed OR this run just created it - the
         # post-dispatch barrier resolves the tag it has only just written.
         if contains "${GH_STUB_TAGS:-}" "${repo}:${tag}" || [ -f "$(dirname "$0")/tag_created" ]; then
@@ -178,9 +185,18 @@ if [[ "$sub" == "api" ]]; then
       _gf="$(dirname "$0")/gomod_calls"
       _gn=0; [ -f "$_gf" ] && _gn="$(cat "$_gf")"; _gn=$(( _gn + 1 )); echo "$_gn" > "$_gf"
       if [[ "${GH_STUB_GOMOD_FAIL:-}" == "1" ]]; then exit 1; fi
-      # Fail the first N reads only, to exercise the retry budget.
+      # Fail N reads only, to exercise the retry budget: the first N, or N from
+      # read GH_STUB_GOMOD_FAIL_FROM on.
       if [[ -n "${GH_STUB_GOMOD_FAIL_TIMES:-}" ]]; then
-        [ "$_gn" -le "${GH_STUB_GOMOD_FAIL_TIMES}" ] && exit 1
+        _gfrom="${GH_STUB_GOMOD_FAIL_FROM:-1}"
+        [ "$_gn" -ge "$_gfrom" ] && [ "$_gn" -lt $(( _gfrom + GH_STUB_GOMOD_FAIL_TIMES )) ] && exit 1
+      fi
+      # GH_STUB_GOMOD_VERSIONS names the version each read sees, in order, the
+      # last one repeating, so a test can move go.mod between two reads.
+      if [[ -n "${GH_STUB_GOMOD_VERSIONS:-}" ]]; then
+        read -ra _gvs <<<"$GH_STUB_GOMOD_VERSIONS"
+        _gi=$(( _gn <= ${#_gvs[@]} ? _gn - 1 : ${#_gvs[@]} - 1 ))
+        GH_STUB_GOMOD_VERSION="${_gvs[_gi]}"
       fi
       case "${GH_STUB_GOMOD_MODE:-block}" in
         single-line) printf 'require github.com/loft-sh/vcluster %s\n' "${GH_STUB_GOMOD_VERSION:-v0.35.4}" ;;
@@ -193,6 +209,43 @@ if [[ "$sub" == "api" ]]; then
     repos/*/git/tags/*)
       # Peeling an annotated tag object to the commit it points at.
       echo "deadbeefcafe1234"; exit 0 ;;
+    repos/*/commits/*)
+      # The files a commit changes, as --jq '.files[].filename' prints them.
+      # Unset, every commit is a real bump's three files. GH_STUB_COMMIT_FILES
+      # names others, GH_STUB_COMMIT_FILES_FAIL=1 fails the read.
+      if [[ "${GH_STUB_COMMIT_FILES_FAIL:-}" == "1" ]]; then echo "gh: dial tcp: lookup api.github.com" >&2; exit 1; fi
+      printf '%s\n' ${GH_STUB_COMMIT_FILES:-go.mod go.sum vendor/modules.txt}
+      exit 0 ;;
+    repos/*/git/matching-refs/tags/*)
+      # The rc tags a stable cut is checked against, as --jq '.[].ref' prints
+      # them. GH_STUB_RC_TAGS lists them as <repo>:<tag>; unset, every stable
+      # has one rc, rc.1, in every repo, so a test about something else is not
+      # refused for a missing rc. GH_STUB_RC_LIST_FAILS=1 fails the read.
+      if [[ "${GH_STUB_RC_LIST_FAILS:-}" == "1" ]]; then echo "gh: dial tcp: lookup api.github.com" >&2; exit 1; fi
+      rest="${path#repos/}"; repo="${rest%%/git/matching-refs/tags/*}"; prefix="${rest##*/git/matching-refs/tags/}"
+      for entry in ${GH_STUB_RC_TAGS-"${repo}:${prefix}1"}; do
+        [[ "${entry%%:*}" == "$repo" && "${entry#*:}" == "$prefix"* ]] && printf 'refs/tags/%s\n' "${entry#*:}"
+      done
+      exit 0 ;;
+    repos/*/compare/refs/tags/*)
+      # The stable cut's comparison with its newest rc, as
+      # "<status> <ahead_by> <behind_by>". GH_STUB_RC_COMPARE sets it per repo as
+      # <repo>:<status>:<ahead>:<behind>, or for one compared sha only as
+      # <repo>@<sha>:..., which wins; a repo not listed is the same commit.
+      # An entry in any other shape fails the call, so a misspelt one cannot
+      # quietly read as the same commit.
+      rest="${path#repos/}"; repo="${rest%%/compare/*}"
+      cmp_head="${path##*...}"; cmp_head="${cmp_head%%\?*}"
+      answer="identical 0 0"
+      for entry in ${GH_STUB_RC_COMPARE:-}; do
+        if [[ ! "$entry" =~ ^[^/:@]+/[^/:@]+(@[^:]+)?:[^:]+:[^:]*:[^:]*$ ]]; then
+          echo "gh: stub: GH_STUB_RC_COMPARE entry '${entry}' is not <repo>:<status>:<ahead>:<behind>" >&2; exit 97
+        fi
+        IFS=: read -r c_key c_status c_ahead c_behind <<<"$entry"
+        [[ "$c_key" == "${repo}@${cmp_head}" ]] && { echo "$c_status $c_ahead $c_behind"; exit 0; }
+        [[ "$c_key" == "$repo" ]] && answer="$c_status $c_ahead $c_behind"
+      done
+      echo "$answer"; exit 0 ;;
     repos/*/git/ref/heads/*)
       # Singular endpoint: exact match only, mirroring the real API.
       # GH_STUB_HEAD_MISSING=1 makes only this probe 404, simulating a branch
@@ -206,6 +259,12 @@ if [[ "$sub" == "api" ]]; then
       # guard - without it an empty sha would flow into the POST and come back as
       # GitHub's raw 422 "Invalid SHA" instead of the named diagnostic.
       if [[ "${GH_STUB_HEAD_EMPTY:-}" == "1" ]]; then exit 0; fi
+      # GH_STUB_HEAD_AFTER_BUMP=<repo>:<sha> moves that repo's head to <sha> once
+      # the bump workflow has been dispatched, as its merged PR does.
+      rest="${path#repos/}"; repo="${rest%%/git/ref/heads/*}"
+      if [[ -n "${GH_STUB_HEAD_AFTER_BUMP:-}" && -f "$(dirname "$0")/bump_dispatched" && "${GH_STUB_HEAD_AFTER_BUMP%%:*}" == "$repo" ]]; then
+        echo "${GH_STUB_HEAD_AFTER_BUMP#*:}"; exit 0
+      fi
       echo "deadbeefcafe"; exit 0 ;;
     repos/*/git/refs/heads/*)
       # Plural endpoint: falls back to an array of prefix matches when the exact
@@ -257,7 +316,10 @@ if [[ "$sub" == "api" ]]; then
   esac
 fi
 
-if [[ "$sub" == "workflow" && "${1:-}" == "run" ]]; then exit 0; fi
+if [[ "$sub" == "workflow" && "${1:-}" == "run" ]]; then
+  [[ "${2:-}" == "release-bump-vcluster.yaml" ]] && : > "$(dirname "$0")/bump_dispatched"
+  exit 0
+fi
 
 exit 0
 EOF
@@ -805,7 +867,7 @@ EOF
   export GH_STUB_GOMOD_FAIL="1"
   INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run main
   [ "$status" -ne 0 ]
-  [[ "$output" == *"could not be read"* ]]
+  [[ "$output" == *"go.mod at v0.35.4 could not be read, so the dependency bump cannot be confirmed"* ]]
   [[ "$output" != *"dispatched release.yaml"* ]]
 }
 
@@ -1454,10 +1516,11 @@ EOF
   export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
   export GH_STUB_TAGS="loft-sh/vcluster:v0.35.4"
   export GH_STUB_BUMP_PR="merged"
-  export GH_STUB_GOMOD_FAIL="1"
+  # Read 1 is the pre-check's; the after-merge read is the one under test.
+  export GH_STUB_GOMOD_FAIL_FROM=2 GH_STUB_GOMOD_FAIL_TIMES=99
   INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run main
   [ "$status" -ne 0 ]
-  [[ "$output" == *"could not be read"* ]]
+  [[ "$output" == *"go.mod at v0.35 could not be read, so the dependency bump cannot be confirmed"* ]]
   [[ "$output" != *"created tag v0.35.4 in loft-sh/vcluster-pro "* ]]
 }
 
@@ -1483,10 +1546,10 @@ EOF
   export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
   export GH_STUB_TAGS="loft-sh/vcluster:v0.35.4"
   export GH_STUB_BUMP_PR="merged"
-  export GH_STUB_GOMOD_FAIL="1"
+  export GH_STUB_GOMOD_FAIL_FROM=2 GH_STUB_GOMOD_FAIL_TIMES=99
   INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run bash "$SCRIPT"
   [ "$status" -eq 1 ]
-  [[ "$output" == *"could not be read"* ]]
+  [[ "$output" == *"go.mod at v0.35 could not be read, so the dependency bump cannot be confirmed"* ]]
 }
 
 @test "errexit: a pro tag with the wrong OSS version PRINTS its diagnostic" {
@@ -1504,7 +1567,7 @@ EOF
   export GH_STUB_GOMOD_FAIL="1"
   INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run bash "$SCRIPT"
   [ "$status" -eq 1 ]
-  [[ "$output" == *"could not be read"* ]]
+  [[ "$output" == *"go.mod at v0.35.4 could not be read, so the dependency bump cannot be confirmed"* ]]
 }
 
 @test "errexit: the happy path still exits 0 in a real child process" {
@@ -1791,27 +1854,32 @@ JSON
   # Without a budget one blip would abort a cut that has already tagged OSS and
   # merged the bump.
   export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
-  export GH_STUB_GOMOD_FAIL_TIMES=2
+  # Read 1 is the pre-check's, before anything is tagged; the blip hits the
+  # reads after the merge.
+  export GH_STUB_GOMOD_FAIL_FROM=2 GH_STUB_GOMOD_FAIL_TIMES=2
   export GH_STUB_GOMOD_VERSION="v0.35.4"
   export GOMOD_READ_ATTEMPTS=5
   INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   [[ "$output" == *"go.mod at v0.35 requires v0.35.4"* ]]
   [[ "$output" == *"created tag v0.35.4 in loft-sh/vcluster-pro "* ]]
-  # Two failures then a success: exactly three reads, so the budget was used.
-  [ "$(cat "${STUB_DIR}/gomod_calls")" = "3" ]
+  # The pre-check's read, two failures then a success after the merge, and the
+  # pro tag's own read: five, so the budget was used.
+  [ "$(cat "${STUB_DIR}/gomod_calls")" = "5" ]
 }
 
 @test "go.mod read: a sustained failure still fails closed" {
   export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
-  export GH_STUB_GOMOD_FAIL="1"
+  # Read 1 is the pre-check's; every read after the merge fails.
+  export GH_STUB_GOMOD_FAIL_FROM=2 GH_STUB_GOMOD_FAIL_TIMES=99
   export GOMOD_READ_ATTEMPTS=3
   INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="false" run bash "$SCRIPT"
   [ "$status" -ne 0 ]
-  [[ "$output" == *"could not be read"* ]]
+  [[ "$output" == *"go.mod at v0.35 could not be read, so the dependency bump cannot be confirmed"* ]]
+  [[ "$output" == *"created tag v0.35.4 in loft-sh/vcluster "* ]]
   [[ "$output" != *"created tag v0.35.4 in loft-sh/vcluster-pro "* ]]
-  # Exhausted the budget rather than giving up early or spinning past it.
-  [ "$(cat "${STUB_DIR}/gomod_calls")" = "3" ]
+  # Exhausted the budget after the merge rather than giving up early or spinning past it.
+  [ "$(cat "${STUB_DIR}/gomod_calls")" = "4" ]
 }
 
 @test "go.mod read: a clean read of the WRONG version is not retried into a pass" {
@@ -1823,6 +1891,538 @@ JSON
   [ "$status" -ne 0 ]
   [[ "$output" == *"pro would ship the wrong OSS code"* ]]
   # Refusing is not enough: an implementation that re-fetched the same wrong
-  # version five times would also refuse. Prove the answer was taken first time.
-  [ "$(cat "${STUB_DIR}/gomod_calls")" = "1" ]
+  # version five times would also refuse. Prove each check took the answer
+  # first time: one read at the pre-check, one after the merge.
+  [ "$(cat "${STUB_DIR}/gomod_calls")" = "2" ]
+}
+
+# ---- stable cuts ship the last rc's commit ----
+
+@test "monorepo: a stable cut with commits past the last rc is refused before anything is tagged" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.37"
+  export GH_STUB_RC_TAGS="loft-sh/vcluster-pro:v0.37.3-rc.1 loft-sh/vcluster-pro:v0.37.3-rc.2"
+  export GH_STUB_RC_COMPARE="loft-sh/vcluster-pro:ahead:1:0"
+  export GH_STUB_CALL_LOG="${STUB_DIR}/calls"
+  INPUT_VERSION="v0.37.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"refusing to cut v0.37.3 in loft-sh/vcluster-pro: the commit to release (deadbeefcafe) is 1 commit(s) past v0.37.3-rc.2"* ]]
+  [[ "$output" == *"Cut v0.37.3-rc.3"* ]]
+  [[ "$output" != *"created tag"* ]]
+  [[ "$output" != *"dispatched release.yaml"* ]]
+  [ ! -f "${STUB_DIR}/tag_created" ]
+  # Compared at the head it would have tagged.
+  grep -qx "repos/loft-sh/vcluster-pro/compare/refs/tags/v0.37.3-rc.2...deadbeefcafe?per_page=1" "${STUB_DIR}/calls"
+}
+
+@test "monorepo: a stable cut at the last rc's commit is tagged and dispatched" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.37"
+  export GH_STUB_RC_TAGS="loft-sh/vcluster-pro:v0.37.3-rc.2"
+  INPUT_VERSION="v0.37.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"deadbeefcafe is the commit v0.37.3-rc.2 was cut from"* ]]
+  [[ "$output" == *"created tag v0.37.3 in loft-sh/vcluster-pro "* ]]
+  [[ "$output" == *"dispatched release.yaml in loft-sh/vcluster-pro "* ]]
+}
+
+@test "monorepo: a dry-run shows the refusal a real stable cut would hit" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.37"
+  export GH_STUB_RC_TAGS="loft-sh/vcluster-pro:v0.37.3-rc.2"
+  export GH_STUB_RC_COMPARE="loft-sh/vcluster-pro:ahead:1:0"
+  INPUT_VERSION="v0.37.3" INPUT_DRY_RUN="true" run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"refusing to cut v0.37.3"* ]]
+  [[ "$output" != *"[dry-run] gh api -X POST"* ]]
+}
+
+@test "monorepo: a stable cut with no rc is refused" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.37"
+  export GH_STUB_RC_TAGS=""
+  INPUT_VERSION="v0.37.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"in loft-sh/vcluster-pro: v0.37.3 has no rc there"* ]]
+  [ ! -f "${STUB_DIR}/tag_created" ]
+}
+
+@test "monorepo resume: a stable tag past the last rc is refused before the dispatch" {
+  # A tag left by a cut that predates the check is what its build would ship.
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.37"
+  export GH_STUB_TAGS="loft-sh/vcluster-pro:v0.37.3"
+  export GH_STUB_RC_TAGS="loft-sh/vcluster-pro:v0.37.3-rc.2"
+  export GH_STUB_RC_COMPARE="loft-sh/vcluster-pro:ahead:1:0"
+  export GH_STUB_CALL_LOG="${STUB_DIR}/calls"
+  INPUT_VERSION="v0.37.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"(deadbeefcafe1234) is 1 commit(s) past v0.37.3-rc.2"* ]]
+  [[ "$output" != *"dispatched release.yaml"* ]]
+  grep -q "\.\.\.deadbeefcafe1234?" "${STUB_DIR}/calls"
+}
+
+@test "monorepo resume: an already-dispatched stable is not checked" {
+  # Nothing new is built, so there is nothing to hold to the rc.
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.37"
+  export GH_STUB_TAGS="loft-sh/vcluster-pro:v0.37.3"
+  export GH_STUB_DISPATCHED="loft-sh/vcluster-pro:v0.37.3"
+  export GH_STUB_RC_LIST_FAILS=1
+  INPUT_VERSION="v0.37.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"not dispatching again"* ]]
+}
+
+@test "monorepo: an rc cut is not compared with anything" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.37"
+  export GH_STUB_RC_LIST_FAILS=1
+  INPUT_VERSION="v0.37.3-rc.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"created tag v0.37.3-rc.3 in loft-sh/vcluster-pro "* ]]
+}
+
+@test "legacy: a pro head that already carries the bump may sit one commit past its rc" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.36 loft-sh/vcluster-pro:v0.36"
+  export GH_STUB_RC_TAGS="loft-sh/vcluster:v0.36.3-rc.1 loft-sh/vcluster-pro:v0.36.3-rc.1"
+  export GH_STUB_RC_COMPARE="loft-sh/vcluster-pro:ahead:1:0"
+  export GH_STUB_GOMOD_VERSION="v0.36.3"
+  INPUT_VERSION="v0.36.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"deadbeefcafe is 1 commit(s) past v0.36.3-rc.1, within the 1 allowed on top of the rc"* ]]
+  [[ "$output" == *"created tag v0.36.3 in loft-sh/vcluster "* ]]
+  [[ "$output" == *"created tag v0.36.3 in loft-sh/vcluster-pro "* ]]
+}
+
+@test "legacy: OSS past its last rc is refused before either repo is touched" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  export GH_STUB_RC_TAGS="loft-sh/vcluster:v0.35.3-rc.4 loft-sh/vcluster-pro:v0.35.3-rc.4"
+  export GH_STUB_RC_COMPARE="loft-sh/vcluster:ahead:1:0"
+  export GH_STUB_CALL_LOG="${STUB_DIR}/calls"
+  INPUT_VERSION="v0.35.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"is 1 commit(s) past v0.35.3-rc.4"* ]]
+  [[ "$output" == *"This run created no tag and dispatched no release build in loft-sh/vcluster."* ]]
+  [ ! -f "${STUB_DIR}/tag_created" ]
+  # The bump starts with a probe for its PR, so no probe means no bump.
+  ! grep -q "pulls" "${STUB_DIR}/calls"
+}
+
+@test "legacy: pro past its last rc is refused before OSS is tagged or the bump runs" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.36 loft-sh/vcluster-pro:v0.36"
+  export GH_STUB_RC_TAGS="loft-sh/vcluster:v0.36.1-rc.4 loft-sh/vcluster-pro:v0.36.1-rc.4"
+  export GH_STUB_RC_COMPARE="loft-sh/vcluster-pro:ahead:3:0"
+  export GH_STUB_CALL_LOG="${STUB_DIR}/calls"
+  INPUT_VERSION="v0.36.1" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"is 3 commit(s) past v0.36.1-rc.4"* ]]
+  [ ! -f "${STUB_DIR}/tag_created" ]
+  ! grep -q "pulls" "${STUB_DIR}/calls"
+}
+
+@test "legacy: a stable with no rc in OSS is refused" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.36 loft-sh/vcluster-pro:v0.36"
+  export GH_STUB_RC_TAGS="loft-sh/vcluster-pro:v0.36.4-rc.1"
+  INPUT_VERSION="v0.36.4" INPUT_DRY_RUN="true" run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"the newest rc is none in loft-sh/vcluster but v0.36.4-rc.1 in loft-sh/vcluster-pro"* ]]
+}
+
+@test "legacy: a stray pro commit before the bump is refused before anything is tagged" {
+  # The one commit pro may carry past its rc is the bump this cut merges, so
+  # until that bump has landed pro has to sit exactly on its rc. Dry-run too.
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.36 loft-sh/vcluster-pro:v0.36"
+  export GH_STUB_RC_TAGS="loft-sh/vcluster:v0.36.3-rc.1 loft-sh/vcluster-pro:v0.36.3-rc.1"
+  export GH_STUB_RC_COMPARE="loft-sh/vcluster-pro:ahead:1:0"
+  export GH_STUB_GOMOD_VERSION="v0.36.3-rc.1"
+  export GH_STUB_CALL_LOG="${STUB_DIR}/calls"
+  local dry
+  for dry in true false; do
+    rm -f "${STUB_DIR}/tag_created" "${STUB_DIR}/calls"
+    INPUT_VERSION="v0.36.3" INPUT_DRY_RUN="$dry" run main
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"is 1 commit(s) past v0.36.3-rc.1"* ]]
+    [[ "$output" != *"[dry-run] gh api -X POST"* ]]
+    [ ! -f "${STUB_DIR}/tag_created" ]
+    [ "$(grep -c pulls "${STUB_DIR}/calls")" -eq 0 ]
+  done
+}
+
+@test "legacy: a pro go.mod that cannot be read refuses before anything is tagged" {
+  # Without it the cut cannot tell the bump from a stray commit.
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.36 loft-sh/vcluster-pro:v0.36"
+  export GH_STUB_RC_TAGS="loft-sh/vcluster:v0.36.3-rc.1 loft-sh/vcluster-pro:v0.36.3-rc.1"
+  export GH_STUB_RC_COMPARE="loft-sh/vcluster-pro:ahead:1:0"
+  export GH_STUB_GOMOD_FAIL=1 GOMOD_READ_ATTEMPTS=2
+  export GH_STUB_CALL_LOG="${STUB_DIR}/calls"
+  INPUT_VERSION="v0.36.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"go.mod"*"could not be read"* ]]
+  [ ! -f "${STUB_DIR}/tag_created" ]
+  ! grep -q "pulls" "${STUB_DIR}/calls"
+}
+
+@test "legacy: pro two commits past its rc is refused even once the bump has landed" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.36 loft-sh/vcluster-pro:v0.36"
+  export GH_STUB_RC_TAGS="loft-sh/vcluster:v0.36.3-rc.1 loft-sh/vcluster-pro:v0.36.3-rc.1"
+  export GH_STUB_RC_COMPARE="loft-sh/vcluster-pro:ahead:2:0"
+  export GH_STUB_GOMOD_VERSION="v0.36.3"
+  INPUT_VERSION="v0.36.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"is 2 commit(s) past v0.36.3-rc.1 (at most 1 allowed"* ]]
+  [ ! -f "${STUB_DIR}/tag_created" ]
+}
+
+@test "legacy: an rc that only reached one repo refuses the stable" {
+  # A legacy rc cut tags both repos, so different newest rcs mean one stopped
+  # partway, and pro would vendor OSS code that no pro rc built.
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.36 loft-sh/vcluster-pro:v0.36"
+  export GH_STUB_RC_TAGS="loft-sh/vcluster:v0.36.4-rc.1 loft-sh/vcluster:v0.36.4-rc.2 loft-sh/vcluster-pro:v0.36.4-rc.1"
+  export GH_STUB_CALL_LOG="${STUB_DIR}/calls"
+  INPUT_VERSION="v0.36.4" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"newest rc is v0.36.4-rc.2 in loft-sh/vcluster but v0.36.4-rc.1 in loft-sh/vcluster-pro"* ]]
+  [ ! -f "${STUB_DIR}/tag_created" ]
+  ! grep -q "pulls" "${STUB_DIR}/calls"
+}
+
+@test "legacy: once pro is dispatched the two repos' rcs are not compared" {
+  # Pro builds nothing new, so only OSS is left to hold to its own rc.
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.36 loft-sh/vcluster-pro:v0.36"
+  export GH_STUB_TAGS="loft-sh/vcluster:v0.36.4 loft-sh/vcluster-pro:v0.36.4"
+  export GH_STUB_DISPATCHED="loft-sh/vcluster-pro:v0.36.4"
+  export GH_STUB_RC_TAGS="loft-sh/vcluster:v0.36.4-rc.2 loft-sh/vcluster-pro:v0.36.4-rc.1"
+  export GH_STUB_GOMOD_VERSION="v0.36.4"
+  INPUT_VERSION="v0.36.4" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"dispatched release.yaml in loft-sh/vcluster at v0.36.4"* ]]
+}
+
+@test "legacy resume: each existing tag is compared with its rc once" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.36 loft-sh/vcluster-pro:v0.36"
+  export GH_STUB_TAGS="loft-sh/vcluster:v0.36.3 loft-sh/vcluster-pro:v0.36.3"
+  export GH_STUB_GOMOD_VERSION="v0.36.3"
+  export GH_STUB_CALL_LOG="${STUB_DIR}/calls"
+  INPUT_VERSION="v0.36.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [ "$(grep -c '/compare/refs/tags/' "${STUB_DIR}/calls")" -eq 2 ]
+}
+
+@test "legacy: an rc cut reads each branch head once, to tag it" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.36 loft-sh/vcluster-pro:v0.36"
+  export GH_STUB_GOMOD_VERSION="v0.36.4-rc.1"
+  export GH_STUB_CALL_LOG="${STUB_DIR}/calls"
+  INPUT_VERSION="v0.36.4-rc.1" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [ "$(grep -c '/git/ref/heads/' "${STUB_DIR}/calls")" -eq 2 ]
+}
+
+@test "monorepo resume: an rc resume does not re-read its tag for the stable check" {
+  # Only a stable is held to an rc, so one failed read of an rc's tag after
+  # release_state must not stop its resume.
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.37"
+  export GH_STUB_TAGS="loft-sh/vcluster-pro:v0.37.3-rc.3"
+  export GH_STUB_TAG_VALUE_FAIL_AT=2
+  INPUT_VERSION="v0.37.3-rc.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"dispatched release.yaml in loft-sh/vcluster-pro at v0.37.3-rc.3"* ]]
+}
+
+@test "monorepo: a prerelease dry-run reads no branch head" {
+  # Nothing is tagged and no rc is checked, so a preview has no use for it.
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.37"
+  export GH_STUB_HEAD_MISSING=1
+  INPUT_VERSION="v0.37.3-rc.3" INPUT_DRY_RUN="true" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[dry-run] gh api -X POST repos/loft-sh/vcluster-pro/git/refs -f ref=refs/tags/v0.37.3-rc.3"* ]]
+}
+
+@test "monorepo resume: a refused stable tag is named as the cause and left in place" {
+  # An rc lands on the branch head, so once the branch has moved past the tag
+  # no new rc can match it, and asking for one would loop.
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.37"
+  export GH_STUB_TAGS="loft-sh/vcluster-pro:v0.37.3"
+  export GH_STUB_RC_TAGS="loft-sh/vcluster-pro:v0.37.3-rc.2"
+  export GH_STUB_RC_COMPARE="loft-sh/vcluster-pro:behind:0:3"
+  INPUT_VERSION="v0.37.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"refusing to resume v0.37.3 in loft-sh/vcluster-pro: tag v0.37.3 (deadbeefcafe1234) is 3 commit(s) behind v0.37.3-rc.2"* ]]
+  [[ "$output" == *"Another rc alone will not fix this here"* ]]
+  [[ "$output" == *"compare/deadbeefcafe1234...v0.37.3-rc.2"* ]]
+  [[ "$output" != *"Cut v0.37.3-rc."* ]]
+  [[ "$output" != *"Cut v0.37.3-rc.3, then"* ]]
+}
+
+@test "monorepo: a branch head that cannot be read stops a real stable cut" {
+  # In a child process, so the refusal is what the real script prints and exits on.
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.37"
+  export GH_STUB_HEAD_MISSING=1
+  INPUT_VERSION="v0.37.3" INPUT_DRY_RUN="false" run bash "$SCRIPT"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"could not read HEAD of branch 'v0.37' in loft-sh/vcluster-pro"* ]]
+  [ ! -f "${STUB_DIR}/tag_created" ]
+}
+
+@test "ensure_tag: a tagged stable whose commit cannot be resolved is refused" {
+  export GH_STUB_CALL_LOG="${STUB_DIR}/calls"
+  run ensure_tag loft-sh/vcluster-pro v0.37 v0.37.3 tagged
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"v0.37.3 exists in loft-sh/vcluster-pro but its commit could not be resolved"* ]]
+  ! grep -q compare "${STUB_DIR}/calls"
+}
+
+@test "ensure_tag: a released or dispatched stable is not held to its rc" {
+  # Nothing new is built from it.
+  export GH_STUB_RC_LIST_FAILS=1
+  local state
+  for state in released dispatched; do
+    run ensure_tag loft-sh/vcluster-pro v0.37 v0.37.3 "$state"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"not re-tagging"* ]]
+  done
+}
+
+@test "stub: a GH_STUB_RC_COMPARE entry in the wrong shape fails the cut" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:v0.37"
+  export GH_STUB_RC_TAGS="loft-sh/vcluster-pro:v0.37.3-rc.2"
+  export GH_STUB_RC_COMPARE="ahead 1 0"
+  INPUT_VERSION="v0.37.3" INPUT_DRY_RUN="true" run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"GH_STUB_RC_COMPARE entry 'ahead' is not <repo>:<status>:<ahead>:<behind>"* ]]
+}
+
+@test "legacy: pro is checked and tagged at its head after the bump" {
+  # The bump moves the pro head, so the commit checked has to be the one tagged.
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.36 loft-sh/vcluster-pro:v0.36"
+  export GH_STUB_RC_TAGS="loft-sh/vcluster:v0.36.3-rc.1 loft-sh/vcluster-pro:v0.36.3-rc.1"
+  export GH_STUB_HEAD_AFTER_BUMP="loft-sh/vcluster-pro:postbump0001"
+  export GH_STUB_RC_COMPARE="loft-sh/vcluster-pro@postbump0001:ahead:1:0"
+  export GH_STUB_GOMOD_VERSION="v0.36.3"
+  INPUT_VERSION="v0.36.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"postbump0001 is 1 commit(s) past v0.36.3-rc.1, within the 1 allowed on top of the rc"* ]]
+  [[ "$output" == *"created tag v0.36.3 in loft-sh/vcluster at v0.36 (deadbeefcafe)"* ]]
+  [[ "$output" == *"created tag v0.36.3 in loft-sh/vcluster-pro at v0.36 (postbump0001)"* ]]
+}
+
+@test "legacy: a pro commit that lands during the bump wait is refused when pro is tagged" {
+  # The pre-check saw pro on its rc; the commit only shows at the post-bump head.
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.36 loft-sh/vcluster-pro:v0.36"
+  export GH_STUB_RC_TAGS="loft-sh/vcluster:v0.36.3-rc.1 loft-sh/vcluster-pro:v0.36.3-rc.1"
+  export GH_STUB_HEAD_AFTER_BUMP="loft-sh/vcluster-pro:postbump0001"
+  export GH_STUB_RC_COMPARE="loft-sh/vcluster-pro@postbump0001:ahead:2:0"
+  export GH_STUB_GOMOD_VERSION="v0.36.3"
+  INPUT_VERSION="v0.36.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"(postbump0001) is 2 commit(s) past v0.36.3-rc.1 (at most 1 allowed"* ]]
+  [[ "$output" == *"created tag v0.36.3 in loft-sh/vcluster "* ]]
+  [[ "$output" != *"created tag v0.36.3 in loft-sh/vcluster-pro"* ]]
+}
+
+@test "legacy: an rc in only one repo is refused as a half-finished rc cut" {
+  # The per-repo no-rc refusal would ask for rc.1, which the other repo already has.
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.36 loft-sh/vcluster-pro:v0.36"
+  export GH_STUB_RC_TAGS="loft-sh/vcluster:v0.36.3-rc.1 loft-sh/vcluster:v0.36.3-rc.2"
+  INPUT_VERSION="v0.36.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"the newest rc is v0.36.3-rc.2 in loft-sh/vcluster but none in loft-sh/vcluster-pro"* ]]
+  [[ "$output" == *"Cut v0.36.3-rc.3"* ]]
+  [[ "$output" != *"Cut v0.36.3-rc.1"* ]]
+  [ ! -f "${STUB_DIR}/tag_created" ]
+  export GH_STUB_RC_TAGS="loft-sh/vcluster-pro:v0.36.3-rc.1"
+  INPUT_VERSION="v0.36.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"the newest rc is none in loft-sh/vcluster but v0.36.3-rc.1 in loft-sh/vcluster-pro"* ]]
+  [[ "$output" == *"Cut v0.36.3-rc.2"* ]]
+}
+
+@test "legacy: no rc in either repo is still the plain no-rc refusal" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.36 loft-sh/vcluster-pro:v0.36"
+  export GH_STUB_RC_TAGS=""
+  INPUT_VERSION="v0.36.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 1 ]
+  # Pro's pre-check runs before OSS is touched, so it is the one that refuses.
+  [[ "$output" == *"refusing to cut v0.36.3 in loft-sh/vcluster-pro: v0.36.3 has no rc there"* ]]
+  [[ "$output" == *"Cut v0.36.3-rc.1, then cut v0.36.3 once it passes"* ]]
+  [[ "$output" != *"the newest rc is"* ]]
+}
+
+@test "legacy resume: an rc mismatch with pro already tagged does not claim nothing is tagged" {
+  # Re-running the rc cannot help: pro's rc cut lands its own bump, so it never
+  # meets the existing pro tag.
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.36 loft-sh/vcluster-pro:v0.36"
+  export GH_STUB_RELEASES="loft-sh/vcluster:v0.36.3"
+  export GH_STUB_TAGS="loft-sh/vcluster:v0.36.3 loft-sh/vcluster-pro:v0.36.3"
+  export GH_STUB_RC_TAGS="loft-sh/vcluster:v0.36.3-rc.2 loft-sh/vcluster-pro:v0.36.3-rc.1"
+  INPUT_VERSION="v0.36.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"the newest rc is v0.36.3-rc.2 in loft-sh/vcluster but v0.36.3-rc.1 in loft-sh/vcluster-pro"* ]]
+  [[ "$output" == *"This run created no tag and dispatched no release build for v0.36.3."* ]]
+  [[ "$output" == *"read the recovery steps in this action's README"* ]]
+  [[ "$output" != *"Re-run v0.36.3-rc."* ]]
+  [[ "$output" != *"dispatched release.yaml"* ]]
+}
+
+@test "legacy: the pro pre-check reads go.mod at the head it compares" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.36 loft-sh/vcluster-pro:v0.36"
+  export GH_STUB_RC_TAGS="loft-sh/vcluster:v0.36.3-rc.1 loft-sh/vcluster-pro:v0.36.3-rc.1"
+  export GH_STUB_GOMOD_VERSION="v0.36.3"
+  export GH_STUB_CALL_LOG="${STUB_DIR}/calls"
+  INPUT_VERSION="v0.36.3" INPUT_DRY_RUN="true" run main
+  [ "$status" -eq 0 ]
+  grep -qx "repos/loft-sh/vcluster-pro/contents/go.mod?ref=deadbeefcafe" "${STUB_DIR}/calls"
+}
+
+@test "legacy resume: with OSS already out, a pro refusal does not send the operator to another rc" {
+  # A new rc cannot ship once the OSS stable exists, so the advice points at recovery.
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.36 loft-sh/vcluster-pro:v0.36"
+  export GH_STUB_RELEASES="loft-sh/vcluster:v0.36.3"
+  export GH_STUB_TAGS="loft-sh/vcluster:v0.36.3"
+  export GH_STUB_RC_TAGS="loft-sh/vcluster:v0.36.3-rc.1 loft-sh/vcluster-pro:v0.36.3-rc.1"
+  export GH_STUB_RC_COMPARE="loft-sh/vcluster-pro:ahead:1:0"
+  export GH_STUB_GOMOD_VERSION="v0.36.3-rc.1"
+  INPUT_VERSION="v0.36.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"refusing to cut v0.36.3 in loft-sh/vcluster-pro"* ]]
+  [[ "$output" == *"Another rc alone will not fix this here"* ]]
+  [[ "$output" != *"Cut v0.36.3-rc.2"* ]]
+  [[ "$output" == *"This run created no tag and dispatched no release build in loft-sh/vcluster-pro."* ]]
+}
+
+@test "legacy: an rc listing that fails names the repo and says to re-run" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.36 loft-sh/vcluster-pro:v0.36"
+  export GH_STUB_TAGS="loft-sh/vcluster-pro:v0.36.3 loft-sh/vcluster:v0.36.3"
+  export GH_STUB_RC_LIST_FAILS=1
+  INPUT_VERSION="v0.36.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"could not list the v0.36.3-rc.N tags in loft-sh/vcluster,"* ]]
+  [[ "$output" == *"Re-run the cut once GitHub answers"* ]]
+  [[ "$output" != *"README"* ]]
+}
+
+@test "legacy resume: a released OSS tag past its rc is refused before pro is bumped to it" {
+  # Pro is bumped to the OSS tag, so it would vendor OSS code no rc was cut from.
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.36 loft-sh/vcluster-pro:v0.36"
+  export GH_STUB_RELEASES="loft-sh/vcluster:v0.36.3"
+  export GH_STUB_TAGS="loft-sh/vcluster:v0.36.3"
+  export GH_STUB_RC_TAGS="loft-sh/vcluster:v0.36.3-rc.1 loft-sh/vcluster-pro:v0.36.3-rc.1"
+  export GH_STUB_RC_COMPARE="loft-sh/vcluster:ahead:1:0"
+  export GH_STUB_CALL_LOG="${STUB_DIR}/calls"
+  INPUT_VERSION="v0.36.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"refusing to build on loft-sh/vcluster v0.36.3: tag v0.36.3 (deadbeefcafe1234) is 1 commit(s) past v0.36.3-rc.1"* ]]
+  ! grep -q "pulls" "${STUB_DIR}/calls"
+  [ ! -f "${STUB_DIR}/tag_created" ]
+}
+
+@test "legacy: the pro tag gets its allowance from go.mod at the commit it tags" {
+  # The branch read after the merge shows the bump, but the commit about to be
+  # tagged no longer carries it (a force-push in between), so its one commit
+  # past the rc is not the bump.
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.36 loft-sh/vcluster-pro:v0.36"
+  export GH_STUB_RC_TAGS="loft-sh/vcluster:v0.36.3-rc.1 loft-sh/vcluster-pro:v0.36.3-rc.1"
+  export GH_STUB_HEAD_AFTER_BUMP="loft-sh/vcluster-pro:postbump0001"
+  export GH_STUB_RC_COMPARE="loft-sh/vcluster-pro@postbump0001:ahead:1:0"
+  export GH_STUB_GOMOD_VERSIONS="v0.36.3-rc.1 v0.36.3 v0.36.3-rc.1"
+  INPUT_VERSION="v0.36.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"refusing to cut v0.36.3 in loft-sh/vcluster-pro: the commit to release (postbump0001) is 1 commit(s) past v0.36.3-rc.1"* ]]
+  [[ "$output" != *"created tag v0.36.3 in loft-sh/vcluster-pro"* ]]
+}
+
+@test "legacy resume: a tagged pro one bump past its rc is dispatched" {
+  # Where every real pro stable tag sits.
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.36 loft-sh/vcluster-pro:v0.36"
+  export GH_STUB_TAGS="loft-sh/vcluster:v0.36.3 loft-sh/vcluster-pro:v0.36.3"
+  export GH_STUB_RC_TAGS="loft-sh/vcluster:v0.36.3-rc.1 loft-sh/vcluster-pro:v0.36.3-rc.1"
+  export GH_STUB_RC_COMPARE="loft-sh/vcluster-pro:ahead:1:0"
+  export GH_STUB_GOMOD_VERSION="v0.36.3"
+  INPUT_VERSION="v0.36.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"dispatched release.yaml in loft-sh/vcluster "* ]]
+  [[ "$output" == *"dispatched release.yaml in loft-sh/vcluster-pro "* ]]
+}
+
+@test "legacy resume: a tagged pro past its rc by more than the bump is refused" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.36 loft-sh/vcluster-pro:v0.36"
+  export GH_STUB_TAGS="loft-sh/vcluster:v0.36.3 loft-sh/vcluster-pro:v0.36.3"
+  export GH_STUB_RC_TAGS="loft-sh/vcluster:v0.36.3-rc.1 loft-sh/vcluster-pro:v0.36.3-rc.1"
+  export GH_STUB_RC_COMPARE="loft-sh/vcluster-pro:ahead:2:0"
+  export GH_STUB_GOMOD_VERSION="v0.36.3"
+  INPUT_VERSION="v0.36.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"refusing to resume v0.36.3 in loft-sh/vcluster-pro: tag v0.36.3 (deadbeefcafe1234) is 2 commit(s) past v0.36.3-rc.1 (at most 1 allowed)"* ]]
+  [[ "$output" != *"dispatched release.yaml"* ]]
+}
+
+@test "legacy: a pro go.mod that names no requirement is not reported as a read to retry" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.36 loft-sh/vcluster-pro:v0.36"
+  export GH_STUB_GOMOD_MODE="replace-only"
+  INPUT_VERSION="v0.36.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"could not be read, or names no github.com/loft-sh/vcluster requirement"* ]]
+  [[ "$output" != *"once GitHub answers"* ]]
+  [ ! -f "${STUB_DIR}/tag_created" ]
+}
+
+@test "legacy: pro holding the newer rc is not sent to re-run an rc that cannot finish" {
+  # A legacy rc cut tags OSS first, so re-running pro's rc would be refused.
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.36 loft-sh/vcluster-pro:v0.36"
+  export GH_STUB_RC_TAGS="loft-sh/vcluster:v0.36.3-rc.1 loft-sh/vcluster-pro:v0.36.3-rc.1 loft-sh/vcluster-pro:v0.36.3-rc.2"
+  INPUT_VERSION="v0.36.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"the newest rc is v0.36.3-rc.1 in loft-sh/vcluster but v0.36.3-rc.2 in loft-sh/vcluster-pro"* ]]
+  [[ "$output" == *"Cut v0.36.3-rc.3, then cut v0.36.3 once it passes"* ]]
+  [[ "$output" != *"Re-run"* ]]
+}
+
+@test "legacy: a bump commit that also changes code is not counted as the bump" {
+  # A fix pushed onto the bump PR is squashed into the same commit.
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.36 loft-sh/vcluster-pro:v0.36"
+  export GH_STUB_RC_TAGS="loft-sh/vcluster:v0.36.3-rc.1 loft-sh/vcluster-pro:v0.36.3-rc.1"
+  export GH_STUB_HEAD_AFTER_BUMP="loft-sh/vcluster-pro:postbump0001"
+  export GH_STUB_RC_COMPARE="loft-sh/vcluster-pro@postbump0001:ahead:1:0"
+  export GH_STUB_GOMOD_VERSIONS="v0.36.3-rc.1 v0.36.3"
+  export GH_STUB_COMMIT_FILES="go.mod go.sum vendor/modules.txt pkg/fix.go"
+  INPUT_VERSION="v0.36.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"postbump0001 in loft-sh/vcluster-pro requires v0.36.3 but also changes pkg/fix.go"* ]]
+  [[ "$output" == *"refusing to cut v0.36.3 in loft-sh/vcluster-pro: the commit to release (postbump0001) is 1 commit(s) past v0.36.3-rc.1"* ]]
+  [[ "$output" != *"created tag v0.36.3 in loft-sh/vcluster-pro"* ]]
+  # OSS is tagged and the bump merged, so the next rc alone would dead-end.
+  [[ "$output" != *"Cut v0.36.3-rc.2"* ]]
+  [[ "$output" == *"recovery steps in this action's README"* ]]
+}
+
+@test "legacy resume: a tagged pro whose one commit is not only the bump is refused" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.36 loft-sh/vcluster-pro:v0.36"
+  export GH_STUB_TAGS="loft-sh/vcluster:v0.36.3 loft-sh/vcluster-pro:v0.36.3"
+  export GH_STUB_RC_TAGS="loft-sh/vcluster:v0.36.3-rc.1 loft-sh/vcluster-pro:v0.36.3-rc.1"
+  export GH_STUB_RC_COMPARE="loft-sh/vcluster-pro:ahead:1:0"
+  export GH_STUB_GOMOD_VERSION="v0.36.3"
+  export GH_STUB_COMMIT_FILES="go.mod go.sum Makefile"
+  INPUT_VERSION="v0.36.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"refusing to resume v0.36.3 in loft-sh/vcluster-pro"* ]]
+  [[ "$output" != *"dispatched release.yaml"* ]]
+}
+
+@test "legacy: a bump whose files cannot be listed is refused" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.36 loft-sh/vcluster-pro:v0.36"
+  export GH_STUB_GOMOD_VERSION="v0.36.3"
+  export GH_STUB_COMMIT_FILES_FAIL=1
+  INPUT_VERSION="v0.36.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"could not list the files deadbeefcafe changes in loft-sh/vcluster-pro"* ]]
+  [ ! -f "${STUB_DIR}/tag_created" ]
+}
+
+@test "legacy resume: an OSS tag that is out and past its rc names the pro cut it blocks" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.36 loft-sh/vcluster-pro:v0.36"
+  export GH_STUB_RELEASES="loft-sh/vcluster:v0.36.3"
+  export GH_STUB_TAGS="loft-sh/vcluster:v0.36.3"
+  export GH_STUB_RC_COMPARE="loft-sh/vcluster:ahead:1:0"
+  INPUT_VERSION="v0.36.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"refusing to build on loft-sh/vcluster v0.36.3: tag v0.36.3 (deadbeefcafe1234) is 1 commit(s) past"* ]]
+  [[ "$output" != *"refusing to resume v0.36.3 in loft-sh/vcluster:"* ]]
+}
+
+@test "announce: a version not started says the checks below may still refuse it" {
+  run announce_state loft-sh/vcluster-pro v0.37.3 absent
+  [[ "$output" == *"will tag and dispatch unless a check below refuses it"* ]]
 }

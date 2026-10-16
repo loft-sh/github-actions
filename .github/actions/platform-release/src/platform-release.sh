@@ -784,7 +784,6 @@ cut_release() {
     if [[ "$target" != "$DEFAULT_BRANCH" && "$(classify_suffix "$version")" == rc ]]; then
       SOURCE_BRANCH_UNKNOWN=1
     fi
-    echo "::notice::tag ${version} already exists at ${EXISTING_TAG_SHA} on ${target} with no release and no build running or passed; resuming at the dispatch without re-tagging."
     sha="$EXISTING_TAG_SHA" label="$version"
   else
     # Resolved once and used for both the preflight read and the tag, since the
@@ -792,6 +791,13 @@ cut_release() {
     # commit it would tag.
     sha="$(resolve_head "$REPO" "$target")" || exit 1
     label="$target"
+  fi
+  # On a resume too: its build ships whatever commit the tag points at, and a
+  # tag made by hand need not be the rc's.
+  require_rc_commit "$REPO" "$version" "$sha" 0 "${EXISTING_TAG_SHA:+resume}"
+  # Announced only once the rc check passed, so a refused resume does not log one.
+  if [[ -n "$EXISTING_TAG_SHA" ]]; then
+    echo "::notice::tag ${version} already exists at ${EXISTING_TAG_SHA} on ${target} with no release and no build running or passed; resuming at the dispatch without re-tagging."
   fi
   # Before create_tag, deliberately: every tag starts the repo's tag-push
   # workflows, so a cut that cannot build should stop before it makes one.

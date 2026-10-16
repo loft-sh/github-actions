@@ -292,6 +292,34 @@ if [[ "$sub" == "api" ]]; then
         [[ "$all_args" == *--paginate* ]] || break
       done
       exit 0 ;;
+    repos/*/git/matching-refs/tags/*)
+      # The rc tags a stable cut is checked against. GH_STUB_RC_TAGS lists them
+      # as <repo>:<tag>; unset, every stable has one rc, rc.1, so a test about
+      # something else is not refused for a missing rc. GH_STUB_RC_LIST_FAILS=1
+      # fails the read.
+      if [[ "${GH_STUB_RC_LIST_FAILS:-}" == "1" ]]; then echo "gh: dial tcp: lookup api.github.com" >&2; exit 1; fi
+      rest="${path#repos/}"; repo="${rest%%/git/matching-refs/tags/*}"; prefix="${rest##*/git/matching-refs/tags/}"
+      refs=()
+      for entry in ${GH_STUB_RC_TAGS-"${repo}:${prefix}1"}; do
+        [[ "${entry%%:*}" == "$repo" && "${entry#*:}" == "$prefix"* ]] && refs+=("$(printf '{"ref":"refs/tags/%s"}' "${entry#*:}")")
+      done
+      respond 200 "[$(IFS=,; printf '%s' "${refs[*]}")]" ;;
+    repos/*/compare/refs/tags/*)
+      # The stable cut's comparison with its newest rc. GH_STUB_RC_COMPARE sets
+      # it per repo as <repo>:<status>:<ahead>:<behind>, the vcluster-release
+      # suite's spelling; a repo not listed is the same commit, and an entry in
+      # any other shape fails the call. GH_STUB_RC_COMPARE_LOG records the path.
+      [[ -n "${GH_STUB_RC_COMPARE_LOG:-}" ]] && printf '%s\n' "$path" >>"$GH_STUB_RC_COMPARE_LOG"
+      rest="${path#repos/}"; repo="${rest%%/compare/*}"
+      c_status=identical c_ahead=0 c_behind=0
+      for entry in ${GH_STUB_RC_COMPARE:-}; do
+        if [[ ! "$entry" =~ ^[^/:]+/[^/:]+:[^:]+:[^:]*:[^:]*$ ]]; then
+          echo "gh: stub: GH_STUB_RC_COMPARE entry '${entry}' is not <repo>:<status>:<ahead>:<behind>" >&2; exit 97
+        fi
+        IFS=: read -r e_repo e_status e_ahead e_behind <<<"$entry"
+        if [[ "$e_repo" == "$repo" ]]; then c_status="$e_status" c_ahead="$e_ahead" c_behind="$e_behind"; fi
+      done
+      respond 200 "$(printf '{"status":"%s","ahead_by":%s,"behind_by":%s}' "$c_status" "$c_ahead" "$c_behind")" ;;
     repos/*/compare/*)
       # The resume's check that the tag is on the target branch.
       # GH_STUB_COMPARE_STATUS is the answer (default behind: the tag commit is
@@ -3843,4 +3871,127 @@ fits_annotation() {
   [ "$status" -ne 0 ]
   [[ "$output" == *"branch 'main' not found"* ]]
   [[ "$output" != *"stub-dispatch"* ]]
+}
+
+# ---- stable cuts ship the last rc's commit ----
+
+@test "main: a stable cut is compared with the newest rc at the head it would tag" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.12"
+  export GH_STUB_RC_TAGS="loft-sh/loft-enterprise:v4.12.3-rc.1 loft-sh/loft-enterprise:v4.12.3-rc.2"
+  export GH_STUB_RC_COMPARE_LOG="${STUB_DIR}/rc_compare"
+  INPUT_VERSION="v4.12.3" INPUT_DRY_RUN="true" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"head-release-4.12 is the commit v4.12.3-rc.2 was cut from"* ]]
+  [ "$(cat "${STUB_DIR}/rc_compare")" = "repos/loft-sh/loft-enterprise/compare/refs/tags/v4.12.3-rc.2...head-release-4.12?per_page=1" ]
+}
+
+@test "main: a stable cut with commits past the last rc is refused before anything is tagged" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.12"
+  export GH_STUB_RC_TAGS="loft-sh/loft-enterprise:v4.12.3-rc.2"
+  export GH_STUB_RC_COMPARE="loft-sh/loft-enterprise:ahead:5:0"
+  export GH_STUB_CALL_LOG="${STUB_DIR}/calls"
+  export GH_STUB_CONTENTS_LOG="${STUB_DIR}/reads"
+  INPUT_VERSION="v4.12.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"refusing to cut v4.12.3 in loft-sh/loft-enterprise: the commit to release (head-release-4.12) is 5 commit(s) past v4.12.3-rc.2"* ]]
+  [[ "$output" == *"Cut v4.12.3-rc.3"* ]]
+  [[ "$output" != *"created tag"* ]]
+  [[ "$output" != *"dispatched release.yaml"* ]]
+  [ ! -s "${STUB_DIR}/calls" ]
+  # Refused before the preflight reads release.yaml, the cheaper failure first.
+  ! grep -q 'contents/.github/workflows' "${STUB_DIR}/reads"
+}
+
+@test "main: a dry-run shows the refusal a real stable cut would hit" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.12"
+  export GH_STUB_RC_TAGS="loft-sh/loft-enterprise:v4.12.3-rc.2"
+  export GH_STUB_RC_COMPARE="loft-sh/loft-enterprise:ahead:1:0"
+  INPUT_VERSION="v4.12.3" INPUT_DRY_RUN="true" run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"refusing to cut v4.12.3"* ]]
+  [[ "$output" != *"[dry-run] gh api -X POST"* ]]
+}
+
+@test "main: a stable cut with no rc is refused" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.12"
+  export GH_STUB_RC_TAGS=""
+  export GH_STUB_CALL_LOG="${STUB_DIR}/calls"
+  INPUT_VERSION="v4.12.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"in loft-sh/loft-enterprise: v4.12.3 has no rc there"* ]]
+  [ ! -s "${STUB_DIR}/calls" ]
+}
+
+@test "main: an rc of another repo does not count" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.12"
+  export GH_STUB_RC_TAGS="loft-sh/other:v4.12.3-rc.1"
+  INPUT_VERSION="v4.12.3" INPUT_DRY_RUN="true" run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"in loft-sh/loft-enterprise: v4.12.3 has no rc there"* ]]
+}
+
+@test "main: resuming a stable tag past the last rc is refused before the dispatch" {
+  # A tag left by a cut that predates the check is what its build would ship.
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.12"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.12.3"
+  export GH_STUB_RC_TAGS="loft-sh/loft-enterprise:v4.12.3-rc.2"
+  export GH_STUB_RC_COMPARE="loft-sh/loft-enterprise:ahead:5:0"
+  export GH_STUB_RC_COMPARE_LOG="${STUB_DIR}/rc_compare"
+  INPUT_VERSION="v4.12.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"refusing to resume v4.12.3 in loft-sh/loft-enterprise: tag v4.12.3 (${STUB_TAG_COMMIT}) is 5 commit(s) past v4.12.3-rc.2"* ]]
+  [[ "$output" == *"This run created no tag and dispatched no release build in loft-sh/loft-enterprise."* ]]
+  [[ "$output" != *"Cut v4.12.3-rc."* ]]
+  [[ "$output" != *"dispatched release.yaml"* ]]
+  grep -q "\.\.\.${STUB_TAG_COMMIT}?" "${STUB_DIR}/rc_compare"
+}
+
+@test "main: a resumed tag behind a newer rc is not sent to cut yet another rc" {
+  # The rc an earlier refusal asked for landed on the moved branch head, which
+  # the tag can never match: another rc would land past it too.
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.12"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.12.3"
+  export GH_STUB_RUNS="${STUB_TAG_COMMIT}:completed:failure"
+  export GH_STUB_RC_TAGS="loft-sh/loft-enterprise:v4.12.3-rc.2 loft-sh/loft-enterprise:v4.12.3-rc.3"
+  export GH_STUB_RC_COMPARE="loft-sh/loft-enterprise:behind:0:4"
+  INPUT_VERSION="v4.12.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"tag v4.12.3 (${STUB_TAG_COMMIT}) is 4 commit(s) behind v4.12.3-rc.3"* ]]
+  [[ "$output" == *"Another rc alone will not fix this here"* ]]
+  [[ "$output" != *"Cut v4.12.3-rc.4"* ]]
+}
+
+@test "stub: a GH_STUB_RC_COMPARE entry in the wrong shape fails the cut" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.12"
+  export GH_STUB_RC_TAGS="loft-sh/loft-enterprise:v4.12.3-rc.2"
+  export GH_STUB_RC_COMPARE="ahead 5 0"
+  INPUT_VERSION="v4.12.3" INPUT_DRY_RUN="true" run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"GH_STUB_RC_COMPARE entry 'ahead' is not <repo>:<status>:<ahead>:<behind>"* ]]
+}
+
+@test "main: an rc cut is not compared with anything" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.12"
+  export GH_STUB_RC_LIST_FAILS=1
+  INPUT_VERSION="v4.12.3-rc.3" INPUT_DRY_RUN="true" run main
+  [ "$status" -eq 0 ]
+}
+
+@test "main: a failed rc listing refuses the stable cut" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.12"
+  export GH_STUB_RC_LIST_FAILS=1
+  INPUT_VERSION="v4.12.3" INPUT_DRY_RUN="true" run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"could not list the v4.12.3-rc.N tags in loft-sh/loft-enterprise"* ]]
+}
+
+@test "main: a resume refused by the rc check does not announce the resume" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:release-4.12"
+  export GH_STUB_TAGS="loft-sh/loft-enterprise:v4.12.3"
+  export GH_STUB_RC_TAGS="loft-sh/loft-enterprise:v4.12.3-rc.2"
+  export GH_STUB_RC_COMPARE="loft-sh/loft-enterprise:ahead:5:0"
+  INPUT_VERSION="v4.12.3" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"refusing to resume v4.12.3"* ]]
+  [[ "$output" != *"resuming at the dispatch without re-tagging"* ]]
 }

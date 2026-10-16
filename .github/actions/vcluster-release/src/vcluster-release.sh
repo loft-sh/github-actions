@@ -90,6 +90,15 @@ TAG_REF_JQ='"\(.object.sha // "") \(.object.type // "")"'
 # and gh workflow run rejects undeclared inputs, so legacy dispatches omit it.
 TRIGGERED_BY="${TRIGGERED_BY:-}"
 
+# For require_rc_commit, shared with platform-release so both dispatchers hold
+# a stable to its last rc the same way. Sourced before this script's own
+# helpers, so the ones defined below replace the lib's same-named copies and
+# this script routes by its own rules. A caller pinning vcluster-release/v1 checks
+# out the whole repository at that tag, so the lib read is the one this version
+# was written against.
+# shellcheck source=.github/actions/release-lib/lib.sh disable=SC1091
+source "$(dirname "${BASH_SOURCE[0]}")/../../release-lib/lib.sh"
+
 # ---------------------------------------------------------------------------
 # Pure helpers (no network) - the routing brain, exhaustively unit-tested.
 # ---------------------------------------------------------------------------
@@ -613,21 +622,17 @@ guard_double_cut() {
 announce_state() {
   local repo="$1" tag="$2" state="$3"
   case "$state" in
-    absent)     echo "::notice::${repo}: ${tag} not started; will tag and dispatch." ;;
-    tagged)     echo "::notice::${repo}: ${tag} already tagged but never dispatched; resuming at the dispatch." ;;
+    absent)     echo "::notice::${repo}: ${tag} not started; will tag and dispatch unless a check below refuses it." ;;
+    tagged)     echo "::notice::${repo}: ${tag} already tagged but never dispatched; resuming at the dispatch unless a check below refuses it." ;;
     dispatched) echo "::notice::${repo}: ${tag} already tagged and dispatched; nothing left to do here. Inspect: gh run list --repo ${repo} --workflow ${WORKFLOW} --branch ${tag}" ;;
     released)   echo "::notice::${repo}: ${tag} already released; skipping this repo." ;;
   esac
 }
 
-# create_tag <repo> <branch> <tag> - tag the branch head. Inert w.r.t. release
-# workflows (they trigger on workflow_dispatch, not tag push).
-create_tag() {
-  local repo="$1" branch="$2" tag="$3" sha
-  if [[ "${DRY_RUN:-true}" == "true" ]]; then
-    echo "[dry-run] gh api -X POST repos/${repo}/git/refs -f ref=refs/tags/${tag} -f sha=<${branch} head>"
-    return 0
-  fi
+# head_of <repo> <branch> -> the branch head sha. Returns 1 with the cause
+# printed when it cannot be read, so a caller writes `sha="$(head_of ...)" || exit 1`.
+head_of() {
+  local repo="$1" branch="$2" sha
   # `.object.sha // empty` guards the jq null-string hazard: on an unexpected
   # ref-response shape jq would otherwise print the literal "null" and exit 0
   # (set -e does not catch it), producing a GitHub 422 "Invalid SHA" instead of
@@ -637,18 +642,48 @@ create_tag() {
   # answers with an ARRAY of near-misses when the exact ref is gone, which turns
   # a deleted-branch race into a jq type error instead of a clean 404.
   #
-  # Checked rather than bare, so the failure keeps its own message: under set -e
-  # a bare assignment aborts the moment gh exits non-zero, which left the `-z`
-  # diagnostic below reachable only when gh succeeded with empty output.
+  # Checked rather than bare, so a failed read keeps its own message instead of
+  # falling through to the `-z` diagnostic below, which fits only a read that
+  # succeeded with no sha.
   if ! sha="$(gh api "repos/${repo}/git/ref/heads/${branch}" --jq '.object.sha // empty')"; then
     echo "::error::could not read HEAD of branch '${branch}' in ${repo}. Either it was deleted after the existence check, or the read itself failed (rate limit, SSO/scope, network). See the gh error above." >&2
-    exit 1
+    return 1
   fi
   if [[ -z "$sha" ]]; then
     echo "::error::could not resolve HEAD sha for branch '${branch}' in ${repo}" >&2
-    exit 1
+    return 1
   fi
-  # Checked for the same reason: under set -e a bare call aborts with gh's raw
+  printf '%s' "$sha"
+}
+
+# create_tag <repo> <branch> <tag> [rc-allowed] [rc-mode] - tag the branch head. Inert
+# w.r.t. release workflows (they trigger on workflow_dispatch, not tag push).
+# A stable tag must land on its last rc's commit, plus at most [rc-allowed]
+# commits on top (see require_rc_commit). [rc-allowed] "bump" reads that number
+# off go.mod at the commit itself (see pro_allowance). [rc-mode] is passed on to
+# require_rc_commit, for a cut that has already changed something elsewhere.
+#
+# A stable's head is read in dry-run too, so a preview hits the rc refusal a
+# real cut would at that head. The preview still prints a placeholder rather
+# than that sha: on the legacy path the pro head moves with the dependency bump
+# before it is tagged. A dry-run prerelease has nothing to check, so it reads
+# nothing.
+create_tag() {
+  local repo="$1" branch="$2" tag="$3" rc_allowed="${4:-0}" rc_mode="${5:-}" sha=""
+  if [[ "${DRY_RUN:-true}" != "true" ]] || is_stable_version "$tag"; then
+    sha="$(head_of "$repo" "$branch")" || exit 1
+    if [[ "$rc_allowed" == "bump" ]] && is_stable_version "$tag"; then
+      rc_allowed="$(pro_allowance "$sha" "$tag")" || exit 1
+    fi
+    # Checked on the sha about to be tagged, not an earlier read, so a commit that
+    # lands while the cut runs (during the legacy bump wait, say) is caught.
+    require_rc_commit "$repo" "$tag" "$sha" "$rc_allowed" "$rc_mode"
+  fi
+  if [[ "${DRY_RUN:-true}" == "true" ]]; then
+    echo "[dry-run] gh api -X POST repos/${repo}/git/refs -f ref=refs/tags/${tag} -f sha=<${branch} head>"
+    return 0
+  fi
+  # Checked rather than bare: under set -e a bare call aborts with gh's raw
   # one-liner and no ::error:: annotation, on the one path where the operator is
   # left with a half-finished cut and no guidance.
   #
@@ -707,15 +742,29 @@ dispatch() {
   echo "::warning::${WORKFLOW} was dispatched in ${repo} at ${tag} but the run did not become queryable within $(( DISPATCH_VISIBLE_ATTEMPTS * DISPATCH_VISIBLE_SLEEP_SECONDS ))s. The build is running; just be aware that a cut re-run started right now could dispatch it a second time."
 }
 
-# ensure_tag <repo> <branch> <tag> <state> - create the tag only when this repo
-# has not got one yet. Skipping on a resume is not just an optimisation: the tag
-# a previous run created is what its already-dispatched build is building, so
+# ensure_tag <repo> <branch> <tag> <state> [rc-allowed] [rc-mode] - create the tag only
+# when this repo has not got one yet, at the branch head and held to its last rc
+# (see create_tag). Skipping on a resume is not just an optimisation: the tag a
+# previous run created is what its already-dispatched build is building, so
 # re-pointing it would change what ships under a version that is already moving.
+#
+# A stable tag that exists but was never dispatched is still held to its last
+# rc, since the dispatch ships whatever commit it points at, and a tag made by
+# hand need not be the rc's. A dispatched or released one builds nothing new
+# here.
 ensure_tag() {
-  local repo="$1" branch="$2" tag="$3" state="$4"
+  local repo="$1" branch="$2" tag="$3" state="$4" rc_allowed="${5:-0}" rc_mode="${6:-}" sha
   case "$state" in
-    absent) create_tag "$repo" "$branch" "$tag" ;;
-    *)      echo "resume: tag ${tag} already exists in ${repo}; not re-tagging" ;;
+    absent) create_tag "$repo" "$branch" "$tag" "$rc_allowed" "$rc_mode" ;;
+    *)
+      if [[ "$state" == "tagged" ]] && is_stable_version "$tag"; then
+        sha="$(existing_tag_sha "$repo" "$tag")" || exit 1
+        if [[ "$rc_allowed" == "bump" ]]; then
+          rc_allowed="$(pro_allowance "$sha" "$tag")" || exit 1
+        fi
+        require_rc_commit "$repo" "$tag" "$sha" "$rc_allowed" resume
+      fi
+      echo "resume: tag ${tag} already exists in ${repo}; not re-tagging" ;;
   esac
 }
 
@@ -982,6 +1031,102 @@ require_oss_not_behind_pro() {
   exit 1
 }
 
+# existing_tag_sha <repo> <tag> -> the commit an existing tag points at, or
+# returns 1 with the refusal printed when it cannot be resolved.
+existing_tag_sha() {
+  local sha
+  sha="$(tag_sha_of "$1" "$2")"
+  if [[ -z "$sha" ]]; then
+    echo "::error::${2} exists in ${1} but its commit could not be resolved, so the cut cannot confirm it is the commit the last rc was cut from. This run created no tag and dispatched no release build in ${1}. Re-run the cut once GitHub answers." >&2
+    return 1
+  fi
+  printf '%s' "$sha"
+}
+
+# pro_allowance <sha> <version> -> how many commits pro's <sha> may sit past
+# its rc: 1 when <sha> is the dependency bump, 0 otherwise. Every pro check
+# reads it at the commit it compares, so no allowance is granted on the
+# strength of another commit's go.mod.
+#
+# <sha> is the bump when its go.mod requires <version> and it changes nothing
+# but go.mod, go.sum and vendor/. The second half matters because the bump
+# lands through a PR: a fix pushed onto that PR is squashed into the same
+# commit, and would otherwise ship as "the bump" without any rc building it.
+# Returns 2 with the refusal printed when either cannot be read.
+pro_allowance() {
+  local sha="$1" version="$2" rc=0 files err other
+  bump_landed_at_ref "$sha" "$version" || rc=$?
+  case "$rc" in
+    0) ;;
+    1) printf '0'; return 0 ;;
+    *)
+      echo "::error::go.mod at ${sha} in ${PRO_REPO} could not be read, or names no github.com/loft-sh/vcluster requirement, so the cut cannot tell the dependency bump from any other commit past the rc. This run created no tag and dispatched no release build in ${PRO_REPO}. Check that file at ${sha}, then re-run the cut." >&2
+      return 2 ;;
+  esac
+  if ! run_captured files err gh api --paginate "repos/${PRO_REPO}/commits/${sha}" --jq '.files[].filename'; then
+    echo "::error::could not list the files ${sha} changes in ${PRO_REPO}, so the cut cannot confirm it is only the dependency bump. This run created no tag and dispatched no release build in ${PRO_REPO}. Re-run the cut once GitHub answers. gh said: $(gh_reason "$err")" >&2
+    return 2
+  fi
+  other="$(grep -Ev '^(go\.mod|go\.sum|vendor/.+)$' <<<"$files" | grep -v '^$' | head -n 3 || true)"
+  if [[ -n "$other" ]]; then
+    echo "::notice::${sha} in ${PRO_REPO} requires ${version} but also changes $(flatten "$other")..., so it is not counted as the dependency bump." >&2
+    printf '0'
+    return 0
+  fi
+  printf '1'
+}
+
+
+# require_legacy_rcs <version> <line> <oss_state> <pro_state> - the rc checks
+# a legacy stable needs before anything is touched. OSS is tagged first and the
+# bump lands on pro before pro is tagged, so a pro refusal after either would
+# leave them behind.
+#
+# Pro vendors OSS, so both repos need the same newest rc (a legacy rc cut tags
+# both), or pro would ship OSS code that none of its rcs built. For the same
+# reason an OSS tag that already exists is held to its rc while pro still has a
+# build to do, even when OSS itself was dispatched or released: pro is bumped
+# to that tag. Pro may sit one commit past its rc only once go.mod shows that
+# commit is the dependency bump (see pro_allowance).
+#
+# A pro that is dispatched or released builds nothing new, so nothing is held.
+# Nothing has been changed by this run when this runs; only a cut where neither
+# repo has anything for the version yet is told which rc to cut, since any
+# other state needs the README's recovery steps.
+require_legacy_rcs() {
+  local version="$1" line="$2" oss_state="$3" pro_state="$4" oss_rc pro_rc sha allowed mode="partial"
+  is_stable_version "$version" || return 0
+  [[ "$pro_state" == "absent" || "$pro_state" == "tagged" ]] || return 0
+  [[ "$oss_state" == "absent" && "$pro_state" == "absent" ]] && mode=""
+  local left="This run created no tag and dispatched no release build for ${version}." repo n
+  for repo in "$OSS_REPO" "$PRO_REPO"; do
+    if ! newest_rc n "$repo" "$version"; then
+      echo "::error::could not list the ${version}-rc.N tags in ${repo}, so the cut cannot check that ${OSS_REPO} and ${PRO_REPO} share their last rc. ${left} Re-run the cut once GitHub answers. gh said: $(gh_reason "$NEWEST_RC_ERR")" >&2
+      exit 1
+    fi
+    if [[ "$repo" == "$OSS_REPO" ]]; then oss_rc="$n"; else pro_rc="$n"; fi
+  done
+  if ((oss_rc != pro_rc)); then
+    local last=$((oss_rc > pro_rc ? oss_rc : pro_rc)) oss_name="none" pro_name="none"
+    local advice="Another rc alone will not fix this here: read the recovery steps in this action's README before changing any tag."
+    ((oss_rc >= 0)) && oss_name="${version}-rc.${oss_rc}"
+    ((pro_rc >= 0)) && pro_name="${version}-rc.${pro_rc}"
+    [[ -z "$mode" ]] && advice="Cut ${version}-rc.$((last + 1)), then cut ${version} once it passes."
+    echo "::error::the newest rc is ${oss_name} in ${OSS_REPO} but ${pro_name} in ${PRO_REPO}. A legacy rc cut tags both repos, so they should match, or ${PRO_REPO} would ship ${OSS_REPO} code that none of its rcs built. ${advice} ${left}" >&2
+    exit 1
+  fi
+  # A tagged OSS is checked by ensure_tag before anything moves; a dispatched or
+  # released one is skipped there, since OSS builds nothing new.
+  if [[ "$oss_state" == "dispatched" || "$oss_state" == "released" ]]; then
+    sha="$(existing_tag_sha "$OSS_REPO" "$version")" || exit 1
+    require_rc_commit "$OSS_REPO" "$version" "$sha" 0 dependency
+  fi
+  [[ "$pro_state" == "absent" ]] || return 0
+  sha="$(head_of "$PRO_REPO" "$line")" || exit 1
+  allowed="$(pro_allowance "$sha" "$version")" || exit 1
+  require_rc_commit "$PRO_REPO" "$version" "$sha" "$allowed" "$mode"
+}
+
 cut_legacy() {
   local version="$1" line="$2" oss_state pro_state advisory=""
   echo "Routing ${version} -> legacy (line ${line}); dispatch order: ${OSS_REPO} then ${PRO_REPO}"
@@ -998,6 +1143,7 @@ cut_legacy() {
   require_oss_not_behind_pro "$version" "$oss_state" "$pro_state"
   announce_state "$OSS_REPO" "$version" "$oss_state"
   announce_state "$PRO_REPO" "$version" "$pro_state"
+  require_legacy_rcs "$version" "$line" "$oss_state" "$pro_state"
   # Tag OSS first so `go get github.com/loft-sh/vcluster@${version}` resolves the
   # freshly cut tag during the pro dependency bump below.
   ensure_tag "$OSS_REPO" "$line" "$version" "$oss_state"
@@ -1019,7 +1165,9 @@ cut_legacy() {
   fi
   # Tag pro at the now-bumped branch head. Both tags still precede either
   # dispatch, preserving the tag-before-dispatch invariant.
-  ensure_tag "$PRO_REPO" "$line" "$version" "$pro_state"
+  # By now OSS is tagged and the bump merged, so a pro refusal here is past the
+  # point where the next rc alone would get the version out.
+  ensure_tag "$PRO_REPO" "$line" "$version" "$pro_state" bump partial
   ensure_dispatch "$OSS_REPO" "$version" "$oss_state"
   # OSS is now building. This sequence is non-atomic, but it is resumable: if the
   # pro dispatch below fails, re-run this action with the same version. It reads

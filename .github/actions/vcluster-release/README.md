@@ -74,6 +74,24 @@ builds against the OSS code being co-released.
   an exact match (a prerelease like `v0.35.4-rc.1` does not block the final
   `v0.35.4`), and like the branch check every probe distinguishes a real 404 from
   a transient API error rather than silently skipping the guard.
+- **Stable ships the last rc:** a stable `vX.Y.Z` is refused unless the
+  commit it would tag (or, on a resume, the commit its tag points at) is the
+  commit its newest `vX.Y.Z-rc.N` was cut from, in every repo it tags. Commits
+  that landed after that rc would otherwise ship untested. The error links the
+  commits between the two, and asks for `vX.Y.Z-rc.N+1` only when nothing for
+  the version exists yet in any repo. Anywhere else (a tag that exists and is
+  never moved, OSS already tagged, a bump already merged) another rc alone
+  does not help, so it points at [Re-running a cut](#re-running-a-cut)
+  instead. On a legacy line both repos must have
+  the same newest rc, since pro vendors OSS, and pro may be one commit past it
+  only once that commit is the dependency bump the cut merges itself: its
+  `go.mod` requires `vX.Y.Z` and it changes nothing but `go.mod`, `go.sum` and
+  `vendor/`, so a fix pushed onto the bump PR does not ride along untested. Both repos are checked before either is
+  touched, except for what reaches pro while the cut waits for the bump (a
+  commit landing on the branch, or a fix pushed onto the bump PR and squashed
+  into it): that is refused when pro is tagged, after OSS. A stable with no rc
+  is refused too, and a failed read is refused with a request to re-run.
+  Prereleases are not checked.
 - **Unprepared line:** fails loudly if a required `vX.Y` branch is absent (no
   silent fallback), distinguishing a real 404 from a transient API error.
 - **Dry-run** still performs the read-only checks, so a bad routing decision
@@ -95,7 +113,7 @@ Before touching anything the action resolves a per-repo state:
 | State | Meaning | What a re-run does |
 | --- | --- | --- |
 | `absent` | no tag | tag, then dispatch |
-| `tagged` | tag exists, build never dispatched | dispatch only |
+| `tagged` | tag exists, build never dispatched | dispatch only, once a stable tag is found at its last rc (pro: at most the bump past it) |
 | `dispatched` | a `release.yaml` run exists **at the tag's current commit** | nothing; prints how to inspect that run |
 | `released` | a GitHub Release exists | nothing for this repo |
 
@@ -150,8 +168,33 @@ Two properties this preserves:
   action waits for the run to become queryable, because `gh workflow run` returns
   before that and a cut started in the gap would see the tag with no run.
 
-So the recovery for every partial failure is the same: fix whatever blocked it
-(a bump PR that would not merge, a missing branch, an expired token), then press
+Two refusals from the rc check are not cleared by pressing the button again:
+
+- **A stable tag that is not at its last rc's commit** (it predates the rc
+  check, was made by hand, or an rc was cut after it) is refused on a re-run
+  rather than dispatched, since the dispatch would ship it. A re-run never
+  moves a tag, so a new rc helps only if it lands exactly on the tagged commit.
+  On a legacy line that never happens for pro, whose rc cut merges its own bump
+  first. To ship the version from another commit, delete the tag by hand: that
+  is fine for a `tagged` loft-sh/vcluster-pro tag, since nothing was built from
+  it. On a monorepo line, cut again. On a legacy line the version's bump PR has
+  already merged, so the re-cut needs the bump dispatched by hand first, as in
+  the next item. Never delete or move a stable tag in loft-sh/vcluster: it is a
+  public Go module version that the module proxy may already have recorded, so
+  cut the next patch version instead.
+- **Pro refused at its tag, after OSS.** A commit that lands on the pro branch
+  while a legacy cut waits for the bump is refused when pro is tagged, which
+  leaves the OSS tag and the merged bump behind. Cutting `vX.Y.Z-rc.N+1` then
+  moves pro's `go.mod` to that rc, and a later stable cut does not re-dispatch
+  a bump whose PR already merged, so it stops at the `go.mod` check. Dispatch
+  the bump by hand
+  (`gh workflow run release-bump-vcluster.yaml --repo loft-sh/vcluster-pro --ref main -f version=<version> -f branch=<line>`),
+  wait for it to merge, then cut the stable again. That only works while
+  loft-sh/vcluster has not moved past its stable tag; otherwise cut the next
+  patch version.
+
+Every other partial failure recovers the same way: fix whatever blocked it (a
+bump PR that would not merge, a missing branch, an expired token), then press
 **Cut release** again with the same version. Use `dry-run: true` first to print
 the resume plan without mutating anything.
 
