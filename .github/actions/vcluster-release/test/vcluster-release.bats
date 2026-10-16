@@ -382,6 +382,13 @@ fi
 
 if [[ "$sub" == "workflow" && "${1:-}" == "run" ]]; then
   [[ "${2:-}" == "release-bump-vcluster.yaml" ]] && : > "$(dirname "$0")/bump_dispatched"
+  # GH_STUB_DISPATCH_LOG records each dispatch's arguments, one per line, for
+  # the real cuts that print none.
+  if [ -n "${GH_STUB_DISPATCH_LOG:-}" ]; then printf '%s\n' "$*" >>"$GH_STUB_DISPATCH_LOG"; fi
+  # Fails the dispatch in GH_STUB_DISPATCH_FAILS_REPO only, when that is set.
+  if [[ -n "${GH_STUB_DISPATCH_FAILS_REPO:-}" && " $* " != *" --repo ${GH_STUB_DISPATCH_FAILS_REPO} "* ]]; then
+    GH_STUB_DISPATCH_FAILS=""
+  fi
   # GH_STUB_DISPATCH_FAILS=1 rejects the release.yaml dispatch, as GitHub's 422
   # does for an input the workflow does not declare.
   if [[ "${2:-}" == "release.yaml" && "${GH_STUB_DISPATCH_FAILS:-}" == "1" ]]; then
@@ -2652,6 +2659,37 @@ JSON
   [[ "$output" != *"triggered_by"* ]]
 }
 
+@test "source_branch: a legacy line passes none when release.yaml does not declare it" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  TRIGGERED_BY="carol" INPUT_VERSION="v0.35.4" INPUT_DRY_RUN="true" run main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"--repo loft-sh/vcluster --ref v0.35.4"* ]]
+  [[ "$output" == *"--repo loft-sh/vcluster-pro --ref v0.35.4"* ]]
+  [[ "$output" != *"source_branch"* ]]
+}
+
+@test "source_branch: a real legacy cut passes none when release.yaml does not declare it" {
+  # Pro's arguments are rebuilt after the bump, on a path only a real cut takes.
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  export GH_STUB_GOMOD_VERSION="v0.35.5-rc.1"
+  export GH_STUB_DISPATCH_LOG="${STUB_DIR}/dispatches"
+  INPUT_VERSION="v0.35.5-rc.1" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  grep -qx "run release.yaml --repo loft-sh/vcluster --ref v0.35.5-rc.1" "${STUB_DIR}/dispatches"
+  grep -qx "run release.yaml --repo loft-sh/vcluster-pro --ref v0.35.5-rc.1" "${STUB_DIR}/dispatches"
+}
+
+@test "source_branch: a real legacy cut passes it to each repo that declares it" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  export GH_STUB_GOMOD_VERSION="v0.35.5-rc.1"
+  export GH_STUB_WORKFLOW_SOURCE_BRANCH="optional"
+  export GH_STUB_DISPATCH_LOG="${STUB_DIR}/dispatches"
+  INPUT_VERSION="v0.35.5-rc.1" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 0 ]
+  grep -qx "run release.yaml --repo loft-sh/vcluster --ref v0.35.5-rc.1 -f source_branch=v0.35" "${STUB_DIR}/dispatches"
+  grep -qx "run release.yaml --repo loft-sh/vcluster-pro --ref v0.35.5-rc.1 -f source_branch=v0.35" "${STUB_DIR}/dispatches"
+}
+
 # ---- a failed dispatch says how to resume ----
 
 @test "dispatch: a failed monorepo dispatch names the tag left behind and the re-run" {
@@ -2679,6 +2717,18 @@ JSON
   [ "$status" -eq 1 ]
   [[ "$output" == *"could not dispatch release.yaml in loft-sh/vcluster at v0.35.4-rc.1"* ]]
   [[ "$output" != *"in loft-sh/vcluster-pro at v0.35.4-rc.1, so"* ]]
+}
+
+@test "dispatch: a failed legacy pro dispatch names pro, after OSS was dispatched" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster:v0.35 loft-sh/vcluster-pro:v0.35"
+  export GH_STUB_TAGS="loft-sh/vcluster:v0.35.4-rc.1 loft-sh/vcluster-pro:v0.35.4-rc.1"
+  export GH_STUB_DISPATCHED="loft-sh/vcluster:v0.35.4-rc.1"
+  export GH_STUB_GOMOD_VERSION="v0.35.4-rc.1"
+  export GH_STUB_DISPATCH_FAILS=1 GH_STUB_DISPATCH_FAILS_REPO="loft-sh/vcluster-pro"
+  INPUT_VERSION="v0.35.4-rc.1" INPUT_DRY_RUN="false" run bash "$SCRIPT"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"already dispatched at v0.35.4-rc.1 in loft-sh/vcluster;"* ]]
+  [[ "$output" == *"could not dispatch release.yaml in loft-sh/vcluster-pro at v0.35.4-rc.1, so v0.35.4-rc.1 is tagged there with no build. Re-run the cut with the same version"* ]]
 }
 
 # ---- inputs shared with platform-release ----
