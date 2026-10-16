@@ -101,7 +101,7 @@ TRIGGERED_BY="${TRIGGERED_BY:-}"
 
 # Routing, probes and the dispatch preflight, shared with platform-release so
 # both dispatchers route and refuse the same way. A caller pinning
-# vcluster-release/v2 checks out the whole repository at that tag, so the lib
+# vcluster-release/v1 checks out the whole repository at that tag, so the lib
 # read is the one this version was written against.
 # shellcheck source=.github/actions/release-lib/lib.sh disable=SC1091
 source "$(dirname "${BASH_SOURCE[0]}")/../../release-lib/lib.sh"

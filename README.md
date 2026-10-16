@@ -505,7 +505,7 @@ pipeline output, not a trigger. Needs mikefarah `yq` v4.46.1+ on the runner.
 **Usage:**
 
 ```yaml
-- uses: loft-sh/github-actions/.github/actions/vcluster-release@vcluster-release/v2
+- uses: loft-sh/github-actions/.github/actions/vcluster-release@vcluster-release/v1
   with:
     version: ${{ inputs.version }}
     dry-run: ${{ inputs.dry_run }}

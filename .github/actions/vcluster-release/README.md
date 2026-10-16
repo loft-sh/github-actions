@@ -264,7 +264,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - uses: loft-sh/github-actions/.github/actions/vcluster-release@vcluster-release/v2
+      - uses: loft-sh/github-actions/.github/actions/vcluster-release@vcluster-release/v1
         with:
           version: ${{ inputs.version }}
           dry-run: ${{ inputs.dry_run }}
@@ -274,8 +274,7 @@ jobs:
 ### Runner
 
 The runner needs mikefarah `yq` v4.46.1 or later on `PATH`, which GitHub-hosted
-Ubuntu runners include. The action checks this before any API call. `v1`
-did not read `release.yaml` and needed no `yq`, which is why this is `v2`.
+Ubuntu runners include. The action checks this before any API call.
 
 ### Auth
 
