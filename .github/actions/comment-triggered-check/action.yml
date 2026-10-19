@@ -50,6 +50,14 @@ inputs:
     description: 'start mode. Set to true to split an optional trailing --focus expression from the filter. Disabled by default for existing consumers.'
     required: false
     default: 'false'
+  parse-repeat:
+    description: 'start mode. Set to true to accept `--repeat N` (1 to 10) before --focus: one run whose suite repeats N extra times. Disabled by default for existing consumers.'
+    required: false
+    default: 'false'
+  parse-runs:
+    description: 'start mode. Set to true to accept `--runs N` (1 to 5) before --focus: N independent runs, each with its own check-run and concurrency key. Cannot be combined with --repeat. Disabled by default for existing consumers.'
+    required: false
+    default: 'false'
   allowed-targets:
     description: 'start mode. Whitespace-separated target values accepted when target-name is set. Each value needs a matching action invocation.'
     required: false
@@ -122,11 +130,17 @@ outputs:
   target:
     description: 'Optional target following --target. Empty means no explicit target was requested.'
     value: ${{ steps.start.outputs.target }}
+  repeat:
+    description: 'start mode. N from --repeat, for the caller to pass to its test runner. Empty when not requested.'
+    value: ${{ steps.start.outputs.repeat }}
+  runs:
+    description: 'start mode. JSON array with one {check-run-id, concurrency-key, check-name} per run to dispatch; one entry without --runs, empty when nothing was opened. check-run-id, concurrency-key and check-name name the first entry.'
+    value: ${{ steps.start.outputs.runs }}
   should-run:
     description: 'The caller''s execution gate. "true" only when a check-run was actually opened. Forks are refused unless allow-forks is true and the commenter has write-level permission. Read reason when false.'
     value: ${{ steps.start.outputs.should-run }}
   reason:
-    description: 'Why the command will not run: fork, rerun-not-allowed, insufficient-permission, permission-unreadable, empty-filter, malformed-filter, malformed-focus, malformed-target, invalid-target, target-not-selected, not-a-pull-request, pull-request-closed, pull-request-unreadable, or check-run-not-created. Empty when it will.'
+    description: 'Why the command will not run: fork, rerun-not-allowed, insufficient-permission, permission-unreadable, empty-filter, malformed-filter, malformed-focus, malformed-target, invalid-target, malformed-repeat, repeat-out-of-range, malformed-runs, runs-out-of-range, repeat-and-runs, target-not-selected, not-a-pull-request, pull-request-closed, pull-request-unreadable, or check-run-not-created. Empty when it will.'
     value: ${{ steps.start.outputs.reason }}
   reason-title:
     description: 'start mode. Presentation-ready title for reason. Empty when the command will run or this invocation was not selected.'
@@ -197,6 +211,8 @@ runs:
         INPUT_REPO: ${{ inputs.repo }}
         INPUT_CHECK_NAME_PREFIX: ${{ inputs.check-name-prefix }}
         INPUT_PARSE_FOCUS: ${{ inputs.parse-focus }}
+        INPUT_PARSE_REPEAT: ${{ inputs.parse-repeat }}
+        INPUT_PARSE_RUNS: ${{ inputs.parse-runs }}
         INPUT_ALLOWED_TARGETS: ${{ inputs.allowed-targets }}
         INPUT_TARGET_NAME: ${{ inputs.target-name }}
         INPUT_RUN_ID: ${{ inputs.run-id }}

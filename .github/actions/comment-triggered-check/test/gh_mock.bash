@@ -14,6 +14,7 @@
 #   GH_MOCK_PERMISSION_FAIL non-empty → the permission call fails
 #   GH_MOCK_CREATE_JSON  body for POST .../check-runs
 #   GH_MOCK_CREATE_FAIL  non-empty → the create call fails
+#   GH_MOCK_CREATE_FAIL_FROM  N → the Nth create call and every later one fails
 #   GH_MOCK_PATCH_FAIL   non-empty → a PATCH fails
 #   GH_MOCK_CALLS        path; each invocation appends one line of args
 #   GH_MOCK_TOKENS       path; each invocation appends its GH_TOKEN and args
@@ -58,6 +59,11 @@ case "$all" in
     ;;
   *"--method POST"*"check-runs"*)
     [ -n "${GH_MOCK_CREATE_FAIL:-}" ] && { echo "mock: create failed" >&2; exit 1; }
+    if [ -n "${GH_MOCK_CREATE_FAIL_FROM:-}" ]; then
+      creates=$(( $(cat "$MOCK_DIR/creates" 2>/dev/null || echo 0) + 1 ))
+      echo "$creates" > "$MOCK_DIR/creates"
+      [ "$creates" -ge "$GH_MOCK_CREATE_FAIL_FROM" ] && { echo "mock: create failed" >&2; exit 1; }
+    fi
     printf '%s\n' "${GH_MOCK_CREATE_JSON:-$default_create}"
     ;;
   *"--method PATCH"*)

@@ -286,6 +286,72 @@ created() { calls_matching "POST"; }
   [ "$(calls_matching 'snapshots --target oss --focus "creates snapshots"')" -ge 1 ]
 }
 
+# --- --repeat and --runs ----------------------------------------------------
+
+@test "a plain command still emits its one run" {
+  run bash "$SCRIPT"
+  [ "$(kv runs)" = "$(jq -cn --arg key "$(kv concurrency-key)" '[{"check-run-id": 4242, "concurrency-key": $key, "check-name": "e2e: snapshots"}]')" ]
+  [ "$(kv repeat)" = "" ]
+}
+
+@test "--runs opens one check per run, each with its own key" {
+  export INPUT_PARSE_RUNS="true"
+  export INPUT_COMMENT_BODY="/test-e2e snapshots --runs 3"
+  run bash "$SCRIPT"
+  [ "$(kv should-run)" = "true" ]
+  [ "$(kv filter)" = "snapshots" ]
+  [ "$(created)" -eq 3 ]
+  [ "$(kv runs | jq -r '[.[]["check-name"]] | join("|")')" = "e2e: snapshots (run 1/3)|e2e: snapshots (run 2/3)|e2e: snapshots (run 3/3)" ]
+  [ "$(kv runs | jq '[.[]["concurrency-key"]] | unique | length')" -eq 3 ]
+  [ "$(kv runs | jq -r '.[1]["concurrency-key"]')" = "$(kv runs | jq -r '.[0]["concurrency-key"]' | sed 's/-run-1-of-3$//')-run-2-of-3" ]
+  [ "$(kv check-name)" = "e2e: snapshots (run 1/3)" ]
+  [ "$(calls_matching 'with `/test-e2e snapshots --runs 3`')" -eq 3 ]
+}
+
+@test "--repeat opens one check whose key differs from the plain request" {
+  run bash "$SCRIPT"
+  plain_key="$(kv concurrency-key)"
+  : > "$GITHUB_OUTPUT"
+  export INPUT_PARSE_REPEAT="true"
+  export INPUT_COMMENT_BODY='/test-e2e snapshots --repeat 4 --focus "x"'
+  run bash "$SCRIPT"
+  [ "$(kv should-run)" = "true" ]
+  [ "$(kv repeat)" = "4" ]
+  [ "$(kv focus)" = "x" ]
+  [ "$(kv check-name)" = 'e2e: snapshots --focus "x" (repeat 4)' ]
+  [ "$(kv concurrency-key)" != "$plain_key" ]
+  [ "$(kv concurrency-key)" = "$(kv runs | jq -r '.[0]["concurrency-key"]')" ]
+}
+
+@test "a run whose check cannot be opened closes the checks already opened" {
+  export INPUT_PARSE_RUNS="true"
+  export INPUT_COMMENT_BODY="/test-e2e snapshots --runs 3"
+  export GH_MOCK_CREATE_FAIL_FROM=3
+  run bash "$SCRIPT"
+  [ "$(kv should-run)" = "false" ]
+  [ "$(kv reason)" = "check-run-not-created" ]
+  [ "$(kv runs)" = "[]" ]
+  [ "$(kv check-run-id)" = "" ]
+  [ "$(calls_matching 'PATCH.*conclusion=failure')" -eq 2 ]
+}
+
+@test "an out-of-range count is refused before any API call" {
+  export INPUT_PARSE_RUNS="true"
+  export INPUT_COMMENT_BODY="/test-e2e snapshots --runs 6"
+  run bash "$SCRIPT"
+  [ "$(kv should-run)" = "false" ]
+  [ "$(kv reason)" = "runs-out-of-range" ]
+  [ "$(kv reason-title)" = '`--runs` is out of range' ]
+  [ "$(call_count)" -eq 0 ]
+}
+
+@test "--runs stays part of the filter unless parsing is enabled" {
+  export INPUT_COMMENT_BODY="/test-e2e snapshots --runs 3"
+  run bash "$SCRIPT"
+  [ "$(kv filter)" = "snapshots --runs 3" ]
+  [ "$(created)" -eq 1 ]
+}
+
 # --- authorization -----------------------------------------------------------
 
 @test "a past contributor cannot run it, and no API call is made" {
