@@ -85,8 +85,10 @@ stable_tags() {
     | sed 's/^v//' | { grep -E "$STABLE_RE" || true; }
 }
 
-oldest_live_line() {
-  stable_tags "$1" | sed -E 's/\.[0-9]+$//' | sort -uV | tail -n2 | head -n1
+line_of() { local v="${1%%-*}"; printf '%s' "${v%.*}"; }
+
+previous_stable_line() {
+  stable_tags "$1" | while read -r v; do line_of "$v"; echo; done | sort -uV | tail -n2 | head -n1
 }
 
 # The most recently published pre-release whose final release is not out yet.
@@ -95,13 +97,12 @@ oldest_live_line() {
 newest_unreleased_pre_release() {
   local repo="$1" released floor
   released="$(stable_tags "$repo")"
-  floor="$(oldest_live_line "$repo")"
-  local ranked first line
+  floor="$(previous_stable_line "$repo")"
+  local ranked first
   ranked="$(pre_release_tags "$repo" | while IFS=$'\t' read -r published version; do
     [ -n "$version" ] || continue
     if grep -qxF "${version%%-*}" <<<"$released"; then continue; fi
-    line="${version%%-*}"; line="${line%.*}"
-    if [ -n "$floor" ] && is_below "$line" "$floor"; then continue; fi
+    if [ -n "$floor" ] && is_below "$(line_of "$version")" "$floor"; then continue; fi
     printf '%s\t%s\t%s\n' "$published" "$(sort_key "$version")" "$version"
   done | sort -t "$(printf '\t')" -k1,1r -k2,2Vr)"
   [ -n "$ranked" ] || return 0
@@ -125,7 +126,7 @@ UP="${STANDALONE_VCLUSTER_UPGRADE_VERSION_INPUT:-}"
 UP="${UP#v}"
 if [ -z "$UP" ]; then
   UP="$(newest_unreleased_pre_release vcluster)"
-  [ -n "$UP" ] || { echo "no unreleased vCluster pre-release on or above the $(oldest_live_line vcluster) line in loft-sh/vcluster; pass standalone-vcluster-upgrade-version explicitly"; exit 1; }
+  [ -n "$UP" ] || { echo "no unreleased vCluster pre-release on or above the $(previous_stable_line vcluster) line in loft-sh/vcluster; pass standalone-vcluster-upgrade-version explicitly"; exit 1; }
   echo "Resolved newest unreleased vCluster pre-release: $UP"
 fi
 [[ "$UP" =~ $VERSION_RE ]] || { echo "invalid standalone-vcluster-upgrade-version: $UP"; exit 1; }
@@ -148,7 +149,7 @@ RC="${PLATFORM_RC_VERSION_INPUT:-}"
 RC="${RC#v}"
 if [ -z "$RC" ]; then
   RC="$(newest_unreleased_pre_release loft-enterprise)"
-  [ -n "$RC" ] || { echo "no unreleased platform pre-release on or above the $(oldest_live_line loft-enterprise) line in loft-sh/loft-enterprise; pass platform-rc-version explicitly"; exit 1; }
+  [ -n "$RC" ] || { echo "no unreleased platform pre-release on or above the $(previous_stable_line loft-enterprise) line in loft-sh/loft-enterprise; pass platform-rc-version explicitly"; exit 1; }
   echo "Resolved newest unreleased platform pre-release: $RC"
 fi
 [[ "$RC" =~ $VERSION_RE ]] || { echo "invalid platform-rc-version: $RC"; exit 1; }

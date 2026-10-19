@@ -392,6 +392,18 @@ out() { grep "^$1=" "$GITHUB_OUTPUT" | cut -d= -f2-; }
   [ "$(out standalone-vcluster-version)" = "0.36.3" ]
 }
 
+@test "a patch pre-release on the current line is a target" {
+  set_releases vcluster 1 "[
+    $(release v0.37.4-rc.1    true  2026-10-16T13:11:47Z),
+    $(release v0.37.3         false 2026-10-05T10:00:00Z),
+    $(release v0.36.3         false 2026-09-20T10:00:00Z)
+  ]"
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(out standalone-vcluster-upgrade-version)" = "0.37.4-rc.1" ]
+  [ "$(out standalone-vcluster-version)" = "0.37.3" ]
+}
+
 @test "a pre-release of the next major is a target" {
   export STANDALONE_VCLUSTER_UPGRADE_VERSION_INPUT="0.36.1-rc.3"
   set_releases loft-enterprise 1 "[
