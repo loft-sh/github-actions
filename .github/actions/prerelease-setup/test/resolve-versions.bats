@@ -359,3 +359,62 @@ out() { grep "^$1=" "$GITHUB_OUTPUT" | cut -d= -f2-; }
   [ "$status" -ne 0 ]
   [[ "$output" == *"no stable vCluster release below 0.35.3-rc.1"* ]]
 }
+
+# --- abandoned pre-releases --------------------------------------------------
+
+@test "a pre-release from a line that was never finished is not a target" {
+  # run 35222301790: every 0.37 pre-release had shipped, so the resolver fell
+  # through to a 2023 alpha whose line was abandoned before install-standalone.sh existed
+  set_releases vcluster 1 "[
+    $(release v0.37.1-rc.2    true  2026-09-10T10:00:00Z),
+    $(release v0.37.1         false 2026-09-15T10:00:00Z),
+    $(release v0.37.0         false 2026-09-01T10:00:00Z),
+    $(release v0.36.2         false 2026-08-20T10:00:00Z),
+    $(release v0.18.2-alpha.0 true  2023-12-28T13:30:54Z),
+    $(release v0.18.1         false 2023-12-01T10:00:00Z)
+  ]"
+  run "$SCRIPT"
+  [ "$status" -ne 0 ]
+  [[ "$output" != *"0.18.2-alpha.0"* ]]
+  [[ "$output" == *"pass standalone-vcluster-upgrade-version explicitly"* ]]
+}
+
+@test "a maintenance pre-release on the previous line is still a target" {
+  set_releases vcluster 1 "[
+    $(release v0.36.4-rc.1    true  2026-10-10T10:00:00Z),
+    $(release v0.37.3         false 2026-10-05T10:00:00Z),
+    $(release v0.36.3         false 2026-09-20T10:00:00Z),
+    $(release v0.18.2-alpha.0 true  2023-12-28T13:30:54Z)
+  ]"
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(out standalone-vcluster-upgrade-version)" = "0.36.4-rc.1" ]
+  [ "$(out standalone-vcluster-version)" = "0.36.3" ]
+}
+
+@test "a pre-release of the next major is a target" {
+  export STANDALONE_VCLUSTER_UPGRADE_VERSION_INPUT="0.36.1-rc.3"
+  set_releases loft-enterprise 1 "[
+    $(release v5.0.0-alpha.1  true  2026-10-08T20:41:44Z),
+    $(release v4.12.3         false 2026-10-01T10:00:00Z),
+    $(release v4.11.3         false 2026-09-01T10:00:00Z),
+    $(release v2.3.1-alpha.0  true  2022-01-01T10:00:00Z)
+  ]"
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(out platform-rc-version)" = "5.0.0-alpha.1" ]
+  [ "$(out platform-base-version)" = "4.12.3" ]
+}
+
+@test "the platform target is rejected the same way" {
+  export STANDALONE_VCLUSTER_UPGRADE_VERSION_INPUT="0.36.1-rc.3"
+  set_releases loft-enterprise 1 "[
+    $(release v4.12.3         false 2026-10-01T10:00:00Z),
+    $(release v4.11.3         false 2026-09-01T10:00:00Z),
+    $(release v2.3.1-alpha.0  true  2022-01-01T10:00:00Z)
+  ]"
+  run "$SCRIPT"
+  [ "$status" -ne 0 ]
+  [[ "$output" != *"2.3.1-alpha.0"* ]]
+  [[ "$output" == *"pass platform-rc-version explicitly"* ]]
+}
