@@ -22,7 +22,12 @@ The action performs, in order:
    upgrade target (`standalone-vcluster-upgrade-version`,
    `platform-rc-version`) resolves to the most recently published
    pre-release whose final release has not shipped yet, excluding `-next`
-   internal builds. An empty base
+   internal builds and anything below the previous stable minor line. A
+   pre-release that old belongs to a line that was never finished, and once
+   every current line has gone GA those are all that is left: a manual run
+   once resolved `0.18.2-alpha.0` that way and died on a missing asset. When
+   nothing qualifies the step fails and asks for the version explicitly. An
+   empty base
    (`standalone-vcluster-version`, `platform-base-version`) resolves to the
    highest stable release strictly below its target, so a maintenance
    release is tested against the release before it rather than against
@@ -55,9 +60,9 @@ provisioning (`aws-test-infra`) and the Ginkgo test execution
 |-------------------------------------|--------|----------|---------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 |            github-token             | string |   true   |         | GitHub token with contents:read on loft-sh/loft-enterprise. <br>Required because the platform release resolvers <br>call the GitHub API for a <br>private repo; unauthenticated calls return 404. <br>Pass the calling job's github.token from <br>a job whose permissions grant contents:read.  |
 |        platform-base-version        | string |  false   |         |                                                                 Platform version for the initial install <br>(e.g. 4.9.0). Empty resolves to the highest <br>stable release of loft-sh/loft-enterprise below the <br>RC target.                                                                  |
-|         platform-rc-version         | string |  false   |         |                                               Platform RC version for upgrade (e.g. 4.10.0-alpha.6). <br>Empty resolves to the most recently <br>published platform pre-release whose final release <br>has not shipped, excluding -next builds.                                                 |
+|         platform-rc-version         | string |  false   |         |                                               Platform RC version for upgrade (e.g. 4.10.0-alpha.6). <br>Empty resolves to the most recently <br>published platform pre-release whose final release <br>has not shipped, excluding -next builds <br>and anything below the previous stable <br>minor line; fails when nothing qualifies.                                                 |
 |          role-session-name          | string |   true   |         |                                                                           AWS STS role-session-name. Each consumer job <br>passes a distinct value (e.g. prerelease-vcluster-<run-id>, prerelease-aicloud-<run-id>).                                                                             |
-| standalone-vcluster-upgrade-version | string |  false   |         |                vCluster version to upgrade standalone to <br>(e.g. 0.35.0-alpha.7). Empty resolves to the most <br>recently published vCluster pre-release whose final <br>release has not shipped, excluding -next <br>builds. Must differ from the resolved <br>base version.                  |
+| standalone-vcluster-upgrade-version | string |  false   |         |                vCluster version to upgrade standalone to <br>(e.g. 0.35.0-alpha.7). Empty resolves to the most <br>recently published vCluster pre-release whose final <br>release has not shipped, excluding -next <br>builds and anything below the previous <br>stable minor line; fails when nothing <br>qualifies. Must differ from the resolved <br>base version.                  |
 |     standalone-vcluster-version     | string |  false   |         |                                                                vCluster version to install for standalone <br>(e.g. 0.34.0). Empty resolves to the highest <br>stable release of loft-sh/vcluster below the <br>upgrade target.                                                                  |
 
 <!-- AUTO-DOC-INPUT:END -->
