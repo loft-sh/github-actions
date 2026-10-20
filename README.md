@@ -1081,7 +1081,7 @@ jobs:
 - `scan-paths` (optional, default: `./...`): space-separated Go package patterns
 - `test-flag` (optional, default: `true`): pass `-test` to govulncheck
 - `go-version-file` (optional, default: `go.mod`): passed to `actions/setup-go`
-- `private-repo` (optional, default: `false`): enable git url rewrite + `GOPRIVATE`
+- `private-repo` (optional, default: `false`): configure a github.com git credential helper with `gh-access-token` + set `GOPRIVATE`
 - `goprivate` (optional, default: `github.com/loft-sh/*`)
 - `govulncheck-version` (optional, default: `latest`)
 - `test-name` (optional, default: `govulncheck`): Slack header

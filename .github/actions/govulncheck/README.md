@@ -8,18 +8,18 @@ On scheduled runs, posts a Slack notification via `ci-test-notify` when vulnerab
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-|        INPUT        |  TYPE  | REQUIRED |         DEFAULT          |                                                                         DESCRIPTION                                                                          |
-|---------------------|--------|----------|--------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------|
-|   gh-access-token   | string |  false   |                          |                                      PAT with access to private loft-sh <br>repos. Required when `private-repo: true`.                                       |
-|   go-version-file   | string |  false   |        `"go.mod"`        |                                                 Path to go.mod (or go.work) passed to <br>actions/setup-go.                                                  |
-|      goprivate      | string |  false   | `"github.com/loft-sh/*"` |                                               Value of the GOPRIVATE env var <br>when `private-repo` is true.                                                |
-| govulncheck-version | string |  false   |        `"latest"`        |                                                   Version of golang.org/x/vuln/cmd/govulncheck to install.                                                   |
-|       notify        | string |  false   |         `"true"`         |                    Send a Slack notification on vulnerabilities. <br>Only fires on `schedule` events — <br>PR/manual runs never notify.                      |
-|    private-repo     | string |  false   |        `"false"`         | When true, configures `git` url rewriting <br>with `gh-access-token` and sets `GOPRIVATE=github.com/loft-sh/*` so <br>the scan can resolve private modules.  |
-|     scan-paths      | string |  false   |        `"./..."`         |                                        Space-separated Go package patterns to scan. <br>Example: `./... ./cmd/...`.                                          |
-|  slack-webhook-url  | string |  false   |                          |             Slack incoming webhook URL for the <br>ci-test-notify action. Required when `notify: true` and <br>the workflow runs on `schedule`.              |
-|      test-flag      | string |  false   |         `"true"`         |                                                Pass `-test` to govulncheck (include test files in the scan).                                                 |
-|      test-name      | string |  false   |     `"govulncheck"`      |                                                    Slack notification header (passed to ci-test-notify).                                                     |
+|        INPUT        |  TYPE  | REQUIRED |         DEFAULT          |                                                                                      DESCRIPTION                                                                                      |
+|---------------------|--------|----------|--------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|   gh-access-token   | string |  false   |                          |                                                  PAT with access to private loft-sh <br>repos. Required when `private-repo: true`.                                                    |
+|   go-version-file   | string |  false   |        `"go.mod"`        |                                                             Path to go.mod (or go.work) passed to <br>actions/setup-go.                                                               |
+|      goprivate      | string |  false   | `"github.com/loft-sh/*"` |                                                           Value of the GOPRIVATE env var <br>when `private-repo` is true.                                                             |
+| govulncheck-version | string |  false   |        `"latest"`        |                                                               Version of golang.org/x/vuln/cmd/govulncheck to install.                                                                |
+|       notify        | string |  false   |         `"true"`         |                                 Send a Slack notification on vulnerabilities. <br>Only fires on `schedule` events — <br>PR/manual runs never notify.                                  |
+|    private-repo     | string |  false   |        `"false"`         | When true, configures a `git` credential <br>helper for github.com with `gh-access-token` and <br>sets `GOPRIVATE=github.com/loft-sh/*` so the scan can <br>resolve private modules.  |
+|     scan-paths      | string |  false   |        `"./..."`         |                                                     Space-separated Go package patterns to scan. <br>Example: `./... ./cmd/...`.                                                      |
+|  slack-webhook-url  | string |  false   |                          |                         Slack incoming webhook URL for the <br>ci-test-notify action. Required when `notify: true` and <br>the workflow runs on `schedule`.                           |
+|      test-flag      | string |  false   |         `"true"`         |                                                            Pass `-test` to govulncheck (include test files in the scan).                                                              |
+|      test-name      | string |  false   |     `"govulncheck"`      |                                                                 Slack notification header (passed to ci-test-notify).                                                                 |
 
 <!-- AUTO-DOC-INPUT:END -->
 
@@ -80,10 +80,12 @@ jobs:
 
 The caller checks out its own source and controls `runs-on`, `timeout-minutes`, and fork-guarding at the job level. For large monorepos that need more memory/CPU, override `runs-on` with a larger runner label. Composite action steps cannot declare `timeout-minutes`, so set it on the caller job (10m is reasonable for most modules).
 
+With `private-repo: true` the action writes a git credential helper for `https://github.com` to the runner's global git config, answering with `gh-access-token`. Later steps in the same job can fetch private loft-sh repos with it too. It replaces an `insteadOf` rewrite to `https://<token>@github.com/`, which broke on ubuntu-24.04 runner image 20261018.339: its curl strips credentials from the effective URL and git then drops the token (DEVOPS-1702).
+
 ## Testing
 
 ```bash
 make test-govulncheck
 ```
 
-Runs the bats suite in `test/run.bats` against `run.sh` with a stubbed `govulncheck` binary.
+Runs the bats suites in `test/`: `run.bats` against `run.sh` with a stubbed `govulncheck` binary, and `configure-git.bats` against `configure-git.sh` with a throwaway global git config.

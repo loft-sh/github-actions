@@ -154,13 +154,13 @@ test-publish-helm-chart: ## run publish-helm-chart bats tests (requires mikefara
 	bats $(ACTIONS_DIR)/publish-helm-chart/test/run.bats
 
 test-govulncheck: ## run govulncheck bats tests
-	bats $(ACTIONS_DIR)/govulncheck/test/run.bats
+	bats $(ACTIONS_DIR)/govulncheck/test/*.bats
 
 test-cve-scan: ## run cve-scan bats tests
 	bats $(ACTIONS_DIR)/cve-scan/test/*.bats
 
 test-go-licenses: ## run go-licenses bats tests
-	bats $(ACTIONS_DIR)/go-licenses/test/run.bats
+	bats $(ACTIONS_DIR)/go-licenses/test/*.bats
 
 test-run-ginkgo: ## run run-ginkgo bats and focus selection tests
 	bats $(ACTIONS_DIR)/run-ginkgo/test/*.bats

@@ -106,10 +106,14 @@ jobs:
           gh-access-token: ${{ secrets.GH_ACCESS_TOKEN }}
 ```
 
+## Notes
+
+When `gh-access-token` is set, the action writes a git credential helper for `https://github.com` to the runner's global git config, answering with that token. Later steps in the same job can fetch private loft-sh repos with it too. It replaces an `insteadOf` rewrite to `https://<token>@github.com/`, which broke on ubuntu-24.04 runner image 20261018.339: its curl strips credentials from the effective URL and git then drops the token (DEVOPS-1702).
+
 ## Testing
 
 ```bash
 make test-go-licenses
 ```
 
-Runs the bats suite in `test/run.bats` against `run.sh` with stubbed `go-licenses` and `go work` binaries.
+Runs the bats suites in `test/`: `run.bats` against `run.sh` with stubbed `go-licenses` and `go work` binaries, and `configure-git.bats` against `configure-git.sh` with a throwaway global git config.

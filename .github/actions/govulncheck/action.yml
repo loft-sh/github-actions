@@ -18,7 +18,7 @@ inputs:
     required: false
     default: go.mod
   private-repo:
-    description: "When true, configures `git` url rewriting with `gh-access-token` and sets `GOPRIVATE=github.com/loft-sh/*` so the scan can resolve private modules."
+    description: "When true, configures a `git` credential helper for github.com with `gh-access-token` and sets `GOPRIVATE=github.com/loft-sh/*` so the scan can resolve private modules."
     required: false
     default: "false"
   goprivate:
@@ -50,17 +50,14 @@ inputs:
 runs:
   using: "composite"
   steps:
+    # Credential helper, not an insteadOf token URL: curl strips credentials
+    # from the effective URL and git then drops the token (DEVOPS-1702).
     - name: Configure git for private modules
       if: inputs.private-repo == 'true'
       shell: bash
       env:
         GH_ACCESS_TOKEN: ${{ inputs.gh-access-token }}
-      run: |
-        if [ -z "${GH_ACCESS_TOKEN}" ]; then
-          echo "::error::private-repo=true requires gh-access-token input"
-          exit 1
-        fi
-        git config --global url."https://${GH_ACCESS_TOKEN}@github.com/".insteadOf "https://github.com/"
+      run: ${{ github.action_path }}/configure-git.sh
 
     - name: Set up Go
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
