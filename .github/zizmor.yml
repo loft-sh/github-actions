@@ -1,4 +1,9 @@
 rules:
+  unpinned-uses:
+    config:
+      policies:
+        "loft-sh/*": ref-pin
+        "*": hash-pin
   # The fix rewrites local `uses: ./...` to GitHub's `$/...` form, which
   # actionlint (1.7.12) rejects as an invalid action reference. Re-enable once
   # actionlint accepts it.

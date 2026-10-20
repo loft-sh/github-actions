@@ -115,7 +115,8 @@ Every PR that adds or modifies an action must verify:
 
 - [ ] `persist-credentials: false` on all checkout steps
 - [ ] Explicit job-level `permissions` (least privilege)
-- [ ] All action references pinned by SHA (tag in comment for Renovate)
+- [ ] Third-party references use full commit SHAs with version comments for Renovate
+- [ ] In-house `loft-sh/*` references use their rolling version tags
 - [ ] actionlint + zizmor clean (`make lint`)
 - [ ] Fork PRs handled (skip gracefully or guard on repo match)
 
@@ -135,16 +136,18 @@ git tag -f <action-name>/v1
 git push origin <action-name>/v1 --force
 ```
 
-Callers reference actions pinned by SHA with the tag in a comment so Renovate
-can track updates:
+Callers reference in-house actions by their rolling version tags so shared fixes
+reach every caller:
 
 ```yaml
-uses: loft-sh/github-actions/.github/actions/<action-name>@<commit-sha> # <action-name>/v1
+uses: loft-sh/github-actions/.github/actions/<action-name>@<action-name>/v1
 ```
 
 Maintainers reserve the right to update the `v<N>` tag pointer at any time when
 a new version is released, unless Renovate is configured to handle the upgrade
 for a specific caller.
 
-Reusable workflows live under `.github/workflows/` and are referenced the same
-way — pinned by SHA with a tag comment.
+Reusable workflows live under `.github/workflows/` and use their corresponding
+rolling version tags. Third-party actions and reusable workflows use full commit
+SHAs with version comments. Renovate configurations must exempt `loft-sh/**`
+from digest pinning.

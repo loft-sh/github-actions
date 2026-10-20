@@ -88,7 +88,7 @@ runs:
       if: steps.collect.outputs.proceed == 'true'
       continue-on-error: true
       # Pinned by SHA like every internal composite (docs/CONVENTIONS.md).
-      uses: loft-sh/github-actions/.github/actions/ai-step@17f1806257f071e23c72c5fae7cfa7af78ab5bae # ai-step/v1
+      uses: loft-sh/github-actions/.github/actions/ai-step@ai-step/v1 # ai-step/v1
       with:
         provider: anthropic
         effort: ${{ inputs.effort }}

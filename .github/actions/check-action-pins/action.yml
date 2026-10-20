@@ -1,5 +1,8 @@
 name: Check action pins
 description: Require immutable third-party action pins while allowing loft-sh rolling refs.
+branding:
+  icon: shield
+  color: blue
 inputs:
   path:
     description: Repository directory to scan; workflows and action definitions under .github are checked.

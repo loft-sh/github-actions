@@ -81,6 +81,16 @@ def test_ignored_file_is_collected(repository, zizmor):
     assert check.check(zizmor, repository) == 1
 
 
+@pytest.mark.parametrize("filename", ["dependabot.yml", "dependabot.yaml"])
+@pytest.mark.parametrize("reference,expected", [("vendor/example@v1", 1),
+                                                 (f"vendor/example@{SHA}", 0)])
+def test_workflow_named_dependabot_is_audited(repository, zizmor, filename, reference, expected):
+    workflow(repository, reference)
+    source = repository / ".github/workflows/check.yaml"
+    source.rename(source.with_name(filename))
+    assert check.check(zizmor, repository) == expected
+
+
 def test_docs_and_script_text_are_not_references(repository, zizmor):
     workflow(repository, f"actions/checkout@{SHA}")
     (repository / ".github/README.md").write_text("uses: vendor/example@v1")

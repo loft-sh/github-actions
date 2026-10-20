@@ -71,7 +71,7 @@ def check(binary, repository):
     result = run([
         binary, "--offline", "--no-progress", "--format", "json",
         "--no-exit-codes", "--no-ignores", "--strict-collection",
-        "--collect", "all", "--config", str(POLICY), str(target),
+        "--collect", "workflows,actions", "--config", str(POLICY), str(target),
     ], env=environment)
     if result.returncode:
         raise CheckError(f"zizmor failed ({result.returncode}): {result.stderr}")
