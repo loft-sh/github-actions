@@ -82,12 +82,14 @@ runs:
           fi
         fi
 
+    # Credential helper, not an insteadOf token URL: curl strips credentials
+    # from the effective URL and git then drops the token (DEVOPS-1702).
     - name: Configure git for private repos
       if: inputs.gh-access-token != ''
       shell: bash
       env:
         GH_ACCESS_TOKEN: ${{ inputs.gh-access-token }}
-      run: git config --global "url.https://${GH_ACCESS_TOKEN}@github.com/.insteadOf" https://github.com/
+      run: ${{ github.action_path }}/configure-git.sh
 
     - name: Set up Go
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
