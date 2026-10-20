@@ -1,0 +1,28 @@
+name: Test check-action-pins
+
+on:
+  pull_request:
+    paths:
+      - '.github/actions/check-action-pins/**'
+      - '.github/workflows/test-check-action-pins.yaml'
+      - 'Makefile'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  check-action-pins:
+    name: Test action pin check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Run tests
+        run: make test-check-action-pins
+      - name: Check repository action pins
+        uses: ./.github/actions/check-action-pins

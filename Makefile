@@ -1,6 +1,7 @@
 .PHONY: test test-secret-broker-request test-secret-broker-response test-semver-validation test-setup-semstat test-linear-pr-commenter test-link-backport-prs test-select-backport-source-prs test-release-notification test-linear-release-sync test-linear-cve-summary test-aws-test-infra test-cleanup-head-charts test-ci-test-notify test-auto-approve-bot-prs test-ai-pr-review test-ai-step test-release-summary test-publish-helm-chart test-govulncheck test-go-licenses test-run-ginkgo test-sticky-pr-comment test-repository-dispatch test-parse-label-filter test-release-branch-freeze test-prerelease-setup test-vcluster-release test-platform-release test-release-lib test-subtree-mirror test-oss-commit-sync test-oss-mirror-staleness test-backport-legacy-allowlist test-backport-legacy-split test-promote-release test-wait-for-release test-cve-scan test-commitlint test-resolve-github-release test-comment-triggered-check build-linear-release-sync lint check-bats-jobs install-auto-doc generate-docs check-docs help
 
 ACTIONS_DIR := .github/actions
+.PHONY: test-check-action-pins
 WORKFLOWS_DIR := .github/workflows
 SCRIPTS_DIR := .github/scripts
 
@@ -94,6 +95,11 @@ help: ## show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-30s %s\n", $$1, $$2}'
 
 test: test-secret-broker-request test-secret-broker-response test-semver-validation test-setup-semstat test-linear-pr-commenter test-link-backport-prs test-select-backport-source-prs test-release-notification test-linear-release-sync test-linear-cve-summary test-aws-test-infra test-cleanup-head-charts test-auto-approve-bot-prs test-ai-pr-review test-ai-step test-release-summary test-ci-test-notify test-go-licenses test-publish-helm-chart test-govulncheck test-run-ginkgo test-sticky-pr-comment test-repository-dispatch test-parse-label-filter test-release-branch-freeze test-prerelease-setup test-vcluster-release test-platform-release test-release-lib test-subtree-mirror test-oss-commit-sync test-oss-mirror-staleness test-backport-legacy-allowlist test-backport-legacy-split test-promote-release test-wait-for-release test-cve-scan test-commitlint test-resolve-github-release test-comment-triggered-check ## run all action tests
+
+test: test-check-action-pins
+
+test-check-action-pins: ## run action-pin unit tests and offline zizmor integration tests
+	uv run --with pytest==8.3.3 --with zizmor==1.30.1 pytest $(ACTIONS_DIR)/check-action-pins/test/ -q
 
 test-secret-broker-request: ## run secret-broker-request pytest tests
 	uv run --with pytest==8.3.3 pytest $(ACTIONS_DIR)/secret-broker-request/test/ -q

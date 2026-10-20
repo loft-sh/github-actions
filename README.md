@@ -7,6 +7,17 @@ are written, tested, and structured.
 
 ## Available Actions
 
+### Check Action Pins
+
+Opt-in check for SHA-pinned third-party actions and reusable workflows, while
+allowing `loft-sh/*` rolling refs. Runs zizmor offline with a fixed policy and
+works on fork pull requests with `contents: read`.
+
+Location: `.github/actions/check-action-pins`
+
+See [check-action-pins README](./.github/actions/check-action-pins/README.md)
+for usage, runner requirements, and the release and required-check followup.
+
 ### Secret Broker Request Action
 
 Validates a short-lived secret request from an immutable commit, verifies the
