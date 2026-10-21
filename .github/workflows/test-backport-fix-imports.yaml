@@ -1,0 +1,27 @@
+name: Test backport-fix-imports
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/actions/backport-fix-imports/**'
+      - '.github/workflows/test-backport-fix-imports.yaml'
+  pull_request:
+    paths:
+      - '.github/actions/backport-fix-imports/**'
+      - '.github/workflows/test-backport-fix-imports.yaml'
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Run backport-fix-imports pytest
+        run: uv run --with pytest==8.3.3 pytest .github/actions/backport-fix-imports/test/ -q

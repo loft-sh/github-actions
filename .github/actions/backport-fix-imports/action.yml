@@ -1,0 +1,64 @@
+name: Backport fix imports
+description: |
+  Repair Go module paths on a backport branch whose target release line is on
+  an older module major than its source (for example a v5 main backported to a
+  v4 release branch). Rewrites the import paths of modules the repository owns,
+  moves files added under a source-only staging directory, resolves conflict
+  hunks made only of import lines, then commits and pushes one commit. Conflicts
+  in real code are left and counted. Advisory: every failure path warns and
+  exits 0, so it never fails the backport that calls it.
+inputs:
+  target-branch:
+    description: 'Release branch the backport PR targets, e.g. release-4.12. Its root go.mod gives the target module paths.'
+    required: true
+  backport-branch:
+    description: 'Head branch of the backport PR, e.g. backport/release-4.12/pr-8606. Checked out, fixed and pushed back.'
+    required: true
+  source-branch:
+    description: 'Branch the original change merged into. Its root go.mod gives the source module paths.'
+    required: false
+    default: 'main'
+  github-token:
+    description: 'Token with contents write on the repository, used to fetch and push the backport branch. Supplied to git through the environment, never argv or .git/config.'
+    required: true
+  push:
+    description: 'false commits the fix locally without pushing (dry run).'
+    required: false
+    default: 'true'
+
+outputs:
+  conclusion:
+    description: 'fixed (a commit was made), unchanged (nothing to rewrite), skipped (same module paths, no go.mod, or missing input) or failed.'
+    value: ${{ steps.fix.outputs.conclusion }}
+  reason:
+    description: 'One-line explanation of the conclusion.'
+    value: ${{ steps.fix.outputs.reason }}
+  files-changed:
+    description: 'Number of .go files rewritten.'
+    value: ${{ steps.fix.outputs.files-changed }}
+  hunks-resolved:
+    description: 'Number of import-only conflict hunks resolved.'
+    value: ${{ steps.fix.outputs.hunks-resolved }}
+  conflicts-remaining:
+    description: 'Number of changed files that still carry conflict markers after the fix.'
+    value: ${{ steps.fix.outputs.conflicts-remaining }}
+  commit:
+    description: 'SHA of the fix commit; empty when none was made.'
+    value: ${{ steps.fix.outputs.commit }}
+
+runs:
+  using: composite
+  steps:
+    # The script exits 0 on every path it controls; continue-on-error covers
+    # the rest (a missing interpreter), so a backport is never failed by it.
+    - name: Fix module paths
+      id: fix
+      continue-on-error: true
+      shell: bash
+      env:
+        TARGET_BRANCH: ${{ inputs.target-branch }}
+        BACKPORT_BRANCH: ${{ inputs.backport-branch }}
+        SOURCE_BRANCH: ${{ inputs.source-branch }}
+        PUSH: ${{ inputs.push }}
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: python3 "${{ github.action_path }}/src/fix.py"
