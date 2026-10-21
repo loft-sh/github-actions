@@ -8,7 +8,7 @@ inputs:
     description: 'Release tag to summarize. Must exist in the checkout.'
     required: true
   previous-tag:
-    description: 'Tag to compare against. Leave empty to use the nearest earlier v* tag that is not a -next tag.'
+    description: 'Tag to compare against. Leave empty to derive it: a stable tag (no prerelease part, or -patch / -patch.N) compares with the highest earlier stable tag on any branch, a pre-release with the nearest earlier v* tag that is not a -next tag.'
     required: false
     default: ''
   repository:
