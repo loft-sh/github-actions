@@ -172,27 +172,109 @@ def test_first_release_skips(repo, env):
     assert "nothing to compare" in outputs(env)["reason"]
 
 
-def test_previous_tag_prefers_the_rc_on_the_same_commit(tmp_path, monkeypatch):
-    """v4.12.2 is cut from the commit of v4.12.2-rc.7; describe v4.12.2^ would
-    skip it and answer rc.6, so the GA summary would repeat rc.7's changes."""
+@pytest.mark.parametrize("tags, version", [
+    ([["v1.0.0-alpha.1"]], "v1.0.0-alpha.1"),
+    ([["v1.0.0-alpha.1"], ["v1.0.0-rc.1", "v1.0.0"]], "v1.0.0"),
+])
+def test_first_of_its_kind_skips(tmp_path, monkeypatch, env, tags, version):
+    """A first pre-release has no earlier tag; a first stable has only
+    pre-releases below it."""
+    history(tmp_path, monkeypatch, *tags)
+    with pytest.raises(SystemExit) as exc:
+        load().resolve_previous_tag(version, "")
+    assert exc.value.code == 0
+    assert "nothing to compare" in outputs(env)["reason"]
+
+
+def test_stable_skips_the_rc_on_the_same_commit(tmp_path, monkeypatch):
+    """v4.12.2 is cut from the commit of v4.12.2-rc.7. Comparing with that rc
+    gives an empty range and a zero-PR skip, so a stable tag compares with
+    the previous stable and covers every rc in between."""
     history(tmp_path, monkeypatch, ["v4.12.1"], ["v4.12.2-rc.6"],
             ["v4.12.2-rc.7", "v4.12.2"])
-    assert load().resolve_previous_tag("v4.12.2", "") == "v4.12.2-rc.7"
+    mod = load()
+    assert mod.resolve_previous_tag("v4.12.2", "") == "v4.12.1"
+    assert len(mod.list_commits("v4.12.1", "v4.12.2")) == 2
+
+
+def test_override_wins_over_both_rules(tmp_path, monkeypatch):
+    history(tmp_path, monkeypatch, ["v4.12.1"], ["v4.12.2-rc.6"],
+            ["v4.12.2-rc.7", "v4.12.2"])
+    mod = load()
+    assert mod.resolve_previous_tag("v4.12.2", "v4.12.2-rc.6") == "v4.12.2-rc.6"
+    assert mod.resolve_previous_tag("v4.12.2-rc.7", "v4.12.1") == "v4.12.1"
 
 
 def test_previous_tag_same_commit_orders_numerically(tmp_path, monkeypatch):
-    """rc.10 beats rc.9 and a prerelease beats an older alpha, whatever the
-    order git lists them in."""
+    """rc.9 beats beta.1 and alpha.2 below rc.10, whatever the order git
+    lists them in; the stable release on the commit compares with the
+    previous stable."""
     history(tmp_path, monkeypatch, ["v1.0.0"],
             ["v1.1.0-alpha.2", "v1.1.0-rc.9", "v1.1.0-rc.10", "v1.1.0-beta.1", "v1.1.0"])
-    assert load().resolve_previous_tag("v1.1.0", "") == "v1.1.0-rc.10"
+    mod = load()
+    assert mod.resolve_previous_tag("v1.1.0-rc.10", "") == "v1.1.0-rc.9"
+    assert mod.resolve_previous_tag("v1.1.0", "") == "v1.0.0"
 
 
 def test_previous_tag_same_commit_ignores_next_tags(tmp_path, monkeypatch):
-    """-next sorts above alpha, so only the exclusion keeps it out."""
+    """-next sorts between alpha and rc, so only the exclusion keeps it out."""
     history(tmp_path, monkeypatch, ["v1.0.0"],
-            ["v1.1.0-alpha.1", "v1.1.0-next.3", "v1.1.0"])
-    assert load().resolve_previous_tag("v1.1.0", "") == "v1.1.0-alpha.1"
+            ["v1.1.0-alpha.1", "v1.1.0-next.3", "v1.1.0-rc.1"])
+    assert load().resolve_previous_tag("v1.1.0-rc.1", "") == "v1.1.0-alpha.1"
+
+
+def test_stable_finds_the_previous_stable_on_a_sibling_branch(tmp_path, monkeypatch):
+    """v5.0.0 on main follows v4.12.2 on release-4.12, which describe from
+    main cannot reach. A higher stable elsewhere never counts, and the
+    pre-release rule is unchanged."""
+    r = history(tmp_path, monkeypatch, ["v4.12.0"])
+    git(r, "checkout", "-q", "-b", "release-4.12")
+    for tag in ("v4.12.1", "v4.12.2"):
+        commit(r, tag)
+        git(r, "tag", tag)
+    git(r, "checkout", "-q", "main")
+    commit(r, "alpha")
+    git(r, "tag", "v5.0.0-alpha.1")
+    commit(r, "rc")
+    git(r, "tag", "v5.0.0-rc.1")
+    git(r, "tag", "v5.0.0")
+    mod = load()
+    assert git(r, "describe", "--tags", "--abbrev=0", "v5.0.0^") == "v5.0.0-alpha.1"
+    assert mod.resolve_previous_tag("v5.0.0", "") == "v4.12.2"
+    assert mod.resolve_previous_tag("v4.12.2", "") == "v4.12.1"
+    assert mod.resolve_previous_tag("v5.0.0-alpha.1", "") == "v4.12.0"
+    assert [s for _, s in mod.list_commits("v4.12.2", "v5.0.0")] == ["rc", "alpha"]
+
+
+def test_stable_counts_a_patch_as_stable(tmp_path, monkeypatch):
+    """v0.28.2-patch.1 is cut on top of v0.28.2 (vcluster-pro), so it
+    compares with v0.28.2 and is itself the base for the next patch, though
+    semver sorts it below v0.28.2."""
+    history(tmp_path, monkeypatch, ["v0.28.1"], ["v0.28.2-rc.1", "v0.28.2"],
+            ["v0.28.2-patch.1"], ["v0.28.2-patch.2"], ["v0.28.3-rc.1", "v0.28.3"])
+    mod = load()
+    assert mod.resolve_previous_tag("v0.28.2-patch.1", "") == "v0.28.2"
+    assert mod.resolve_previous_tag("v0.28.2-patch.2", "") == "v0.28.2-patch.1"
+    assert mod.resolve_previous_tag("v0.28.3", "") == "v0.28.2-patch.2"
+
+
+@pytest.mark.parametrize("tag, stable", [
+    ("v0.34.4", True),
+    ("v0.28.2-patch.1", True),
+    ("v0.28.2-patch", True),
+    ("v0.34.4+build.1", True),
+    ("v0.35.0-rc.9", False),
+    ("v0.35.0-alpha.8", False),
+    ("v0.35.0-beta.2", False),
+    ("v0.35.0-dev.1", False),
+    ("v0.35.0-pre.1", False),
+    ("v0.35.0-next.0", False),
+    ("v0.35.0-patchset.1", False),
+    ("latest", False),
+])
+def test_is_stable_matches_linear_release_sync(tag, stable):
+    """The cases of linear-release-sync TestReleaseIsStable (DEVOPS-1006)."""
+    assert load().is_stable(tag) is stable
 
 
 def test_previous_tag_ignores_a_higher_tag_on_the_same_commit(tmp_path, monkeypatch):
@@ -203,23 +285,23 @@ def test_previous_tag_ignores_a_higher_tag_on_the_same_commit(tmp_path, monkeypa
 
 
 def test_previous_tag_falls_back_to_describe_without_a_shared_commit(tmp_path, monkeypatch):
-    history(tmp_path, monkeypatch, ["v1.0.0"], [], ["v1.1.0"])
-    assert load().resolve_previous_tag("v1.1.0", "") == "v1.0.0"
+    history(tmp_path, monkeypatch, ["v1.1.0-alpha.1"], [], ["v1.1.0-alpha.2"])
+    assert load().resolve_previous_tag("v1.1.0-alpha.2", "") == "v1.1.0-alpha.1"
 
 
 def test_previous_tag_prefers_the_release_over_its_rc_on_one_commit(tmp_path, monkeypatch):
-    """v4.12.1 follows a commit carrying v4.12.0 and v4.12.0-rc.12. describe
-    breaks that tie on tagger date, so an rc tagged later wins over the
-    release; the tagger dates here pin that."""
+    """v4.12.1-rc.1 follows a commit carrying v4.12.0 and v4.12.0-rc.12.
+    describe breaks that tie on tagger date, so an rc tagged later wins over
+    the release; the tagger dates here pin that."""
     r = history(tmp_path, monkeypatch, ["v4.12.0-rc.11"], [])
     for tag, date in (("v4.12.0", "2026-01-01T00:00:00"),
                       ("v4.12.0-rc.12", "2026-01-02T00:00:00")):
         subprocess.run(["git", "-C", str(r), "tag", "-a", "-m", tag, tag], check=True,
                        capture_output=True, env={**os.environ, "GIT_COMMITTER_DATE": date})
     commit(r, "commit 2")
-    git(r, "tag", "v4.12.1")
-    assert git(r, "describe", "--tags", "--abbrev=0", "v4.12.1^") == "v4.12.0-rc.12"
-    assert load().resolve_previous_tag("v4.12.1", "") == "v4.12.0"
+    git(r, "tag", "v4.12.1-rc.1")
+    assert git(r, "describe", "--tags", "--abbrev=0", "v4.12.1-rc.1^") == "v4.12.0-rc.12"
+    assert load().resolve_previous_tag("v4.12.1-rc.1", "") == "v4.12.0"
 
 
 def test_semver_key_orders_by_precedence():
@@ -517,6 +599,22 @@ def test_main_collects_and_proceeds(repo, env):
     assert prs["pull_requests"][1] == {"number": 10, "url": "https://x/pull/10",
                                        "title": "t", "linear": ["ENG-7"]}
     assert len(calls) == 1
+
+
+def test_main_summarizes_a_stable_cut_from_its_last_rc(tmp_path, monkeypatch, env):
+    """Compared with rc.2 on its own commit, v1.1.0 would hold no PR and
+    skip; compared with v1.0.0 it covers both rcs."""
+    history(tmp_path, monkeypatch, ["v1.0.0"], ["v1.1.0-rc.1"], ["v1.1.0-rc.2", "v1.1.0"])
+    monkeypatch.setenv("VERSION", "v1.1.0")
+    mod = load()
+    mod.graphql = lambda q, v, t: {"repository": {
+        "c0": {"associatedPullRequests": {"nodes": [pr(21)]}},
+        "c1": {"associatedPullRequests": {"nodes": [pr(20)]}}}}
+    mod.main()
+    o = outputs(env)
+    assert o["proceed"] == "true"
+    assert o["previous_tag"] == "v1.0.0"
+    assert o["pr_count"] == "2"
 
 
 def test_main_falls_back_to_subject_pr_number(repo, env):

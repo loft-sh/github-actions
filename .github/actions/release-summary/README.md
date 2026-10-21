@@ -13,12 +13,21 @@ any failure-notification job's `needs`.
 
 ## How it works
 
-1. `src/collect.py` picks the comparison base (the nearest earlier `v*` tag
-   that is not a `-next` tag, or `previous-tag`), lists first-parent commits,
+1. `src/collect.py` picks the comparison base, lists first-parent commits,
    and resolves each to its merged PR through GraphQL
    `associatedPullRequests`. Rebase-merged PRs carry no `(#N)` in their
    subjects, so the subject is only a fallback. It extracts Linear ids from
    closing keywords, Linear links, title prefixes and branch names.
+
+   The base is `previous-tag` when given. Otherwise it depends on the tag:
+
+   | Tag | Compared with | Example |
+   |---|---|---|
+   | Pre-release (`-alpha`, `-beta`, `-rc`) | the nearest earlier `v*` tag that is not a `-next` tag | `v5.0.0-alpha.3` against `v5.0.0-alpha.2` |
+   | Stable (no prerelease part, or `-patch` / `-patch.N`) | the highest earlier stable tag on any branch, skipping every pre-release | `v4.12.2` against `v4.12.1`, not its `v4.12.2-rc.7` |
+
+   Stability follows the tag name, as in `linear-release-sync`, and a
+   `-patch.N` tag sorts right above the release it patches.
 2. [`ai-step`](../ai-step/README.md) summarizes the PR descriptions, changed
    paths and diffstat into features, bug fixes, tech debt and tests, ordered
    by customer impact. The input travels through `input-file`, because PR
@@ -103,20 +112,20 @@ so two runs never race to post.
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-|       INPUT       |  TYPE  | REQUIRED |  DEFAULT   |                                                                                                                     DESCRIPTION                                                                                                                     |
-|-------------------|--------|----------|------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| anthropic-api-key | string |  false   |            |                                                                                           Anthropic API key. Empty skips the <br>summary with a warning.                                                                                            |
-|      dry-run      | string |  false   | `"false"`  |                                                                                  Collect, summarize and render into the <br>job summary without posting to Slack.                                                                                   |
-|      effort       | string |  false   | `"medium"` |                                                                                                      ai-step effort level (low, medium, high).                                                                                                      |
-|   github-token    | string |   true   |            |                                                                                       Token that can read the repository <br>pull requests through GraphQL.                                                                                         |
-| linear-workspace  | string |  false   |  `"loft"`  |                                                                                                 Linear workspace slug used to link <br>issue ids.                                                                                                   |
-|   previous-tag    | string |  false   |            |                                                                     Tag to compare against. Leave empty <br>to use the nearest earlier v* <br>tag that is not a -next <br>tag.                                                                      |
-|      product      | string |   true   |            |                                                                                           Product name shown in the summary, <br>e.g. vCluster Platform.                                                                                            |
-|    repository     | string |   true   |            |                                                              Repository the release belongs to (owner/name). <br>The checkout must be this repository <br>with full history and tags.                                                               |
-|  slack-bot-token  | string |  false   |            | Slack bot token with chat:write and <br>channels:history (groups:history for a private channel) in the banner channel. <br>chat:write also lets a re-run edit <br>the summary the bot posted earlier. <br>Empty skips the post with a <br>warning.  |
-| slack-channel-id  | string |  false   |            |                                                                                                   Slack channel id the banner was <br>posted to.                                                                                                    |
-|     thread-ts     | string |  false   |            |                                                            Message ts of the release banner, <br>or its Slack message link (Copy link); <br>the summary is posted as a <br>reply to it.                                                             |
-|      version      | string |   true   |            |                                                                                             Release tag to summarize. Must exist <br>in the checkout.                                                                                               |
+|       INPUT       |  TYPE  | REQUIRED |  DEFAULT   |                                                                                                                              DESCRIPTION                                                                                                                              |
+|-------------------|--------|----------|------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| anthropic-api-key | string |  false   |            |                                                                                                    Anthropic API key. Empty skips the <br>summary with a warning.                                                                                                     |
+|      dry-run      | string |  false   | `"false"`  |                                                                                           Collect, summarize and render into the <br>job summary without posting to Slack.                                                                                            |
+|      effort       | string |  false   | `"medium"` |                                                                                                               ai-step effort level (low, medium, high).                                                                                                               |
+|   github-token    | string |   true   |            |                                                                                                Token that can read the repository <br>pull requests through GraphQL.                                                                                                  |
+| linear-workspace  | string |  false   |  `"loft"`  |                                                                                                          Linear workspace slug used to link <br>issue ids.                                                                                                            |
+|   previous-tag    | string |  false   |            | Tag to compare against. Leave empty <br>to derive it: a stable tag <br>(no prerelease part, or -patch / -patch.N) compares with the highest earlier <br>stable tag on any branch, a <br>pre-release with the nearest earlier v* <br>tag that is not a -next <br>tag.  |
+|      product      | string |   true   |            |                                                                                                    Product name shown in the summary, <br>e.g. vCluster Platform.                                                                                                     |
+|    repository     | string |   true   |            |                                                                       Repository the release belongs to (owner/name). <br>The checkout must be this repository <br>with full history and tags.                                                                        |
+|  slack-bot-token  | string |  false   |            |          Slack bot token with chat:write and <br>channels:history (groups:history for a private channel) in the banner channel. <br>chat:write also lets a re-run edit <br>the summary the bot posted earlier. <br>Empty skips the post with a <br>warning.           |
+| slack-channel-id  | string |  false   |            |                                                                                                            Slack channel id the banner was <br>posted to.                                                                                                             |
+|     thread-ts     | string |  false   |            |                                                                     Message ts of the release banner, <br>or its Slack message link (Copy link); <br>the summary is posted as a <br>reply to it.                                                                      |
+|      version      | string |   true   |            |                                                                                                      Release tag to summarize. Must exist <br>in the checkout.                                                                                                        |
 
 <!-- AUTO-DOC-INPUT:END -->
 
