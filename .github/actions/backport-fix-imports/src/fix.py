@@ -78,7 +78,8 @@ def git(*args: str, check: bool = True) -> str:
                    GIT_CONFIG_VALUE_0=f"AUTHORIZATION: basic {auth}")
     res = subprocess.run(["git", *args], capture_output=True, text=True, env=env)
     if check and res.returncode != 0:
-        raise RuntimeError(f"git {args[0]} failed: {res.stderr.strip()}")
+        sub = next(a for i, a in enumerate(args) if not a.startswith("-") and (i == 0 or args[i - 1] != "-c"))
+        raise RuntimeError(f"git {sub} failed: {res.stderr.strip()}")
     return res.stdout
 
 
@@ -173,10 +174,12 @@ def merge_imports(ours: list[str], theirs: list[str], body: str) -> list[str]:
         if not m or m.group(2) in seen:
             continue
         name = import_name(line)
-        if name is None or re.search(r"\b" + re.escape(name) + r"\.", body):
+        # Not after a dot: obj.config.Field is a field, not package config.
+        if name is None or re.search(r"(?<![\w.])" + re.escape(name) + r"\.", body):
             merged.append(line)
             seen.add(m.group(2))
-    return [l for l in merged if l.strip()]
+    # Blank lines stay: they separate the import groups gofmt sorts within.
+    return merged
 
 
 def resolve_import_hunks(text: str, paths: list[tuple[str, str]]) -> tuple[str, int]:
@@ -289,7 +292,7 @@ def run() -> dict[str, str]:
 
     remaining = [p for p in changed if Path(p).is_file() and has_markers(Path(p).read_text(encoding="utf-8", errors="replace"))]
     for p in remaining:
-        print(f"::warning::{p}: conflict markers outside import blocks remain; resolve them by hand")
+        print(f"::warning::{p}: conflict markers remain; resolve them by hand")
     result = {"files-changed": str(len(rewritten)), "hunks-resolved": str(hunks),
               "conflicts-remaining": str(len(remaining)), "commit": ""}
 
@@ -318,7 +321,9 @@ def main() -> int:
     except Exception as e:  # noqa: BLE001 -- advisory: never fail the backport
         result = {"conclusion": "failed", "reason": str(e).splitlines()[0] if str(e) else type(e).__name__}
         print(f"::warning::backport-fix-imports failed: {result['reason']}; the backport PR is unchanged, fix it by hand")
-    for key, value in result.items():
+    # Every output on every path: an empty count would read as "not 0".
+    defaults = {"files-changed": "0", "hunks-resolved": "0", "conflicts-remaining": "0", "commit": ""}
+    for key, value in {**defaults, **result}.items():
         emit(key, value)
     print(f"conclusion={result['conclusion']} reason={result['reason']}")
     return 0

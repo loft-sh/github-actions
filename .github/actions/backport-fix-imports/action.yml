@@ -35,13 +35,13 @@ outputs:
     value: ${{ steps.fix.outputs.reason || 'the fix step did not run; see its log' }}
   files-changed:
     description: 'Number of .go files rewritten.'
-    value: ${{ steps.fix.outputs.files-changed }}
+    value: ${{ steps.fix.outputs.files-changed || '0' }}
   hunks-resolved:
     description: 'Number of import-only conflict hunks resolved.'
-    value: ${{ steps.fix.outputs.hunks-resolved }}
+    value: ${{ steps.fix.outputs.hunks-resolved || '0' }}
   conflicts-remaining:
-    description: 'Number of changed files that still carry conflict markers after the fix.'
-    value: ${{ steps.fix.outputs.conflicts-remaining }}
+    description: 'Number of changed files that still carry conflict markers after the fix. 0 on skipped and failed, where nothing was checked, so gate on conclusion too.'
+    value: ${{ steps.fix.outputs.conflicts-remaining || '0' }}
   commit:
     description: 'SHA of the fix commit; empty when none was made.'
     value: ${{ steps.fix.outputs.commit }}

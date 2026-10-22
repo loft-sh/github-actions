@@ -50,7 +50,9 @@ a one-line `reason` and exit 0, and nothing is pushed.
     backport-branch: backport/release-4.12/pr-8606
     github-token: ${{ secrets.GH_ACCESS_TOKEN }}
 
-- if: steps.fix.outputs.conflicts-remaining != '0'
+- if: >-
+    (steps.fix.outputs.conclusion == 'fixed' || steps.fix.outputs.conclusion == 'unchanged') &&
+    steps.fix.outputs.conflicts-remaining != '0'
   run: echo "conflicts left for review"
 ```
 
@@ -73,14 +75,14 @@ the backport PR's CI.
 
 <!-- AUTO-DOC-OUTPUT:START - Do not remove or modify this section -->
 
-|       OUTPUT        |  TYPE  |                                                             DESCRIPTION                                                             |
-|---------------------|--------|-------------------------------------------------------------------------------------------------------------------------------------|
-|       commit        | string |                                        SHA of the fix commit; empty <br>when none was made.                                         |
-|     conclusion      | string | fixed (a commit was made), unchanged (nothing to rewrite), skipped (same module paths, no go.mod, or missing input) <br>or failed.  |
-| conflicts-remaining | string |                            Number of changed files that still <br>carry conflict markers after the fix.                             |
-|    files-changed    | string |                                                   Number of .go files rewritten.                                                    |
-|   hunks-resolved    | string |                                           Number of import-only conflict hunks resolved.                                            |
-|       reason        | string |                                               One-line explanation of the conclusion.                                               |
+|       OUTPUT        |  TYPE  |                                                                               DESCRIPTION                                                                                |
+|---------------------|--------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|       commit        | string |                                                          SHA of the fix commit; empty <br>when none was made.                                                            |
+|     conclusion      | string |                   fixed (a commit was made), unchanged (nothing to rewrite), skipped (same module paths, no go.mod, or missing input) <br>or failed.                     |
+| conflicts-remaining | string | Number of changed files that still <br>carry conflict markers after the fix. <br>0 on skipped and failed, where <br>nothing was checked, so gate on <br>conclusion too.  |
+|    files-changed    | string |                                                                      Number of .go files rewritten.                                                                      |
+|   hunks-resolved    | string |                                                              Number of import-only conflict hunks resolved.                                                              |
+|       reason        | string |                                                                 One-line explanation of the conclusion.                                                                  |
 
 <!-- AUTO-DOC-OUTPUT:END -->
 

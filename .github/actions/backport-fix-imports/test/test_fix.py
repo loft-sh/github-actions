@@ -183,6 +183,27 @@ def test_target_only_import_kept_while_used_dropped_when_not():
     assert "pkg/gone" not in out
 
 
+def test_field_access_is_not_a_package_use():
+    text = conflicted(['\t"example.com/acme/app/v4/pkg/config"'], ['\t"example.com/acme/app/v5/pkg/apply"'],
+                      "func F() { x := obj.config.Field; apply.X(x) }\n")
+    out, _ = fix.resolve_import_hunks(text, PATHS)
+    assert "pkg/config" not in out
+
+
+@pytest.mark.parametrize("use", ["config.Load()", "(config.X)", "*config.T", "[]config.T{}"])
+def test_package_use_forms_keep_the_import(use):
+    text = conflicted(['\t"example.com/acme/app/v4/pkg/config"'], ['\t"example.com/acme/app/v5/pkg/apply"'],
+                      f"func F() {{ _ = {use}; apply.X() }}\n")
+    out, _ = fix.resolve_import_hunks(text, PATHS)
+    assert '"example.com/acme/app/v4/pkg/config"' in out
+
+
+def test_blank_lines_between_import_groups_are_kept():
+    theirs = ['\t"strings"', "", '\t"example.com/acme/app/v5/pkg/apply"']
+    out, _ = fix.resolve_import_hunks(conflicted([], theirs, "func F() { strings.X(); apply.X() }\n"), PATHS)
+    assert '\t"strings"\n\n\t"example.com/acme/app/v4/pkg/apply"' in out
+
+
 def test_target_only_import_with_unknown_name_is_kept():
     text = conflicted(['\t"github.com/x/go-openapi"'], ['\t"example.com/acme/app/v5/pkg/apply"'])
     out, _ = fix.resolve_import_hunks(text, PATHS)
@@ -332,9 +353,12 @@ def test_missing_branch_fails_soft(repo, monkeypatch):
     out = outputs(repo)
     assert out["conclusion"] == "failed"
     assert "git fetch failed" in out["reason"]
+    assert out["conflicts-remaining"] == "0" and out["commit"] == ""
 
 
 def test_missing_inputs_skip(repo, monkeypatch):
     monkeypatch.delenv("TARGET_BRANCH")
     assert fix.main() == 0
-    assert outputs(repo)["conclusion"] == "skipped"
+    out = outputs(repo)
+    assert out["conclusion"] == "skipped"
+    assert out["files-changed"] == out["hunks-resolved"] == out["conflicts-remaining"] == "0"
