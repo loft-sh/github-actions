@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Resolves and validates the four version inputs for the pre-release checks.
 # An empty upgrade target becomes the most recently published pre-release whose
-# final release has not shipped yet; an empty base becomes the highest release
-# below that target.
+# final release has not shipped yet, on or above the previous stable minor line;
+# an empty base becomes the highest release below that target.
 #
 # Needs GNU coreutils: `sort -V` must rank '~' below everything, which BSD and
 # macOS sort do not. The runners are Ubuntu; `make test` on a Mac will disagree.
@@ -85,16 +85,24 @@ stable_tags() {
     | sed 's/^v//' | { grep -E "$STABLE_RE" || true; }
 }
 
+line_of() { local v="${1%%-*}"; printf '%s' "${v%.*}"; }
+
+previous_stable_line() {
+  stable_tags "$1" | while read -r v; do line_of "$v"; echo; done | sort -uV | tail -n2 | head -n1
+}
+
 # The most recently published pre-release whose final release is not out yet.
 # /releases is not returned in any dependable order, so publish time is read
 # from the payload and sorted here rather than trusting the first row.
 newest_unreleased_pre_release() {
-  local repo="$1" released
+  local repo="$1" released floor
   released="$(stable_tags "$repo")"
+  floor="$(previous_stable_line "$repo")"
   local ranked first
   ranked="$(pre_release_tags "$repo" | while IFS=$'\t' read -r published version; do
     [ -n "$version" ] || continue
     if grep -qxF "${version%%-*}" <<<"$released"; then continue; fi
+    if [ -n "$floor" ] && is_below "$(line_of "$version")" "$floor"; then continue; fi
     printf '%s\t%s\t%s\n' "$published" "$(sort_key "$version")" "$version"
   done | sort -t "$(printf '\t')" -k1,1r -k2,2Vr)"
   [ -n "$ranked" ] || return 0
@@ -118,7 +126,7 @@ UP="${STANDALONE_VCLUSTER_UPGRADE_VERSION_INPUT:-}"
 UP="${UP#v}"
 if [ -z "$UP" ]; then
   UP="$(newest_unreleased_pre_release vcluster)"
-  [ -n "$UP" ] || { echo "no vCluster pre-release found in loft-sh/vcluster"; exit 1; }
+  [ -n "$UP" ] || { echo "no unreleased vCluster pre-release on or above the $(previous_stable_line vcluster) line in loft-sh/vcluster; pass standalone-vcluster-upgrade-version explicitly"; exit 1; }
   echo "Resolved newest unreleased vCluster pre-release: $UP"
 fi
 [[ "$UP" =~ $VERSION_RE ]] || { echo "invalid standalone-vcluster-upgrade-version: $UP"; exit 1; }
@@ -141,7 +149,7 @@ RC="${PLATFORM_RC_VERSION_INPUT:-}"
 RC="${RC#v}"
 if [ -z "$RC" ]; then
   RC="$(newest_unreleased_pre_release loft-enterprise)"
-  [ -n "$RC" ] || { echo "no platform pre-release found in loft-sh/loft-enterprise"; exit 1; }
+  [ -n "$RC" ] || { echo "no unreleased platform pre-release on or above the $(previous_stable_line loft-enterprise) line in loft-sh/loft-enterprise; pass platform-rc-version explicitly"; exit 1; }
   echo "Resolved newest unreleased platform pre-release: $RC"
 fi
 [[ "$RC" =~ $VERSION_RE ]] || { echo "invalid platform-rc-version: $RC"; exit 1; }

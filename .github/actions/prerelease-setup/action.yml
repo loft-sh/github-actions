@@ -13,7 +13,7 @@ inputs:
     required: false
     default: ''
   standalone-vcluster-upgrade-version:
-    description: 'vCluster version to upgrade standalone to (e.g. 0.35.0-alpha.7). Empty resolves to the most recently published vCluster pre-release whose final release has not shipped, excluding -next builds. Must differ from the resolved base version.'
+    description: 'vCluster version to upgrade standalone to (e.g. 0.35.0-alpha.7). Empty resolves to the most recently published vCluster pre-release whose final release has not shipped, excluding -next builds and anything below the previous stable minor line; fails when nothing qualifies. Must differ from the resolved base version.'
     required: false
     default: ''
   platform-base-version:
@@ -21,7 +21,7 @@ inputs:
     required: false
     default: ''
   platform-rc-version:
-    description: 'Platform RC version for upgrade (e.g. 4.10.0-alpha.6). Empty resolves to the most recently published platform pre-release whose final release has not shipped, excluding -next builds.'
+    description: 'Platform RC version for upgrade (e.g. 4.10.0-alpha.6). Empty resolves to the most recently published platform pre-release whose final release has not shipped, excluding -next builds and anything below the previous stable minor line; fails when nothing qualifies.'
     required: false
     default: ''
 
