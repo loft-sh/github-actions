@@ -18,18 +18,21 @@ already exists on the remote:
    rewritten, so a dependency major bump on `main` is left alone.
 2. Moves files the backport added under a source-only local directory (for
    example `staging/src/github.com/loft-sh/api/v5/...`) into the target's
-   directory.
+   directory. A file whose target path already exists is not moved and is
+   left for review.
 3. Resolves conflict hunks made only of import lines inside an import block.
    The backported side wins, rewritten to the target paths. An import only the
-   target side had stays while the file still uses it.
+   target side had stays while the code uses it, ignoring comments and strings.
+   When its package name cannot be told from the path (a `/vN` path such as
+   `k8s.io/api/core/v1`), the hunk is left for review instead of guessed.
 4. Rewrites the mapped paths in the `.go` files the backport changed, only at
    the start of a string literal and on a path boundary.
 5. Runs `gofmt` on files whose import blocks it resolved, then commits as
    `github-actions[bot]` and pushes one commit:
    `fix(backport): use <target-branch> module paths`.
 
-Conflict hunks in real code are left as they are and counted in
-`conflicts-remaining`, with a warning per file. A second run finds nothing to
+Conflict hunks in real code, undecidable import hunks and blocked moves are
+left as they are and counted in `conflicts-remaining`, with a warning per file. A second run finds nothing to
 rewrite and reports `unchanged`, so re-runs are safe.
 
 The action never fails the job: every failure path ends with `conclusion=failed`,
@@ -75,14 +78,14 @@ the backport PR's CI.
 
 <!-- AUTO-DOC-OUTPUT:START - Do not remove or modify this section -->
 
-|       OUTPUT        |  TYPE  |                                                                               DESCRIPTION                                                                                |
-|---------------------|--------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-|       commit        | string |                                                          SHA of the fix commit; empty <br>when none was made.                                                            |
-|     conclusion      | string |                   fixed (a commit was made), unchanged (nothing to rewrite), skipped (same module paths, no go.mod, or missing input) <br>or failed.                     |
-| conflicts-remaining | string | Number of changed files that still <br>carry conflict markers after the fix. <br>0 on skipped and failed, where <br>nothing was checked, so gate on <br>conclusion too.  |
-|    files-changed    | string |                                                                      Number of .go files rewritten.                                                                      |
-|   hunks-resolved    | string |                                                              Number of import-only conflict hunks resolved.                                                              |
-|       reason        | string |                                                                 One-line explanation of the conclusion.                                                                  |
+|       OUTPUT        |  TYPE  |                                                                                                                 DESCRIPTION                                                                                                                  |
+|---------------------|--------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|       commit        | string |                                                                                            SHA of the fix commit; empty <br>when none was made.                                                                                              |
+|     conclusion      | string |                                                     fixed (a commit was made), unchanged (nothing to rewrite), skipped (same module paths, no go.mod, or missing input) <br>or failed.                                                       |
+| conflicts-remaining | string | Number of changed files left for <br>a person: conflict markers remain, or <br>a new file could not be <br>moved because its target path exists. <br>0 on skipped and failed, where <br>nothing was checked, so gate on <br>conclusion too.  |
+|    files-changed    | string |                                                                                                        Number of .go files rewritten.                                                                                                        |
+|   hunks-resolved    | string |                                                                                                Number of import-only conflict hunks resolved.                                                                                                |
+|       reason        | string |                                                                                                   One-line explanation of the conclusion.                                                                                                    |
 
 <!-- AUTO-DOC-OUTPUT:END -->
 

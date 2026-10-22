@@ -204,20 +204,39 @@ def test_blank_lines_between_import_groups_are_kept():
     assert '\t"strings"\n\n\t"example.com/acme/app/v4/pkg/apply"' in out
 
 
-def test_target_only_import_with_unknown_name_is_kept():
-    text = conflicted(['\t"github.com/x/go-openapi"'], ['\t"example.com/acme/app/v5/pkg/apply"'])
-    out, _ = fix.resolve_import_hunks(text, PATHS)
-    assert '"github.com/x/go-openapi"' in out
+@pytest.mark.parametrize("line", [
+    '\t"github.com/x/go-openapi"',
+    # k8s.io/api/core/v1 is package v1, k8s.io/klog/v2 is package klog: the
+    # path alone cannot tell, so neither keeping nor dropping is safe.
+    '\t"k8s.io/api/core/v1"',
+    '\t"k8s.io/klog/v2"',
+    '\t. "example.com/dot"',
+])
+def test_target_only_import_with_unknown_name_leaves_the_hunk(line):
+    text = conflicted([line], ['\t"example.com/acme/app/v5/pkg/apply"'], "func F() { _ = v1.Pod{}; apply.X() }\n")
+    out, resolved = fix.resolve_import_hunks(text, PATHS)
+    assert resolved == 0
+    assert out == text
 
 
-def test_target_only_versioned_package_is_kept():
-    # k8s.io/api/core/v1 is package v1, not core: guessing "core" would drop
-    # an import the body still uses.
-    text = conflicted(['\t"k8s.io/api/core/v1"'], ['\t"example.com/acme/app/v5/pkg/apply"'],
-                      "func F() { _ = v1.Pod{}; apply.X() }\n")
+def test_target_only_blank_import_is_kept():
+    text = conflicted(['\t_ "embed"'], ['\t"example.com/acme/app/v5/pkg/apply"'], "func F() { apply.X() }\n")
     out, resolved = fix.resolve_import_hunks(text, PATHS)
     assert resolved == 1
-    assert '"k8s.io/api/core/v1"' in out
+    assert '_ "embed"' in out
+
+
+@pytest.mark.parametrize("body", [
+    "// config.Load() is called by the caller\nfunc F() { apply.X() }\n",
+    "/* config.Load() */\nfunc F() { apply.X() }\n",
+    'var s = "config.Load()"\nfunc F() { apply.X() }\n',
+    "var s = `config.Load()`\nfunc F() { apply.X() }\n",
+])
+def test_use_in_comment_or_string_does_not_keep_the_import(body):
+    text = conflicted(['\t"example.com/acme/app/v4/pkg/config"'], ['\t"example.com/acme/app/v5/pkg/apply"'], body)
+    out, resolved = fix.resolve_import_hunks(text, PATHS)
+    assert resolved == 1
+    assert "pkg/config" not in out
 
 
 def test_diff3_base_section_is_ignored():
@@ -273,6 +292,30 @@ def test_untouched_files_are_not_rewritten(repo):
     fix.main()
     assert '"example.com/acme/app/v5/pkg/x"' in remote_file(repo, "pkg/other/other.go")
     assert '"example.com/acme/app/v4/pkg/util"' in remote_file(repo, "pkg/peer/new.go")
+
+
+def test_existing_file_under_source_dir_is_not_moved(repo):
+    # Only files the backport added move; one the target already had stays put.
+    write(repo, f"{API_V5}/types/kept.go", "package types\n")
+    commit_all(repo, "pre-existing")
+    git(repo, "push", "-q", "origin", "HEAD:release-4.12")
+    write(repo, f"{API_V5}/types/kept.go", "package types\n\nvar X = 1\n")
+    write(repo, "pkg/peer/new.go", 'package peer\n\nimport "example.com/acme/app/v5/pkg/util"\n\nvar _ = util.X\n')
+    push_backport(repo)
+    fix.main()
+    tree = git(repo, "ls-tree", "-r", "--name-only", "origin/backport/release-4.12/pr-1")
+    assert f"{API_V5}/types/kept.go" in tree
+    assert f"{API_V4}/types/kept.go" not in tree
+
+
+def test_move_blocked_by_existing_target_is_left_for_review(repo):
+    write(repo, f"{API_V5}/types/types.go", 'package types\n\nimport "example.com/acme/api/v5/pkg/x"\n\nvar _ = x.Y\n')
+    push_backport(repo)
+    fix.main()
+    out = outputs(repo)
+    assert out["conflicts-remaining"] == "1"
+    assert out["conclusion"] == "unchanged"
+    assert '"example.com/acme/api/v5/pkg/x"' in remote_file(repo, f"{API_V5}/types/types.go")
 
 
 def test_file_added_under_source_staging_dir_is_moved(repo):

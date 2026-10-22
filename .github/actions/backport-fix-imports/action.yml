@@ -40,7 +40,7 @@ outputs:
     description: 'Number of import-only conflict hunks resolved.'
     value: ${{ steps.fix.outputs.hunks-resolved || '0' }}
   conflicts-remaining:
-    description: 'Number of changed files that still carry conflict markers after the fix. 0 on skipped and failed, where nothing was checked, so gate on conclusion too.'
+    description: 'Number of changed files left for a person: conflict markers remain, or a new file could not be moved because its target path exists. 0 on skipped and failed, where nothing was checked, so gate on conclusion too.'
     value: ${{ steps.fix.outputs.conflicts-remaining || '0' }}
   commit:
     description: 'SHA of the fix commit; empty when none was made.'

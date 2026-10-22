@@ -54,6 +54,8 @@ MAJOR_SUFFIX = re.compile(r"/v\d+$")
 IMPORT_SPEC = re.compile(r'^\s*(?:([A-Za-z_][A-Za-z0-9_]*|\.)\s+)?"([^"\s]+)"\s*(?://.*)?$')
 COMMENT = re.compile(r"^\s*//")
 IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+# Comments and string, raw string and rune literals: a name inside them is not a use.
+GO_NOISE = re.compile(r"""//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\\n])*"|`[^`]*`|'(?:\\.|[^'\\\n])*'""", re.S)
 
 BOT_NAME = "github-actions[bot]"
 BOT_EMAIL = "41898282+github-actions[bot]@users.noreply.github.com"
@@ -163,19 +165,23 @@ def block_end(lines: list[str], index: int) -> int:
     return len(lines)
 
 
-def merge_imports(ours: list[str], theirs: list[str], body: str) -> list[str]:
+def merge_imports(ours: list[str], theirs: list[str], body: str) -> list[str] | None:
     """Theirs (the backported change) wins. An import only the target side
-    has stays while the file still uses it, and whenever its name cannot be
-    told: an unused import fails the build as surely as a missing one."""
+    has stays while the code uses it. Returns None when that cannot be told
+    from the path, so the hunk is left for review: an unused import fails the
+    build as surely as a missing one."""
     merged = list(theirs)
     seen = {m.group(2) for m in map(IMPORT_SPEC.match, theirs) if m}
+    code = GO_NOISE.sub(" ", body)
     for line in ours:
         m = IMPORT_SPEC.match(line)
         if not m or m.group(2) in seen:
             continue
         name = import_name(line)
+        if m.group(1) != "_" and name is None:
+            return None
         # Not after a dot: obj.config.Field is a field, not package config.
-        if name is None or re.search(r"(?<![\w.])" + re.escape(name) + r"\.", body):
+        if m.group(1) == "_" or re.search(r"(?<![\w.])" + re.escape(name) + r"\.", code):
             merged.append(line)
             seen.add(m.group(2))
     # Blank lines stay: they separate the import groups gofmt sorts within.
@@ -203,9 +209,11 @@ def resolve_import_hunks(text: str, paths: list[tuple[str, str]]) -> tuple[str, 
         base = next((j for j in range(i + 1, sep) if lines[j].startswith(MARK_BASE)), sep)
         ours = [rewrite_paths(l, paths) for l in lines[i + 1:base]]
         theirs = [rewrite_paths(l, paths) for l in lines[sep + 1:end]]
+        merged = None
         if is_import_only(ours) and is_import_only(theirs) and in_import_block(lines, i):
-            body = "\n".join(lines[block_end(lines, end + 1) + 1:])
-            out.extend(merge_imports(ours, theirs, body))
+            merged = merge_imports(ours, theirs, "\n".join(lines[block_end(lines, end + 1) + 1:]))
+        if merged is not None:
+            out.extend(merged)
             resolved += 1
         else:
             out.extend(lines[i:end + 1])
@@ -217,16 +225,28 @@ def has_markers(text: str) -> bool:
     return any(l.startswith(MARK_OURS) for l in text.split("\n"))
 
 
-def move_files(changed: list[str], dirs: list[tuple[str, str]]) -> list[str]:
-    """Move files added under a source-only directory into the target's."""
-    result = []
-    for path in changed:
+def changed_files(base: str) -> list[tuple[str, str]]:
+    """(status letter, current path) for each file the backport added, modified or renamed."""
+    files = []
+    for line in git("diff", "--name-status", "--diff-filter=AMR", base, "HEAD").splitlines():
+        fields = line.split("\t")
+        files.append((fields[0][0], fields[-1]))
+    return files
+
+
+def move_files(changed: list[tuple[str, str]], dirs: list[tuple[str, str]]) -> tuple[list[str], list[str]]:
+    """Move files the backport added under a source-only directory into the
+    target's. Returns the resulting paths and the files that could not move
+    because their target path exists; those are left for review."""
+    result, blocked = [], []
+    for status, path in changed:
         new = path
         for src_dir, tgt_dir in dirs:
-            if path.startswith(src_dir + "/"):
+            if status == "A" and path.startswith(src_dir + "/"):
                 candidate = tgt_dir + path[len(src_dir):]
                 if Path(candidate).exists():
-                    print(f"::warning::{path}: {candidate} already exists, left in place; move it by hand")
+                    print(f"::warning::{path}: {candidate} already exists, so it was not moved; merge the two by hand")
+                    blocked.append(path)
                 else:
                     Path(candidate).parent.mkdir(parents=True, exist_ok=True)
                     git("mv", path, candidate)
@@ -234,7 +254,7 @@ def move_files(changed: list[str], dirs: list[tuple[str, str]]) -> list[str]:
                     new = candidate
                 break
         result.append(new)
-    return result
+    return result, blocked
 
 
 def gofmt(files: list[str]) -> None:
@@ -271,13 +291,12 @@ def run() -> dict[str, str]:
 
     git("checkout", "-q", "-B", branch, f"{remote}/{branch}")
     base = git("merge-base", f"{remote}/{target}", "HEAD").strip()
-    changed = [p for p in git("diff", "--name-only", "--diff-filter=AMR", base, "HEAD").splitlines() if p]
-    changed = move_files(changed, dirs)
+    changed, blocked = move_files(changed_files(base), dirs)
     moved = git("diff", "--cached", "--name-only").strip() != ""
 
     rewritten, to_format, hunks = [], [], 0
     for path in changed:
-        if not path.endswith(".go") or not Path(path).is_file():
+        if path in blocked or not path.endswith(".go") or not Path(path).is_file():
             continue
         before = Path(path).read_text(encoding="utf-8")
         after, resolved = resolve_import_hunks(before, paths)
@@ -290,9 +309,10 @@ def run() -> dict[str, str]:
                 to_format.append(path)
     gofmt(to_format)
 
-    remaining = [p for p in changed if Path(p).is_file() and has_markers(Path(p).read_text(encoding="utf-8", errors="replace"))]
-    for p in remaining:
+    marked = [p for p in changed if Path(p).is_file() and has_markers(Path(p).read_text(encoding="utf-8", errors="replace"))]
+    for p in marked:
         print(f"::warning::{p}: conflict markers remain; resolve them by hand")
+    remaining = sorted(set(marked) | set(blocked))
     result = {"files-changed": str(len(rewritten)), "hunks-resolved": str(hunks),
               "conflicts-remaining": str(len(remaining)), "commit": ""}
 
