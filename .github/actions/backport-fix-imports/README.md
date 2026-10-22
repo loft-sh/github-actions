@@ -24,7 +24,8 @@ already exists on the remote:
    The backported side wins, rewritten to the target paths. An import only the
    target side had stays while the code uses it, ignoring comments and strings.
    When its package name cannot be told from the path (a `/vN` path such as
-   `k8s.io/api/core/v1`), the hunk is left for review instead of guessed.
+   `k8s.io/api/core/v1`), or when both sides import the same path under
+   different names, the hunk is left for review instead of guessed.
 4. Rewrites the mapped paths in the `.go` files the backport changed, only at
    the start of a string literal and on a path boundary.
 5. Runs `gofmt` on files whose import blocks it resolved, then commits as

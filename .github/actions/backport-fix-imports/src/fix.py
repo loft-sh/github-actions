@@ -171,11 +171,17 @@ def merge_imports(ours: list[str], theirs: list[str], body: str) -> list[str] | 
     from the path, so the hunk is left for review: an unused import fails the
     build as surely as a missing one."""
     merged = list(theirs)
-    seen = {m.group(2) for m in map(IMPORT_SPEC.match, theirs) if m}
+    seen = {m.group(2): m.group(1) for m in map(IMPORT_SPEC.match, theirs) if m}
     code = GO_NOISE.sub(" ", body)
     for line in ours:
         m = IMPORT_SPEC.match(line)
-        if not m or m.group(2) in seen:
+        if not m:
+            continue
+        if m.group(2) in seen:
+            # Same path under another name (or blank/dot): the code outside
+            # the hunk may still use the target's name.
+            if seen[m.group(2)] != m.group(1):
+                return None
             continue
         name = import_name(line)
         if m.group(1) != "_" and name is None:
@@ -183,7 +189,7 @@ def merge_imports(ours: list[str], theirs: list[str], body: str) -> list[str] | 
         # Not after a dot: obj.config.Field is a field, not package config.
         if m.group(1) == "_" or re.search(r"(?<![\w.])" + re.escape(name) + r"\.", code):
             merged.append(line)
-            seen.add(m.group(2))
+            seen[m.group(2)] = m.group(1)
     # Blank lines stay: they separate the import groups gofmt sorts within.
     return merged
 

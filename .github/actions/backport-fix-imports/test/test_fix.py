@@ -219,6 +219,27 @@ def test_target_only_import_with_unknown_name_leaves_the_hunk(line):
     assert out == text
 
 
+@pytest.mark.parametrize("ours, theirs", [
+    ('\toldname "example.com/p"', '\tnewname "example.com/p"'),
+    ('\toldname "example.com/p"', '\t"example.com/p"'),
+    ('\t_ "example.com/p"', '\t"example.com/p"'),
+    ('\t. "example.com/p"', '\t"example.com/p"'),
+])
+def test_same_path_under_another_name_leaves_the_hunk(ours, theirs):
+    text = conflicted([ours], [theirs], "func F() { oldname.X(); newname.Y(); p.Z() }\n")
+    out, resolved = fix.resolve_import_hunks(text, PATHS)
+    assert resolved == 0
+    assert out == text
+
+
+def test_same_path_same_name_is_deduplicated():
+    text = conflicted(['\tcfg "example.com/acme/app/v4/pkg/config"'], ['\tcfg "example.com/acme/app/v5/pkg/config"'],
+                      "func F() { cfg.X() }\n")
+    out, resolved = fix.resolve_import_hunks(text, PATHS)
+    assert resolved == 1
+    assert out.count('cfg "example.com/acme/app/v4/pkg/config"') == 1
+
+
 def test_target_only_blank_import_is_kept():
     text = conflicted(['\t_ "embed"'], ['\t"example.com/acme/app/v5/pkg/apply"'], "func F() { apply.X() }\n")
     out, resolved = fix.resolve_import_hunks(text, PATHS)
