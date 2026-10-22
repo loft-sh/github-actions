@@ -360,7 +360,6 @@ def test_clean_pick_with_source_imports_is_rewritten_and_pushed(repo):
     assert fix.main() == 0
     out = outputs(repo)
     assert out["conclusion"] == "fixed"
-    assert out["files-changed"] == "1"
     content = remote_file(repo, "pkg/peer/peer_test.go")
     assert '"example.com/acme/api/v4/pkg/apis/storage/v1"' in content
     assert '"example.com/acme/app/v4/pkg/peer/networkpeer"' in content
@@ -398,8 +397,8 @@ def test_move_blocked_by_existing_target_is_left_for_review(repo):
     push_backport(repo)
     fix.main()
     out = outputs(repo)
-    assert out["conflicts-remaining"] == "1"
     assert out["conclusion"] == "unchanged"
+    assert "1 file(s) left for review" in out["reason"]
     assert '"example.com/acme/api/v5/pkg/x"' in remote_file(repo, f"{API_V5}/types/types.go")
 
 
@@ -424,8 +423,7 @@ def test_import_conflict_resolved_code_conflict_counted(repo):
     fix.main()
     out = outputs(repo)
     assert out["conclusion"] == "fixed"
-    assert out["hunks-resolved"] == "1"
-    assert out["conflicts-remaining"] == "1"
+    assert "resolved 1 import conflict(s); 1 file(s) left for review" in out["reason"]
     assert not fix.has_markers(remote_file(repo, "pkg/peer/peer.go"))
     assert fix.has_markers(remote_file(repo, "pkg/peer/code.go"))
 
@@ -470,7 +468,8 @@ def test_push_false_leaves_the_remote_alone(repo, monkeypatch):
     before = git(repo, "rev-parse", "origin/backport/release-4.12/pr-1")
     fix.main()
     out = outputs(repo)
-    assert out["conclusion"] == "fixed" and out["commit"] != before
+    assert out["conclusion"] == "fixed"
+    assert git(repo, "rev-parse", "HEAD") != before
     git(repo, "fetch", "-q", "origin")
     assert git(repo, "rev-parse", "origin/backport/release-4.12/pr-1") == before
 
@@ -481,7 +480,6 @@ def test_missing_branch_fails_soft(repo, monkeypatch):
     out = outputs(repo)
     assert out["conclusion"] == "failed"
     assert "git fetch failed" in out["reason"]
-    assert out["conflicts-remaining"] == "0" and out["commit"] == ""
 
 
 def test_missing_inputs_skip(repo, monkeypatch):
@@ -489,4 +487,3 @@ def test_missing_inputs_skip(repo, monkeypatch):
     assert fix.main() == 0
     out = outputs(repo)
     assert out["conclusion"] == "skipped"
-    assert out["files-changed"] == out["hunks-resolved"] == out["conflicts-remaining"] == "0"

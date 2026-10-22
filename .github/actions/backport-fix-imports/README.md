@@ -37,7 +37,8 @@ already exists on the remote:
    `fix(backport): use <target-branch> module paths`.
 
 Conflict hunks in real code, undecidable import hunks and blocked moves are
-left as they are and counted in `conflicts-remaining`, with a warning per file. A second run finds nothing to
+left as they are, with a warning per file, and the `reason` says how many files
+are left for review. A second run finds nothing to
 rewrite and reports `unchanged`, so re-runs are safe.
 
 The action never fails the job: every failure path ends with `conclusion=failed`,
@@ -58,10 +59,10 @@ a one-line `reason` and exit 0, and nothing is pushed.
     backport-branch: backport/release-4.12/pr-8606
     github-token: ${{ secrets.GH_ACCESS_TOKEN }}
 
-- if: >-
-    (steps.fix.outputs.conclusion == 'fixed' || steps.fix.outputs.conclusion == 'unchanged') &&
-    steps.fix.outputs.conflicts-remaining != '0'
-  run: echo "conflicts left for review"
+- env:
+    CONCLUSION: ${{ steps.fix.outputs.conclusion }}
+    REASON: ${{ steps.fix.outputs.reason }}
+  run: echo "$CONCLUSION: $REASON"
 ```
 
 The runner needs `python3` and `git`; `gofmt` is optional and only formats the
@@ -83,14 +84,10 @@ the backport PR's CI.
 
 <!-- AUTO-DOC-OUTPUT:START - Do not remove or modify this section -->
 
-|       OUTPUT        |  TYPE  |                                                                                                                 DESCRIPTION                                                                                                                  |
-|---------------------|--------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-|       commit        | string |                                                                                            SHA of the fix commit; empty <br>when none was made.                                                                                              |
-|     conclusion      | string |                                                     fixed (a commit was made), unchanged (nothing to rewrite), skipped (same module paths, no go.mod, or missing input) <br>or failed.                                                       |
-| conflicts-remaining | string | Number of changed files left for <br>a person: conflict markers remain, or <br>a new file could not be <br>moved because its target path exists. <br>0 on skipped and failed, where <br>nothing was checked, so gate on <br>conclusion too.  |
-|    files-changed    | string |                                                                                                        Number of .go files rewritten.                                                                                                        |
-|   hunks-resolved    | string |                                                                                                Number of import-only conflict hunks resolved.                                                                                                |
-|       reason        | string |                                                                                                   One-line explanation of the conclusion.                                                                                                    |
+|   OUTPUT   |  TYPE  |                                                             DESCRIPTION                                                             |
+|------------|--------|-------------------------------------------------------------------------------------------------------------------------------------|
+| conclusion | string | fixed (a commit was made), unchanged (nothing to rewrite), skipped (same module paths, no go.mod, or missing input) <br>or failed.  |
+|   reason   | string |                                               One-line explanation of the conclusion.                                               |
 
 <!-- AUTO-DOC-OUTPUT:END -->
 

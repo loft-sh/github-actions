@@ -349,24 +349,21 @@ def run() -> dict[str, str]:
     marked = [p for p in changed if Path(p).is_file() and has_markers(Path(p).read_text(encoding="utf-8", errors="replace"))]
     for p in marked:
         print(f"::warning::{p}: conflict markers remain; resolve them by hand")
-    remaining = sorted(set(marked) | set(blocked))
-    result = {"files-changed": str(len(rewritten)), "hunks-resolved": str(hunks),
-              "conflicts-remaining": str(len(remaining)), "commit": ""}
+    left = len(set(marked) | set(blocked))
+    left_note = f"; {left} file(s) left for review" if left else ""
 
     if not rewritten and not moved:
-        return {**result, "conclusion": "unchanged", "reason": "no module paths to rewrite"}
+        return {"conclusion": "unchanged", "reason": f"no module paths to rewrite{left_note}"}
 
     if rewritten:
         git("add", "--", *rewritten)
     mapping = ", ".join(f"{s} -> {t}" for s, t in paths)
     git("-c", f"user.name={BOT_NAME}", "-c", f"user.email={BOT_EMAIL}", "commit", "-q",
         "-m", f"fix(backport): use {target} module paths", "-m", f"Rewrote {mapping}.")
-    sha = git("rev-parse", "HEAD").strip()
-    result["commit"] = sha
     if push:
         git("push", "-q", remote, f"HEAD:refs/heads/{branch}")
-    reason = f"rewrote {len(rewritten)} file(s), resolved {hunks} import conflict(s)"
-    return {**result, "conclusion": "fixed", "reason": reason}
+    reason = f"rewrote {len(rewritten)} file(s), resolved {hunks} import conflict(s){left_note}"
+    return {"conclusion": "fixed", "reason": reason}
 
 
 def main() -> int:
@@ -378,9 +375,7 @@ def main() -> int:
     except Exception as e:  # noqa: BLE001 -- advisory: never fail the backport
         result = {"conclusion": "failed", "reason": str(e).splitlines()[0] if str(e) else type(e).__name__}
         print(f"::warning::backport-fix-imports failed: {result['reason']}; the backport PR is unchanged, fix it by hand")
-    # Every output on every path: an empty count would read as "not 0".
-    defaults = {"files-changed": "0", "hunks-resolved": "0", "conflicts-remaining": "0", "commit": ""}
-    for key, value in {**defaults, **result}.items():
+    for key, value in result.items():
         emit(key, value)
     print(f"conclusion={result['conclusion']} reason={result['reason']}")
     return 0
