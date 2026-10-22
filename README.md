@@ -167,6 +167,14 @@ backport link sweep and performs no mutation.
 
 See [select-backport-source-prs README](./.github/actions/select-backport-source-prs/README.md) for inputs, outputs, and tests.
 
+### Backport Fix Imports Action
+
+Repairs Go module paths on a backport branch whose target release line is on an older module major than its source, for example a v5 `main` backported to a v4 release branch. Rewrites the import paths of modules the repository owns, moves files added under a source-only staging directory, resolves conflict hunks made only of import lines, and pushes one fix commit. Conflicts in real code are left and counted; advisory, never fails the job.
+
+**Location:** `.github/actions/backport-fix-imports`
+
+See [backport-fix-imports README](./.github/actions/backport-fix-imports/README.md) for inputs, outputs, and tests.
+
 ### Run Ginkgo Tests
 
 Runs Ginkgo tests with directory or label-based filtering and generates a
