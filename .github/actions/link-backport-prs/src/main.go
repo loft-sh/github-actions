@@ -228,27 +228,24 @@ func versionFromBranch(branch string) string {
 	return m[1] + "." + m[2]
 }
 
-// backportHeadBranch is the branch sorenlouv creates for a backport:
-// backport/<targetBranch>/pr-<sourcePR>.
-func backportHeadBranch(targetBranch string, sourcePR int) string {
-	return fmt.Sprintf("backport/%s/pr-%d", targetBranch, sourcePR)
-}
+// maxRefValuesLen is where sorenlouv cuts the joined refs in a backport branch.
+const maxRefValuesLen = 200
 
-// isBackportHeadBranch reports whether head is sorenlouv's branch for sourcePR.
-// A multi-commit source repeats the ref once per commit:
-// backport/<targetBranch>/pr-<sourcePR>_pr-<sourcePR>.
+// isBackportHeadBranch reports whether head is the branch sorenlouv creates for
+// sourcePR: backport/<targetBranch>/pr-<sourcePR>, with the ref repeated once per
+// commit (pr-<sourcePR>_pr-<sourcePR>) and the refs cut to 200 characters.
 func isBackportHeadBranch(head, targetBranch string, sourcePR int) bool {
-	rest, ok := strings.CutPrefix(head, backportHeadBranch(targetBranch, sourcePR))
-	if !ok {
+	refValues, ok := strings.CutPrefix(head, "backport/"+targetBranch+"/")
+	ref := fmt.Sprintf("pr-%d", sourcePR)
+	if !ok || len(refValues) < len(ref) || len(refValues) > maxRefValuesLen {
 		return false
 	}
-	repeat := fmt.Sprintf("_pr-%d", sourcePR)
-	for rest != "" {
-		if rest, ok = strings.CutPrefix(rest, repeat); !ok {
-			return false
-		}
+	repeated := strings.Repeat(ref+"_", maxRefValuesLen/len(ref)+1)
+	if len(refValues) == maxRefValuesLen {
+		return refValues == repeated[:maxRefValuesLen]
 	}
-	return true
+	// Under the limit nothing was cut, so the refs end on a whole ref.
+	return refValues+"_" == repeated[:len(refValues)+1]
 }
 
 // titleMatchesVersion reports whether a sub-issue title carries the release-line
