@@ -140,7 +140,8 @@ def test_rewrite_only_at_string_start_and_path_boundary(text, expected):
 @pytest.mark.parametrize("line, name", [
     ('\t"example.com/acme/app/v4/pkg/peer"', "peer"),
     ('\tstoragev1 "example.com/acme/api/v4/pkg/apis/storage/v1"', "storagev1"),
-    ('\t"example.com/acme/api/v4"', "api"),
+    ('\t"example.com/acme/api/v4"', None),
+    ('\t"k8s.io/api/core/v1"', None),
     ('\t"gopkg.in/yaml.v3"', "yaml"),
     ('\t"github.com/go-openapi/spec"', "spec"),
     ('\t"github.com/x/go-openapi"', None),
@@ -186,6 +187,16 @@ def test_target_only_import_with_unknown_name_is_kept():
     text = conflicted(['\t"github.com/x/go-openapi"'], ['\t"example.com/acme/app/v5/pkg/apply"'])
     out, _ = fix.resolve_import_hunks(text, PATHS)
     assert '"github.com/x/go-openapi"' in out
+
+
+def test_target_only_versioned_package_is_kept():
+    # k8s.io/api/core/v1 is package v1, not core: guessing "core" would drop
+    # an import the body still uses.
+    text = conflicted(['\t"k8s.io/api/core/v1"'], ['\t"example.com/acme/app/v5/pkg/apply"'],
+                      "func F() { _ = v1.Pod{}; apply.X() }\n")
+    out, resolved = fix.resolve_import_hunks(text, PATHS)
+    assert resolved == 1
+    assert '"k8s.io/api/core/v1"' in out
 
 
 def test_diff3_base_section_is_ignored():

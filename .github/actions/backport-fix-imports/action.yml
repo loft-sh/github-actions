@@ -29,10 +29,10 @@ inputs:
 outputs:
   conclusion:
     description: 'fixed (a commit was made), unchanged (nothing to rewrite), skipped (same module paths, no go.mod, or missing input) or failed.'
-    value: ${{ steps.fix.outputs.conclusion }}
+    value: ${{ steps.fix.outputs.conclusion || 'failed' }}
   reason:
     description: 'One-line explanation of the conclusion.'
-    value: ${{ steps.fix.outputs.reason }}
+    value: ${{ steps.fix.outputs.reason || 'the fix step did not run; see its log' }}
   files-changed:
     description: 'Number of .go files rewritten.'
     value: ${{ steps.fix.outputs.files-changed }}
@@ -51,6 +51,8 @@ runs:
   steps:
     # The script exits 0 on every path it controls; continue-on-error covers
     # the rest (a missing interpreter), so a backport is never failed by it.
+    # When the script never ran it wrote no outputs, so conclusion and reason
+    # fall back to failed above.
     - name: Fix module paths
       id: fix
       continue-on-error: true

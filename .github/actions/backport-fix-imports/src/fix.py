@@ -131,10 +131,12 @@ def import_name(line: str) -> str | None:
         return None
     if m.group(1):
         return m.group(1)
-    parts = m.group(2).split("/")
-    last = parts[-1]
-    if re.fullmatch(r"v\d+", last) and len(parts) > 1:
-        last = parts[-2]
+    last = m.group(2).split("/")[-1]
+    # A /vN element is either a module major (package named after its parent)
+    # or the package itself (k8s.io/api/core/v1 is package v1); the path
+    # cannot tell which.
+    if re.fullmatch(r"v\d+", last):
+        return None
     last = re.sub(r"\.v\d+$", "", last)
     return last if IDENT.fullmatch(last) else None
 
