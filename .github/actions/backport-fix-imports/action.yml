@@ -87,13 +87,13 @@ runs:
           The JSON below lists each conflicted file in full. In every conflict block, the part between "<<<<<<< HEAD" and "=======" is the release branch; the part between "=======" and ">>>>>>>" is the backported change. A "|||||||" section, when present, is the common ancestor. The id of a block is the file path, "#", and its 0-based position in that file.
 
           For every block, return its id and either:
-          - resolvable true and code: the exact lines that replace the whole block, markers included, with the file's indentation; or
+          - resolvable true and code: the final lines that take the place of the whole block, from its "<<<<<<<" line through its ">>>>>>>" line, with the file's indentation; or
           - resolvable false, when you are not sure.
 
           Rules:
           - Keep what the backported change does, adapted to the release branch. Use only packages, types, functions and fields that the release-branch side of the file shows exist. Import paths of this repository use release_module, never a newer major version.
           - If the change depends on code the release branch does not have, or you are not certain the result compiles and behaves as intended, return resolvable false and say why in reason. A wrong answer is worse than none: a person reviews what you leave.
-          - code must not contain conflict markers.
+          - code is the resolved source only: it never contains a "<<<<<<<", "|||||||", "=======" or ">>>>>>>" line.
           - reason is one short sentence.
         output-schema: |
           {
