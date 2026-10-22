@@ -23,7 +23,7 @@ fix = load()
 
 V4_GOMOD = """module example.com/acme/app/v4
 
-go 1.26
+go 1.22
 
 require example.com/acme/api/v4 v4.0.0
 
@@ -474,8 +474,16 @@ def test_push_false_leaves_the_remote_alone(repo, monkeypatch):
     assert git(repo, "rev-parse", "origin/backport/release-4.12/pr-1") == before
 
 
-def test_missing_branch_fails_soft(repo, monkeypatch):
+def test_missing_backport_branch_skips(repo, monkeypatch):
     monkeypatch.setenv("BACKPORT_BRANCH", "backport/release-4.12/pr-404")
+    assert fix.main() == 0
+    assert outputs(repo)["conclusion"] == "skipped"
+
+
+def test_missing_target_branch_fails_soft(repo, monkeypatch):
+    write(repo, "pkg/peer/new.go", "package peer\n")
+    push_backport(repo)
+    monkeypatch.setenv("TARGET_BRANCH", "release-9.9")
     assert fix.main() == 0
     out = outputs(repo)
     assert out["conclusion"] == "failed"

@@ -313,6 +313,9 @@ def run() -> dict[str, str]:
     if not target or not branch:
         raise Skip("target-branch and backport-branch are required; pass both from the backport job")
 
+    # A label with no cherry-pick branch (a legacy line, a failed pick) is not ours to fix.
+    if not git("ls-remote", "--heads", remote, f"refs/heads/{branch}").strip():
+        raise Skip(f"no {branch} branch on {remote}; nothing to fix")
     git("fetch", "-q", "--no-tags", remote,
         *(f"+refs/heads/{b}:refs/remotes/{remote}/{b}" for b in (target, source, branch)))
     gomods = []

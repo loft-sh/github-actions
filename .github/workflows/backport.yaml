@@ -38,12 +38,26 @@ on:
         type: string
         required: false
         default: ''
+      fix-imports:
+        description: >-
+          After the cherry-picks, run backport-fix-imports on each backport
+          branch: rewrite the repository's own Go module paths to the target
+          line's major, resolve import-only conflicts, and push a fix commit.
+          For repositories whose release lines sit on an older module major.
+          With anthropic-api-key set, Go conflicts that remain also go to an AI
+          pass, committed only for packages that pass go vet.
+        type: boolean
+        required: false
+        default: false
     secrets:
       gh-access-token:
         description: 'GitHub PAT for creating backport PRs'
         required: true
       linear-token:
         description: 'Linear API token for linking backport PRs to their matching Linear sub-issue. Optional; linking is skipped when not provided.'
+        required: false
+      anthropic-api-key:
+        description: 'Anthropic API key for the fix-imports AI pass. Optional; without it only the deterministic fix runs.'
         required: false
 
 # Serialize runs for the same source PR so two rapid label events can't both race
@@ -70,7 +84,16 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
+    outputs:
+      targets: ${{ steps.targets.outputs.targets }}
     steps:
+      # First, so fix-imports gets its targets even when a cherry-pick fails.
+      - name: List backport targets
+        id: targets
+        env:
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: echo "targets=$(jq -c '[.[] | select(startswith("backport-to-")) | ltrimstr("backport-to-")]' <<< "$LABELS")" >> "$GITHUB_OUTPUT"
+
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -101,6 +124,39 @@ jobs:
       - name: Debug log
         if: ${{ failure() }}
         run: cat ~/.backport/backport.debug.log
+
+  # One job per backport-to-* label. A label with no cherry-pick branch (a
+  # legacy line, a failed pick) makes the action skip, so the matrix needs no
+  # filtering here.
+  fix-imports:
+    name: Fix imports for ${{ matrix.target }}
+    needs: backport
+    if: inputs.fix-imports && !cancelled() && needs.backport.outputs.targets != '' && needs.backport.outputs.targets != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.backport.outputs.targets) }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # go and gofmt for the AI pass come with the hosted runner; go vet
+      # switches to the toolchain the target's go.mod asks for on its own.
+      - name: Fix imports on backport/${{ matrix.target }}/pr-${{ github.event.pull_request.number }}
+        uses: loft-sh/github-actions/.github/actions/backport-fix-imports@backport-fix-imports/v1 # zizmor: ignore[unpinned-uses] -- internal loft-sh/github-actions ref; reusable workflows check out the CALLER repo, so a local ./.github/actions path is not present here. @backport-fix-imports/v1 is the floating coordination tag kept aligned with backport/v1 (see DEVOPS-923 pin-drift class).
+        with:
+          target-branch: ${{ matrix.target }}
+          backport-branch: backport/${{ matrix.target }}/pr-${{ github.event.pull_request.number }}
+          source-branch: ${{ github.event.pull_request.base.ref }}
+          github-token: ${{ secrets.gh-access-token }} # zizmor: ignore[secrets-outside-env] -- PAT passed through workflow_call; pushes the fix commit so the backport PR's CI runs on it
+          anthropic-api-key: ${{ secrets.anthropic-api-key }} # zizmor: ignore[secrets-outside-env] -- optional key passed through workflow_call
 
   # --- pre-monorepo (<= v0.36) split/re-root flow ---------------------------
   # sorenlouv (above) only cherry-picks monorepo-era (>= v0.37) targets. Legacy

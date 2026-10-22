@@ -4,9 +4,11 @@ description: |
   an older module major than its source (for example a v5 main backported to a
   v4 release branch). Rewrites the import paths of modules the repository owns,
   moves files added under a source-only staging directory, resolves conflict
-  hunks made only of import lines, then commits and pushes one commit. Conflicts
-  in real code are left and counted. Advisory: every failure path warns and
-  exits 0, so it never fails the backport that calls it.
+  hunks made only of import lines, then commits and pushes one commit. With an
+  Anthropic key, Go conflicts that remain go to an AI pass whose answers are
+  committed only for packages that pass go vet. Anything else is left for
+  review. Advisory: every failure path warns and exits 0, so it never fails the
+  backport that calls it.
 inputs:
   target-branch:
     description: 'Release branch the backport PR targets, e.g. release-4.12. Its root go.mod gives the target module paths.'
@@ -25,6 +27,10 @@ inputs:
     description: 'false commits the fix locally without pushing (dry run).'
     required: false
     default: 'true'
+  anthropic-api-key:
+    description: 'Anthropic API key. Set, it turns on the AI pass for Go conflicts left after the fix; empty, the AI pass never runs. Needs go and gofmt on the runner.'
+    required: false
+    default: ''
 
 outputs:
   conclusion:
@@ -52,3 +58,61 @@ runs:
         PUSH: ${{ inputs.push }}
         GH_TOKEN: ${{ inputs.github-token }}
       run: python3 "${{ github.action_path }}/src/fix.py"
+
+    - name: Collect Go conflicts for the AI pass
+      id: prepare
+      if: inputs.anthropic-api-key != '' && (steps.fix.outputs.conclusion == 'fixed' || steps.fix.outputs.conclusion == 'unchanged')
+      continue-on-error: true
+      shell: bash
+      env:
+        TARGET_BRANCH: ${{ inputs.target-branch }}
+      run: python3 "${{ github.action_path }}/src/ai.py" prepare
+
+    - name: Resolve Go conflicts
+      id: ai
+      if: steps.prepare.outputs.input-file != ''
+      continue-on-error: true
+      # Pinned by SHA like every internal composite (docs/CONVENTIONS.md).
+      uses: loft-sh/github-actions/.github/actions/ai-step@17f1806257f071e23c72c5fae7cfa7af78ab5bae # ai-step/v1
+      with:
+        provider: anthropic
+        # Few calls (only backports with Go conflicts left), and a wrong answer
+        # costs a reviewer more than a stronger model costs us.
+        effort: high
+        max-tokens: '16000'
+        anthropic-api-key: ${{ inputs.anthropic-api-key }}
+        input-file: ${{ steps.prepare.outputs.input-file }}
+        prompt: |
+          A change merged on ${{ inputs.source-branch }} was cherry-picked onto the older release branch ${{ inputs.target-branch }}, and some Go files have git conflicts.
+          The JSON below lists each conflicted file in full. In every conflict block, the part between "<<<<<<< HEAD" and "=======" is the release branch; the part between "=======" and ">>>>>>>" is the backported change. A "|||||||" section, when present, is the common ancestor. The id of a block is the file path, "#", and its 0-based position in that file.
+
+          For every block, return its id and either:
+          - resolvable true and code: the exact lines that replace the whole block, markers included, with the file's indentation; or
+          - resolvable false, when you are not sure.
+
+          Rules:
+          - Keep what the backported change does, adapted to the release branch. Use only packages, types, functions and fields that the release-branch side of the file shows exist. Import paths of this repository use release_module, never a newer major version.
+          - If the change depends on code the release branch does not have, or you are not certain the result compiles and behaves as intended, return resolvable false and say why in reason. A wrong answer is worse than none: a person reviews what you leave.
+          - code must not contain conflict markers.
+          - reason is one short sentence.
+        output-schema: |
+          {
+            "type": "object",
+            "required": ["resolutions"],
+            "properties": {
+              "resolutions": {"type": "array", "items": {"type": "object", "required": ["id", "resolvable", "code", "reason"], "properties": {"id": {"type": "string"}, "resolvable": {"type": "boolean"}, "code": {"type": "string"}, "reason": {"type": "string"}}}}
+            }
+          }
+
+    - name: Apply AI resolutions that pass go vet
+      if: steps.ai.outputs.conclusion == 'success'
+      continue-on-error: true
+      shell: bash
+      env:
+        TARGET_BRANCH: ${{ inputs.target-branch }}
+        BACKPORT_BRANCH: ${{ inputs.backport-branch }}
+        PUSH: ${{ inputs.push }}
+        GH_TOKEN: ${{ inputs.github-token }}
+        INPUT_FILE: ${{ steps.prepare.outputs.input-file }}
+        AI_RESULT: ${{ steps.ai.outputs.result }}
+      run: python3 "${{ github.action_path }}/src/ai.py" apply
