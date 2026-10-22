@@ -57,6 +57,13 @@ func TestMatchingBackportPRs(t *testing.T) {
 	wrongFullSHA := testPullRequest(52, "loft-sh/vcluster", "backport/v0.35/deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", "v0.35", "")
 	wrongFullBase := testPullRequest(53, "loft-sh/vcluster", "backport/v0.35/"+mergeSHA, "v0.36", "")
 	bodylessFullSHAPro := testPullRequest(55, "loft-sh/vcluster-pro", "backport/v0.35/"+mergeSHA, "v0.35", "")
+	multiCommit := testPullRequest(56, "loft-sh/vcluster-pro", "backport/v0.35/pr-2285_pr-2285", "v0.35", "")
+	sixCommits := testPullRequest(57, "loft-sh/vcluster-pro", "backport/v0.35/pr-2285_pr-2285_pr-2285_pr-2285_pr-2285_pr-2285", "v0.35", "")
+	mixedSources := testPullRequest(58, "loft-sh/vcluster-pro", "backport/v0.35/pr-2285_pr-9999", "v0.35", "")
+	prefixSuffix := testPullRequest(59, "loft-sh/vcluster-pro", "backport/v0.35/pr-2285_pr-22850", "v0.35", "")
+	prefixModern := testPullRequest(60, "loft-sh/vcluster-pro", "backport/v0.35/pr-22850", "v0.35", "")
+	trailingSeparator := testPullRequest(61, "loft-sh/vcluster-pro", "backport/v0.35/pr-2285_", "v0.35", "")
+	foreignMultiCommit := testPullRequest(62, "outside-contributor/vcluster-pro", "backport/v0.35/pr-2285_pr-2285", "v0.35", "")
 
 	cases := []struct {
 		name          string
@@ -79,6 +86,10 @@ func TestMatchingBackportPRs(t *testing.T) {
 		{name: "full SHA still requires matching SHA and base", prs: []*github.PullRequest{wrongFullSHA, wrongFullBase}, expectedRepo: "loft-sh/vcluster", allowModern: false, want: nil},
 		{name: "bodyless full SHA is rejected in source repo", prs: []*github.PullRequest{bodylessFullSHAPro}, expectedRepo: "loft-sh/vcluster-pro", allowModern: true, want: nil},
 		{name: "empty source SHA rejects full SHA branch", prs: []*github.PullRequest{fullSHAOSS}, expectedRepo: "loft-sh/vcluster", allowModern: false, emptyMergeSHA: true, want: nil},
+		{name: "multi-commit branch in source repo", prs: []*github.PullRequest{multiCommit, sixCommits}, expectedRepo: "loft-sh/vcluster-pro", allowModern: true, want: []int{56, 57}},
+		{name: "reject multi-commit branches naming another PR", prs: []*github.PullRequest{mixedSources, prefixSuffix, prefixModern, trailingSeparator}, expectedRepo: "loft-sh/vcluster-pro", allowModern: true, want: nil},
+		{name: "foreign multi-commit head repo rejected", prs: []*github.PullRequest{foreignMultiCommit}, expectedRepo: "loft-sh/vcluster-pro", allowModern: true, want: nil},
+		{name: "multi-commit branch rejected in additional repo", prs: []*github.PullRequest{multiCommit}, expectedRepo: "loft-sh/vcluster-pro", allowModern: false, want: nil},
 	}
 
 	for _, c := range cases {

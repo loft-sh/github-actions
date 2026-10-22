@@ -234,6 +234,23 @@ func backportHeadBranch(targetBranch string, sourcePR int) string {
 	return fmt.Sprintf("backport/%s/pr-%d", targetBranch, sourcePR)
 }
 
+// isBackportHeadBranch reports whether head is sorenlouv's branch for sourcePR.
+// A multi-commit source repeats the ref once per commit:
+// backport/<targetBranch>/pr-<sourcePR>_pr-<sourcePR>.
+func isBackportHeadBranch(head, targetBranch string, sourcePR int) bool {
+	rest, ok := strings.CutPrefix(head, backportHeadBranch(targetBranch, sourcePR))
+	if !ok {
+		return false
+	}
+	repeat := fmt.Sprintf("_pr-%d", sourcePR)
+	for rest != "" {
+		if rest, ok = strings.CutPrefix(rest, repeat); !ok {
+			return false
+		}
+	}
+	return true
+}
+
 // titleMatchesVersion reports whether a sub-issue title carries the release-line
 // prefix for version, e.g. "[0.34] Copy of ENGCP-906" or "[v0.34] ...".
 func titleMatchesVersion(title, version string) bool {
@@ -498,13 +515,12 @@ func findBackportPRs(ctx context.Context, gh *github.Client, repos []repository,
 	return found, nil
 }
 
-// matchingBackportPRs accepts sorenlouv's deterministic branch or the legacy
-// split branch. New cross-repository split PRs carry the full source merge SHA
+// matchingBackportPRs accepts sorenlouv's deterministic branch (including its
+// multi-commit form) or the legacy split branch. New cross-repository split PRs carry the full source merge SHA
 // in the branch. Source-repository PRs and older SHA-prefix branches require
 // the fully-qualified source PR reference. The PR head repository must match the repository being
 // searched, so a fork cannot copy those values and receive a privileged edit.
 func matchingBackportPRs(prs []*github.PullRequest, target string, sourcePR int, mergeSHA, sourceRepo, expectedRepo string, allowModern bool) []*github.PullRequest {
-	modernHead := backportHeadBranch(target, sourcePR)
 	legacyPrefix := "backport/" + target + "/"
 	sourceRef := regexp.MustCompile(regexp.QuoteMeta(fmt.Sprintf("%s#%d", sourceRepo, sourcePR)) + `\b`)
 	var matches []*github.PullRequest
@@ -516,7 +532,7 @@ func matchingBackportPRs(prs []*github.PullRequest, target string, sourcePR int,
 			continue
 		}
 		head := pr.GetHead().GetRef()
-		if allowModern && head == modernHead {
+		if allowModern && isBackportHeadBranch(head, target, sourcePR) {
 			matches = append(matches, pr)
 			continue
 		}
