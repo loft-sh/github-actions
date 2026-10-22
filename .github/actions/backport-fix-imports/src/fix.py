@@ -32,12 +32,14 @@ Env:
 from __future__ import annotations
 
 import base64
+import functools
 import os
 import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Callable
 
 MARK_OURS = "<<<<<<< "
 MARK_BASE = "||||||| "
@@ -53,7 +55,7 @@ MAJOR_SUFFIX = re.compile(r"/v\d+$")
 # One import spec per line: optional name, quoted path, optional comment.
 IMPORT_SPEC = re.compile(r'^\s*(?:([A-Za-z_][A-Za-z0-9_]*|\.)\s+)?"([^"\s]+)"\s*(?://.*)?$')
 COMMENT = re.compile(r"^\s*//")
-IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+PACKAGE_CLAUSE = re.compile(r"^package\s+([A-Za-z_][A-Za-z0-9_]*)", re.M)
 # Comments and string, raw string and rune literals: a name inside them is not a use.
 GO_NOISE = re.compile(r"""//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\\n])*"|`[^`]*`|'(?:\\.|[^'\\\n])*'""", re.S)
 
@@ -126,22 +128,37 @@ def rewrite_paths(text: str, paths: list[tuple[str, str]]) -> str:
     return text
 
 
-def import_name(line: str) -> str | None:
-    """Package name an import line binds, or None when it cannot be told
-    (blank and dot imports, paths whose name is not their last element)."""
-    m = IMPORT_SPEC.match(line)
-    if not m or m.group(1) in (".", "_"):
-        return None
-    if m.group(1):
-        return m.group(1)
-    last = m.group(2).split("/")[-1]
-    # A /vN element is either a module major (package named after its parent)
-    # or the package itself (k8s.io/api/core/v1 is package v1); the path
-    # cannot tell which.
-    if re.fullmatch(r"v\d+", last):
-        return None
-    last = re.sub(r"\.v\d+$", "", last)
-    return last if IDENT.fullmatch(last) else None
+def package_clause(directory: Path) -> str | None:
+    """The package name the non-test .go files in a directory declare, or
+    None when there are none or they disagree."""
+    names = set()
+    if directory.is_dir():
+        for f in directory.glob("*.go"):
+            if not f.name.endswith("_test.go"):
+                m = PACKAGE_CLAUSE.search(GO_NOISE.sub(" ", f.read_text(encoding="utf-8", errors="replace")))
+                if m:
+                    names.add(m.group(1))
+    return names.pop() if len(names) == 1 else None
+
+
+def package_namer(owned: dict[str, tuple[str, str]], root: Path = Path(".")) -> Callable[[str], str | None]:
+    """Resolve an import path to the package name its source declares, since
+    the path does not say (github.com/json-iterator/go is package jsoniter).
+    The standard library goes by its last element, the repository's own
+    modules by their directory, everything else by vendor/. None when the
+    source is not in the checkout."""
+    modules = sorted(owned.values(), key=lambda m: len(m[0]), reverse=True)
+
+    @functools.cache
+    def name(path: str) -> str | None:
+        if "." not in path.split("/")[0]:
+            return [p for p in path.split("/") if not re.fullmatch(r"v\d+", p)][-1]
+        for mod_path, local in modules:
+            if path == mod_path or path.startswith(mod_path + "/"):
+                return package_clause(root / local / path[len(mod_path) + 1:])
+        return package_clause(root / "vendor" / path)
+
+    return name
 
 
 def is_import_only(lines: list[str]) -> bool:
@@ -165,36 +182,49 @@ def block_end(lines: list[str], index: int) -> int:
     return len(lines)
 
 
-def merge_imports(ours: list[str], theirs: list[str], body: str) -> list[str] | None:
+def merge_imports(ours: list[str], theirs: list[str], body: str,
+                  package_name: Callable[[str], str | None]) -> list[str] | None:
     """Theirs (the backported change) wins. An import only the target side
-    has stays while the code uses it. Returns None when that cannot be told
-    from the path, so the hunk is left for review: an unused import fails the
-    build as surely as a missing one."""
+    has stays while the code uses it. Returns None whenever dropping or
+    keeping a target line cannot be proven safe, so the hunk is left for
+    review: an unused import fails the build as surely as a missing one."""
     merged = list(theirs)
-    seen = {m.group(2): m.group(1) for m in map(IMPORT_SPEC.match, theirs) if m}
+    seen = {m.group(2): l.strip() for l in theirs if (m := IMPORT_SPEC.match(l))}
+    theirs_lines = {l.strip() for l in theirs}
     code = GO_NOISE.sub(" ", body)
     for line in ours:
+        if not line.strip():
+            continue
         m = IMPORT_SPEC.match(line)
         if not m:
-            continue
-        if m.group(2) in seen:
-            # Same path under another name (or blank/dot): the code outside
-            # the hunk may still use the target's name.
-            if seen[m.group(2)] != m.group(1):
+            # A comment only the target side has would be lost.
+            if line.strip() not in theirs_lines:
                 return None
             continue
-        name = import_name(line)
-        if m.group(1) != "_" and name is None:
+        alias, path = m.groups()
+        if path in seen:
+            # Same path under another name or comment (a //nolint, say): the
+            # code or a linter may rely on the target's line.
+            if seen[path] != line.strip():
+                return None
+            continue
+        if alias == ".":
             return None
-        # Not after a dot: obj.config.Field is a field, not package config.
-        if m.group(1) == "_" or re.search(r"(?<![\w.])" + re.escape(name) + r"\.", code):
-            merged.append(line)
-            seen[m.group(2)] = m.group(1)
+        if alias != "_":
+            name = alias or package_name(path)
+            if name is None:
+                return None
+            # Not after a dot: obj.config.Field is a field, not package config.
+            if not re.search(r"(?<![\w.])" + re.escape(name) + r"\.", code):
+                continue
+        merged.append(line)
+        seen[path] = line.strip()
     # Blank lines stay: they separate the import groups gofmt sorts within.
     return merged
 
 
-def resolve_import_hunks(text: str, paths: list[tuple[str, str]]) -> tuple[str, int]:
+def resolve_import_hunks(text: str, paths: list[tuple[str, str]],
+                         package_name: Callable[[str], str | None] = lambda _: None) -> tuple[str, int]:
     """Resolve conflict hunks made only of import lines inside an import
     block. Returns the new text and how many hunks were resolved."""
     lines = text.split("\n")
@@ -217,7 +247,7 @@ def resolve_import_hunks(text: str, paths: list[tuple[str, str]]) -> tuple[str, 
         theirs = [rewrite_paths(l, paths) for l in lines[sep + 1:end]]
         merged = None
         if is_import_only(ours) and is_import_only(theirs) and in_import_block(lines, i):
-            merged = merge_imports(ours, theirs, "\n".join(lines[block_end(lines, end + 1) + 1:]))
+            merged = merge_imports(ours, theirs, "\n".join(lines[block_end(lines, end + 1) + 1:]), package_name)
         if merged is not None:
             out.extend(merged)
             resolved += 1
@@ -298,6 +328,7 @@ def run() -> dict[str, str]:
     git("checkout", "-q", "-B", branch, f"{remote}/{branch}")
     base = git("merge-base", f"{remote}/{target}", "HEAD").strip()
     changed, blocked = move_files(changed_files(base), dirs)
+    package_name = package_namer(owned_modules(gomods[1]))
     moved = git("diff", "--cached", "--name-only").strip() != ""
 
     rewritten, to_format, hunks = [], [], 0
@@ -305,7 +336,7 @@ def run() -> dict[str, str]:
         if path in blocked or not path.endswith(".go") or not Path(path).is_file():
             continue
         before = Path(path).read_text(encoding="utf-8")
-        after, resolved = resolve_import_hunks(before, paths)
+        after, resolved = resolve_import_hunks(before, paths, package_name)
         after = rewrite_paths(after, paths)
         if after != before:
             Path(path).write_text(after, encoding="utf-8")

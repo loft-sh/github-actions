@@ -64,6 +64,7 @@ def repo(tmp_path, monkeypatch):
     subprocess.run(["git", "init", "-q", "-b", "release-4.12", str(work)], check=True)
     write(work, "go.mod", V4_GOMOD)
     write(work, f"{API_V4}/types/types.go", "package types\n")
+    write(work, "pkg/util/util.go", "package util\n\nvar X = 1\n")
     write(work, "pkg/peer/peer.go", 'package peer\n\nimport (\n\t"fmt"\n\n\t"example.com/acme/app/v4/pkg/util"\n)\n\nfunc A() { fmt.Println(util.X) }\n')
     commit_all(work, "release line")
     git(work, "checkout", "-q", "-b", "main")
@@ -137,22 +138,51 @@ def test_rewrite_only_at_string_start_and_path_boundary(text, expected):
     assert fix.rewrite_paths(text, PATHS) == expected
 
 
-@pytest.mark.parametrize("line, name", [
-    ('\t"example.com/acme/app/v4/pkg/peer"', "peer"),
-    ('\tstoragev1 "example.com/acme/api/v4/pkg/apis/storage/v1"', "storagev1"),
-    ('\t"example.com/acme/api/v4"', None),
-    ('\t"k8s.io/api/core/v1"', None),
-    ('\t"gopkg.in/yaml.v3"', "yaml"),
-    ('\t"github.com/go-openapi/spec"', "spec"),
-    ('\t"github.com/x/go-openapi"', None),
-    ('\t_ "embed"', None),
-    ('\t. "example.com/dot"', None),
+# -- package names ---------------------------------------------------------
+
+def go_file(root: Path, path: str, package: str) -> None:
+    (root / path).parent.mkdir(parents=True, exist_ok=True)
+    (root / path).write_text(f"// Package {package} does things.\npackage {package}\n")
+
+
+@pytest.fixture
+def namer(tmp_path):
+    go_file(tmp_path, "pkg/util/util.go", "util")
+    go_file(tmp_path, f"{API_V4}/pkg/x/x.go", "xapi")
+    go_file(tmp_path, "vendor/github.com/json-iterator/go/a.go", "jsoniter")
+    go_file(tmp_path, "vendor/k8s.io/api/core/v1/types.go", "v1")
+    go_file(tmp_path, "vendor/k8s.io/klog/v2/klog.go", "klog")
+    go_file(tmp_path, "vendor/example.com/mixed/a.go", "a")
+    go_file(tmp_path, "vendor/example.com/mixed/b.go", "b")
+    go_file(tmp_path, "vendor/example.com/tested/a_test.go", "tested_test")
+    go_file(tmp_path, "vendor/example.com/tested/a.go", "tested")
+    return fix.package_namer(fix.owned_modules(V4_GOMOD), tmp_path)
+
+
+@pytest.mark.parametrize("path, name", [
+    ("fmt", "fmt"),
+    ("net/http", "http"),
+    ("math/rand/v2", "rand"),
+    ("example.com/acme/app/v4/pkg/util", "util"),
+    ("example.com/acme/api/v4/pkg/x", "xapi"),
+    ("github.com/json-iterator/go", "jsoniter"),
+    ("k8s.io/api/core/v1", "v1"),
+    ("k8s.io/klog/v2", "klog"),
+    ("example.com/tested", "tested"),
+    # Not in the checkout, or files that disagree: no safe answer.
+    ("example.com/acme/app/v4/pkg/missing", None),
+    ("github.com/not/vendored", None),
+    ("example.com/mixed", None),
 ])
-def test_import_name(line, name):
-    assert fix.import_name(line) == name
+def test_package_name_comes_from_the_source(namer, path, name):
+    assert namer(path) == name
 
 
 # -- resolving import hunks ------------------------------------------------
+
+def by_last_element(path: str) -> str:
+    return path.rsplit("/", 1)[-1]
+
 
 def conflicted(ours: list[str], theirs: list[str], body: str = "func F() {}\n") -> str:
     return "\n".join(["package p", "", "import (", '\t"fmt"', "",
@@ -178,7 +208,7 @@ def test_target_only_import_kept_while_used_dropped_when_not():
         ['\t"example.com/acme/app/v4/pkg/legacy"', '\t"example.com/acme/app/v4/pkg/gone"'],
         ['\t"example.com/acme/app/v5/pkg/apply"'],
         "func F() { legacy.Run(); apply.X() }\n")
-    out, _ = fix.resolve_import_hunks(text, PATHS)
+    out, _ = fix.resolve_import_hunks(text, PATHS, by_last_element)
     assert '"example.com/acme/app/v4/pkg/legacy"' in out
     assert "pkg/gone" not in out
 
@@ -186,7 +216,7 @@ def test_target_only_import_kept_while_used_dropped_when_not():
 def test_field_access_is_not_a_package_use():
     text = conflicted(['\t"example.com/acme/app/v4/pkg/config"'], ['\t"example.com/acme/app/v5/pkg/apply"'],
                       "func F() { x := obj.config.Field; apply.X(x) }\n")
-    out, _ = fix.resolve_import_hunks(text, PATHS)
+    out, _ = fix.resolve_import_hunks(text, PATHS, by_last_element)
     assert "pkg/config" not in out
 
 
@@ -194,7 +224,7 @@ def test_field_access_is_not_a_package_use():
 def test_package_use_forms_keep_the_import(use):
     text = conflicted(['\t"example.com/acme/app/v4/pkg/config"'], ['\t"example.com/acme/app/v5/pkg/apply"'],
                       f"func F() {{ _ = {use}; apply.X() }}\n")
-    out, _ = fix.resolve_import_hunks(text, PATHS)
+    out, _ = fix.resolve_import_hunks(text, PATHS, by_last_element)
     assert '"example.com/acme/app/v4/pkg/config"' in out
 
 
@@ -205,15 +235,13 @@ def test_blank_lines_between_import_groups_are_kept():
 
 
 @pytest.mark.parametrize("line", [
-    '\t"github.com/x/go-openapi"',
-    # k8s.io/api/core/v1 is package v1, k8s.io/klog/v2 is package klog: the
-    # path alone cannot tell, so neither keeping nor dropping is safe.
+    '\t"github.com/json-iterator/go"',
     '\t"k8s.io/api/core/v1"',
-    '\t"k8s.io/klog/v2"',
     '\t. "example.com/dot"',
 ])
 def test_target_only_import_with_unknown_name_leaves_the_hunk(line):
-    text = conflicted([line], ['\t"example.com/acme/app/v5/pkg/apply"'], "func F() { _ = v1.Pod{}; apply.X() }\n")
+    # No source to read the package name from: neither keeping nor dropping is safe.
+    text = conflicted([line], ['\t"example.com/acme/app/v5/pkg/apply"'], "func F() { jsoniter.X(); apply.X() }\n")
     out, resolved = fix.resolve_import_hunks(text, PATHS)
     assert resolved == 0
     assert out == text
@@ -240,6 +268,42 @@ def test_same_path_same_name_is_deduplicated():
     assert out.count('cfg "example.com/acme/app/v4/pkg/config"') == 1
 
 
+def test_package_name_from_source_decides_the_import(namer):
+    # github.com/json-iterator/go is package jsoniter, not go.
+    text = conflicted(['\t"github.com/json-iterator/go"', '\t"k8s.io/klog/v2"'],
+                      ['\t"example.com/acme/app/v5/pkg/util"'], "func F() { jsoniter.X(); util.X() }\n")
+    out, resolved = fix.resolve_import_hunks(text, PATHS, namer)
+    assert resolved == 1
+    assert '"github.com/json-iterator/go"' in out
+    assert "klog" not in out
+
+
+@pytest.mark.parametrize("ours, theirs", [
+    ('\t"example.com/acme/app/v4/legacy" //nolint:staticcheck', '\t"example.com/acme/app/v5/legacy"'),
+    ('\t"example.com/acme/app/v4/legacy"', '\t"example.com/acme/app/v5/legacy" // new note'),
+])
+def test_same_path_with_another_comment_leaves_the_hunk(ours, theirs):
+    text = conflicted([ours], [theirs], "func F() { legacy.X() }\n")
+    out, resolved = fix.resolve_import_hunks(text, PATHS, by_last_element)
+    assert resolved == 0
+    assert out == text
+
+
+def test_comment_line_only_the_target_has_leaves_the_hunk():
+    text = conflicted(["\t// keep first: registers the scheme", '\t"example.com/acme/app/v4/pkg/a"'],
+                      ['\t"example.com/acme/app/v5/pkg/a"'], "func F() { a.X() }\n")
+    _, resolved = fix.resolve_import_hunks(text, PATHS, by_last_element)
+    assert resolved == 0
+
+
+def test_comment_line_both_sides_have_is_fine():
+    text = conflicted(["\t// shared note", '\t"example.com/acme/app/v4/pkg/a"'],
+                      ["\t// shared note", '\t"example.com/acme/app/v5/pkg/a"'], "func F() { a.X() }\n")
+    out, resolved = fix.resolve_import_hunks(text, PATHS, by_last_element)
+    assert resolved == 1
+    assert out.count("// shared note") == 1
+
+
 def test_target_only_blank_import_is_kept():
     text = conflicted(['\t_ "embed"'], ['\t"example.com/acme/app/v5/pkg/apply"'], "func F() { apply.X() }\n")
     out, resolved = fix.resolve_import_hunks(text, PATHS)
@@ -255,7 +319,7 @@ def test_target_only_blank_import_is_kept():
 ])
 def test_use_in_comment_or_string_does_not_keep_the_import(body):
     text = conflicted(['\t"example.com/acme/app/v4/pkg/config"'], ['\t"example.com/acme/app/v5/pkg/apply"'], body)
-    out, resolved = fix.resolve_import_hunks(text, PATHS)
+    out, resolved = fix.resolve_import_hunks(text, PATHS, by_last_element)
     assert resolved == 1
     assert "pkg/config" not in out
 

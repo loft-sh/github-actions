@@ -23,9 +23,13 @@ already exists on the remote:
 3. Resolves conflict hunks made only of import lines inside an import block.
    The backported side wins, rewritten to the target paths. An import only the
    target side had stays while the code uses it, ignoring comments and strings.
-   When its package name cannot be told from the path (a `/vN` path such as
-   `k8s.io/api/core/v1`), or when both sides import the same path under
-   different names, the hunk is left for review instead of guessed.
+   The package name is read from the source, never guessed from the path
+   (`github.com/json-iterator/go` is package `jsoniter`): the standard library
+   by its last element, the repository's own modules from their directory, and
+   everything else from `vendor/`. The hunk is left for review instead when
+   the name cannot be read, when both sides import the same path differently
+   (another name, another comment such as `//nolint`), or when a comment line
+   only the target side has would be lost.
 4. Rewrites the mapped paths in the `.go` files the backport changed, only at
    the start of a string literal and on a path boundary.
 5. Runs `gofmt` on files whose import blocks it resolved, then commits as
