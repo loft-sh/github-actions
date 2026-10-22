@@ -228,10 +228,24 @@ func versionFromBranch(branch string) string {
 	return m[1] + "." + m[2]
 }
 
-// backportHeadBranch is the branch sorenlouv creates for a backport:
-// backport/<targetBranch>/pr-<sourcePR>.
-func backportHeadBranch(targetBranch string, sourcePR int) string {
-	return fmt.Sprintf("backport/%s/pr-%d", targetBranch, sourcePR)
+// maxRefValuesLen is where sorenlouv cuts the joined refs in a backport branch.
+const maxRefValuesLen = 200
+
+// isBackportHeadBranch reports whether head is the branch sorenlouv creates for
+// sourcePR: backport/<targetBranch>/pr-<sourcePR>, with the ref repeated once per
+// commit (pr-<sourcePR>_pr-<sourcePR>) and the refs cut to 200 characters.
+func isBackportHeadBranch(head, targetBranch string, sourcePR int) bool {
+	refValues, ok := strings.CutPrefix(head, "backport/"+targetBranch+"/")
+	ref := fmt.Sprintf("pr-%d", sourcePR)
+	if !ok || len(refValues) < len(ref) || len(refValues) > maxRefValuesLen {
+		return false
+	}
+	repeated := strings.Repeat(ref+"_", maxRefValuesLen/len(ref)+1)
+	if len(refValues) == maxRefValuesLen {
+		return refValues == repeated[:maxRefValuesLen]
+	}
+	// Under the limit nothing was cut, so the refs end on a whole ref.
+	return refValues+"_" == repeated[:len(refValues)+1]
 }
 
 // titleMatchesVersion reports whether a sub-issue title carries the release-line
@@ -498,13 +512,12 @@ func findBackportPRs(ctx context.Context, gh *github.Client, repos []repository,
 	return found, nil
 }
 
-// matchingBackportPRs accepts sorenlouv's deterministic branch or the legacy
-// split branch. New cross-repository split PRs carry the full source merge SHA
+// matchingBackportPRs accepts sorenlouv's deterministic branch (including its
+// multi-commit form) or the legacy split branch. New cross-repository split PRs carry the full source merge SHA
 // in the branch. Source-repository PRs and older SHA-prefix branches require
 // the fully-qualified source PR reference. The PR head repository must match the repository being
 // searched, so a fork cannot copy those values and receive a privileged edit.
 func matchingBackportPRs(prs []*github.PullRequest, target string, sourcePR int, mergeSHA, sourceRepo, expectedRepo string, allowModern bool) []*github.PullRequest {
-	modernHead := backportHeadBranch(target, sourcePR)
 	legacyPrefix := "backport/" + target + "/"
 	sourceRef := regexp.MustCompile(regexp.QuoteMeta(fmt.Sprintf("%s#%d", sourceRepo, sourcePR)) + `\b`)
 	var matches []*github.PullRequest
@@ -516,7 +529,7 @@ func matchingBackportPRs(prs []*github.PullRequest, target string, sourcePR int,
 			continue
 		}
 		head := pr.GetHead().GetRef()
-		if allowModern && head == modernHead {
+		if allowModern && isBackportHeadBranch(head, target, sourcePR) {
 			matches = append(matches, pr)
 			continue
 		}

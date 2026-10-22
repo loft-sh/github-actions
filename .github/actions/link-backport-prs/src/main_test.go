@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -31,12 +32,65 @@ func TestVersionFromBranch(t *testing.T) {
 	}
 }
 
-func TestBackportHeadBranch(t *testing.T) {
-	if got := backportHeadBranch("v0.34", 3993); got != "backport/v0.34/pr-3993" {
-		t.Errorf("got %q", got)
+// producerHeadBranch mirrors sorenlouv/backport getBackportBranchName for a
+// source PR whose commits all carry that PR: one ref per commit, joined, cut to 200.
+func producerHeadBranch(targetBranch string, sourcePR, commits int) string {
+	refs := make([]string, commits)
+	for i := range refs {
+		refs[i] = fmt.Sprintf("pr-%d", sourcePR)
 	}
-	if got := backportHeadBranch("release-4.2", 12); got != "backport/release-4.2/pr-12" {
-		t.Errorf("got %q", got)
+	refValues := strings.Join(refs, "_")
+	if len(refValues) > 200 {
+		refValues = refValues[:200]
+	}
+	return "backport/" + targetBranch + "/" + refValues
+}
+
+func TestIsBackportHeadBranchAcceptsProducerNames(t *testing.T) {
+	for _, sourcePR := range []int{12, 3993, 8608, 12345} {
+		for commits := 1; commits <= 40; commits++ {
+			head := producerHeadBranch("release-4.12", sourcePR, commits)
+			if !isBackportHeadBranch(head, "release-4.12", sourcePR) {
+				t.Errorf("PR %d with %d commits: rejected %q", sourcePR, commits, head)
+			}
+		}
+	}
+}
+
+func TestIsBackportHeadBranch(t *testing.T) {
+	repeated := func(ref string, n int) string {
+		return strings.TrimSuffix(strings.Repeat(ref+"_", n), "_")
+	}
+	cases := []struct {
+		name     string
+		head     string
+		sourcePR int
+		want     bool
+	}{
+		{name: "single commit", head: "backport/v0.34/pr-3993", want: true},
+		{name: "two commits", head: "backport/v0.34/pr-3993_pr-3993", want: true},
+		{name: "cut after a separator", head: "backport/v0.34/" + repeated("pr-3993", 26)[:200], want: true},
+		{name: "cut inside a ref", head: "backport/v0.34/" + repeated("pr-12345", 23)[:200], sourcePR: 12345, want: true},
+		{name: "other target", head: "backport/v0.35/pr-3993", want: false},
+		{name: "other source PR", head: "backport/v0.34/pr-9999", want: false},
+		{name: "longer source PR", head: "backport/v0.34/pr-39930", want: false},
+		{name: "other PR in the chain", head: "backport/v0.34/pr-3993_pr-9999", want: false},
+		{name: "longer PR in the chain", head: "backport/v0.34/pr-3993_pr-39930", want: false},
+		{name: "trailing separator under the limit", head: "backport/v0.34/pr-3993_", want: false},
+		{name: "partial ref under the limit", head: "backport/v0.34/pr-3993_pr-39", want: false},
+		{name: "partial first ref", head: "backport/v0.34/pr-399", want: false},
+		{name: "over the limit", head: "backport/v0.34/" + repeated("pr-3993", 26)[:201], want: false},
+		{name: "untruncated over the limit", head: "backport/v0.34/" + repeated("pr-3993", 26), want: false},
+		{name: "wrong content at the limit", head: "backport/v0.34/" + repeated("pr-3993", 25)[:192] + "_pr-9999", want: false},
+		{name: "no prefix", head: "pr-3993", want: false},
+	}
+	for _, c := range cases {
+		if c.sourcePR == 0 {
+			c.sourcePR = 3993
+		}
+		if got := isBackportHeadBranch(c.head, "v0.34", c.sourcePR); got != c.want {
+			t.Errorf("%s: isBackportHeadBranch(%q) = %v, want %v", c.name, c.head, got, c.want)
+		}
 	}
 }
 
@@ -57,6 +111,13 @@ func TestMatchingBackportPRs(t *testing.T) {
 	wrongFullSHA := testPullRequest(52, "loft-sh/vcluster", "backport/v0.35/deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", "v0.35", "")
 	wrongFullBase := testPullRequest(53, "loft-sh/vcluster", "backport/v0.35/"+mergeSHA, "v0.36", "")
 	bodylessFullSHAPro := testPullRequest(55, "loft-sh/vcluster-pro", "backport/v0.35/"+mergeSHA, "v0.35", "")
+	multiCommit := testPullRequest(56, "loft-sh/vcluster-pro", "backport/v0.35/pr-2285_pr-2285", "v0.35", "")
+	sixCommits := testPullRequest(57, "loft-sh/vcluster-pro", "backport/v0.35/pr-2285_pr-2285_pr-2285_pr-2285_pr-2285_pr-2285", "v0.35", "")
+	mixedSources := testPullRequest(58, "loft-sh/vcluster-pro", "backport/v0.35/pr-2285_pr-9999", "v0.35", "")
+	prefixSuffix := testPullRequest(59, "loft-sh/vcluster-pro", "backport/v0.35/pr-2285_pr-22850", "v0.35", "")
+	prefixModern := testPullRequest(60, "loft-sh/vcluster-pro", "backport/v0.35/pr-22850", "v0.35", "")
+	trailingSeparator := testPullRequest(61, "loft-sh/vcluster-pro", "backport/v0.35/pr-2285_", "v0.35", "")
+	foreignMultiCommit := testPullRequest(62, "outside-contributor/vcluster-pro", "backport/v0.35/pr-2285_pr-2285", "v0.35", "")
 
 	cases := []struct {
 		name          string
@@ -79,6 +140,10 @@ func TestMatchingBackportPRs(t *testing.T) {
 		{name: "full SHA still requires matching SHA and base", prs: []*github.PullRequest{wrongFullSHA, wrongFullBase}, expectedRepo: "loft-sh/vcluster", allowModern: false, want: nil},
 		{name: "bodyless full SHA is rejected in source repo", prs: []*github.PullRequest{bodylessFullSHAPro}, expectedRepo: "loft-sh/vcluster-pro", allowModern: true, want: nil},
 		{name: "empty source SHA rejects full SHA branch", prs: []*github.PullRequest{fullSHAOSS}, expectedRepo: "loft-sh/vcluster", allowModern: false, emptyMergeSHA: true, want: nil},
+		{name: "multi-commit branch in source repo", prs: []*github.PullRequest{multiCommit, sixCommits}, expectedRepo: "loft-sh/vcluster-pro", allowModern: true, want: []int{56, 57}},
+		{name: "reject multi-commit branches naming another PR", prs: []*github.PullRequest{mixedSources, prefixSuffix, prefixModern, trailingSeparator}, expectedRepo: "loft-sh/vcluster-pro", allowModern: true, want: nil},
+		{name: "foreign multi-commit head repo rejected", prs: []*github.PullRequest{foreignMultiCommit}, expectedRepo: "loft-sh/vcluster-pro", allowModern: true, want: nil},
+		{name: "multi-commit branch rejected in additional repo", prs: []*github.PullRequest{multiCommit}, expectedRepo: "loft-sh/vcluster-pro", allowModern: false, want: nil},
 	}
 
 	for _, c := range cases {
