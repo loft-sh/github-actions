@@ -36,17 +36,22 @@ read_once=""
 for attempt in $(seq 1 "$attempts"); do
   # The preflight read the PR with this token, so a failure here is treated as
   # transient and retried rather than stranding a run whose CI already passed.
+  # The third field is the first label matching SKIP_LABELS, compared without
+  # case as GitHub does, and matched inside the filter so no label name passes
+  # through @tsv as JSON.
+  # shellcheck disable=SC2016 # $ENV is read by jq, not the shell
   if ! pr_state=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" \
     --jq '[
       (.mergeable | if . == null then "null" else tostring end),
       (.head.sha // ""),
-      ([.labels[]?.name] | tojson)
+      ([$ENV.SKIP_LABELS // "" | split(",")[] | gsub("^\\s+|\\s+$"; "") | ascii_downcase | select(length > 0)] as $skip
+       | first(.labels[]?.name | select(ascii_downcase as $l | $skip | index($l))) // "")
     ] | @tsv' 2>/dev/null); then
     [ "$attempt" -lt "$attempts" ] && sleep "$sleep_seconds"
     continue
   fi
 
-  IFS=$'\t' read -r mergeable current_head labels <<< "$pr_state"
+  IFS=$'\t' read -r mergeable current_head skip <<< "$pr_state"
   read_once=1
   if [ -z "$current_head" ]; then
     echo "::error::could not resolve the current head SHA for PR #${PR_NUMBER} after CI; not approving because the tested commit cannot be verified"
@@ -58,19 +63,10 @@ for attempt in $(seq 1 "$attempts"); do
     emit proceed false
     exit 0
   fi
-  if [ -n "${SKIP_LABELS:-}" ]; then
-    if ! skip=$(jq -nr --argjson have "${labels:-}" --arg skip "$SKIP_LABELS" \
-        '[$skip | split(",")[] | gsub("^\\s+|\\s+$"; "") | select(length > 0)] as $s
-         | first($have[] | select(. as $l | $s | index($l))) // empty' 2>/dev/null); then
-      echo "::error::could not read the labels of PR #${PR_NUMBER}; not approving because skip-labels is set"
-      emit proceed false
-      exit 0
-    fi
-    if [ -n "$skip" ]; then
-      echo "::notice::PR #${PR_NUMBER} is labeled '$(safe "$skip")'; not approving, it is left for a person"
-      emit proceed false
-      exit 0
-    fi
+  if [ -n "$skip" ]; then
+    echo "::notice::PR #${PR_NUMBER} is labeled '$(safe "$skip")'; not approving, it is left for a person"
+    emit proceed false
+    exit 0
   fi
   [ "$mergeable" != "null" ] && break
   [ "$attempt" -lt "$attempts" ] && sleep "$sleep_seconds"

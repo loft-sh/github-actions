@@ -130,4 +130,27 @@ kv() { grep "^$1=" "$GITHUB_OUTPUT" | tail -n1; }
   GH_MOCK_PULL_SEQ="$BATS_TEST_TMPDIR/pulls" GH_MOCK_LABELS='["backport-ai-resolved"]' SKIP_LABELS="backport-ai-resolved" run "$SCRIPT"
   [ "$status" -eq 0 ]
   [ "$(kv proceed)" = "proceed=false" ]
+  # Decided on the first read, before mergeability resolves.
+  [ "$(grep -c 'pulls/42' "$GH_MOCK_CALLS")" -eq 1 ]
+}
+
+@test "a skip label blocks even when mergeability never resolves" {
+  GH_MOCK_MERGEABLE=null GH_MOCK_LABELS='["backport-ai-resolved"]' SKIP_LABELS="backport-ai-resolved" run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv proceed)" = "proceed=false" ]
+  [[ "$output" != *"did not report mergeability"* ]]
+}
+
+@test "skip labels match without case, as GitHub labels do" {
+  GH_MOCK_MERGEABLE=true GH_MOCK_LABELS='["backport-ai-resolved"]' SKIP_LABELS="Backport-AI-Resolved" run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv proceed)" = "proceed=false" ]
+}
+
+@test "labels with quotes or backslashes do not break the read" {
+  GH_MOCK_MERGEABLE=true GH_MOCK_LABELS='["say \"hi\"", "a\\b"]' SKIP_LABELS="backport-ai-resolved" run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv proceed)" = "proceed=true" ]
+  GH_MOCK_MERGEABLE=true GH_MOCK_LABELS='["say \"hi\"", "backport-ai-resolved"]' SKIP_LABELS="backport-ai-resolved" run "$SCRIPT"
+  [ "$(kv proceed)" = "proceed=false" ]
 }
