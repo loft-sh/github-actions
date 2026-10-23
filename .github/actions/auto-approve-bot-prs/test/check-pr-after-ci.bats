@@ -91,3 +91,43 @@ kv() { grep "^$1=" "$GITHUB_OUTPUT" | tail -n1; }
     GITHUB_REPOSITORY=o/r PR_NUMBER=1 "$SCRIPT"
   [ "$status" -ne 0 ]
 }
+
+@test "a skip label keeps the PR for a person" {
+  GH_MOCK_MERGEABLE=true GH_MOCK_LABELS='["backport-ai-resolved"]' SKIP_LABELS="backport-ai-resolved" run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv proceed)" = "proceed=false" ]
+  [[ "$output" == *"::notice::PR #42 is labeled 'backport-ai-resolved'"* ]]
+}
+
+@test "any label from a list with spaces matches" {
+  GH_MOCK_MERGEABLE=true GH_MOCK_LABELS='["Large","hold"]' SKIP_LABELS=" backport-ai-resolved , hold " run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv proceed)" = "proceed=false" ]
+  [[ "$output" == *"labeled 'hold'"* ]]
+}
+
+@test "other labels do not block approval" {
+  GH_MOCK_MERGEABLE=true GH_MOCK_LABELS='["Large"]' SKIP_LABELS="backport-ai-resolved" run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv proceed)" = "proceed=true" ]
+}
+
+@test "without skip-labels a labeled PR proceeds as before" {
+  GH_MOCK_MERGEABLE=true GH_MOCK_LABELS='["backport-ai-resolved"]' run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv proceed)" = "proceed=true" ]
+}
+
+@test "a moved head is reported before a skip label" {
+  GH_MOCK_MERGEABLE=true GH_MOCK_HEAD_SHA="new-head-sha" GH_MOCK_LABELS='["backport-ai-resolved"]' SKIP_LABELS="backport-ai-resolved" run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv proceed)" = "proceed=false" ]
+  [[ "$output" == *"head changed"* ]]
+}
+
+@test "a skip label read while mergeability is pending still blocks" {
+  printf 'null\ntrue\n' > "$BATS_TEST_TMPDIR/pulls"
+  GH_MOCK_PULL_SEQ="$BATS_TEST_TMPDIR/pulls" GH_MOCK_LABELS='["backport-ai-resolved"]' SKIP_LABELS="backport-ai-resolved" run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv proceed)" = "proceed=false" ]
+}

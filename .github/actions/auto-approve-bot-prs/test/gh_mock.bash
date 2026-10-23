@@ -15,6 +15,7 @@ set -o pipefail
 #
 # GH_MOCK_MERGEABLE          → response for `gh api ...pulls/N`
 # GH_MOCK_HEAD_SHA           → PR head SHA returned by `gh api ...pulls/N`
+# GH_MOCK_LABELS             → JSON array of label names on `gh api ...pulls/N` (default [])
 # GH_MOCK_PULL_FAIL          → if 'always', /pulls/N exits non-zero
 # GH_MOCK_PULL_SEQ           → path to file with one mergeable value per line
 #                              (true|false|null); call N reads line N, falling
@@ -103,8 +104,9 @@ emit_api_response() {
       fi
       m="${seq:-${GH_MOCK_MERGEABLE:-null}}"
       case "$m" in true|false) ;; *) m=null ;; esac
-      printf '{"mergeable":%s,"head":{"sha":"%s"}}\n' \
-        "$m" "${GH_MOCK_HEAD_SHA:-tested-head-sha}"
+      printf '{"mergeable":%s,"head":{"sha":"%s"},"labels":%s}\n' \
+        "$m" "${GH_MOCK_HEAD_SHA:-tested-head-sha}" \
+        "$(jq -c 'map({name: .})' <<< "${GH_MOCK_LABELS:-[]}")"
       ;;
     *"/check-runs"*)
       if [ "${GH_MOCK_CHECK_RUNS_FAIL:-}" = "always" ]; then
