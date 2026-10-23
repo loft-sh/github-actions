@@ -21,17 +21,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fix  # noqa: E402
 
 
+def count(n: int, noun: str) -> str:
+    return f"{n} {noun}" if n == 1 else f"{n} {noun}s"
+
+
 def body(notes: dict) -> str:
     script = notes.get("script", {})
     lines = []
     if script.get("commit"):
-        lines.append(f"- Module paths: fixed in {script['commit'][:10]} ({script.get('rewritten', 0)} file(s) "
-                     f"rewritten, {script.get('hunks', 0)} import conflict(s) resolved).")
+        lines.append(f"- Module paths: fixed in {script['commit'][:10]} ({count(script.get('rewritten', 0), 'file')} "
+                     f"rewritten, {count(script.get('hunks', 0), 'import conflict')} resolved).")
     left = script.get("left", {})
     if left:
         lines.append("- Left for you:")
         lines.extend(f"  - `{p}`: {r}" for p, r in sorted(left.items()))
-    return "\n".join(["### Backport fix-imports", *lines]) if lines else ""
+    return "\n".join(["### Import fixes for this backport", *lines]) if lines else ""
 
 
 def main() -> int:
