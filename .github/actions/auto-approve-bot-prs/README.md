@@ -108,6 +108,18 @@ Refusing to approve is reported as an `::error::`. The job keeps its
 refusal is a real outcome and something downstream is often blocking on the merge
 that will now never happen. Reported as a notice, it read as a clean green job.
 
+## Keeping a PR for a person
+
+`skip-labels` lists labels that stop approval: a PR carrying any of them is
+left for a person, with a notice. The labels are read in the post-CI check,
+right before approving, so a label added before a push is always seen by the
+run for that push. Runs for older heads already stop at the head check. If
+`skip-labels` is set and the labels cannot be read, the PR is not approved.
+
+The backport workflow's AI pass labels its PRs `backport-ai-resolved`, so a
+caller that wants AI-written backports reviewed passes
+`skip-labels: backport-ai-resolved`.
+
 ## Merging
 
 With `auto-merge: true` the action tries a **plain merge first**, and uses
@@ -196,6 +208,7 @@ PR is benign, and a PR closed unmerged is a human decision.
 |    github-token    | string |   true   |                                                |                                   PAT used to read PR state <br>and approve. Must NOT match the <br>PR author. Also used to merge <br>when merge-token is omitted.                                    |
 |    merge-method    | string |  false   |                   `"squash"`                   |                                                                                  Merge method (squash|merge|rebase)                                                                                   |
 |    merge-token     | string |  false   |                                                |             Optional token used only to merge <br>when auto-merge is true. Defaults to <br>github-token. It may match the PR <br>author, but needs a merge path <br>on the base branch.               |
+|    skip-labels     | string |  false   |                                                |                             Comma-separated labels that keep a PR <br>for a person: a PR carrying <br>one is never approved. Read after <br>CI, right before approving.                               |
 |  trusted-authors   | string |  false   | `"renovate[bot],loft-bot,github-actions[bot]"` |                                                                              Comma-separated list of trusted bot logins                                                                               |
 | wait-max-attempts  | string |  false   |                     `"90"`                     |                                                                         Max polling attempts waiting for other <br>CI checks                                                                          |
 | wait-min-attempts  | string |  false   |                     `"12"`                     |                          Minimum polls before ci_green=true is allowed. <br>Prevents early approval while slow external <br>checks (e.g. Netlify) have not yet registered.                            |

@@ -27,6 +27,10 @@ on:
         description: 'Seconds between polling attempts.'
         type: string
         default: '10'
+      skip-labels:
+        description: 'Comma-separated labels that keep a PR for a person, e.g. backport-ai-resolved. A PR carrying one is never approved.'
+        type: string
+        default: ''
     secrets:
       gh-access-token:
         description: 'GitHub PAT for approving PRs (must be different identity from PR author). Also used for merging when merge-token is omitted.'
@@ -73,6 +77,7 @@ jobs:
           auto-merge: ${{ inputs.auto-merge }}
           wait-max-attempts: ${{ inputs.wait-max-attempts }}
           wait-min-attempts: ${{ inputs.wait-min-attempts }}
+          skip-labels: ${{ inputs.skip-labels }}
           wait-sleep-seconds: ${{ inputs.wait-sleep-seconds }}
           github-token: ${{ secrets.gh-access-token }} # zizmor: ignore[secrets-outside-env] -- PAT passed via workflow_call, not a repo secret
           merge-token: ${{ secrets.merge-token }} # zizmor: ignore[secrets-outside-env] -- optional token passed via workflow_call

@@ -41,6 +41,10 @@ inputs:
     description: 'Seconds between polling attempts'
     required: false
     default: '10'
+  skip-labels:
+    description: 'Comma-separated labels that keep a PR for a person: a PR carrying one is never approved. Read after CI, right before approving.'
+    required: false
+    default: ''
 
 runs:
   using: composite
@@ -93,6 +97,7 @@ runs:
         GH_TOKEN: ${{ inputs.github-token }}
         PR_NUMBER: ${{ github.event.pull_request.number }}
         EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        SKIP_LABELS: ${{ inputs.skip-labels }}
       run: ${{ github.action_path }}/src/check-pr-after-ci.sh
 
     - name: Approve PR
