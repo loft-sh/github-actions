@@ -74,6 +74,17 @@ def test_main_without_a_pr_writes_nothing(env, monkeypatch):
     assert not (env / "output").exists()
 
 
+def test_failed_login_lookup_writes_no_outputs(env, monkeypatch):
+    (env / report.fix.NOTES_FILE).write_text(json.dumps({"script": SCRIPT}))
+
+    def refuse(method, path, body=None):
+        raise OSError("HTTP Error 401")
+
+    monkeypatch.setattr(report.fix, "github", refuse)
+    assert report.main() == 0
+    assert not (env / "output").exists()
+
+
 def test_main_never_fails(env, monkeypatch):
     (env / report.fix.NOTES_FILE).write_text(json.dumps({"script": SCRIPT}))
 

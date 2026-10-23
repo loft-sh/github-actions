@@ -28,7 +28,7 @@ inputs:
 
 outputs:
   conclusion:
-    description: 'fixed (a commit was made), unchanged (nothing to rewrite), skipped (same module paths, no go.mod, or missing input) or failed.'
+    description: 'fixed (a commit was made), unchanged (nothing to rewrite), skipped (no backport branch, same module paths, no go.mod, or missing input) or failed.'
     value: ${{ steps.fix.outputs.conclusion || 'failed' }}
   reason:
     description: 'One-line explanation of the conclusion.'
@@ -55,7 +55,8 @@ runs:
 
     - name: Write the backport PR comment
       id: report
-      if: steps.fix.outputs.conclusion == 'fixed' || steps.fix.outputs.conclusion == 'unchanged'
+      # A dry run pushes nothing, so it must not post a comment naming its commit.
+      if: (steps.fix.outputs.conclusion == 'fixed' || steps.fix.outputs.conclusion == 'unchanged') && inputs.push != 'false'
       continue-on-error: true
       shell: bash
       env:

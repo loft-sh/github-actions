@@ -48,12 +48,14 @@ def main() -> int:
         if pr is None:
             print("::warning::no open backport PR to comment on")
             return 0
+        # sticky-pr-comment only updates comments by this author. Read it
+        # first, so a failed lookup writes no outputs and no comment step runs.
+        author = fix.github("GET", "/user")["login"]
         delim = f"EOF_{secrets.token_hex(8)}"
         with open(os.environ.get("GITHUB_OUTPUT", os.devnull), "a", encoding="utf-8") as f:
             f.write(f"body<<{delim}\n{text}\n{delim}\n")
         fix.emit("pr-number", str(pr))
-        # sticky-pr-comment only updates comments by this author.
-        fix.emit("author", fix.github("GET", "/user")["login"])
+        fix.emit("author", author)
     except Exception as e:  # noqa: BLE001 -- advisory: never fail the backport
         print(f"::warning::backport PR comment skipped: {str(e).splitlines()[0] if str(e) else type(e).__name__}")
     return 0
