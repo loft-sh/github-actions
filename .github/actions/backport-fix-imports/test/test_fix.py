@@ -3,6 +3,7 @@ real throwaway git repos with a local bare remote. No network, no tokens."""
 from __future__ import annotations
 
 import importlib.util
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -23,7 +24,7 @@ fix = load()
 
 V4_GOMOD = """module example.com/acme/app/v4
 
-go 1.26
+go 1.22
 
 require example.com/acme/api/v4 v4.0.0
 
@@ -366,6 +367,17 @@ def test_clean_pick_with_source_imports_is_rewritten_and_pushed(repo):
     assert git(repo, "log", "-1", "--format=%s", "origin/backport/release-4.12/pr-1") == "fix(backport): use release-4.12 module paths"
 
 
+def test_script_notes_what_it_fixed_and_left(repo, monkeypatch):
+    monkeypatch.setenv("RUNNER_TEMP", str(repo.parent))
+    write(repo, "pkg/peer/new.go", 'package peer\n\nimport "example.com/acme/app/v5/pkg/util"\n\nvar _ = util.X\n')
+    write(repo, "pkg/peer/code.go", "package peer\n\nfunc B() {\n<<<<<<< HEAD\n\ta()\n=======\n\tb()\n>>>>>>> abc123\n}\n")
+    push_backport(repo)
+    fix.main()
+    notes = json.loads((repo.parent / fix.NOTES_FILE).read_text())["script"]
+    assert notes["rewritten"] == 1 and notes["commit"]
+    assert notes["left"] == {"pkg/peer/code.go": "conflict markers remain"}
+
+
 def test_untouched_files_are_not_rewritten(repo):
     # A v5 path in a file the backport did not change is not ours to touch.
     write(repo, "pkg/other/other.go", 'package other\n\nimport _ "example.com/acme/app/v5/pkg/x"\n')
@@ -474,8 +486,16 @@ def test_push_false_leaves_the_remote_alone(repo, monkeypatch):
     assert git(repo, "rev-parse", "origin/backport/release-4.12/pr-1") == before
 
 
-def test_missing_branch_fails_soft(repo, monkeypatch):
+def test_missing_backport_branch_skips(repo, monkeypatch):
     monkeypatch.setenv("BACKPORT_BRANCH", "backport/release-4.12/pr-404")
+    assert fix.main() == 0
+    assert outputs(repo)["conclusion"] == "skipped"
+
+
+def test_missing_target_branch_fails_soft(repo, monkeypatch):
+    write(repo, "pkg/peer/new.go", "package peer\n")
+    push_backport(repo)
+    monkeypatch.setenv("TARGET_BRANCH", "release-9.9")
     assert fix.main() == 0
     out = outputs(repo)
     assert out["conclusion"] == "failed"

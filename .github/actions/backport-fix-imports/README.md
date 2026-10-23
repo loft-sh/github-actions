@@ -44,6 +44,19 @@ rewrite and reports `unchanged`, so re-runs are safe.
 The action never fails the job: every failure path ends with `conclusion=failed`,
 a one-line `reason` and exit 0, and nothing is pushed.
 
+## PR comment
+
+When there is something to tell the assignee, the action upserts one sticky
+comment on the backport PR: the fix commit, and each file left for them with
+the reason. No comment when nothing was changed and nothing is left.
+
+## In the backport workflow
+
+[`backport.yaml`](../../../docs/workflows/backport.md) runs this action on
+every backport branch after the cherry-picks when the caller sets
+`fix-imports: true`. Off by default. A label with no backport branch, such as
+a legacy line, is skipped.
+
 ## Usage
 
 ```yaml
