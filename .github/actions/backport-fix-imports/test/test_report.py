@@ -26,9 +26,16 @@ def test_nothing_to_tell_means_no_comment():
 
 def test_fix_and_leftovers():
     text = report.body({"script": SCRIPT})
-    assert "fixed in b2c250ffb0 (22 file(s) rewritten, 18 import conflict(s) resolved)" in text
+    assert "fixed in b2c250ffb0 (22 files rewritten, 18 import conflicts resolved)" in text
     assert "  - `pkg/a/a_test.go`: conflict markers remain" in text
     assert "  - `pkg/b/b.go`: conflict markers remain" in text
+
+
+def test_counts_are_singular_for_one():
+    text = report.body({"script": {"rewritten": 1, "hunks": 1, "commit": "22cb3caca00f", "left": {}}})
+    assert "(1 file rewritten, 1 import conflict resolved)" in text
+    zero = report.body({"script": {"rewritten": 0, "hunks": 0, "commit": "22cb3caca00f", "left": {}}})
+    assert "(0 files rewritten, 0 import conflicts resolved)" in zero
 
 
 def test_only_leftovers():
@@ -51,7 +58,7 @@ def test_main_hands_sticky_pr_comment_its_inputs(env):
     (env / report.fix.NOTES_FILE).write_text(json.dumps({"script": SCRIPT}))
     assert report.main() == 0
     out = (env / "output").read_text()
-    assert out.startswith("body<<EOF_") and "### Backport fix-imports" in out
+    assert out.startswith("body<<EOF_") and "### Import fixes for this backport" in out
     assert "pr-number=42\n" in out and "author=acme-bot\n" in out
 
 
