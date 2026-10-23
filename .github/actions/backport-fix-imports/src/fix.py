@@ -33,11 +33,14 @@ from __future__ import annotations
 
 import base64
 import functools
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from typing import Callable
 
@@ -59,6 +62,7 @@ PACKAGE_CLAUSE = re.compile(r"^package\s+([A-Za-z_][A-Za-z0-9_]*)", re.M)
 # Comments and string, raw string and rune literals: a name inside them is not a use.
 GO_NOISE = re.compile(r"""//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\\n])*"|`[^`]*`|'(?:\\.|[^'\\\n])*'""", re.S)
 
+NOTES_FILE = "backport-fix-imports-notes.json"
 BOT_NAME = "github-actions[bot]"
 BOT_EMAIL = "41898282+github-actions[bot]@users.noreply.github.com"
 
@@ -85,6 +89,38 @@ def git(*args: str, check: bool = True) -> str:
         sub = next(a for i, a in enumerate(args) if not a.startswith("-") and (i == 0 or args[i - 1] != "-c"))
         raise RuntimeError(f"git {sub} failed: {res.stderr.strip()}")
     return res.stdout
+
+
+def tool_env() -> dict[str, str]:
+    """The job environment without the push token: gofmt never needs it."""
+    return {k: v for k, v in os.environ.items() if k not in ("GH_TOKEN", "GITHUB_TOKEN")}
+
+
+def note(section: str, data: dict) -> None:
+    """Record what a pass did, for the PR comment. A no-op outside Actions."""
+    if not os.environ.get("RUNNER_TEMP"):
+        return
+    path = Path(os.environ["RUNNER_TEMP"]) / NOTES_FILE
+    notes = json.loads(path.read_text()) if path.is_file() else {}
+    notes[section] = data
+    path.write_text(json.dumps(notes))
+
+
+def github(method: str, path: str, body: dict | None = None):
+    req = urllib.request.Request(
+        f"https://api.github.com{path}", method=method,
+        data=json.dumps(body).encode() if body is not None else None,
+        headers={"Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                 "Accept": "application/vnd.github+json"})
+    with urllib.request.urlopen(req, timeout=30) as res:
+        return json.load(res)
+
+
+def backport_pr(branch: str) -> int | None:
+    repo = os.environ["GITHUB_REPOSITORY"]
+    head = urllib.parse.quote(f"{repo.split('/')[0]}:{branch}")
+    prs = github("GET", f"/repos/{repo}/pulls?state=open&head={head}")
+    return prs[0]["number"] if prs else None
 
 
 def strip_major(path: str) -> str:
@@ -299,7 +335,7 @@ def gofmt(files: list[str]) -> None:
     if not shutil.which("gofmt"):
         print("::warning::gofmt not on PATH; resolved import blocks are left unformatted")
         return
-    res = subprocess.run(["gofmt", "-w", *files], capture_output=True, text=True)
+    res = subprocess.run(["gofmt", "-w", *files], capture_output=True, text=True, env=tool_env())
     if res.returncode != 0:
         raise RuntimeError(f"gofmt rejected the result, nothing committed: {res.stderr.strip()}")
 
@@ -313,6 +349,9 @@ def run() -> dict[str, str]:
     if not target or not branch:
         raise Skip("target-branch and backport-branch are required; pass both from the backport job")
 
+    # A label with no cherry-pick branch (a legacy line, a failed pick) is not ours to fix.
+    if not git("ls-remote", "--heads", remote, f"refs/heads/{branch}").strip():
+        raise Skip(f"no {branch} branch on {remote}; nothing to fix")
     git("fetch", "-q", "--no-tags", remote,
         *(f"+refs/heads/{b}:refs/remotes/{remote}/{b}" for b in (target, source, branch)))
     gomods = []
@@ -349,10 +388,12 @@ def run() -> dict[str, str]:
     marked = [p for p in changed if Path(p).is_file() and has_markers(Path(p).read_text(encoding="utf-8", errors="replace"))]
     for p in marked:
         print(f"::warning::{p}: conflict markers remain; resolve them by hand")
-    left = len(set(marked) | set(blocked))
-    left_note = f"; {left} file(s) left for review" if left else ""
+    left = {p: "conflict markers remain" for p in marked}
+    left.update({p: "added under the source path, but that path exists on the target" for p in blocked})
+    left_note = f"; {len(left)} file(s) left for review" if left else ""
 
     if not rewritten and not moved:
+        note("script", {"rewritten": 0, "hunks": 0, "left": left, "commit": ""})
         return {"conclusion": "unchanged", "reason": f"no module paths to rewrite{left_note}"}
 
     if rewritten:
@@ -362,11 +403,15 @@ def run() -> dict[str, str]:
         "-m", f"fix(backport): use {target} module paths", "-m", f"Rewrote {mapping}.")
     if push:
         git("push", "-q", remote, f"HEAD:refs/heads/{branch}")
+    note("script", {"rewritten": len(rewritten), "hunks": hunks, "left": left,
+                    "commit": git("rev-parse", "HEAD").strip()})
     reason = f"rewrote {len(rewritten)} file(s), resolved {hunks} import conflict(s){left_note}"
     return {"conclusion": "fixed", "reason": reason}
 
 
 def main() -> int:
+    if os.environ.get("RUNNER_TEMP"):
+        (Path(os.environ["RUNNER_TEMP"]) / NOTES_FILE).unlink(missing_ok=True)
     try:
         result = run()
     except Skip as e:
