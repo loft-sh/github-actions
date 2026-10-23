@@ -404,10 +404,13 @@ def test_existing_file_under_source_dir_is_not_moved(repo):
     assert f"{API_V4}/types/kept.go" not in tree
 
 
-def test_move_blocked_by_existing_target_is_left_for_review(repo):
+def test_move_blocked_by_existing_target_is_left_for_review(repo, monkeypatch):
+    monkeypatch.setenv("RUNNER_TEMP", str(repo.parent))
     write(repo, f"{API_V5}/types/types.go", 'package types\n\nimport "example.com/acme/api/v5/pkg/x"\n\nvar _ = x.Y\n')
     push_backport(repo)
     fix.main()
+    left = json.loads((repo.parent / fix.NOTES_FILE).read_text())["script"]["left"]
+    assert left == {f"{API_V5}/types/types.go": "added under the source path, but that path exists on the target"}
     out = outputs(repo)
     assert out["conclusion"] == "unchanged"
     assert "1 file(s) left for review" in out["reason"]
