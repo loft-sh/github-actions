@@ -3,6 +3,7 @@ real throwaway git repos with a local bare remote. No network, no tokens."""
 from __future__ import annotations
 
 import importlib.util
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -364,6 +365,17 @@ def test_clean_pick_with_source_imports_is_rewritten_and_pushed(repo):
     assert '"example.com/acme/api/v4/pkg/apis/storage/v1"' in content
     assert '"example.com/acme/app/v4/pkg/peer/networkpeer"' in content
     assert git(repo, "log", "-1", "--format=%s", "origin/backport/release-4.12/pr-1") == "fix(backport): use release-4.12 module paths"
+
+
+def test_script_notes_what_it_fixed_and_left(repo, monkeypatch):
+    monkeypatch.setenv("RUNNER_TEMP", str(repo.parent))
+    write(repo, "pkg/peer/new.go", 'package peer\n\nimport "example.com/acme/app/v5/pkg/util"\n\nvar _ = util.X\n')
+    write(repo, "pkg/peer/code.go", "package peer\n\nfunc B() {\n<<<<<<< HEAD\n\ta()\n=======\n\tb()\n>>>>>>> abc123\n}\n")
+    push_backport(repo)
+    fix.main()
+    notes = json.loads((repo.parent / fix.NOTES_FILE).read_text())["script"]
+    assert notes["rewritten"] == 1 and notes["commit"]
+    assert notes["left"] == {"pkg/peer/code.go": "conflict markers remain"}
 
 
 def test_untouched_files_are_not_rewritten(repo):

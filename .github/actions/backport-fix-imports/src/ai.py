@@ -103,7 +103,8 @@ def resolve_file(text: str, answers: dict[str, dict], path: str) -> str | None:
 
 def vet(package: str) -> tuple[bool, str]:
     try:
-        res = subprocess.run(["go", "vet", package], capture_output=True, text=True, timeout=VET_TIMEOUT)
+        res = subprocess.run(["go", "vet", package], capture_output=True, text=True, timeout=VET_TIMEOUT,
+                             env=fix.tool_env())
     except (OSError, subprocess.TimeoutExpired) as e:
         return False, str(e)
     lines = [l for l in (res.stdout + res.stderr).splitlines() if l and not l.startswith("#")]
@@ -116,16 +117,19 @@ def apply() -> None:
     answers = {r["id"]: r for r in result.get("resolutions", []) if isinstance(r, dict) and "id" in r}
 
     written: dict[str, str] = {}
+    declined: dict[str, str] = {}
     for f in payload["files"]:
         path = f["file"]
         current = Path(path).read_text(encoding="utf-8", errors="replace")
         if digest(current) != f["sha256"]:
             print(f"::warning::{path} changed since it was sent to the AI pass; left for review")
+            declined[path] = "changed after it was sent to the AI"
             continue
         resolved = resolve_file(current, answers, path)
         if resolved is None:
             reasons = "; ".join(answers.get(i, {}).get("reason", "no answer") for i in f["ids"])
             print(f"::warning::{path}: not every conflict was resolved ({reasons}); left for review")
+            declined[path] = f"the AI did not resolve it: {reasons}"
             continue
         Path(path).write_text(resolved, encoding="utf-8")
         written[path] = current
@@ -141,7 +145,7 @@ def apply() -> None:
         if any(fix.has_markers(p.read_text(encoding="utf-8", errors="replace")) for p in others):
             ok, why = False, "another file in the package still has conflicts"
         if ok:
-            res = subprocess.run(["gofmt", "-w", *paths], capture_output=True, text=True)
+            res = subprocess.run(["gofmt", "-w", *paths], capture_output=True, text=True, env=fix.tool_env())
             ok, why = res.returncode == 0, res.stderr.strip().splitlines()[0] if res.returncode else ""
         if ok:
             ok, why = vet(f"./{directory}")
@@ -151,16 +155,25 @@ def apply() -> None:
         else:
             for p in paths:
                 Path(p).write_text(written[p], encoding="utf-8")
+                declined[p] = f"the AI answer was rejected: {why}"
             print(f"::warning::AI resolution for ./{directory} rejected ({why}); left for review")
 
+    fix.note("ai", {"committed": [], "commit": "", "declined": declined})
     if not keep:
         return
+    branch = os.environ["BACKPORT_BRANCH"]
     fix.git("add", "--", *keep)
     fix.git("-c", f"user.name={fix.BOT_NAME}", "-c", f"user.email={fix.BOT_EMAIL}", "commit", "-q",
             "-m", "fix(backport): resolve conflicts with ai", "-m",
             "Resolved by the backport AI pass and checked with go vet:\n" + "\n".join(f"- {p}" for p in keep))
     if os.environ.get("PUSH", "true") != "false":
-        fix.git("push", "-q", os.environ.get("REMOTE") or "origin", f"HEAD:refs/heads/{os.environ['BACKPORT_BRANCH']}")
+        # Label first: auto-approve must never see the AI commit on an unlabeled PR.
+        pr = fix.backport_pr(branch)
+        if pr is None:
+            raise RuntimeError(f"no open PR for {branch} to label, so the AI commit was not pushed")
+        fix.github("POST", f"/repos/{os.environ['GITHUB_REPOSITORY']}/issues/{pr}/labels", {"labels": [fix.AI_LABEL]})
+        fix.git("push", "-q", os.environ.get("REMOTE") or "origin", f"HEAD:refs/heads/{branch}")
+    fix.note("ai", {"committed": keep, "commit": fix.git("rev-parse", "HEAD").strip(), "declined": declined})
     print(f"committed AI resolutions for {len(keep)} file(s)")
 
 

@@ -7,6 +7,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -46,7 +47,24 @@ def backport(repo, monkeypatch):
     monkeypatch.setenv("RUNNER_TEMP", str(repo.parent))
     monkeypatch.setenv("GOFLAGS", "-mod=mod")
     monkeypatch.setenv("GOTOOLCHAIN", "local")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "acme/app")
+    monkeypatch.setenv("GH_TOKEN", "test-token")
     return repo
+
+
+@pytest.fixture
+def gh(backport, monkeypatch):
+    """Fake GitHub API: records label calls with the remote tip at that moment."""
+    calls = []
+
+    def github(method, path, body=None):
+        tip = git(backport, "ls-remote", "origin", "refs/heads/backport/release-4.12/pr-1").split()[0]
+        calls.append((method, path, body, tip))
+        return {}
+
+    monkeypatch.setattr(ai.fix, "backport_pr", lambda branch: 42)
+    monkeypatch.setattr(ai.fix, "github", github)
+    return calls
 
 
 def prepared(repo: Path) -> Path:
@@ -117,12 +135,56 @@ def test_prepare_over_the_cap_sets_nothing(backport, monkeypatch):
 # -- apply ------------------------------------------------------------------
 
 @needs_go
-def test_answer_that_vets_is_committed_and_pushed(backport, monkeypatch):
+def test_answer_that_vets_is_committed_and_pushed(backport, monkeypatch, gh):
+    before = git(backport, "rev-parse", "origin/backport/release-4.12/pr-1")
     apply(monkeypatch, prepared(backport), {"pkg/peer/pick.go#0": GOOD})
+    # The label lands while the remote still has the old tip: before the AI commit.
+    assert gh == [("POST", "/repos/acme/app/issues/42/labels", {"labels": ["backport-ai-resolved"]}, before)]
+    notes = json.loads((backport.parent / ai.fix.NOTES_FILE).read_text())
+    assert notes["ai"]["committed"] == ["pkg/peer/pick.go"] and notes["ai"]["commit"]
     content = remote_file(backport, "pkg/peer/pick.go")
     assert "return 4" in content and "<<<<<<<" not in content
     assert git(backport, "log", "-1", "--format=%s", "origin/backport/release-4.12/pr-1") == \
         "fix(backport): resolve conflicts with ai"
+
+
+@needs_go
+@pytest.mark.parametrize("failure", ["no pr", "label error"])
+def test_ai_commit_is_not_pushed_unless_the_pr_is_labeled(backport, monkeypatch, failure):
+    def refuse(*args, **kwargs):
+        raise OSError("HTTP Error 403: Forbidden")
+
+    if failure == "no pr":
+        monkeypatch.setattr(ai.fix, "backport_pr", lambda branch: None)
+    else:
+        monkeypatch.setattr(ai.fix, "backport_pr", lambda branch: 42)
+        monkeypatch.setattr(ai.fix, "github", refuse)
+    before = git(backport, "rev-parse", "origin/backport/release-4.12/pr-1")
+    input_file = prepared(backport)
+    monkeypatch.setenv("INPUT_FILE", str(input_file))
+    monkeypatch.setenv("AI_RESULT", json.dumps({"resolutions": [{"id": "pkg/peer/pick.go#0", **GOOD}]}))
+    monkeypatch.setattr(sys, "argv", ["ai.py", "apply"])
+    assert ai.main() == 0
+    git(backport, "fetch", "-q", "origin")
+    assert git(backport, "rev-parse", "origin/backport/release-4.12/pr-1") == before
+
+
+def test_go_tools_never_see_the_push_token(backport, monkeypatch):
+    seen = []
+
+    def run(cmd, **kwargs):
+        seen.append((cmd[0], kwargs.get("env")))
+        return subprocess.CompletedProcess(cmd, 1, "", "stop here")
+
+    monkeypatch.setattr(ai.subprocess, "run", run)
+    ai.vet("./pkg/peer")
+    monkeypatch.setattr(ai.fix.subprocess, "run", run)
+    monkeypatch.setattr(ai.fix.shutil, "which", lambda name: "/usr/bin/" + name)
+    with pytest.raises(RuntimeError):
+        ai.fix.gofmt(["pkg/peer/pick.go"])
+    assert [name for name, _ in seen] == ["go", "gofmt"]
+    for _, env in seen:
+        assert env is not None and "GH_TOKEN" not in env
 
 
 @needs_go

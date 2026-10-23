@@ -57,10 +57,22 @@ changed still have conflicts after the fix. Non-Go conflicts are never sent.
 3. Each touched package must pass `gofmt` and `go vet`, and have no other
    conflicted file. Packages that pass are committed as
    `fix(backport): resolve conflicts with ai`. The rest are reverted.
+4. Before that commit is pushed, the backport PR gets the
+   `backport-ai-resolved` label, so auto-approve can keep it for a person. If
+   the PR cannot be labeled, the AI commit is not pushed.
+
+`gofmt` and `go vet` run without the push token in their environment.
 
 So a wrong or partial answer never reaches the branch. It stays a conflict for a
 person, as without the AI pass. The pass is skipped when there are more than 20
 conflict blocks or the input would exceed 300 KB.
+
+## PR comment
+
+When there is something to tell the assignee, the action upserts one sticky
+comment on the backport PR: the fix commit, the AI commit to review closely,
+and each file left for them with the reason. No comment when nothing was
+changed and nothing is left.
 
 ## Usage
 
