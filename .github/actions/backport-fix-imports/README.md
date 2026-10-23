@@ -44,6 +44,36 @@ rewrite and reports `unchanged`, so re-runs are safe.
 The action never fails the job: every failure path ends with `conclusion=failed`,
 a one-line `reason` and exit 0, and nothing is pushed.
 
+## AI pass
+
+Only with `anthropic-api-key` set, and only when `.go` files the backport
+changed still have conflicts after the fix. Non-Go conflicts are never sent.
+
+1. Each conflicted Go file goes, whole, to [`ai-step`](../ai-step/README.md) in
+   one call. The model answers per conflict block: replacement code, or "not
+   sure".
+2. A file is changed only when every block in it has an answer with no conflict
+   markers.
+3. Each touched package must pass `gofmt` and `go vet`, and have no other
+   conflicted file. Packages that pass are committed as
+   `fix(backport): resolve conflicts with ai`. The rest are reverted.
+4. Before that commit is pushed, the backport PR gets the
+   `backport-ai-resolved` label, so auto-approve can keep it for a person. If
+   the PR cannot be labeled, the AI commit is not pushed.
+
+`gofmt` and `go vet` run without the push token in their environment.
+
+So a wrong or partial answer never reaches the branch. It stays a conflict for a
+person, as without the AI pass. The pass is skipped when there are more than 20
+conflict blocks or the input would exceed 300 KB.
+
+## PR comment
+
+When there is something to tell the assignee, the action upserts one sticky
+comment on the backport PR: the fix commit, the AI commit to review closely,
+and each file left for them with the reason. No comment when nothing was
+changed and nothing is left.
+
 ## Usage
 
 ```yaml
@@ -66,19 +96,21 @@ a one-line `reason` and exit 0, and nothing is pushed.
 ```
 
 The runner needs `python3` and `git`; `gofmt` is optional and only formats the
-import blocks it resolved (it ships on GitHub-hosted Ubuntu runners). Pushing
+import blocks it resolved (it ships on GitHub-hosted Ubuntu runners). The AI
+pass also needs `go`, which GitHub-hosted runners have. Pushing
 with a PAT, rather than `GITHUB_TOKEN`, is what makes the fix commit trigger
 the backport PR's CI.
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-|      INPUT      |  TYPE  | REQUIRED | DEFAULT  |                                                                                  DESCRIPTION                                                                                  |
-|-----------------|--------|----------|----------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| backport-branch | string |   true   |          |                               Head branch of the backport PR, <br>e.g. backport/release-4.12/pr-8606. Checked out, fixed and <br>pushed back.                                 |
-|  github-token   | string |   true   |          | Token with contents write on the <br>repository, used to fetch and push <br>the backport branch. Supplied to git <br>through the environment, never argv or <br>.git/config.  |
-|      push       | string |  false   | `"true"` |                                                         false commits the fix locally without <br>pushing (dry run).                                                          |
-|  source-branch  | string |  false   | `"main"` |                                        Branch the original change merged into. <br>Its root go.mod gives the source <br>module paths.                                         |
-|  target-branch  | string |   true   |          |                              Release branch the backport PR targets, <br>e.g. release-4.12. Its root go.mod gives <br>the target module paths.                                |
+|       INPUT       |  TYPE  | REQUIRED | DEFAULT  |                                                                                  DESCRIPTION                                                                                  |
+|-------------------|--------|----------|----------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| anthropic-api-key | string |  false   |          |    Anthropic API key. Set, it turns <br>on the AI pass for Go <br>conflicts left after the fix; empty, <br>the AI pass never runs. Needs <br>go and gofmt on the runner.      |
+|  backport-branch  | string |   true   |          |                               Head branch of the backport PR, <br>e.g. backport/release-4.12/pr-8606. Checked out, fixed and <br>pushed back.                                 |
+|   github-token    | string |   true   |          | Token with contents write on the <br>repository, used to fetch and push <br>the backport branch. Supplied to git <br>through the environment, never argv or <br>.git/config.  |
+|       push        | string |  false   | `"true"` |                                                         false commits the fix locally without <br>pushing (dry run).                                                          |
+|   source-branch   | string |  false   | `"main"` |                                        Branch the original change merged into. <br>Its root go.mod gives the source <br>module paths.                                         |
+|   target-branch   | string |   true   |          |                              Release branch the backport PR targets, <br>e.g. release-4.12. Its root go.mod gives <br>the target module paths.                                |
 
 <!-- AUTO-DOC-INPUT:END -->
 
