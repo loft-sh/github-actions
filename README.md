@@ -1194,6 +1194,18 @@ jobs:
 
 See [cve-scan README](./.github/actions/cve-scan/README.md) for suppressing findings via `.snyk`, the scanner-adapter exit-code contract, how to resolve the image tag per repo, and the SARIF upload example.
 
+### Scheduled CVE Scan
+
+Reusable workflow that scans a list of images with `cve-scan` on the caller's
+schedule and uploads each result to Code Scanning. Each repo keeps a short caller
+with its images. The caller file must be named `scheduled-cve-scan.yaml` with job
+id `scan`, so existing Code Scanning alerts keep updating.
+
+**Location:** `.github/workflows/scheduled-cve-scan.yaml`
+
+See [docs/workflows/scheduled-cve-scan.md](./docs/workflows/scheduled-cve-scan.md)
+for the caller example, inputs and secrets.
+
 ### Linear CVE Summary
 
 Posts aggregated structured `cve-scan` results to the matching release-checklist
