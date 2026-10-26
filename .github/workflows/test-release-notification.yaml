@@ -82,7 +82,7 @@ jobs:
       - uses: dcarbone/install-yq-action@4075b4dca348d74bd83f2bf82d30f25d7c54539b # v1.3.1
         with:
           # renovate: datasource=github-releases depName=mikefarah/yq
-          version: v4.53.6
+          version: v4.54.1
       - name: Check the notifier-shaped checkout still matches notify-release.yaml
         run: |
           # JSON with sorted keys and string values, so comments, key order
