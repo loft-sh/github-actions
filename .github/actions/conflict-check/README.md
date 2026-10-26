@@ -5,9 +5,11 @@ markers (`<<<<<<< ` and `>>>>>>> ` at the start of a line), whatever the file
 extension. `vendor` and `node_modules` are skipped, and so are binary files.
 `=======` is not matched, because Markdown uses it as a heading underline.
 
-The action only reports. It never fails on markers, so the caller decides what
-to do with them. A scan that cannot run (for example, no git checkout) fails the
-step instead of reporting a clean result.
+The action reports whether the checkout has conflict markers. It does not fail on
+markers itself, so the caller decides what to do with them: the
+`conflict-check.yaml` reusable workflow, for example, comments on the PR and then
+fails the job. A scan that cannot run (for example, no git checkout) fails the
+step, so an error never passes as a clean result.
 
 Released under the `conflict-check/v1` tag, the same tag as the
 `conflict-check.yaml` reusable workflow.

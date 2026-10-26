@@ -229,8 +229,10 @@ image setup (vind, Kind, bare Docker).
 
 Scans every tracked text file in the checked-out repository for git conflict
 markers, whatever the file extension, skipping `vendor` and `node_modules`.
-Reports `found` and a Markdown report file, and leaves the decision to fail to
-the caller. Released under the `conflict-check/v1` tag, shared with the
+Reports `found` and a Markdown report file. It does not fail on markers itself:
+the caller decides, and the `conflict-check.yaml` reusable workflow comments on
+the PR and then fails the job. A scan that cannot run fails the step, so an error
+never passes as a clean result. Released under the `conflict-check/v1` tag, shared with the
 `conflict-check.yaml` reusable workflow.
 
 **Location:** `.github/actions/conflict-check`
