@@ -10,14 +10,15 @@ secret.
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-|       INPUT        |  TYPE   | REQUIRED |                    DEFAULT                     |                                                      DESCRIPTION                                                       |
-|--------------------|---------|----------|------------------------------------------------|------------------------------------------------------------------------------------------------------------------------|
-|     auto-merge     | boolean |  false   |                    `false`                     |                             Merge the PR after approving it, <br>directly where possible.                              |
-|    merge-method    | string  |  false   |                   `"squash"`                   |                                          Merge method (squash, merge, rebase)                                          |
-|  trusted-authors   | string  |  false   | `"renovate[bot],loft-bot,github-actions[bot]"` |                                       Comma-separated list of trusted bot logins                                       |
-| wait-max-attempts  | string  |  false   |                     `"90"`                     | Max polling attempts waiting for other <br>CI checks (raise this when a slow required check, e.g. e2e, gates the PR).  |
-| wait-min-attempts  | string  |  false   |                     `"12"`                     |                                     Minimum polls before ci_green=true is allowed.                                     |
-| wait-sleep-seconds | string  |  false   |                     `"10"`                     |                                           Seconds between polling attempts.                                            |
+|       INPUT        |  TYPE   | REQUIRED |                    DEFAULT                     |                                                         DESCRIPTION                                                          |
+|--------------------|---------|----------|------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------|
+|     auto-merge     | boolean |  false   |                    `false`                     |                                Merge the PR after approving it, <br>directly where possible.                                 |
+|    merge-method    | string  |  false   |                   `"squash"`                   |                                             Merge method (squash, merge, rebase)                                             |
+|    skip-labels     | string  |  false   |                                                | Comma-separated labels that keep a PR <br>for a person, e.g. backport-ai-resolved. A <br>PR carrying one is never approved.  |
+|  trusted-authors   | string  |  false   | `"renovate[bot],loft-bot,github-actions[bot]"` |                                          Comma-separated list of trusted bot logins                                          |
+| wait-max-attempts  | string  |  false   |                     `"90"`                     |    Max polling attempts waiting for other <br>CI checks (raise this when a slow required check, e.g. e2e, gates the PR).     |
+| wait-min-attempts  | string  |  false   |                     `"12"`                     |                                        Minimum polls before ci_green=true is allowed.                                        |
+| wait-sleep-seconds | string  |  false   |                     `"10"`                     |                                              Seconds between polling attempts.                                               |
 
 <!-- AUTO-DOC-INPUT:END -->
 
