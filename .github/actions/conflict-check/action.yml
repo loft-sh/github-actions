@@ -1,0 +1,27 @@
+name: Conflict Check
+description: |
+  Scans every tracked text file in the checked-out repository for git conflict
+  markers, whatever the file extension. vendor and node_modules are skipped.
+  Reports what it found and never fails on markers itself, so the caller
+  decides whether to comment or fail. A failed scan fails the step.
+outputs:
+  found:
+    description: '"true" when conflict markers were found, "false" otherwise.'
+    value: ${{ steps.scan.outputs.found }}
+  report-file:
+    description: 'Path to a Markdown report listing the markers. Written only when found is "true".'
+    value: ${{ steps.scan.outputs.report-file }}
+runs:
+  using: composite
+  steps:
+    - name: Find conflict markers
+      id: scan
+      shell: bash
+      env:
+        REPORT_FILE: ${{ runner.temp }}/conflict-report.md
+      run: |
+        echo "report-file=$REPORT_FILE" >> "$GITHUB_OUTPUT"
+        "${{ github.action_path }}/src/find-markers.sh"
+branding:
+  icon: 'git-merge'
+  color: 'red'

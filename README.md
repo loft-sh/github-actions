@@ -225,6 +225,18 @@ image setup (vind, Kind, bare Docker).
 
 - `failure-summary`: Markdown-formatted test results summary
 
+### Conflict Check
+
+Scans every tracked text file in the checked-out repository for git conflict
+markers, whatever the file extension, skipping `vendor` and `node_modules`.
+Reports `found` and a Markdown report file. It does not fail on markers itself:
+the caller decides, and the `conflict-check.yaml` reusable workflow comments on
+the PR and then fails the job. A scan that cannot run fails the step, so an error
+never passes as a clean result. Released under the `conflict-check/v1` tag, shared with the
+`conflict-check.yaml` reusable workflow.
+
+**Location:** `.github/actions/conflict-check`
+
 ### Sticky PR Comment
 
 Upserts a sticky comment on a pull request, identified by a stable HTML
@@ -1301,7 +1313,8 @@ workflow that triggers on PRs when the workflow file changes:
 - `test-clean-github-cache.yaml` - calls `clean-github-cache.yaml` (PR-only, since the
   underlying workflow needs `github.event.pull_request.number`)
 - `test-cleanup-backport-branches.yaml` - calls `cleanup-backport-branches.yaml` with `dry-run: true`
-- `test-conflict-check.yaml` - calls `conflict-check.yaml` and asserts success or skipped
+- `test-conflict-check.yaml` - runs the `conflict-check` action's bats suite, smoke-tests the action on a clean
+  checkout and on a tracked Dockerfile with markers, and calls `conflict-check.yaml` asserting success or skipped
 - `test-claude-code-review.yaml` - calls `claude-code-review.yaml` to validate workflow is callable
 - `test-claude.yaml` - calls `claude.yaml` and asserts `skipped` (no `@claude` comment event)
 - `test-notify-release.yaml` - calls `notify-release.yaml` with dummy inputs to validate the contract

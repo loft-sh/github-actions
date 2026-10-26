@@ -4,10 +4,64 @@ on:
   pull_request:
     paths:
       - '.github/workflows/conflict-check.yaml'
+      - '.github/workflows/test-conflict-check.yaml'
+      - '.github/actions/conflict-check/**'
 
 permissions: {}
 
 jobs:
+  bats:
+    name: Run bats tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: bats-core/bats-action@77d6fb60505b4d0d1d73e48bd035b55074bbfb43 # 4.0.0
+        with:
+          support-install: false
+          assert-install: false
+          detik-install: false
+          file-install: false
+      - name: Run conflict-check tests
+        run: bats .github/actions/conflict-check/test/*.bats
+
+  composite-smoke:
+    name: Composite smoke (clean + markers)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Scan clean checkout
+        id: clean
+        uses: ./.github/actions/conflict-check
+
+      - name: Track a Dockerfile with conflict markers
+        run: |
+          printf '<<<<<<< HEAD\nARG V=1\n=======\nARG V=2\n>>>>>>> abc1234\n' > Dockerfile.smoke
+          git add Dockerfile.smoke
+
+      - name: Scan checkout with markers
+        id: markers
+        uses: ./.github/actions/conflict-check
+
+      - name: Verify results
+        env:
+          CLEAN_FOUND: ${{ steps.clean.outputs.found }}
+          MARKERS_FOUND: ${{ steps.markers.outputs.found }}
+          REPORT_FILE: ${{ steps.markers.outputs.report-file }}
+        run: |
+          echo "clean found=$CLEAN_FOUND markers found=$MARKERS_FOUND"
+          [[ "$CLEAN_FOUND" == "false" ]]
+          [[ "$MARKERS_FOUND" == "true" ]]
+          grep -q '^Dockerfile.smoke:1:<<<<<<< HEAD$' "$REPORT_FILE"
+
   conflict-check:
     permissions:
       contents: read
