@@ -169,7 +169,7 @@ See [select-backport-source-prs README](./.github/actions/select-backport-source
 
 ### Backport Fix Imports Action
 
-Repairs Go module paths on a backport branch whose target release line is on an older module major than its source, for example a v5 `main` backported to a v4 release branch. Rewrites the import paths of modules the repository owns, moves files added under a source-only staging directory, resolves conflict hunks made only of import lines, and pushes one fix commit. Conflicts in real code are left and counted; advisory, never fails the job.
+Repairs Go module paths on a backport branch whose target release line is on an older module major than its source, for example a v5 `main` backported to a v4 release branch. Rewrites the import paths of modules the repository owns, moves files added under a source-only staging directory, resolves conflict hunks made only of import lines, and pushes one fix commit. Conflicts in real code are left for the assignee, listed in a sticky PR comment. Wired into [`backport.yaml`](./docs/workflows/backport.md) behind `fix-imports`; advisory, never fails the job.
 
 **Location:** `.github/actions/backport-fix-imports`
 

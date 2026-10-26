@@ -44,6 +44,19 @@ rewrite and reports `unchanged`, so re-runs are safe.
 The action never fails the job: every failure path ends with `conclusion=failed`,
 a one-line `reason` and exit 0, and nothing is pushed.
 
+## PR comment
+
+When there is something to tell the assignee, the action upserts one sticky
+comment on the backport PR: the fix commit, and each file left for them with
+the reason. No comment when nothing was changed and nothing is left.
+
+## In the backport workflow
+
+[`backport.yaml`](../../../docs/workflows/backport.md) runs this action on
+every backport branch after the cherry-picks when the caller sets
+`fix-imports: true`. Off by default. A label with no backport branch, such as
+a legacy line, is skipped.
+
 ## Usage
 
 ```yaml
@@ -84,10 +97,10 @@ the backport PR's CI.
 
 <!-- AUTO-DOC-OUTPUT:START - Do not remove or modify this section -->
 
-|   OUTPUT   |  TYPE  |                                                             DESCRIPTION                                                             |
-|------------|--------|-------------------------------------------------------------------------------------------------------------------------------------|
-| conclusion | string | fixed (a commit was made), unchanged (nothing to rewrite), skipped (same module paths, no go.mod, or missing input) <br>or failed.  |
-|   reason   | string |                                               One-line explanation of the conclusion.                                               |
+|   OUTPUT   |  TYPE  |                                                                       DESCRIPTION                                                                       |
+|------------|--------|---------------------------------------------------------------------------------------------------------------------------------------------------------|
+| conclusion | string | fixed (a commit was made), unchanged (nothing to rewrite), skipped (no backport branch, same module paths, no go.mod, or missing input) <br>or failed.  |
+|   reason   | string |                                                         One-line explanation of the conclusion.                                                         |
 
 <!-- AUTO-DOC-OUTPUT:END -->
 
