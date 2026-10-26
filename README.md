@@ -1306,9 +1306,6 @@ workflow that triggers on PRs when the workflow file changes:
 - `test-claude.yaml` - calls `claude.yaml` and asserts `skipped` (no `@claude` comment event)
 - `test-notify-release.yaml` - calls `notify-release.yaml` with dummy inputs to validate the contract
 
-Post-merge, `dispatch-integration-tests.yaml` triggers full E2E tests in
-[vClusterLabs-Experiments/github-actions-test](https://github.com/vClusterLabs-Experiments/github-actions-test).
-
 ### Writing tests for new actions
 
 1. Composite actions with shell logic - put the logic in `src/*.sh` and add a
