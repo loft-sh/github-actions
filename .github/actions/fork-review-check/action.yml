@@ -1,0 +1,93 @@
+name: 'Fork review check'
+description: 'Verifies that every loft-sh fork commit consumed by a build has approved fork review evidence'
+
+inputs:
+  mode:
+    description: 'CLI mode. scan discovers supported build inputs by default.'
+    required: false
+    default: 'scan'
+  root:
+    description: 'Root directory for scan mode.'
+    required: false
+    default: '.'
+  dirs:
+    description: 'Newline-separated Go module directories.'
+    required: false
+    default: ''
+  images:
+    description: 'Newline-separated digest-pinned ghcr.io fork images.'
+    required: false
+    default: ''
+  binaries:
+    description: 'Newline-separated GitHub release asset URL and SHA-256 pairs.'
+    required: false
+    default: ''
+  sources:
+    description: 'Newline-separated fork=tag-or-full-SHA source clone pins.'
+    required: false
+    default: ''
+  signer-workflows:
+    description: 'Newline-separated fork=.github/workflows/release.yml attestation mappings.'
+    required: false
+    default: ''
+  upstreams:
+    description: 'Newline-separated fork=upstream[@branch] temporary upstream mappings.'
+    required: false
+    default: ''
+  as-of:
+    description: 'RFC 3339 release time that approvals must predate.'
+    required: false
+    default: ''
+  advisory:
+    description: 'Report rule failures without failing the calling step.'
+    required: false
+    default: 'true'
+  receipt:
+    description: 'Path for the JSON evidence receipt.'
+    required: false
+    default: 'fork-review-receipt.json'
+  github-token:
+    description: 'GitHub token used for read-only repository, review, and permission lookups.'
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  receipt:
+    description: 'Path to the JSON evidence receipt.'
+    value: ${{ steps.check.outputs.receipt }}
+  pass:
+    description: 'Whether the receipt passed every rule.'
+    value: ${{ steps.check.outputs.pass }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version-file: ${{ github.action_path }}/src/go.mod
+
+    - name: Build fork-review-check
+      shell: bash
+      run: go build -o "$RUNNER_TEMP/fork-review-check" "${{ github.action_path }}/src"
+
+    - name: Check fork review evidence
+      id: check
+      shell: bash
+      env:
+        FORK_REVIEW_CHECK_BIN: ${{ runner.temp }}/fork-review-check
+        FORK_REVIEW_CHECK_VERSION: ${{ github.action_ref }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        GH_TOKEN: ${{ inputs.github-token }}
+        INPUT_MODE: ${{ inputs.mode }}
+        INPUT_ROOT: ${{ inputs.root }}
+        INPUT_DIRS: ${{ inputs.dirs }}
+        INPUT_IMAGES: ${{ inputs.images }}
+        INPUT_BINARIES: ${{ inputs.binaries }}
+        INPUT_SOURCES: ${{ inputs.sources }}
+        INPUT_SIGNER_WORKFLOWS: ${{ inputs.signer-workflows }}
+        INPUT_UPSTREAMS: ${{ inputs.upstreams }}
+        INPUT_AS_OF: ${{ inputs.as-of }}
+        INPUT_ADVISORY: ${{ inputs.advisory }}
+        INPUT_RECEIPT: ${{ inputs.receipt }}
+      run: bash "${{ github.action_path }}/src/action.sh"

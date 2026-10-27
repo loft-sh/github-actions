@@ -18,6 +18,7 @@
 //
 //	fork-review-check ref -repo loft-sh/kine -ref v0.16.5.vcluster.1
 //	fork-review-check go -dir . -dir ./sub
+//	fork-review-check scan -root .
 //	fork-review-check image -image ghcr.io/loft-sh/kine:v0.16.5.vcluster.1@sha256:...
 //	fork-review-check binary -url https://github.com/loft-sh/kine/releases/download/v0.16.5.vcluster.1/kine -sha256 ...
 //
@@ -68,6 +69,8 @@ type options struct {
 	mode            string
 	repo            string
 	ref             string
+	root            string
+	sources         multiFlag
 	dirs            multiFlag
 	images          multiFlag
 	urls            multiFlag
@@ -133,17 +136,19 @@ func run(args []string, stdout io.Writer) int {
 func parseArgs(args []string) (options, error) {
 	var opts options
 	if len(args) == 0 {
-		return opts, errors.New("usage: fork-review-check ref|go|image|binary [flags]")
+		return opts, errors.New("usage: fork-review-check ref|go|image|binary|scan [flags]")
 	}
 	opts.mode = args[0]
 
 	fs := flag.NewFlagSet("fork-review-check "+opts.mode, flag.ContinueOnError)
 	fs.StringVar(&opts.repo, "repo", "", "ref mode: fork repository, owner/name")
 	fs.StringVar(&opts.ref, "ref", "", "ref mode: fork release tag or commit SHA")
+	fs.StringVar(&opts.root, "root", ".", "scan mode: root directory to inspect")
 	fs.Var(&opts.dirs, "dir", "go mode: module directory to resolve (repeatable)")
 	fs.Var(&opts.images, "image", "image mode: digest-pinned ghcr.io fork image (repeatable)")
 	fs.Var(&opts.urls, "url", "binary mode: GitHub release asset URL (repeatable)")
 	fs.Var(&opts.sha256, "sha256", "binary mode: release asset SHA-256, paired with -url (repeatable)")
+	fs.Var(&opts.sources, "source", "scan mode: fork=tag-or-full-SHA source clone pin (repeatable)")
 	fs.Var(&opts.upstreams, "upstream", "fork=upstream[@branch] used when a fork has no fork-upstream property; in ref mode a bare upstream applies to -repo (repeatable)")
 	fs.Var(&opts.signerWorkflows, "signer-workflow", "fork=workflow path used to verify an image or binary (repeatable)")
 	fs.StringVar(&opts.asOf, "as-of", "", "RFC 3339 time every approval must predate (rule 3), normally the product release time")
@@ -154,6 +159,10 @@ func parseArgs(args []string) (options, error) {
 	}
 
 	switch opts.mode {
+	case "scan":
+		if len(opts.urls) != len(opts.sha256) {
+			return opts, errors.New("scan mode needs paired -url and -sha256 flags")
+		}
 	case "ref":
 		if opts.repo == "" || opts.ref == "" {
 			return opts, errors.New("ref mode needs -repo and -ref")
@@ -171,9 +180,100 @@ func parseArgs(args []string) (options, error) {
 			return opts, errors.New("binary mode needs paired -url and -sha256 flags")
 		}
 	default:
-		return opts, fmt.Errorf("unknown mode %q: want ref, go, image or binary", opts.mode)
+		return opts, fmt.Errorf("unknown mode %q: want ref, go, image, binary or scan", opts.mode)
 	}
 	return opts, nil
+}
+
+type inputResolver struct {
+	ctx      context.Context
+	api      forkAPI
+	tool     goTool
+	attest   attestTool
+	download downloadTool
+	signers  map[string]string
+	rc       *receipt
+	pins     []pin
+	forks    map[string]bool
+}
+
+func (r *inputResolver) add(p pin, in inputRecord, failure string, err error) error {
+	if err != nil {
+		return err
+	}
+	if failure != "" {
+		r.rc.Failures = append(r.rc.Failures, failure)
+		return nil
+	}
+	r.pins = append(r.pins, p)
+	r.rc.Inputs = append(r.rc.Inputs, in)
+	return nil
+}
+
+func (r *inputResolver) goDirs(dirs []string) error {
+	for _, dir := range dirs {
+		inputs, failures, err := goForkInputs(r.tool, dir)
+		if err != nil {
+			return err
+		}
+		r.rc.Failures = append(r.rc.Failures, failures...)
+		for _, in := range inputs {
+			fork, err := r.fork(in.Repo)
+			if err != nil {
+				return fmt.Errorf("read %s: %w", in.Repo, err)
+			}
+			in.Fork = fork
+			r.rc.Inputs = append(r.rc.Inputs, in)
+			if fork {
+				r.pins = append(r.pins, pinFromGoInput(in))
+			}
+		}
+	}
+	return nil
+}
+
+func (r *inputResolver) images(sources []string) error {
+	for _, source := range sources {
+		if err := r.add(imagePin(r.ctx, r.api, r.attest, r.signers, source)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *inputResolver) binaries(urls, hashes []string) error {
+	if len(urls) != len(hashes) {
+		return errors.New("binary inputs need paired -url and -sha256 flags")
+	}
+	for i, source := range urls {
+		if err := r.add(binaryPin(r.ctx, r.api, r.attest, r.download, r.signers, source, hashes[i])); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *inputResolver) sources(values []string, source string) error {
+	for _, value := range values {
+		repo, ref, err := sourceParts(value)
+		if err != nil {
+			return err
+		}
+		p, failure, err := refPin(r.ctx, r.api, repo, ref)
+		in := inputRecord{
+			Kind:    "fork-source",
+			Source:  source,
+			Path:    repo,
+			Version: ref,
+			Repo:    repo,
+			Commit:  p.Commit,
+			Fork:    true,
+		}
+		if err := r.add(p, in, failure, err); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // check resolves the pins for the mode and evaluates every fork.
@@ -198,69 +298,49 @@ func check(ctx context.Context, api forkAPI, tool goTool, attest attestTool, dow
 		return rc, err
 	}
 
-	var pins []pin
+	r := inputResolver{
+		ctx: ctx, api: api, tool: tool, attest: attest, download: download,
+		signers: signers, rc: &rc,
+	}
 	switch opts.mode {
 	case "ref":
 		p, failure, err := refPin(ctx, api, opts.repo, opts.ref)
-		if err != nil {
+		in := inputRecord{
+			Kind:    "fork-ref",
+			Source:  "-ref",
+			Path:    opts.repo,
+			Version: opts.ref,
+			Repo:    opts.repo,
+			Commit:  p.Commit,
+			Fork:    true,
+		}
+		if err := r.add(p, in, failure, err); err != nil {
 			return rc, err
 		}
-		if failure != "" {
-			rc.Failures = append(rc.Failures, failure)
-		} else {
-			pins = append(pins, p)
-			rc.Inputs = append(rc.Inputs, inputRecord{Kind: "fork-ref", Source: "-ref", Path: opts.repo, Version: opts.ref, Repo: opts.repo, Commit: p.Commit, Fork: true})
-		}
 	case "go":
-		for _, dir := range opts.dirs {
-			inputs, failures, err := goForkInputs(tool, dir)
-			if err != nil {
-				return rc, err
-			}
-			rc.Failures = append(rc.Failures, failures...)
-			for _, in := range inputs {
-				fork, err := isFork(ctx, api, in.Repo)
-				if err != nil {
-					return rc, fmt.Errorf("read %s: %w", in.Repo, err)
-				}
-				in.Fork = fork
-				rc.Inputs = append(rc.Inputs, in)
-				if fork {
-					pins = append(pins, pinFromGoInput(in))
-				}
-			}
+		if err := r.goDirs(opts.dirs); err != nil {
+			return rc, err
 		}
 	case "image":
-		for _, source := range opts.images {
-			p, in, failure, err := imagePin(ctx, api, attest, signers, source)
-			if err != nil {
-				return rc, err
-			}
-			if failure != "" {
-				rc.Failures = append(rc.Failures, failure)
-				continue
-			}
-			pins = append(pins, p)
-			rc.Inputs = append(rc.Inputs, in)
+		if err := r.images(opts.images); err != nil {
+			return rc, err
 		}
 	case "binary":
-		for i, source := range opts.urls {
-			p, in, failure, err := binaryPin(ctx, api, attest, download, signers, source, opts.sha256[i])
-			if err != nil {
-				return rc, err
-			}
-			if failure != "" {
-				rc.Failures = append(rc.Failures, failure)
-				continue
-			}
-			pins = append(pins, p)
-			rc.Inputs = append(rc.Inputs, in)
+		if err := r.binaries(opts.urls, opts.sha256); err != nil {
+			return rc, err
 		}
+	case "scan":
+		if err := r.scan(opts); err != nil {
+			return rc, err
+		}
+	}
+	if opts.mode == "scan" {
+		sort.Strings(rc.Failures)
 	}
 
 	c := newChecker(api, asOf, overrides)
 	seen := map[string]bool{}
-	for _, p := range pins {
+	for _, p := range r.pins {
 		key := p.Repo + "@" + p.Commit + "@" + p.Tag
 		if seen[key] {
 			continue

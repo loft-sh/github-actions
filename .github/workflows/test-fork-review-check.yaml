@@ -5,10 +5,12 @@ on:
     branches: [main]
     paths:
       - '.github/actions/fork-review-check/**'
+      - '.github/workflows/fork-review-check.yaml'
       - '.github/workflows/test-fork-review-check.yaml'
   pull_request:
     paths:
       - '.github/actions/fork-review-check/**'
+      - '.github/workflows/fork-review-check.yaml'
       - '.github/workflows/test-fork-review-check.yaml'
   workflow_dispatch:
 
@@ -29,6 +31,55 @@ jobs:
           go-version-file: .github/actions/fork-review-check/src/go.mod
       - run: go test ./...
         working-directory: .github/actions/fork-review-check/src
+
+  bats:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: bats-core/bats-action@77d6fb60505b4d0d1d73e48bd035b55074bbfb43 # 4.0.0
+        with:
+          support-install: false
+          assert-install: false
+          detik-install: false
+          file-install: false
+      - name: Run fork-review-check action tests
+        run: bats .github/actions/fork-review-check/test/*.bats
+      - uses: bats-core/bats-action@77d6fb60505b4d0d1d73e48bd035b55074bbfb43 # 4.0.0
+        with:
+          support-install: false
+          assert-install: false
+          detik-install: false
+          file-install: false
+      - name: Test action wrapper
+        run: bats .github/actions/fork-review-check/test/*.bats
+
+  live-scan:
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: loft-sh/kubernetes
+          path: target
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: .github/actions/fork-review-check/src/go.mod
+      - name: Scan loft-sh/kubernetes
+        working-directory: .github/actions/fork-review-check/src
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
+        run: go run . scan -root "$GITHUB_WORKSPACE/target" -advisory -receipt /dev/stdout
 
   # Read-only run against the shipped fork pins the design names, with the
   # workflow token a required workflow gets. Advisory: it records today's gap

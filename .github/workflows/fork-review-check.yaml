@@ -1,0 +1,121 @@
+name: Fork review check
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: 'CLI mode.'
+        required: false
+        type: string
+        default: 'scan'
+      root:
+        description: 'Root directory for scan mode.'
+        required: false
+        type: string
+        default: '.'
+      dirs:
+        description: 'Newline-separated Go module directories.'
+        required: false
+        type: string
+        default: ''
+      images:
+        description: 'Newline-separated digest-pinned fork images.'
+        required: false
+        type: string
+        default: ''
+      binaries:
+        description: 'Newline-separated release URL and SHA-256 pairs.'
+        required: false
+        type: string
+        default: ''
+      sources:
+        description: 'Newline-separated fork=tag-or-full-SHA source pins.'
+        required: false
+        type: string
+        default: ''
+      signer-workflows:
+        description: 'Newline-separated attestation workflow mappings.'
+        required: false
+        type: string
+        default: ''
+      upstreams:
+        description: 'Newline-separated temporary upstream mappings.'
+        required: false
+        type: string
+        default: ''
+      as-of:
+        description: 'RFC 3339 release time that approvals must predate.'
+        required: false
+        type: string
+        default: ''
+      advisory:
+        description: 'Report rule failures without failing the caller.'
+        required: false
+        type: boolean
+        default: true
+      receipt:
+        description: 'Path for the JSON evidence receipt.'
+        required: false
+        type: string
+        default: 'fork-review-receipt.json'
+      ref:
+        description: 'Caller ref to check out. Empty uses the event ref.'
+        required: false
+        type: string
+        default: ''
+      artifact-name:
+        description: 'Name for the uploaded receipt artifact.'
+        required: false
+        type: string
+        default: 'fork-review-receipt'
+    secrets:
+      github-token:
+        description: 'Token for GitHub read APIs. Defaults to the workflow token.'
+        required: false
+    outputs:
+      pass:
+        description: 'Whether every fork review rule passed.'
+        value: ${{ jobs.check.outputs.pass }}
+      artifact-name:
+        description: 'Name of the uploaded receipt artifact.'
+        value: ${{ jobs.check.outputs.artifact-name }}
+
+permissions: {}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      pass: ${{ steps.check.outputs.pass }}
+      artifact-name: ${{ inputs.artifact-name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - id: check
+        uses: loft-sh/github-actions/.github/actions/fork-review-check@fork-review-check/v1 # zizmor: ignore[unpinned-uses] -- internal loft-sh/github-actions coordination tag
+        with:
+          mode: ${{ inputs.mode }}
+          root: ${{ inputs.root }}
+          dirs: ${{ inputs.dirs }}
+          images: ${{ inputs.images }}
+          binaries: ${{ inputs.binaries }}
+          sources: ${{ inputs.sources }}
+          signer-workflows: ${{ inputs.signer-workflows }}
+          upstreams: ${{ inputs.upstreams }}
+          as-of: ${{ inputs.as-of }}
+          advisory: ${{ inputs.advisory }}
+          receipt: ${{ inputs.receipt }}
+          github-token: ${{ secrets.github-token || github.token }}
+
+      - name: Upload fork review receipt
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: ${{ inputs.receipt }}
+          if-no-files-found: warn
