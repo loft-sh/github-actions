@@ -73,7 +73,7 @@ Exit codes: 0 pass or advisory, 1 a rule failed, 2 the check could not run.
 | Binary | `github.com/loft-sh/<fork>/releases/download/...` | Explicit URL and SHA-256 after checksum and provenance verification | Pass paired `-url` and `-sha256` |
 | Link | Release tags, blobs, trees, pulls, issues, and commits | Ignored | Not applicable |
 
-Any other fork reference fails, so a new build-input form cannot slip past the check. A templated reference (a variable with no default in the same file) passes only when the matching explicit flag names that fork. A `loft-sh` repository that is not a fork, or an image name with no repository behind it, is ignored.
+Any other fork reference fails, so a new build-input form cannot slip past the check. A templated reference (a variable with no default in the same file) passes only when the matching explicit flag names that fork. A `loft-sh` repository that is not a fork is ignored. An image whose name matches no repository (`ghcr.io/loft-sh/kine-fips`) is traced to the repository GitHub links its package to: a non-fork build repository such as `loft-sh/fips-builds` is ignored, a fork publishing under another name fails, and a package that cannot be read fails.
 
 ## Action inputs
 
@@ -113,7 +113,7 @@ The JSON receipt lists each input with its hash, each fork's `fork-upstream` val
 
 ## Token
 
-Reading PRs, reviews and compares on public forks works with any token. The approver permission lookup (`repos/{owner}/{repo}/collaborators/{user}/permission`) is the open question for the required workflow: `test-fork-review-check.yaml` runs the CLI against kine, tailscale and fuse with the workflow token to show whether that token can read it cross-repo.
+Reading PRs, reviews and compares on public forks works with any token. `scan` also reads container package metadata, so the job needs `packages: read`. The approver permission lookup (`repos/{owner}/{repo}/collaborators/{user}/permission`) is the open question for the required workflow: `test-fork-review-check.yaml` runs the CLI against kine, tailscale and fuse with the workflow token to show whether that token can read it cross-repo.
 
 ## Product release caller
 

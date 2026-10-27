@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-var scanRepoRe = regexp.MustCompile(`(?:github\.com|ghcr\.io)/loft-sh/([A-Za-z0-9._-]+)`)
+var scanRepoRe = regexp.MustCompile(`(github\.com|ghcr\.io)/loft-sh/([A-Za-z0-9._-]+)`)
 var scanVarRe = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)`)
 
 // scanCheckoutRe matches actions/checkout's repository input, a source clone
@@ -94,7 +94,7 @@ func scanImage(line, repo string) string {
 		}
 	}
 	match := scanRepoRe.FindStringSubmatch(image)
-	if len(match) != 2 || "loft-sh/"+strings.TrimSuffix(match[1], ".git") != repo {
+	if len(match) != 3 || "loft-sh/"+strings.TrimSuffix(match[2], ".git") != repo {
 		return ""
 	}
 	if !strings.HasPrefix(image, "ghcr.io/") {
@@ -161,8 +161,31 @@ func (r *inputResolver) fork(repo string) (bool, error) {
 	return fork, nil
 }
 
+// imageRepo returns the repository that publishes ghcr.io/loft-sh/<name>: the
+// repository of the same name, else the one GitHub links the package to. It
+// is "" when neither exists. A failed package lookup is a rule failure, since
+// the image could come from a fork.
+func (r *inputResolver) imageRepo(name string) (string, string, error) {
+	repo := "loft-sh/" + name
+	if published, ok := r.published[repo]; ok {
+		return published, "", nil
+	}
+	published := repo
+	if _, err := r.api.Repo(r.ctx, repo); isNotFound(err) {
+		published, err = r.api.PackageRepo(r.ctx, "loft-sh", name)
+		if err != nil {
+			return "", fmt.Sprintf("cannot tell which repository publishes ghcr.io/%s: %v", repo, err), nil
+		}
+	} else if err != nil {
+		return "", "", fmt.Errorf("read %s: %w", repo, err)
+	}
+	r.published[repo] = published
+	return published, "", nil
+}
+
 func (r *inputResolver) scan(opts options) error {
 	r.forks = map[string]bool{}
+	r.published = map[string]string{}
 	covered := map[string]bool{}
 	for _, source := range opts.images {
 		if ref, failure := parseImageReference(source); failure == "" {
@@ -249,7 +272,32 @@ func (r *inputResolver) scan(opts options) error {
 				}
 			}
 			for _, match := range scanRepoRe.FindAllStringSubmatchIndex(line, -1) {
-				repo := "loft-sh/" + strings.TrimSuffix(line[match[2]:match[3]], ".git")
+				repo := "loft-sh/" + strings.TrimSuffix(line[match[4]:match[5]], ".git")
+				if line[match[2]:match[3]] == "ghcr.io" {
+					published, failure, err := r.imageRepo(strings.TrimPrefix(repo, "loft-sh/"))
+					if err != nil {
+						return err
+					}
+					if failure != "" {
+						r.rc.Failures = append(r.rc.Failures, location+": "+failure)
+						continue
+					}
+					if published == "" {
+						continue
+					}
+					if published != repo {
+						fork, err := r.fork(published)
+						if err != nil {
+							return fmt.Errorf("read %s: %w", published, err)
+						}
+						if fork {
+							r.rc.Failures = append(r.rc.Failures, fmt.Sprintf(
+								"%s: image ghcr.io/%s is published by fork %s under another name, which no resolver understands",
+								location, repo, published))
+						}
+						continue
+					}
+				}
 				fork, err := r.fork(repo)
 				if err != nil {
 					return fmt.Errorf("read %s: %w", repo, err)

@@ -87,6 +87,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      packages: read
     outputs:
       pass: ${{ steps.check.outputs.pass }}
       artifact-name: ${{ inputs.artifact-name }}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -188,13 +189,52 @@ func (f missingRepoAPI) Repo(ctx context.Context, repo string) (repoInfo, error)
 	return f.fakeAPI.Repo(ctx, repo)
 }
 
-func TestScanIgnoresMissingImageRepository(t *testing.T) {
+type packageErrAPI struct{ missingRepoAPI }
+
+func (f packageErrAPI) PackageRepo(context.Context, string, string) (string, error) {
+	return "", errors.New("403 Resource not accessible by integration")
+}
+
+// kine-fips has no repository of its own. Which repository publishes the
+// package decides whether it can carry fork code.
+func TestScanResolvesImageWithoutRepositoryThroughItsPackage(t *testing.T) {
 	root := scanFixture(t, map[string]string{
 		"Dockerfile": "FROM ghcr.io/loft-sh/kine-fips:latest\n",
 	})
-	rc := scanCheck(t, root, missingRepoAPI{scanFork()}, nil, nil, nil, scanOptions(root))
-	if !rc.Pass || len(rc.Failures) != 0 {
-		t.Fatalf("scan result = %+v", rc)
+	cases := []struct {
+		name    string
+		publish string
+		api     func(*fakeAPI) forkAPI
+		want    string
+	}{
+		{name: "no package", api: func(f *fakeAPI) forkAPI { return missingRepoAPI{f} }},
+		{name: "published by a non-fork build repo", publish: "loft-sh/fips-builds", api: func(f *fakeAPI) forkAPI { return missingRepoAPI{f} }},
+		{
+			name: "published by a fork under another name", publish: fork,
+			api:  func(f *fakeAPI) forkAPI { return missingRepoAPI{f} },
+			want: "Dockerfile:1: image ghcr.io/loft-sh/kine-fips is published by fork loft-sh/kine under another name, which no resolver understands",
+		},
+		{
+			name: "package lookup fails", api: func(f *fakeAPI) forkAPI { return packageErrAPI{missingRepoAPI{f}} },
+			want: "Dockerfile:1: cannot tell which repository publishes ghcr.io/loft-sh/kine-fips: 403 Resource not accessible by integration",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := scanFork()
+			f.repos["loft-sh/fips-builds"] = repoInfo{FullName: "loft-sh/fips-builds"}
+			f.packages = map[string]string{"loft-sh/kine-fips": tc.publish}
+			rc := scanCheck(t, root, tc.api(f), nil, nil, nil, scanOptions(root))
+			if tc.want == "" {
+				if !rc.Pass || len(rc.Failures) != 0 {
+					t.Fatalf("scan result = %+v", rc)
+				}
+				return
+			}
+			if rc.Pass || len(rc.Failures) != 1 || rc.Failures[0] != tc.want {
+				t.Fatalf("failures = %q, want only %q", rc.Failures, tc.want)
+			}
+		})
 	}
 }
 

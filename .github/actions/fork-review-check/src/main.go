@@ -195,6 +195,8 @@ type inputResolver struct {
 	rc       *receipt
 	pins     []pin
 	forks    map[string]bool
+	// published maps a ghcr.io/loft-sh image name to the repository that publishes it.
+	published map[string]string
 }
 
 func (r *inputResolver) add(p pin, in inputRecord, failure string, err error) error {

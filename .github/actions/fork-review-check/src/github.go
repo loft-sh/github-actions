@@ -68,6 +68,9 @@ type forkAPI interface {
 	LastForcePush(ctx context.Context, repo string, number int) (time.Time, error)
 	// Permission returns the collaborator permission: admin, write, read or none.
 	Permission(ctx context.Context, repo, user string) (string, error)
+	// PackageRepo returns the repository a container package is linked to, or
+	// "" when the package does not exist or has no repository.
+	PackageRepo(ctx context.Context, owner, name string) (string, error)
 }
 
 type githubAPI struct {
@@ -86,6 +89,17 @@ func (a githubAPI) Repo(ctx context.Context, repo string) (repoInfo, error) {
 		return repoInfo{}, err
 	}
 	return repoInfo{FullName: r.GetFullName(), DefaultBranch: r.GetDefaultBranch(), Fork: r.GetFork()}, nil
+}
+
+func (a githubAPI) PackageRepo(ctx context.Context, owner, name string) (string, error) {
+	p, _, err := a.gh.Organizations.GetPackage(ctx, owner, "container", name)
+	if isNotFound(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return p.GetRepository().GetFullName(), nil
 }
 
 func (a githubAPI) ForkUpstream(ctx context.Context, repo string) (string, error) {
