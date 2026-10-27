@@ -130,7 +130,7 @@ func TestGoModeChecksOnlyForks(t *testing.T) {
 	f.repos["loft-sh/tailscale"] = repoInfo{FullName: "loft-sh/tailscale", Fork: true}
 	f.upstreams["loft-sh/tailscale"] = "tailscale/tailscale"
 
-	rc, err := check(context.Background(), f, vnodeGraph(), options{mode: "go", dirs: multiFlag{"vnode"}}, time.Now())
+	rc, err := check(context.Background(), f, vnodeGraph(), nil, nil, options{mode: "go", dirs: multiFlag{"vnode"}}, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}

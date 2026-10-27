@@ -32,12 +32,26 @@ go run . ref -repo loft-sh/kine -ref v0.16.5.vcluster.1
 
 # Every loft-sh fork in the effective Go module graph of one or more modules.
 GOPRIVATE=github.com/loft-sh/* go run . go -dir /path/to/vnode-internal
+
+# A digest-pinned fork image. -image and -signer-workflow are repeatable.
+go run . image \
+  -image ghcr.io/loft-sh/kine:v0.16.5.vcluster.1@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+  -signer-workflow loft-sh/kine=.github/workflows/release.yml
+
+# A fork release asset. -url and -sha256 are paired in flag order.
+go run . binary \
+  -url https://github.com/loft-sh/kine/releases/download/v0.16.5.vcluster.1/kine \
+  -sha256 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+  -signer-workflow loft-sh/kine=.github/workflows/release.yml
 ```
 
 | Flag | Meaning |
 | --- | --- |
 | `-repo`, `-ref` | `ref` mode: the fork and the tag or commit to check |
 | `-dir` | `go` mode: module directory, repeatable. S is the commit Go downloaded (`go mod download -json`, `Origin.Hash`), not today's tag |
+| `-image` | `image` mode: a `ghcr.io/<owner>/<name>:<fork-tag>@sha256:<digest>` image, repeatable |
+| `-url`, `-sha256` | `binary` mode: a GitHub release asset URL and its 64-character SHA-256, paired and repeatable |
+| `-signer-workflow` | `fork=.github/workflows/release.yml`, repeatable. Required for every image or binary fork |
 | `-upstream` | `fork=upstream[@branch]`, used only while a fork has no `fork-upstream` property. The missing property still fails; the override only keeps the per-commit evidence coming |
 | `-as-of` | RFC 3339 time for rule 3 |
 | `-receipt` | Write the JSON receipt to this path |
@@ -57,7 +71,7 @@ Reading PRs, reviews and compares on public forks works with any token. The appr
 
 ## Not yet covered
 
-Container images by digest, release binaries by sha256, source clones, and the fail-closed net for unknown fork references are step 4 of the design.
+Source clones and the fail-closed net for unknown fork references are still step 4 of the design.
 
 ## Tests
 
