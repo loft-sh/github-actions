@@ -140,15 +140,170 @@ func repoFromOrigin(url, path string) string {
 	return parts[0] + "/" + parts[1]
 }
 
+// verifyVendor checks the committed vendor tree using a caller-provided
+// verifier in a temporary clone. The verifier is trusted code, not sandboxed.
+func verifyVendor(dir, verifier string) error {
+	// Workspace vendoring belongs to the workspace root, not an individual
+	// module. Do not certify it with a module-scoped verifier.
+	if st, err := os.Stat(dir); err == nil && st.IsDir() {
+		out, err := runGo(dir, "env", "GOWORK")
+		if err != nil {
+			return fmt.Errorf("detect Go workspace: %w", err)
+		}
+		workspace := strings.TrimSpace(string(out))
+		if workspace != "" && workspace != "off" {
+			path := filepath.Join(filepath.Dir(workspace), "vendor")
+			if _, err := os.Lstat(path); err == nil {
+				return fmt.Errorf("workspace vendor tree %s requires workspace verification, which is not supported", path)
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("inspect workspace vendor tree: %w", err)
+			}
+		}
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect module directory: %w", err)
+	}
+	vendor := filepath.Join(dir, "vendor")
+	info, err := os.Lstat(vendor)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect vendor tree: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("vendor path %s is not a directory", vendor)
+	}
+	if strings.TrimSpace(verifier) == "" {
+		return fmt.Errorf("%s exists: configure a trusted vendor verifier", vendor)
+	}
+	module, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return fmt.Errorf("resolve module directory: %w", err)
+	}
+	module, err = filepath.Abs(module)
+	if err != nil {
+		return err
+	}
+	runGit := func(at string, args ...string) ([]byte, error) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = at
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return nil, fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+		}
+		return out, nil
+	}
+	out, err := runGit(module, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return fmt.Errorf("vendor verification needs a Git checkout: %w", err)
+	}
+	root, err := filepath.EvalSymlinks(strings.TrimSpace(string(out)))
+	if err != nil {
+		return err
+	}
+	rel, err := filepath.Rel(root, module)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("module directory is outside its Git checkout")
+	}
+	// A clean checkout binds the clone to the source the build will consume.
+	// Include ignored vendor files: Git's normal status hides them, but Go can
+	// still compile them. Do not follow symlinks outside the checkout.
+	clean := func() error {
+		status, err := runGit(root, "status", "--porcelain", "--untracked-files=all")
+		if err != nil {
+			return err
+		}
+		if len(status) != 0 {
+			return fmt.Errorf("vendor verification requires a clean checkout")
+		}
+		status, err = runGit(root, "status", "--porcelain", "--untracked-files=all", "--ignored", "--", filepath.Join(rel, "vendor"))
+		if err != nil {
+			return err
+		}
+		if len(status) != 0 {
+			return fmt.Errorf("vendor tree contains uncommitted or ignored files")
+		}
+		return nil
+	}
+	if err := clean(); err != nil {
+		return err
+	}
+	err = filepath.WalkDir(filepath.Join(module, "vendor"), func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.Type()&os.ModeSymlink == 0 {
+			return nil
+		}
+		target, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return fmt.Errorf("resolve vendor symlink %s: %w", path, err)
+		}
+		r, err := filepath.Rel(root, target)
+		if err != nil || r == ".." || strings.HasPrefix(r, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("vendor symlink %s points outside the checkout", path)
+		}
+		status, err := runGit(root, "status", "--porcelain", "--untracked-files=all", "--ignored", "--", r)
+		if err != nil {
+			return err
+		}
+		if len(status) != 0 {
+			return fmt.Errorf("vendor symlink target %s contains uncommitted or ignored files", path)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	head, err := runGit(root, "rev-parse", "--verify", "HEAD")
+	if err != nil {
+		return err
+	}
+	tmp, err := os.MkdirTemp("", "fork-review-vendor-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmp)
+	clone := filepath.Join(tmp, "checkout")
+	if _, err := runGit(root, "-c", "core.hooksPath=/dev/null", "clone", "--no-hardlinks", "--no-checkout", "--", root, clone); err != nil {
+		return err
+	}
+	if _, err := runGit(clone, "-c", "core.hooksPath=/dev/null", "checkout", "--detach", strings.TrimSpace(string(head))); err != nil {
+		return err
+	}
+	if err := clean(); err != nil {
+		return err
+	}
+	current, err := runGit(root, "rev-parse", "--verify", "HEAD")
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(head, current) {
+		return fmt.Errorf("checkout HEAD changed during vendor verification")
+	}
+	cmd := exec.Command("sh", "-c", verifier)
+	cmd.Dir = filepath.Join(clone, rel)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("vendor verifier failed: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
 type execGo struct{}
 
 func (execGo) ListModules(dir string) ([]goModule, error) {
 	args := []string{"list", "-m", "-json"}
 	// With a vendor directory and no workspace, go list cannot compute "all"
-	// from vendor/modules.txt. Go already checks that file against go.mod, so
-	// reading the graph from go.mod yields the same versions.
-	if exists(filepath.Join(dir, "vendor")) && os.Getenv("GOWORK") != "off" && !exists(filepath.Join(dir, "go.work")) {
-		args = append(args, "-mod=mod")
+	// from vendor/modules.txt. The vendor verifier checks that source separately.
+	if exists(filepath.Join(dir, "vendor")) {
+		work, err := runGo(dir, "env", "GOWORK")
+		if err != nil {
+			return nil, fmt.Errorf("detect Go workspace: %w", err)
+		}
+		if strings.TrimSpace(string(work)) == "" || strings.TrimSpace(string(work)) == "off" {
+			args = append(args, "-mod=mod")
+		}
 	}
 	args = append(args, "all")
 	out, err := runGo(dir, args...)

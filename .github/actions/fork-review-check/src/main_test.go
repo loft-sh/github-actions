@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -64,6 +66,27 @@ func TestParseArgs(t *testing.T) {
 	o, err := parseArgs([]string{"go"})
 	if err != nil || len(o.dirs) != 1 || o.dirs[0] != "." {
 		t.Errorf("go mode defaults to the current directory: %+v %v", o, err)
+	}
+}
+
+func TestGoModeRequiresVendorVerification(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "vendor"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rc, err := check(context.Background(), newFake(), vnodeGraph(), options{mode: "go", dirs: multiFlag{dir}}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rc.Pass || !strings.Contains(strings.Join(rc.Failures, " "), "vendor") {
+		t.Fatalf("unverified vendor tree must fail: %+v", rc)
+	}
+}
+
+func TestParseVendorVerifier(t *testing.T) {
+	o, err := parseArgs([]string{"go", "-vendor-verifier", "bash hack/verify-vendor.sh"})
+	if err != nil || o.vendorVerifier != "bash hack/verify-vendor.sh" {
+		t.Fatalf("vendor verifier = %q, error %v", o.vendorVerifier, err)
 	}
 }
 

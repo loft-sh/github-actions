@@ -13,7 +13,8 @@
 //  3. With -as-of, every approval predates that time (the product release).
 //  4. It fails and names every commit that breaks a rule.
 //
-// It reads GitHub and the go command only; it writes nothing but its receipt.
+// It reads GitHub and the go command. For vendored modules, it runs a trusted
+// verifier in a temporary checkout, and it can write a receipt.
 //
 //	fork-review-check ref -repo loft-sh/kine -ref v0.16.5.vcluster.1
 //	fork-review-check go -dir . -dir ./sub
@@ -62,14 +63,15 @@ func (m *multiFlag) String() string     { return strings.Join(*m, ",") }
 func (m *multiFlag) Set(v string) error { *m = append(*m, v); return nil }
 
 type options struct {
-	mode      string
-	repo      string
-	ref       string
-	dirs      multiFlag
-	upstreams multiFlag
-	asOf      string
-	receipt   string
-	advisory  bool
+	mode           string
+	repo           string
+	ref            string
+	dirs           multiFlag
+	vendorVerifier string
+	upstreams      multiFlag
+	asOf           string
+	receipt        string
+	advisory       bool
 }
 
 func main() {
@@ -134,6 +136,7 @@ func parseArgs(args []string) (options, error) {
 	fs.StringVar(&opts.repo, "repo", "", "ref mode: fork repository, owner/name")
 	fs.StringVar(&opts.ref, "ref", "", "ref mode: fork release tag or commit SHA")
 	fs.Var(&opts.dirs, "dir", "go mode: module directory to resolve (repeatable)")
+	fs.StringVar(&opts.vendorVerifier, "vendor-verifier", "", "go mode: trusted command to verify vendor in an isolated checkout")
 	fs.Var(&opts.upstreams, "upstream", "fork=upstream[@branch] used when a fork has no fork-upstream property; in ref mode a bare upstream applies to -repo (repeatable)")
 	fs.StringVar(&opts.asOf, "as-of", "", "RFC 3339 time every approval must predate (rule 3), normally the product release time")
 	fs.StringVar(&opts.receipt, "receipt", "", "write the JSON receipt to this path")
@@ -190,6 +193,10 @@ func check(ctx context.Context, api forkAPI, tool goTool, opts options, now time
 		}
 	case "go":
 		for _, dir := range opts.dirs {
+			if err := verifyVendor(dir, opts.vendorVerifier); err != nil {
+				rc.Failures = append(rc.Failures, fmt.Sprintf("%s: verify vendor: %v", dir, err))
+				continue
+			}
 			inputs, failures, err := goForkInputs(tool, dir)
 			if err != nil {
 				return rc, err
