@@ -53,6 +53,48 @@ func TestVerifyVendorRequiresVerifier(t *testing.T) {
 	}
 }
 
+func TestGoAndScanModesVerifyVendorBeforeResolving(t *testing.T) {
+	for _, mode := range []string{"go", "scan"} {
+		for _, tc := range []struct {
+			name, verifier string
+			wantPass       bool
+		}{
+			{"missing", "", false},
+			{"failing", "exit 7", false},
+			{"passing", "true", true},
+		} {
+			t.Run(mode+"/"+tc.name, func(t *testing.T) {
+				dir := vendorFixture(t)
+				if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/test\n\nrequire github.com/loft-sh/kine v1.0.0\n"), 0644); err != nil {
+					t.Fatal(err)
+				}
+				cmd := exec.Command("git", "add", "go.mod")
+				cmd.Dir = dir
+				if out, err := cmd.CombinedOutput(); err != nil {
+					t.Fatalf("git add: %v: %s", err, out)
+				}
+				cmd = exec.Command("git", "commit", "-qm", "add module")
+				cmd.Dir = dir
+				if out, err := cmd.CombinedOutput(); err != nil {
+					t.Fatalf("git commit: %v: %s", err, out)
+				}
+				g := &scanGo{}
+				opts := options{mode: mode, root: dir, vendorVerifier: tc.verifier}
+				if mode == "go" {
+					opts.dirs = multiFlag{dir}
+				}
+				rc, err := check(context.Background(), scanFork(), g, nil, nil, opts, t0)
+				if err != nil || rc.Pass != tc.wantPass {
+					t.Fatalf("receipt = %+v, err = %v", rc, err)
+				}
+				if tc.wantPass && len(g.dirs) != 1 || !tc.wantPass && (len(g.dirs) != 0 || !strings.Contains(strings.Join(rc.Failures, " "), "verify vendor")) {
+					t.Fatalf("receipt = %+v, Go calls = %v", rc, g.dirs)
+				}
+			})
+		}
+	}
+}
+
 func TestVerifyVendorRejectsBrokenVendorLink(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.Symlink("missing", filepath.Join(dir, "vendor")); err != nil {
