@@ -13,8 +13,9 @@
 //  3. With -as-of, every approval predates that time (the product release).
 //  4. It fails and names every commit that breaks a rule.
 //
-// It reads GitHub, the go command and attestation evidence. It writes only its
-// receipt and temporary downloaded release assets.
+// It reads GitHub, the go command and attestation evidence. For vendored modules,
+// it runs a trusted verifier in a temporary checkout. It can write a receipt and
+// temporary downloaded release assets.
 //
 //	fork-review-check ref -repo loft-sh/kine -ref v0.16.5.vcluster.1
 //	fork-review-check go -dir . -dir ./sub
@@ -69,6 +70,7 @@ type options struct {
 	repo            string
 	ref             string
 	dirs            multiFlag
+	vendorVerifier  string
 	images          multiFlag
 	urls            multiFlag
 	sha256          multiFlag
@@ -144,6 +146,7 @@ func parseArgs(args []string) (options, error) {
 	fs.Var(&opts.images, "image", "image mode: digest-pinned ghcr.io fork image (repeatable)")
 	fs.Var(&opts.urls, "url", "binary mode: GitHub release asset URL (repeatable)")
 	fs.Var(&opts.sha256, "sha256", "binary mode: release asset SHA-256, paired with -url (repeatable)")
+	fs.StringVar(&opts.vendorVerifier, "vendor-verifier", "", "go mode: trusted command to verify vendor in an isolated checkout")
 	fs.Var(&opts.upstreams, "upstream", "fork=upstream[@branch] used when a fork has no fork-upstream property; in ref mode a bare upstream applies to -repo (repeatable)")
 	fs.Var(&opts.signerWorkflows, "signer-workflow", "fork=workflow path used to verify an image or binary (repeatable)")
 	fs.StringVar(&opts.asOf, "as-of", "", "RFC 3339 time every approval must predate (rule 3), normally the product release time")
@@ -213,6 +216,10 @@ func check(ctx context.Context, api forkAPI, tool goTool, attest attestTool, dow
 		}
 	case "go":
 		for _, dir := range opts.dirs {
+			if err := verifyVendor(dir, opts.vendorVerifier); err != nil {
+				rc.Failures = append(rc.Failures, fmt.Sprintf("%s: verify vendor: %v", dir, err))
+				continue
+			}
 			inputs, failures, err := goForkInputs(tool, dir)
 			if err != nil {
 				return rc, err
