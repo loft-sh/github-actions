@@ -18,6 +18,11 @@ on:
         required: false
         type: string
         default: ''
+      vendor-verifier:
+        description: 'Trusted command to verify vendored Go modules in a temporary checkout.'
+        required: false
+        type: string
+        default: ''
       images:
         description: 'Newline-separated digest-pinned fork images.'
         required: false
@@ -103,6 +108,7 @@ jobs:
           mode: ${{ inputs.mode }}
           root: ${{ inputs.root }}
           dirs: ${{ inputs.dirs }}
+          vendor-verifier: ${{ inputs.vendor-verifier }}
           images: ${{ inputs.images }}
           binaries: ${{ inputs.binaries }}
           sources: ${{ inputs.sources }}

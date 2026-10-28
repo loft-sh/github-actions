@@ -32,6 +32,10 @@ append_lines -source "$INPUT_SOURCES"
 append_lines -signer-workflow "$INPUT_SIGNER_WORKFLOWS"
 append_lines -upstream "$INPUT_UPSTREAMS"
 
+if [ -n "$INPUT_VENDOR_VERIFIER" ]; then
+  argv+=(-vendor-verifier "$INPUT_VENDOR_VERIFIER")
+fi
+
 if [ -n "$INPUT_AS_OF" ]; then
   argv+=(-as-of "$INPUT_AS_OF")
 fi

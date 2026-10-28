@@ -244,6 +244,11 @@ func (c *checker) checkCommit(ctx context.Context, repo string, ci commitInfo) c
 	}
 
 	for _, pr := range pulls {
+		covered, reason := c.commitCoveredByHead(ctx, repo, ci, pr)
+		if !covered {
+			res.Failures = append(res.Failures, reason)
+			continue
+		}
 		approval, reasons := c.qualifyingApproval(ctx, repo, pr, effectiveAuthor(ci, pr))
 		if approval == nil {
 			res.Failures = append(res.Failures, reasons...)
@@ -253,6 +258,31 @@ func (c *checker) checkCommit(ctx context.Context, repo string, ci commitInfo) c
 		return res
 	}
 	return res
+}
+
+// commitCoveredByHead proves that an associated commit is in the approved
+// final head, or is the exact verified GitHub merge result for that PR.
+func (c *checker) commitCoveredByHead(ctx context.Context, repo string, ci commitInfo, pr pullInfo) (bool, string) {
+	if ci.SHA != "" && ci.SHA == pr.HeadSHA {
+		return true, ""
+	}
+	if ci.SHA != "" && ci.SHA == pr.MergeCommit {
+		if isGitHubMergeResult(ci, pr) {
+			return true, ""
+		}
+		return false, fmt.Sprintf("#%d: merge result lacks a verified signature or web-flow committer", pr.Number)
+	}
+	if ci.SHA == "" || pr.HeadSHA == "" {
+		return false, fmt.Sprintf("#%d: cannot verify commit ancestry without a commit and final head", pr.Number)
+	}
+	cmp, err := c.api.Compare(ctx, repo, ci.SHA, pr.HeadSHA)
+	if err != nil {
+		return false, fmt.Sprintf("#%d: compare commit to final head: %v", pr.Number, err)
+	}
+	if (cmp.Status != "ahead" && cmp.Status != "identical") || !strings.EqualFold(cmp.MergeBase, ci.SHA) {
+		return false, fmt.Sprintf("#%d: commit is not an ancestor of the final head (compare status %s, merge base %s)", pr.Number, cmp.Status, short(cmp.MergeBase))
+	}
+	return true, ""
 }
 
 // checkReviewedTree applies rule 1 to S: it is the final head or the merge
@@ -269,7 +299,11 @@ func (c *checker) checkReviewedTree(ctx context.Context, repo string, ci commitI
 		case pr.HeadSHA:
 			via = "head"
 		case pr.MergeCommit:
-			via = "merge"
+			if isGitHubMergeResult(ci, pr) {
+				via = "merge"
+			} else {
+				continue
+			}
 		default:
 			continue
 		}
@@ -401,10 +435,14 @@ func commitOf(commits []commitInfo, sha string) commitInfo {
 // is the pull request author. Any other commit keeps its git author, merge
 // commits pushed by hand included.
 func effectiveAuthor(ci commitInfo, pr pullInfo) string {
-	if ci.Merge && ci.Committer == githubMergeCommitter && ci.SHA == pr.MergeCommit {
+	if ci.Merge && isGitHubMergeResult(ci, pr) {
 		return pr.Author
 	}
 	return ci.Author
+}
+
+func isGitHubMergeResult(ci commitInfo, pr pullInfo) bool {
+	return ci.SHA != "" && ci.SHA == pr.MergeCommit && ci.Committer == githubMergeCommitter && ci.Verified
 }
 
 func short(sha string) string {

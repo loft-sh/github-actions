@@ -26,6 +26,7 @@ type commitInfo struct {
 	SHA       string
 	Author    string // GitHub login of the git author; empty when the email maps to no account
 	Committer string // GitHub login of the committer
+	Verified  bool   // GitHub's verification result for the commit signature
 	Subject   string
 	Merge     bool
 }
@@ -165,6 +166,7 @@ func (a githubAPI) Compare(ctx context.Context, repo, base, head string) (compar
 				SHA:       rc.GetSHA(),
 				Author:    rc.GetAuthor().GetLogin(),
 				Committer: rc.GetCommitter().GetLogin(),
+				Verified:  rc.GetCommit().GetVerification().GetVerified(),
 				Subject:   firstLine(rc.GetCommit().GetMessage()),
 				Merge:     len(rc.Parents) > 1,
 			})

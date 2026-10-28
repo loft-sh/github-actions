@@ -11,6 +11,7 @@ setup() {
   export INPUT_MODE=scan
   export INPUT_ROOT=target
   export INPUT_DIRS=$' cmd/api \ncmd/worker'
+  export INPUT_VENDOR_VERIFIER='bash hack/verify-vendor.sh'
   export INPUT_IMAGES='ghcr.io/loft-sh/kine:v0.16.5.vcluster.1@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
   export INPUT_BINARIES='https://github.com/loft-sh/kine/releases/download/v0.16.5.vcluster.1/kine bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
   export INPUT_SOURCES='loft-sh/kine=v0.16.5.vcluster.1'
@@ -60,6 +61,8 @@ loft-sh/kine=v0.16.5.vcluster.1
 loft-sh/kine=.github/workflows/release.yml
 -upstream
 loft-sh/kine=k3s-io/kine
+-vendor-verifier
+bash hack/verify-vendor.sh
 -as-of
 2026-10-27T09:00:00Z
 -url

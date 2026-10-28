@@ -13,8 +13,9 @@
 //  3. With -as-of, every approval predates that time (the product release).
 //  4. It fails and names every commit that breaks a rule.
 //
-// It reads GitHub, the go command and attestation evidence. It writes only its
-// receipt and temporary downloaded release assets.
+// It reads GitHub, the go command and attestation evidence. For vendored modules,
+// it runs a trusted verifier in a temporary checkout. It can write a receipt and
+// temporary downloaded release assets.
 //
 //	fork-review-check ref -repo loft-sh/kine -ref v0.16.5.vcluster.1
 //	fork-review-check go -dir . -dir ./sub
@@ -72,6 +73,7 @@ type options struct {
 	root            string
 	sources         multiFlag
 	dirs            multiFlag
+	vendorVerifier  string
 	images          multiFlag
 	urls            multiFlag
 	sha256          multiFlag
@@ -149,6 +151,7 @@ func parseArgs(args []string) (options, error) {
 	fs.Var(&opts.urls, "url", "binary mode: GitHub release asset URL (repeatable)")
 	fs.Var(&opts.sha256, "sha256", "binary mode: release asset SHA-256, paired with -url (repeatable)")
 	fs.Var(&opts.sources, "source", "scan mode: fork=tag-or-full-SHA source clone pin (repeatable)")
+	fs.StringVar(&opts.vendorVerifier, "vendor-verifier", "", "go and scan modes: trusted command to verify vendor in an isolated checkout")
 	fs.Var(&opts.upstreams, "upstream", "fork=upstream[@branch] used when a fork has no fork-upstream property; in ref mode a bare upstream applies to -repo (repeatable)")
 	fs.Var(&opts.signerWorkflows, "signer-workflow", "fork=workflow path used to verify an image or binary (repeatable)")
 	fs.StringVar(&opts.asOf, "as-of", "", "RFC 3339 time every approval must predate (rule 3), normally the product release time")
@@ -186,15 +189,16 @@ func parseArgs(args []string) (options, error) {
 }
 
 type inputResolver struct {
-	ctx      context.Context
-	api      forkAPI
-	tool     goTool
-	attest   attestTool
-	download downloadTool
-	signers  map[string]string
-	rc       *receipt
-	pins     []pin
-	forks    map[string]bool
+	ctx            context.Context
+	api            forkAPI
+	tool           goTool
+	attest         attestTool
+	download       downloadTool
+	vendorVerifier string
+	signers        map[string]string
+	rc             *receipt
+	pins           []pin
+	forks          map[string]bool
 	// published maps a ghcr.io/loft-sh image name to the repository that publishes it.
 	published map[string]string
 }
@@ -214,6 +218,10 @@ func (r *inputResolver) add(p pin, in inputRecord, failure string, err error) er
 
 func (r *inputResolver) goDirs(dirs []string) error {
 	for _, dir := range dirs {
+		if err := verifyVendor(dir, r.vendorVerifier); err != nil {
+			r.rc.Failures = append(r.rc.Failures, fmt.Sprintf("%s: verify vendor: %v", dir, err))
+			continue
+		}
 		inputs, failures, err := goForkInputs(r.tool, dir)
 		if err != nil {
 			return err
@@ -302,7 +310,7 @@ func check(ctx context.Context, api forkAPI, tool goTool, attest attestTool, dow
 
 	r := inputResolver{
 		ctx: ctx, api: api, tool: tool, attest: attest, download: download,
-		signers: signers, rc: &rc,
+		signers: signers, rc: &rc, vendorVerifier: opts.vendorVerifier,
 	}
 	switch opts.mode {
 	case "ref":

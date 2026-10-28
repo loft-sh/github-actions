@@ -14,6 +14,10 @@ inputs:
     description: 'Newline-separated Go module directories.'
     required: false
     default: ''
+  vendor-verifier:
+    description: 'Trusted command to verify vendored Go modules in a temporary checkout.'
+    required: false
+    default: ''
   images:
     description: 'Newline-separated digest-pinned ghcr.io fork images.'
     required: false
@@ -82,6 +86,7 @@ runs:
         INPUT_MODE: ${{ inputs.mode }}
         INPUT_ROOT: ${{ inputs.root }}
         INPUT_DIRS: ${{ inputs.dirs }}
+        INPUT_VENDOR_VERIFIER: ${{ inputs.vendor-verifier }}
         INPUT_IMAGES: ${{ inputs.images }}
         INPUT_BINARIES: ${{ inputs.binaries }}
         INPUT_SOURCES: ${{ inputs.sources }}

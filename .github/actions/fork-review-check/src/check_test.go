@@ -113,9 +113,10 @@ func reviewedFork() *fakeAPI {
 		Commits: []commitInfo{
 			{SHA: c1, Author: "alice", Committer: "alice", Subject: "add kerberos"},
 			{SHA: head, Author: "alice", Committer: "alice", Subject: "fix review"},
-			{SHA: merge, Author: "bob", Committer: githubMergeCommitter, Subject: "Merge pull request #22", Merge: true},
+			{SHA: merge, Author: "bob", Committer: githubMergeCommitter, Verified: true, Subject: "Merge pull request #22", Merge: true},
 		},
 	}
+	f.compares[fork+"@"+c1+"..."+head] = comparison{Status: "ahead", MergeBase: c1}
 	pr22 := pullInfo{Number: 22, URL: "https://github.com/loft-sh/kine/pull/22", Author: "alice", BaseRepo: fork, HeadSHA: head, MergeCommit: merge, MergedAt: t0.Add(2 * time.Hour)}
 	for _, sha := range []string{c1, head, merge} {
 		f.pulls[fork+"@"+sha] = []pullInfo{pr22}
@@ -170,6 +171,46 @@ func TestDirectPushFails(t *testing.T) {
 	}
 	if !r.Commits[1].Pass {
 		t.Error("the reviewed commits should still pass on their own")
+	}
+}
+
+func TestAssociatedCommitRemovedFromFinalHeadFails(t *testing.T) {
+	f := reviewedFork()
+	f.compares[fork+"@"+c1+"..."+head] = comparison{Status: "diverged"}
+	r := runCheck(f, tagPin())
+	if r.Commits[0].Pass {
+		t.Fatal("a commit associated with the PR but absent from its final head must fail")
+	}
+}
+
+func TestFinalHeadAncestryLookupErrorFailsClosed(t *testing.T) {
+	f := reviewedFork()
+	delete(f.compares, fork+"@"+c1+"..."+head)
+	r := runCheck(f, tagPin())
+	if r.Commits[0].Pass {
+		t.Fatal("a failed ancestry lookup must not establish that the final head includes the commit")
+	}
+}
+
+func TestFinalHeadComparisonMustNameCommitAsMergeBase(t *testing.T) {
+	f := reviewedFork()
+	f.compares[fork+"@"+c1+"..."+head] = comparison{Status: "ahead", MergeBase: baseSHA}
+	r := runCheck(f, tagPin())
+	if r.Commits[0].Pass {
+		t.Fatal("a comparison whose merge base differs from the commit must fail")
+	}
+}
+
+func TestUnsignedWebFlowMergeFails(t *testing.T) {
+	f := reviewedFork()
+	f.compares[fork+"@"+baseSHA+"..."+merge].Commits[2].Verified = false
+	r := runCheck(f, tagPin())
+	if r.Commits[2].Pass || r.ReviewedTree.Pass {
+		t.Fatal("an unsigned merge result must not be treated as a GitHub-generated merge")
+	}
+	ci := f.compares[fork+"@"+baseSHA+"..."+merge].Commits[2]
+	if author := effectiveAuthor(ci, f.pulls[fork+"@"+merge][0]); author != "bob" {
+		t.Fatalf("unsigned merge author = %q, want git author bob", author)
 	}
 }
 

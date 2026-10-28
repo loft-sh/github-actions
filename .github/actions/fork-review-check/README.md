@@ -9,7 +9,7 @@ It implements build steps 1 and 4 of the design: input resolution and the receip
 For every fork commit S the build consumes, over the range from the trusted upstream base to S:
 
 1. S is the approved final head, or the merge result, of a merged fork PR.
-2. Every commit in the range belongs to a merged fork PR approved at its final head, after its last force push, by someone with write or higher permission on the fork who is neither the PR author nor the commit author. For the merge commit GitHub writes when a PR merges, the code author is the PR author, so the approver may also be the merger.
+2. Every commit in the range must be an ancestor of an approved final head, that head itself, or a verified `web-flow` merge result of the merged PR. The approval must be after the last force push, by someone with write or higher permission on the fork who is neither the PR author nor the commit author. For a verified merge commit recorded as the PR's merge result with `web-flow` as committer, the code author is the PR author, so the approver may also be the merger. Rewritten commits from rebase merges that cannot be tied to the approved head fail closed.
 3. With `-as-of`, every approval predates that time, normally the product release.
 4. The check fails and names every commit that breaks a rule.
 
@@ -52,6 +52,7 @@ go run . binary \
 | `-image` | `image` mode: a `ghcr.io/<owner>/<name>:<fork-tag>@sha256:<digest>` image, repeatable |
 | `-url`, `-sha256` | `binary` mode: a GitHub release asset URL and its 64-character SHA-256, paired and repeatable |
 | `-signer-workflow` | `fork=.github/workflows/release.yml`, repeatable. Required for every image or binary fork |
+| `-vendor-verifier` | `go` and `scan` modes: trusted command that verifies the committed vendor tree in a temporary checkout. Required when a module has `vendor/` |
 | `-upstream` | `fork=upstream[@branch]`, used only while a fork has no `fork-upstream` property. The missing property still fails; the override only keeps the per-commit evidence coming |
 | `-as-of` | RFC 3339 time for rule 3 |
 | `-receipt` | Write the JSON receipt to this path |
@@ -60,6 +61,10 @@ go run . binary \
 Exit codes: 0 pass or advisory, 1 a rule failed, 2 the check could not run.
 
 `go` mode needs `GOPRIVATE=github.com/loft-sh/*` so Go fetches loft-sh modules from git and reports the origin commit; without an origin the module fails.
+
+When a module contains `vendor/`, the downloaded module graph alone does not verify the code compiled from that directory. The check requires `-vendor-verifier`, for example `-vendor-verifier 'bash hack/verify-vendor.sh'` for a repository that provides that verifier. It also requires a clean Git checkout, including no ignored files in `vendor/`. The command runs in a temporary copy of the repository and must fail when the committed vendor tree differs from the generated tree. It is trusted code, not a sandbox: run this check only with a trusted command and repository. A missing or failing verifier fails the check. The consumer is responsible for selecting a verifier that preserves its vendor symlinks and checks all relevant files.
+
+Workspace-level `vendor/` is not supported and fails closed. Use a module without workspace vendoring until a workspace verifier is supported.
 
 ## Scan mode
 
@@ -93,6 +98,7 @@ Any other fork reference fails, so a new build-input form cannot slip past the c
 | signer-workflows | string |  false   |                              |    Newline-separated fork=.github/workflows/release.yml attestation mappings.    |
 |     sources      | string |  false   |                              |            Newline-separated fork=tag-or-full-SHA source clone pins.             |
 |    upstreams     | string |  false   |                              |      Newline-separated fork=upstream[@branch] temporary upstream mappings.       |
+| vendor-verifier  | string |  false   |                              |   Trusted command to verify vendored Go <br>modules in a temporary checkout.     |
 
 <!-- AUTO-DOC-INPUT:END -->
 
