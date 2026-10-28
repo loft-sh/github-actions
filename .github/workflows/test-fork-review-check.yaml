@@ -67,3 +67,34 @@ jobs:
           REF: ${{ matrix.ref }}
           UPSTREAM: ${{ matrix.upstream }}
         run: go run . ref -repo "$REPO" -ref "$REF" -upstream "$UPSTREAM" -advisory -receipt /dev/stdout
+
+  # The image path against the real registry and attestations: the kine digest
+  # loft-enterprise pins must verify against its tag, and the same digest under
+  # another tag (a bump of KINE_VERSION alone) must not.
+  live-image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: ghcr.io/loft-sh/kine:v0.16.5.vcluster.1@sha256:7e72281879c7683b3d28d48b330e2f2db9d8a53a8015db10712819a0b8ec855a
+            want: attested
+          - image: ghcr.io/loft-sh/kine:v0.17.2.vcluster.0@sha256:7e72281879c7683b3d28d48b330e2f2db9d8a53a8015db10712819a0b8ec855a
+            want: rejected
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: .github/actions/fork-review-check/src/go.mod
+      - name: Check ${{ matrix.image }}
+        working-directory: .github/actions/fork-review-check/src
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
+          IMAGE: ${{ matrix.image }}
+          WANT: ${{ matrix.want }}
+        run: bash ../test/live-image.sh
