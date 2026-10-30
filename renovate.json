@@ -1,6 +1,6 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:recommended"],
+  "extends": ["config:recommended", "helpers:pinGitHubActionDigests"],
   "packageRules": [
     {
       "description": "Group all GitHub Actions updates into a single PR",
@@ -24,6 +24,17 @@
       "matchManagers": ["gomod"],
       "matchFileNames": [".github/actions/link-backport-prs/**"],
       "groupName": "link-backport-prs"
+    },
+    {
+      "description": "Keep in-house actions on rolling tags so shared fixes reach every caller.",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "matchPackageNames": [
+        "loft-sh/**"
+      ],
+      "pinDigests": false,
+      "enabled": false
     }
   ],
   "customManagers": [

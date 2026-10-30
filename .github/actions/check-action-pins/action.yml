@@ -1,0 +1,19 @@
+name: Check action pins
+description: Require immutable third-party action pins while allowing loft-sh rolling refs.
+branding:
+  icon: shield
+  color: blue
+inputs:
+  path:
+    description: Repository directory to scan; workflows and action definitions under .github are checked.
+    required: false
+    default: '.'
+runs:
+  using: composite
+  steps:
+    - name: Check action pins
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        SCAN_PATH: ${{ inputs.path }}
+      run: python3 -I "$ACTION_PATH/src/check.py"
