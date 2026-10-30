@@ -18,6 +18,13 @@ Location: `.github/actions/check-action-pins`
 See [check-action-pins README](./.github/actions/check-action-pins/README.md)
 for usage, runner requirements, and the release and required-check followup.
 
+### Retry approved PR CI
+
+Opt-in, dry-run-first retries for allowlisted failed PR workflows with current human
+approval. At most three reruns; exhaustion emits a diagnosis handoff. Never merges.
+
+See [retry-approved-pr-ci README](./.github/actions/retry-approved-pr-ci/README.md).
+
 ### Secret Broker Request Action
 
 Validates a short-lived secret request from an immutable commit, verifies the
