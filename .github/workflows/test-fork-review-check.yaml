@@ -1,0 +1,69 @@
+name: Test fork-review-check
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/actions/fork-review-check/**'
+      - '.github/workflows/test-fork-review-check.yaml'
+  pull_request:
+    paths:
+      - '.github/actions/fork-review-check/**'
+      - '.github/workflows/test-fork-review-check.yaml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: .github/actions/fork-review-check/src/go.mod
+      - run: go test ./...
+        working-directory: .github/actions/fork-review-check/src
+
+  # Read-only run against the shipped fork pins the design names, with the
+  # workflow token a required workflow gets. Advisory: it records today's gap
+  # and whether that token can read approver permission on another repo, and
+  # never fails the build.
+  live:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - repo: loft-sh/kine
+            ref: v0.16.5.vcluster.1
+            upstream: k3s-io/kine
+          - repo: loft-sh/tailscale
+            ref: v1.96.4-loft.3
+            upstream: tailscale/tailscale
+          # bazil.org/fuse in vnode-internal pins loft-sh/fuse at this pseudo-version commit.
+          - repo: loft-sh/fuse
+            ref: 0b597961e33ddd4c9a19e9e3981b79cc113885b5
+            upstream: nestybox/fuse
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: .github/actions/fork-review-check/src/go.mod
+      - name: Check ${{ matrix.repo }} ${{ matrix.ref }}
+        working-directory: .github/actions/fork-review-check/src
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPO: ${{ matrix.repo }}
+          REF: ${{ matrix.ref }}
+          UPSTREAM: ${{ matrix.upstream }}
+        run: go run . ref -repo "$REPO" -ref "$REF" -upstream "$UPSTREAM" -advisory -receipt /dev/stdout

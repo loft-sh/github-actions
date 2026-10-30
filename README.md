@@ -168,6 +168,18 @@ Links modern and legacy backport PRs to the matching Linear sub-issue (`[X.Y] Co
 
 See [link-backport-prs README](./.github/actions/link-backport-prs/README.md) for detailed documentation.
 
+### Fork Review Check
+
+CLI that verifies every fork commit a product build consumes reached its loft-sh fork through a merged pull request approved, at its final head, by someone with write access who is not its author. Read-only, build step 1 of the [fork review check design](https://github.com/loft-sh/architecture/blob/main/engineering-enablement/designs/fork-review-check.md); the required workflow and release receipt come next.
+
+**Location:** `.github/actions/fork-review-check`
+
+```bash
+go run ./.github/actions/fork-review-check/src ref -repo loft-sh/kine -ref v0.16.5.vcluster.1
+```
+
+See [fork-review-check README](./.github/actions/fork-review-check/README.md) for the rules, flags and receipt.
+
 ### Select Backport Source PRs Action
 
 Selects one explicit source PR or merged source PRs inside a lookback window
