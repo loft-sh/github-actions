@@ -1,0 +1,64 @@
+name: Retry approved PR CI
+description: Retry allowlisted failed PR workflows with current human approval and a hard retry cap
+branding:
+  icon: repeat
+  color: blue
+inputs:
+  run-id:
+    description: Workflow run ID from a completed workflow_run event
+    required: true
+  run-attempt:
+    description: Attempt from that event; stale or duplicate events are skipped
+    required: true
+  workflow-ids:
+    description: Comma-separated numeric workflow IDs approved for retries in this repository
+    required: true
+  enabled:
+    description: Explicit opt-in to policy reads and retries
+    required: false
+    default: 'false'
+  dry-run:
+    description: Perform the same policy reads but suppress the retry request
+    required: false
+    default: 'true'
+  max-retries:
+    description: Maximum reruns per workflow run, including manual reruns; integer from 0 to 3
+    required: false
+    default: '3'
+  github-token:
+    description: Token with Actions write, Contents read and Pull requests read in this repository
+    required: true
+outputs:
+  outcome:
+    description: disabled, skipped, would_retry, retried, exhausted or error
+    value: ${{ steps.retry.outputs.outcome }}
+  reason:
+    description: Fixed policy reason for the decision
+    value: ${{ steps.retry.outputs.reason }}
+  run_url:
+    description: Workflow run for human diagnosis
+    value: ${{ steps.retry.outputs.run_url }}
+  head_sha:
+    description: Verified PR head SHA, empty when eligibility is not established
+    value: ${{ steps.retry.outputs.head_sha }}
+  retries_used:
+    description: Observed reruns before this invocation, including manual reruns
+    value: ${{ steps.retry.outputs.retries_used }}
+  diagnosis:
+    description: JSON handoff with verified repository, PR, SHA and run identifiers when retries are exhausted
+    value: ${{ steps.retry.outputs.diagnosis }}
+runs:
+  using: composite
+  steps:
+    - name: Check policy and request failed-job retry
+      id: retry
+      shell: bash
+      run: python3 "$GITHUB_ACTION_PATH/src/retry_ci.py"
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        INPUT_RUN_ID: ${{ inputs.run-id }}
+        INPUT_RUN_ATTEMPT: ${{ inputs.run-attempt }}
+        INPUT_WORKFLOW_IDS: ${{ inputs.workflow-ids }}
+        INPUT_ENABLED: ${{ inputs.enabled }}
+        INPUT_DRY_RUN: ${{ inputs.dry-run }}
+        INPUT_MAX_RETRIES: ${{ inputs.max-retries }}
