@@ -166,7 +166,7 @@ branding:
 runs:
   using: 'docker'
   # renovate manages this tag via the built-in github-actions manager (runs.image).
-  image: 'docker://ghcr.io/bridgecrewio/checkov:3.3.0'
+  image: 'docker://ghcr.io/bridgecrewio/checkov:3.4.0'
   args:
     - ${{ inputs.file }}
     - ${{ inputs.directory }}
