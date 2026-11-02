@@ -34,12 +34,12 @@ output_value() {
   [ "$(output_value label_field)" = '- {"type":"mrkdwn","text":"*GitHub label:*\nPre-release"}' ]
 }
 
-@test "promotion reminder leaves line tags to the release run" {
+@test "promotion reminder covers newest releases and patches on older lines" {
   export NEEDS_PROMOTION="true"
   export PROMOTE_WORKFLOW="ship-stable.yaml"
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
-  [ "$(output_value label_field)" = '- {"type":"mrkdwn","text":"*GitHub label:*\n`None` - not Latest yet. The line image tags move on their own after this release run. When this is the newest release, <https://github.com/example-org/private-product/actions/workflows/ship-stable.yaml|Promote it> to move Latest, the `latest` image tags and, where the product has one, the Homebrew formula."}' ]
+  [ "$(output_value label_field)" = '- {"type":"mrkdwn","text":"*GitHub label:*\n`None` - not Latest yet. Newest release? <https://github.com/example-org/private-product/actions/workflows/ship-stable.yaml|Promote it> to make it Latest. Patch on an older line? Nothing to do."}' ]
 }
 
 @test "promotion reminder takes precedence when both state flags are true" {

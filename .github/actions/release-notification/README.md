@@ -66,9 +66,8 @@ With changelog link:
 
 `is_prerelease: "true"` adds a `GitHub label: Pre-release` field.
 `needs_promotion: "true"` instead shows the GitHub `None` label and links to
-`promote_workflow`. It tells the Release Captain that the line image tags move
-on their own after the release run, and that Latest, the `latest` image tags and
-any Homebrew formula still need the promotion when this is the newest release.
+`promote_workflow`. It tells the Release Captain to promote the newest release
+to Latest, and that patches on older lines need no action.
 With neither flag set, no label field is rendered, so existing
 callers that publish directly to Latest keep their previous banner.
 
