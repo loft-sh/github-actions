@@ -2,7 +2,7 @@
 
 CLI behind the fork review check in [loft-sh/architecture `engineering-enablement/designs/fork-review-check.md`](https://github.com/loft-sh/architecture/blob/main/engineering-enablement/designs/fork-review-check.md). It verifies that every fork commit a product build consumes reached its loft-sh fork through a merged pull request approved by someone other than its author.
 
-This is build step 1 of the design: the CLI, run read-only. The workflow and release receipt that make it a required check (step 4) build on it.
+It implements build steps 1 and 4 of the design: input resolution and the receipt a product release attaches.
 
 ## Rules
 
@@ -52,7 +52,7 @@ go run . binary \
 | `-image` | `image` mode: a `ghcr.io/<owner>/<name>:<fork-tag>@sha256:<digest>` image, repeatable |
 | `-url`, `-sha256` | `binary` mode: a GitHub release asset URL and its 64-character SHA-256, paired and repeatable |
 | `-signer-workflow` | `fork=.github/workflows/release.yml`, repeatable. Required for every image or binary fork |
-| `-vendor-verifier` | `go` mode: trusted command that verifies the committed vendor tree in a temporary checkout. Required when a module has `vendor/` |
+| `-vendor-verifier` | `go` and `scan` modes: trusted command that verifies the committed vendor tree in a temporary checkout. Required when a module has `vendor/` |
 | `-upstream` | `fork=upstream[@branch]`, used only while a fork has no `fork-upstream` property. The missing property still fails; the override only keeps the per-commit evidence coming |
 | `-as-of` | RFC 3339 time for rule 3 |
 | `-receipt` | Write the JSON receipt to this path |
@@ -66,17 +66,78 @@ When a module contains `vendor/`, the downloaded module graph alone does not ver
 
 Workspace-level `vendor/` is not supported and fails closed. Use a module without workspace vendoring until a workspace verifier is supported.
 
+## Scan mode
+
+`scan` is the default mode of the composite action. It walks the build-input files below `-root` (`go.mod`, `go.work`, Dockerfiles, shell scripts, Makefiles, `.goreleaser` files and workflows) and resolves the fork commit S from what the build consumes. It skips `.git`, `vendor`, `node_modules` and `testdata`, and ignores whole-line comments.
+
+| Form | Recognised shape | How S is resolved | Templated reference |
+| --- | --- | --- | --- |
+| Go | A `github.com/loft-sh/...` reference in `go.mod` or `go.work` | The effective Go module graph and `Origin.Hash` | Not applicable |
+| Image | Dockerfile `FROM` or `COPY --from=` `ghcr.io/loft-sh/<fork>:<tag>@sha256:<digest>` | The fork release tag after provenance verification | Pass a digest-pinned `-image` for that fork |
+| Source | `git clone -b` or `git clone --branch` from `github.com/loft-sh/<fork>`, or a workflow's `repository: loft-sh/<fork>` checkout | The tag or full SHA, as in `ref` mode | Pass `-source fork=tag-or-full-SHA` |
+| Binary | `github.com/loft-sh/<fork>/releases/download/...` | Explicit URL and SHA-256 after checksum and provenance verification | Pass paired `-url` and `-sha256` |
+| Link | Release tags, blobs, trees, pulls, issues, and commits | Ignored | Not applicable |
+
+Any other fork reference fails, so a new build-input form cannot slip past the check. A templated reference (a variable with no default in the same file) passes only when the matching explicit flag names that fork. A `loft-sh` repository that is not a fork is ignored. An image whose name matches no repository (`ghcr.io/loft-sh/kine-fips`) is traced to the repository GitHub links its package to: a non-fork build repository such as `loft-sh/fips-builds` is ignored, a fork publishing under another name fails, and a package that cannot be read fails.
+
+## Action inputs
+
+<!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
+
+|      INPUT       |  TYPE  | REQUIRED |           DEFAULT            |                                   DESCRIPTION                                    |
+|------------------|--------|----------|------------------------------|----------------------------------------------------------------------------------|
+|     advisory     | string |  false   |           `"true"`           |           Report rule failures without failing the <br>calling step.             |
+|      as-of       | string |  false   |                              |             RFC 3339 release time that approvals <br>must predate.               |
+|     binaries     | string |  false   |                              |        Newline-separated GitHub release asset URL and <br>SHA-256 pairs.         |
+|       dirs       | string |  false   |                              |                     Newline-separated Go module directories.                     |
+|   github-token   | string |  false   |   `"${{ github.token }}"`    | GitHub token used for read-only repository, <br>review, and permission lookups.  |
+|      images      | string |  false   |                              |               Newline-separated digest-pinned ghcr.io fork images.               |
+|       mode       | string |  false   |           `"scan"`           |         CLI mode. scan discovers supported build <br>inputs by default.          |
+|     receipt      | string |  false   | `"fork-review-receipt.json"` |                       Path for the JSON evidence receipt.                        |
+|       root       | string |  false   |            `"."`             |                          Root directory for scan mode.                           |
+| signer-workflows | string |  false   |                              |    Newline-separated fork=.github/workflows/release.yml attestation mappings.    |
+|     sources      | string |  false   |                              |            Newline-separated fork=tag-or-full-SHA source clone pins.             |
+|    upstreams     | string |  false   |                              |      Newline-separated fork=upstream[@branch] temporary upstream mappings.       |
+| vendor-verifier  | string |  false   |                              |   Trusted command to verify vendored Go <br>modules in a temporary checkout.     |
+
+<!-- AUTO-DOC-INPUT:END -->
+
+## Action outputs
+
+<!-- AUTO-DOC-OUTPUT:START - Do not remove or modify this section -->
+
+| OUTPUT  |  TYPE  |              DESCRIPTION               |
+|---------|--------|----------------------------------------|
+|  pass   | string | Whether the receipt passed every rule. |
+| receipt | string |   Path to the JSON evidence receipt.   |
+
+<!-- AUTO-DOC-OUTPUT:END -->
+
 ## Receipt
 
 The JSON receipt lists each input with its hash, each fork's `fork-upstream` value and source, the base, and every fork commit with its PR, approver, approval time and the approver's permission as read at check time. The permission endpoint returns current access only, so the receipt is the record and a later rerun can differ.
 
 ## Token
 
-Reading PRs, reviews and compares on public forks works with any token. The approver permission lookup (`repos/{owner}/{repo}/collaborators/{user}/permission`) is the open question for the required workflow: `test-fork-review-check.yaml` runs the CLI against kine, tailscale and fuse with the workflow token to show whether that token can read it cross-repo.
+Reading PRs, reviews and compares on public forks works with any token. `scan` also reads container package metadata, so the job needs `packages: read`. The approver permission lookup (`repos/{owner}/{repo}/collaborators/{user}/permission`) is the open question for the required workflow: `test-fork-review-check.yaml` runs the CLI against kine, tailscale and fuse with the workflow token to show whether that token can read it cross-repo.
 
-## Not yet covered
+## Product release caller
 
-Source clones and the fail-closed net for unknown fork references are still step 4 of the design.
+```yaml
+- name: Check fork review evidence
+  id: fork-review
+  uses: loft-sh/github-actions/.github/actions/fork-review-check@fork-review-check/v1
+  with:
+    receipt: fork-review-receipt.json
+
+- name: Attach fork review receipt
+  env:
+    GH_TOKEN: ${{ github.token }}
+    TAG: ${{ github.ref_name }}
+  run: gh release upload "$TAG" fork-review-receipt.json
+```
+
+The reusable `fork-review-check.yaml` workflow wraps the action for releases that also want the receipt as an Actions artifact. See [docs/workflows/fork-review-check.md](../../../docs/workflows/fork-review-check.md).
 
 ## Tests
 
