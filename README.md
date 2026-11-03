@@ -168,6 +168,20 @@ Links modern and legacy backport PRs to the matching Linear sub-issue (`[X.Y] Co
 
 See [link-backport-prs README](./.github/actions/link-backport-prs/README.md) for detailed documentation.
 
+### Fork Review Check
+
+Composite action and CLI that verify every fork commit a product build consumes reached its loft-sh fork through a merged pull request approved, at its final head, by someone with write access who is not its author. Read-only. By default it scans the caller's build inputs and writes a JSON receipt for the product release. Build steps 1 and 4 of the [fork review check design](https://github.com/loft-sh/architecture/blob/main/engineering-enablement/designs/fork-review-check.md). Released under the `fork-review-check/v1` tag, shared with the `fork-review-check.yaml` reusable workflow.
+
+**Location:** `.github/actions/fork-review-check`
+
+```yaml
+- uses: loft-sh/github-actions/.github/actions/fork-review-check@fork-review-check/v1
+  with:
+    receipt: fork-review-receipt.json
+```
+
+See [fork-review-check README](./.github/actions/fork-review-check/README.md) for the rules, scan forms, inputs and receipt.
+
 ### Select Backport Source PRs Action
 
 Selects one explicit source PR or merged source PRs inside a lookback window
