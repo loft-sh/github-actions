@@ -29,12 +29,24 @@ def image():
 class Fake:
     """GHCR registry plus the GitHub packages API, in one server."""
 
-    def __init__(self, manifests, tags, versions, tag_page=100, delete_status=204):
+    def __init__(
+        self,
+        manifests,
+        tags,
+        versions,
+        tag_page=100,
+        delete_status=204,
+        fail_from=None,
+        registry_tags=None,
+    ):
         self.manifests = manifests
         self.tags = tags
+        # What the registry tag list shows, when it lags the packages API.
+        self.registry_tags = registry_tags
         self.versions = versions
         self.deleted = []
         self.calls = []
+        self.fail_from = fail_from
         fake = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -73,7 +85,9 @@ class Fake:
                 elif "/manifests/" in self.path:
                     self.manifest()
                 elif "/tags/list" in self.path:
-                    names = list(fake.tags)
+                    names = list(
+                        fake.tags if fake.registry_tags is None else fake.registry_tags
+                    )
                     last = re.search(r"last=([^&]+)", self.path)
                     start = names.index(last.group(1)) + 1 if last else 0
                     page = names[start : start + tag_page]
@@ -92,10 +106,21 @@ class Fake:
 
             def do_DELETE(self):
                 fake.calls.append(("DELETE", self.path))
-                self.send_response(delete_status)
+                failing = (
+                    fake.fail_from is not None and len(fake.deleted) >= fake.fail_from
+                )
+                status = 500 if failing else delete_status
+                self.send_response(status)
                 self.end_headers()
-                if delete_status == 204:
-                    fake.deleted.append(int(self.path.rsplit("/", 1)[1]))
+                if status != 204:
+                    return
+                version_id = int(self.path.rsplit("/", 1)[1])
+                fake.deleted.append(version_id)
+                digest = next(v["name"] for v in fake.versions if v["id"] == version_id)
+                fake.versions[:] = [v for v in fake.versions if v["id"] != version_id]
+                fake.manifests.pop(digest, None)
+                for tag in [t for t, x in fake.tags.items() if x == digest]:
+                    del fake.tags[tag]
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.url = f"http://127.0.0.1:{self.server.server_port}"
@@ -306,6 +331,57 @@ def test_tag_list_is_paginated(fake, tmp_path):
     )
     assert result.returncode == 0, result.stdout
     assert sorted(server.deleted) == [1, 2, 3, 4, 5]
+
+
+def test_leaves_are_deleted_before_the_image_index(fake, tmp_path):
+    server = fake()
+    result = run(
+        server,
+        tmp_path,
+        mode="delete",
+        previous_digest=server.old,
+        current_digest=server.new,
+    )
+    assert result.returncode == 0, result.stdout
+    # signature, its referrer index, platform manifests, then the index itself
+    assert server.deleted == [5, 4, 3, 2, 1]
+
+
+def test_tag_seen_only_by_the_packages_api_keeps_everything(fake, tmp_path):
+    old, new, manifests, tags, versions = candy()
+    registry_tags = list(tags)  # the registry snapshot has not seen v2 yet
+    tags["v2"] = old
+    server = fake(tags=tags, registry_tags=registry_tags)
+    server.versions[0] = version(1, old, "v2")
+    result = run(
+        server, tmp_path, mode="delete", previous_digest=old, current_digest=new
+    )
+    assert result.returncode == 0, result.stdout
+    assert server.deleted == []
+    assert "still tagged v2" in result.stdout
+
+
+def test_rerun_after_a_partial_delete_finishes_the_cleanup(fake, tmp_path):
+    server = fake(fail_from=2)
+    first = run(
+        server,
+        tmp_path,
+        mode="delete",
+        previous_digest=server.old,
+        current_digest=server.new,
+    )
+    assert first.returncode == 1
+    assert server.deleted == [5, 4]
+    server.fail_from = None
+    second = run(
+        server,
+        tmp_path,
+        mode="delete",
+        previous_digest=server.old,
+        current_digest=server.new,
+    )
+    assert second.returncode == 0, second.stdout
+    assert server.deleted == [5, 4, 3, 2, 1]
 
 
 def test_failed_delete_fails_the_step(fake, tmp_path):

@@ -17,11 +17,17 @@ removes exactly that image after the new one is pushed:
 It keeps anything that is still reachable from another tag, such as a release
 whose image shares a manifest, and any version that carries a tag it did not
 expect. If the previous image is still tagged (for example, promoted to a
-release), it deletes nothing. Every deleted and kept version is logged and
-written to the step summary.
+release), it deletes nothing. It checks that against both the registry tag list
+and the packages API, and if either shows a tag, it deletes nothing. Every deleted
+and kept version is logged and written to the step summary.
 
 The action fails the step on an API error. Run it last, so a failed build or push
 never reaches it and a failed delete leaves the new image in place.
+
+It deletes leaves first and the image index last. If it stops halfway, the index
+is still there. Running `delete` again with the same `previous-digest` finishes
+the cleanup. Re-running the whole job does not, because the job then records the
+newer `head`.
 
 ## Usage
 
@@ -68,6 +74,11 @@ Only org-owned packages are supported.
   tag. That suits packages with tens of tags, not hundreds.
 - Head images pushed before a repo adopted the action stay. They can't be told
   apart from other untagged versions.
+- GHCR has no atomic "check and delete". The action reads the tags, then deletes.
+  A workflow that tags the previous head digest, or pushes an identical manifest,
+  in that window is not seen. The head workflow's own concurrency group covers
+  head pushes. Release workflows that build their own image don't touch the
+  previous head digest.
 
 ## Inputs
 

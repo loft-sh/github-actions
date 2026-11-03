@@ -112,21 +112,27 @@ def children(manifest):
 
 
 def image_tree(registry, digest):
-    """Every manifest that belongs to one image, mapped to the tags it may carry."""
+    """Every manifest that belongs to one image, mapped to the tags it may carry.
+
+    Ordered leaves first and the image index last, so a delete that stops halfway
+    leaves the index in place and a later run with the same digest finds the rest.
+    """
     _, index = registry.manifest(digest)
     if index is None:
         return {}
-    tree = {digest: set()}
-    for child in children(index):
-        tree[child] = set()
-    for subject in list(tree):
+    subjects = [digest, *children(index)]
+    artifacts, referrer_indexes = {}, {}
+    for subject in subjects:
         tag = referrer_tag(subject)
         referrers_digest, referrers = registry.manifest(tag)
         if referrers_digest is None:
             continue
-        tree[referrers_digest] = {tag}
+        referrer_indexes[referrers_digest] = {tag}
         for referrer in children(referrers):
-            tree.setdefault(referrer, set())
+            artifacts.setdefault(referrer, set())
+    tree = {**artifacts, **referrer_indexes}
+    for subject in reversed(subjects):
+        tree.setdefault(subject, set())
     return tree
 
 
@@ -225,6 +231,14 @@ def delete(owner, name, token, previous, current, dry_run):
 
     packages = Packages(owner, name, token)
     versions = packages.versions(set(tree))
+    # The registry and the packages API are separate reads; trust the stricter one.
+    if previous not in versions:
+        log(f"{previous} has no package version; nothing to delete")
+        return
+    if versions[previous][1]:
+        tags = ", ".join(sorted(versions[previous][1]))
+        log(f"{previous} is still tagged {tags}; nothing to delete")
+        return
     plan, kept = [], []
     for digest, allowed in tree.items():
         if digest in protected:
