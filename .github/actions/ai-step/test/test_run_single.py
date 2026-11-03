@@ -331,3 +331,60 @@ def test_reason_output_falls_through_to_the_run_step():
     assert m, "reason output is not declared"
     assert m.group(2) == "${{ steps.cfg.outputs.reason || steps.run.outputs.reason }}"
     assert "failed" in m.group(1)
+
+
+# --- log-output --------------------------------------------------------------
+
+SECRET = "abcdef.0123456789abcdef"
+
+
+def test_success_prints_the_answer_by_default(run_mod, monkeypatch, capsys):
+    _main_anthropic(run_mod, monkeypatch, FakeAnthropic(text=f'{{"note": "{SECRET}"}}'))
+    assert SECRET in capsys.readouterr().out
+
+
+def test_log_output_false_keeps_the_answer_out_of_the_log(run_mod, monkeypatch, capsys):
+    _main_anthropic(run_mod, monkeypatch, FakeAnthropic(text=f'{{"note": "{SECRET}"}}'),
+                    INPUT_LOG_OUTPUT="false")
+    out = capsys.readouterr().out
+    assert SECRET not in out
+    assert "→ success" in out
+    # the caller still gets the answer, to redact before it prints anything
+    assert SECRET in _output(run_mod)
+    assert _kv(run_mod, "conclusion") == "success"
+
+
+def test_log_output_false_withholds_the_upstream_body(run_mod, monkeypatch, capsys):
+    client = FakeAnthropic(text=f'{{"note": "{SECRET}", "n"', stop_reason="max_tokens")
+    with pytest.raises(SystemExit) as e:
+        _main_anthropic(run_mod, monkeypatch, client, INPUT_LOG_OUTPUT="false")
+    assert e.value.code == 0
+    _assert_failed(run_mod, "response truncated at max-tokens")
+    out = capsys.readouterr().out
+    assert SECRET not in out
+    assert "upstream response withheld (log-output: false)" in out
+
+
+def test_log_output_false_withholds_non_json_content(run_mod, monkeypatch, capsys):
+    with pytest.raises(SystemExit):
+        _main_openai(run_mod, monkeypatch, FakeOpenAI(text=f"not json {SECRET}"),
+                     INPUT_LOG_OUTPUT="false")
+    _assert_failed(run_mod, "provider returned non-JSON content")
+    assert SECRET not in capsys.readouterr().out
+
+
+def test_log_output_is_case_insensitive(run_mod, monkeypatch, capsys):
+    _main_anthropic(run_mod, monkeypatch, FakeAnthropic(text=f'{{"note": "{SECRET}"}}'),
+                    INPUT_LOG_OUTPUT=" False ")
+    assert SECRET not in capsys.readouterr().out
+
+
+def test_log_output_input_defaults_to_true():
+    m = re.search(r"\n  log-output:\n(.*?)\n(?:  [a-z-]+:|outputs:)\n", ACTION.read_text(), re.DOTALL)
+    assert m, "log-output input is not declared"
+    assert "default: 'true'" in m.group(1)
+    assert "required: false" in m.group(1)
+
+
+def test_log_output_reaches_the_run_step():
+    assert "INPUT_LOG_OUTPUT: ${{ inputs.log-output }}" in _steps()["Call provider"]

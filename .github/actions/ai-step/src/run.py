@@ -6,8 +6,9 @@ output to $GITHUB_OUTPUT as `result`.
 
 The action is advisory-only: any failure (bad schema, API error, empty
 content, non-JSON response, session timeout, non-end_turn stop) degrades
-to `conclusion=failed` with the upstream body preserved in the CI log.
-The caller decides how to react.
+to `conclusion=failed` with the upstream body preserved in the CI log,
+unless the caller set log-output to false. The caller decides how to
+react.
 
 Env in:
   INPUT_PROVIDER          anthropic | openai
@@ -24,6 +25,8 @@ Env in:
   INPUT_ANTHROPIC_SESSION_KEY workspace session key (session mode)
   INPUT_VAULT_ID          optional vault to attach (session mode)
   INPUT_SESSION_TIMEOUT   seconds to wait for the session (session mode)
+  INPUT_LOG_OUTPUT        false keeps the answer and upstream bodies out
+                          of the job log (default true)
 Env out ($GITHUB_OUTPUT):
   result                  the schema-conforming JSON string (or empty)
   conclusion              success | failed
@@ -101,12 +104,21 @@ def one_line(msg: str) -> str:
     return flat
 
 
+def log_output() -> bool:
+    """False when the caller set log-output: false because the answer
+    may quote secrets or log lines a later step redacts. The answer
+    still lands on `result`; only the job log leaves it out."""
+    return os.environ.get("INPUT_LOG_OUTPUT", "true").strip().lower() != "false"
+
+
 def fail_soft(msg: str, body: str = "") -> None:
     print(f"::warning::ai-step: {msg}")
-    if body:
+    if body and log_output():
         print("--- upstream response ---")
         print(body)
         print("--- end ---")
+    elif body:
+        print("ai-step: upstream response withheld (log-output: false)")
     emit_block("result", "")
     emit_kv("conclusion", "failed")
     # surfaced as the action's `reason` output so a caller can show why
@@ -398,8 +410,15 @@ def validate_output(parsed, schema, text: str) -> None:
     try:
         jsonschema.validate(parsed, schema)
     except jsonschema.ValidationError as e:
+        if log_output():
+            detail = e.message
+        else:
+            # e.message quotes the offending value, which is agent output;
+            # the schema path comes from the caller's schema alone.
+            where = "/".join(str(p) for p in e.absolute_schema_path) or "(root)"
+            detail = f"fails '{e.validator}' at {where}"
         fail_soft(f"agent output does not validate against output-schema: "
-                  f"{e.message}", text)
+                  f"{detail}", text)
     except jsonschema.SchemaError as e:
         fail_soft(f"output-schema is not a valid JSON Schema: {e.message}")
 
@@ -443,7 +462,8 @@ def main() -> None:
         emit_block("result", text)
         emit_kv("conclusion", "success")
         print(f"ai-step: session against '{agent_name}' → success")
-        print(json.dumps(parsed, indent=2))
+        if log_output():
+            print(json.dumps(parsed, indent=2))
         return
 
     model = require("INPUT_MODEL")
@@ -472,7 +492,8 @@ def main() -> None:
     emit_kv("conclusion", "success")
 
     print(f"ai-step: {provider} / {model} → success")
-    print(json.dumps(parsed, indent=2))
+    if log_output():
+        print(json.dumps(parsed, indent=2))
 
 
 if __name__ == "__main__":

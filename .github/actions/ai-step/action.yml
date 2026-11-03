@@ -96,6 +96,15 @@ inputs:
       with conclusion=failed. Only used when agent is set.
     required: false
     default: '1200'
+  log-output:
+    description: |
+      Print the answer on success, and the raw upstream response on a
+      failure, to the job log. Set 'false' when the answer may quote
+      secrets or log lines that a later step redacts: `result` still
+      carries the answer, the log does not, and a schema error names
+      the failing schema keyword instead of quoting the value.
+    required: false
+    default: 'true'
 
 outputs:
   result:
@@ -157,6 +166,7 @@ runs:
         INPUT_ANTHROPIC_SESSION_KEY: ${{ inputs.anthropic-session-key }}
         INPUT_VAULT_ID: ${{ inputs.vault-id }}
         INPUT_SESSION_TIMEOUT: ${{ inputs.session-timeout-seconds }}
+        INPUT_LOG_OUTPUT: ${{ inputs.log-output }}
       run: python3 ${{ github.action_path }}/src/run.py
 
     - name: Emit conclusion
