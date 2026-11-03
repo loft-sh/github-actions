@@ -91,7 +91,8 @@ No `claude-code-action`, no `codex-action`, no bun install. End-to-end
 call is ~15s including SDK install; the LLM call itself is 2–4s. The
 action never hard-fails: API errors, empty responses, and non-JSON
 content all degrade to `conclusion=failed` with the upstream body
-preserved in the CI log. Caller decides how to react.
+preserved in the CI log, unless `log-output` is `false`. Caller decides
+how to react.
 
 ### Schema compatibility
 
@@ -199,6 +200,11 @@ Read this before wiring it into a pipeline:
   prompt-injected turn can try to make it echo what it read, so never
   point an agent whose output may contain secret material at this
   action, and treat the agent's output as untrusted input downstream.
+  When the answer may quote log lines or secrets that a later step
+  redacts, set `log-output: false`: the answer and the raw output stay
+  out of the log, a schema error names the failing schema keyword
+  instead of the value, and `result` still carries the answer, so
+  redact it before printing it anywhere.
 - **Outbound network is unrestricted.** The per-run environment is
   created with unrestricted egress, matching how the deployed products
   run. The API's `limited` mode needs a per-agent host allowlist this
@@ -226,6 +232,7 @@ Read this before wiring it into a pipeline:
 |         effort          | string |  false   | `"medium"` |                                                                                                                                                                                                                     Effort level (low | medium | high) — maps to <br>a provider-specific model.                                                                                                                                                                                                                      |
 |          input          | string |  false   |            |                                                                                                                                                            Optional data the model should act <br>on, appended to the prompt. Caller <br>sources it — a literal string, <br>a prior step output, or the <br>contents of a file read in <br>a prior step.                                                                                                                                                             |
 |       input-file        | string |  false   |            |                                                                                                                           Optional path to a file whose <br>contents are appended after input. Use <br>it for data too large for <br>an input: inputs reach the script <br>through environment variables, and Linux refuses <br>to start a process when one <br>variable exceeds 128 KiB.                                                                                                                            |
+|       log-output        | string |  false   |  `"true"`  |                                                                              Print the answer on success, and <br>the raw upstream response on a <br>failure, to the job log. Set <br>'false' when the answer may quote <br>secrets or log lines that a <br>later step redacts: `result` still carries <br>the answer, the log does not, <br>and a schema error names the <br>failing schema keyword instead of quoting <br>the value.                                                                               |
 |       max-tokens        | string |  false   |  `"4096"`  |      Most tokens the model may generate <br>(positive integer). A response that hits the <br>limit ends the step with conclusion=failed <br>and a reason that names this <br>input, so raise it when the <br>output is long (for example a summary of dozens of items). Anthropic single-call <br>mode only: the Anthropic SDK refuses <br>non-streaming requests above 21333, so larger <br>values skip the step. OpenAI calls <br>use the model's own output limit <br>and session mode ignores this input.        |
 |     openai-api-key      | string |  false   |            |                                                                                                                                                                                                                                    OpenAI API key. Required when provider=openai.                                                                                                                                                                                                                                    |
 |      output-schema      | string |   true   |            |                                                                                                          JSON Schema (string) the model output <br>must conform to. Required. Structured output <br>is the contract — without a <br>schema the action skips. For `anthropic` this <br>becomes `output_format.schema` on the Messages API; for <br>`openai` it becomes `response_format.json_schema.schema`                                                                                                           |

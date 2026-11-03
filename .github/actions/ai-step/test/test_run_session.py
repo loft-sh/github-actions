@@ -296,3 +296,59 @@ def test_validate_output_accepts_conforming(run_mod):
                              "properties": {"ok": {"type": "boolean"}}},
                             '{"ok": true}')
     assert "conclusion=failed" not in _output(run_mod)
+
+
+# --- log-output --------------------------------------------------------------
+
+SECRET = "abcdef.0123456789abcdef"
+BOOL_SCHEMA = {"type": "object", "properties": {"ok": {"type": "boolean"}}}
+
+
+def test_schema_error_quotes_the_value_by_default(run_mod, monkeypatch, capsys):
+    pytest.importorskip("jsonschema")
+    monkeypatch.delenv("INPUT_LOG_OUTPUT", raising=False)
+    with pytest.raises(SystemExit):
+        run_mod.validate_output({"ok": SECRET}, BOOL_SCHEMA, f'{{"ok": "{SECRET}"}}')
+    assert SECRET in capsys.readouterr().out
+    assert SECRET in _output(run_mod)
+
+
+def test_log_output_false_keeps_the_value_out_of_a_schema_error(run_mod, monkeypatch, capsys):
+    pytest.importorskip("jsonschema")
+    monkeypatch.setenv("INPUT_LOG_OUTPUT", "false")
+    with pytest.raises(SystemExit) as e:
+        run_mod.validate_output({"ok": SECRET}, BOOL_SCHEMA, f'{{"ok": "{SECRET}"}}')
+    assert e.value.code == 0
+    _assert_failed(run_mod)
+    out = capsys.readouterr().out
+    assert SECRET not in out
+    assert SECRET not in _output(run_mod)
+    assert "fails 'type' at properties/ok/type" in _output(run_mod)
+
+
+def _main_session(mod, monkeypatch, client, **extra):
+    env = {"INPUT_PROVIDER": "anthropic", "INPUT_MODE": "session",
+           "INPUT_AGENT": "sre-memory-curator", "INPUT_PROMPT": "hi",
+           "INPUT_OUTPUT_SCHEMA": '{"type": "object"}',
+           "INPUT_ANTHROPIC_SESSION_KEY": "sk-key", **extra}
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    _wire(mod, client)
+    mod.main()
+
+
+def test_session_answer_is_printed_by_default(run_mod, monkeypatch, capsys):
+    pytest.importorskip("jsonschema")
+    monkeypatch.delenv("INPUT_LOG_OUTPUT", raising=False)
+    _main_session(run_mod, monkeypatch, FakeClient(final_text=f'{{"note": "{SECRET}"}}'))
+    assert SECRET in capsys.readouterr().out
+
+
+def test_log_output_false_keeps_the_session_answer_out_of_the_log(run_mod, monkeypatch, capsys):
+    pytest.importorskip("jsonschema")
+    _main_session(run_mod, monkeypatch, FakeClient(final_text=f'{{"note": "{SECRET}"}}'),
+                  INPUT_LOG_OUTPUT="false")
+    out = capsys.readouterr().out
+    assert SECRET not in out
+    assert "→ success" in out
+    assert SECRET in _output(run_mod)
