@@ -20,6 +20,7 @@ type fakeAPI struct {
 	perms      map[string]string // repo/user
 	permErr    error
 	permCalled int
+	packages   map[string]string // owner/name -> linked repo
 }
 
 func newFake() *fakeAPI {
@@ -41,6 +42,10 @@ func (f *fakeAPI) Repo(_ context.Context, repo string) (repoInfo, error) {
 		return repoInfo{}, fmt.Errorf("no repo %s", repo)
 	}
 	return r, nil
+}
+
+func (f *fakeAPI) PackageRepo(_ context.Context, owner, name string) (string, error) {
+	return f.packages[owner+"/"+name], nil
 }
 
 func (f *fakeAPI) ForkUpstream(_ context.Context, repo string) (string, error) {

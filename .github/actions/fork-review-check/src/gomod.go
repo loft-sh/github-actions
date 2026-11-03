@@ -50,15 +50,18 @@ type goTool interface {
 
 // inputRecord is one build input the receipt lists, with its hash.
 type inputRecord struct {
-	Kind    string `json:"kind"`
-	Source  string `json:"source"`
-	Module  string `json:"module,omitempty"`
-	Path    string `json:"path"`
-	Version string `json:"version"`
-	Repo    string `json:"repo"`
-	Commit  string `json:"commit"`
-	Sum     string `json:"sum,omitempty"`
-	Fork    bool   `json:"fork"`
+	Kind           string `json:"kind"`
+	Source         string `json:"source"`
+	Module         string `json:"module,omitempty"`
+	Path           string `json:"path"`
+	Version        string `json:"version"`
+	Repo           string `json:"repo"`
+	Commit         string `json:"commit"`
+	Sum            string `json:"sum,omitempty"`
+	Digest         string `json:"digest,omitempty"`
+	SHA256         string `json:"sha256,omitempty"`
+	SignerWorkflow string `json:"signer_workflow,omitempty"`
+	Fork           bool   `json:"fork"`
 }
 
 // goForkInputs resolves the loft-sh modules in the effective module graph of

@@ -10,7 +10,7 @@ import (
 )
 
 func TestRefModeResolvesTag(t *testing.T) {
-	rc, err := check(context.Background(), reviewedFork(), nil, options{mode: "ref", repo: fork, ref: tag}, time.Now())
+	rc, err := check(context.Background(), reviewedFork(), nil, nil, nil, options{mode: "ref", repo: fork, ref: tag}, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -27,7 +27,7 @@ func TestRefModeAcceptsFullSHA(t *testing.T) {
 	f.repos[upstream] = repoInfo{FullName: upstream, DefaultBranch: "master"}
 	f.compares[fork+"@k3s-io:master..."+merge] = comparison{Status: "diverged", Total: 3, MergeBase: baseSHA, Commits: f.compares[fork+"@"+baseSHA+"..."+merge].Commits}
 	sha := merge
-	rc, err := check(context.Background(), f, nil, options{mode: "ref", repo: fork, ref: sha}, time.Now())
+	rc, err := check(context.Background(), f, nil, nil, nil, options{mode: "ref", repo: fork, ref: sha}, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +37,7 @@ func TestRefModeAcceptsFullSHA(t *testing.T) {
 }
 
 func TestRefModeUnknownRefFails(t *testing.T) {
-	rc, err := check(context.Background(), reviewedFork(), nil, options{mode: "ref", repo: fork, ref: "v9.9.9"}, time.Now())
+	rc, err := check(context.Background(), reviewedFork(), nil, nil, nil, options{mode: "ref", repo: fork, ref: "v9.9.9"}, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +47,7 @@ func TestRefModeUnknownRefFails(t *testing.T) {
 }
 
 func TestAsOfFlagAppliesRule3(t *testing.T) {
-	rc, err := check(context.Background(), reviewedFork(), nil, options{mode: "ref", repo: fork, ref: tag, asOf: t0.Add(30 * time.Minute).Format(time.RFC3339)}, time.Now())
+	rc, err := check(context.Background(), reviewedFork(), nil, nil, nil, options{mode: "ref", repo: fork, ref: tag, asOf: t0.Add(30 * time.Minute).Format(time.RFC3339)}, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,13 @@ func TestParseArgs(t *testing.T) {
 		t.Error("ref mode without -ref must fail")
 	}
 	if _, err := parseArgs([]string{"image"}); err == nil {
-		t.Error("an unknown mode must fail")
+		t.Error("image mode without -image must fail")
+	}
+	if _, err := parseArgs([]string{"binary", "-url", "https://github.com/loft-sh/kine/releases/download/" + tag + "/kine"}); err == nil {
+		t.Error("binary mode without -sha256 must fail")
+	}
+	if _, err := parseSignerWorkflows([]string{"loft-sh/kine"}); err == nil {
+		t.Error("a signer workflow without a mapping must fail")
 	}
 	o, err := parseArgs([]string{"go"})
 	if err != nil || len(o.dirs) != 1 || o.dirs[0] != "." {
@@ -74,7 +80,7 @@ func TestGoModeRequiresVendorVerification(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(dir, "vendor"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	rc, err := check(context.Background(), newFake(), vnodeGraph(), options{mode: "go", dirs: multiFlag{dir}}, time.Now())
+	rc, err := check(context.Background(), newFake(), vnodeGraph(), nil, nil, options{mode: "go", dirs: multiFlag{dir}}, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +112,7 @@ func TestParseUpstreams(t *testing.T) {
 func TestReportsNameFailures(t *testing.T) {
 	f := reviewedFork()
 	delete(f.pulls, fork+"@"+c1)
-	rc, _ := check(context.Background(), f, nil, options{mode: "ref", repo: fork, ref: tag}, time.Now())
+	rc, _ := check(context.Background(), f, nil, nil, nil, options{mode: "ref", repo: fork, ref: tag}, time.Now())
 	text, md := renderText(rc), renderMarkdown(rc)
 	for _, want := range []string{"FAIL", short(c1), "direct push"} {
 		if !strings.Contains(text, want) || !strings.Contains(md, want) {

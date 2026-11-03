@@ -115,6 +115,7 @@ test-link-backport-prs: ## run link-backport-prs unit tests
 
 test-fork-review-check: ## run fork-review-check unit tests
 	cd $(ACTIONS_DIR)/fork-review-check/src && go test -v ./...
+	bats $(ACTIONS_DIR)/fork-review-check/test/*.bats
 
 test-select-backport-source-prs: ## run select-backport-source-prs bats tests
 	bats $(ACTIONS_DIR)/select-backport-source-prs/test/*.bats
