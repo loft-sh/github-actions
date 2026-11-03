@@ -29,6 +29,8 @@ Env in:
                           of the job log (default true)
 Env out ($GITHUB_OUTPUT):
   result                  the schema-conforming JSON string (or empty)
+  result-file             path to a file in $RUNNER_TEMP holding the same
+                          text as `result`
   conclusion              success | failed
   reason                  one-line explanation when conclusion=failed
 """
@@ -37,6 +39,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
 import time
 
 # Managed agents GA beta header, same as pr-review/src/cma.py in
@@ -86,6 +89,24 @@ def emit_block(key: str, value: str) -> None:
         f.write(f"{key}<<AISTEP_EOF\n{value}\nAISTEP_EOF\n")
 
 
+def emit_result(text: str) -> None:
+    """Put the answer on `result`, and in a file named by `result-file`.
+    A caller can only hand `result` to its next step through env: or the
+    script text, and GitHub prints both in the step log, so a caller that
+    keeps the answer out of the log reads the file instead. The file is
+    private to the runner user (mkstemp) and empty on failure."""
+    emit_block("result", text)
+    try:
+        base = os.environ.get("RUNNER_TEMP") or tempfile.gettempdir()
+        fd, path = tempfile.mkstemp(prefix="ai-step-result-", suffix=".json", dir=base)
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+    except OSError as e:
+        print(f"::warning::ai-step: could not write result-file: {e}")
+        return
+    emit_kv("result-file", path)
+
+
 def emit_kv(key: str, value: str) -> None:
     path = os.environ.get("GITHUB_OUTPUT")
     if not path:
@@ -119,7 +140,7 @@ def fail_soft(msg: str, body: str = "") -> None:
         print("--- end ---")
     elif body:
         print("ai-step: upstream response withheld (log-output: false)")
-    emit_block("result", "")
+    emit_result("")
     emit_kv("conclusion", "failed")
     # surfaced as the action's `reason` output so a caller can show why
     # without reading the log
@@ -459,7 +480,7 @@ def main() -> None:
         # written — enforce_strict is a provider-binding requirement,
         # not part of the caller's contract.
         validate_output(parsed, schema, text)
-        emit_block("result", text)
+        emit_result(text)
         emit_kv("conclusion", "success")
         print(f"ai-step: session against '{agent_name}' → success")
         if log_output():
@@ -488,7 +509,7 @@ def main() -> None:
     except json.JSONDecodeError:
         fail_soft("provider returned non-JSON content", text)
 
-    emit_block("result", text)
+    emit_result(text)
     emit_kv("conclusion", "success")
 
     print(f"ai-step: {provider} / {model} → success")

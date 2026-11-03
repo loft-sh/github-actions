@@ -112,6 +112,13 @@ outputs:
       Schema-conforming JSON string. Parse with `fromJSON(...)` in
       downstream `if:` conditions. Empty when `conclusion` is not `success`.
     value: ${{ steps.run.outputs.result }}
+  result-file:
+    description: |
+      Path to a file in RUNNER_TEMP holding the same text as `result`
+      (empty when `conclusion` is not `success`; unset when skipped).
+      Read it in the next step instead of passing `result` through
+      env:, whose values GitHub prints in the step log.
+    value: ${{ steps.run.outputs.result-file }}
   conclusion:
     description: '`success` when the AI step ran and returned JSON; `skipped` when the resolver vetoed the input; `failed` when the provider errored, returned non-JSON, or cut the response off at max-tokens.'
     value: ${{ steps.conclusion.outputs.conclusion }}
