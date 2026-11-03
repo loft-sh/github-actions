@@ -1,0 +1,39 @@
+name: Release on merge
+description: Publish a stable GitHub release from conventional commits on the target history.
+inputs:
+  github-token:
+    description: Token with contents write access to the caller repository.
+    required: false
+    default: ${{ github.token }}
+  target-sha:
+    description: Commit to release from the fully fetched checkout.
+    required: false
+    default: ${{ github.sha }}
+  initial-version:
+    description: Stable version used as the base before the first release.
+    required: false
+    default: v0.0.0
+outputs:
+  version:
+    description: Released stable version, or empty when no release is needed.
+    value: ${{ steps.release.outputs.version }}
+  revision:
+    description: Full target commit SHA.
+    value: ${{ steps.release.outputs.revision }}
+  released:
+    description: True when a release exists for this target; false when skipped.
+    value: ${{ steps.release.outputs.released }}
+runs:
+  using: composite
+  steps:
+    - name: Publish stable release
+      id: release
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        INPUT_TARGET_SHA: ${{ inputs.target-sha }}
+        INPUT_INITIAL_VERSION: ${{ inputs.initial-version }}
+      run: python3 "${{ github.action_path }}/src/release.py"
+branding:
+  icon: tag
+  color: green
