@@ -21,6 +21,9 @@ setup() {
 
   STUB_DIR="$(mktemp -d)"
   PATH="${STUB_DIR}:${PATH}"
+  # The newest line branch, so a v0.40 cut from main is the next line and a test
+  # about something else is not refused by require_next_line.
+  export GH_STUB_LINE_BRANCHES="loft-sh/vcluster-pro:v0.39"
   install_gh_stub
 
   # The pro bump merge-wait polls a stubbed PR; drive it with no real sleeps.
@@ -114,6 +117,18 @@ if [[ "$sub" == "api" ]]; then
     repos/*/branches/*)
       rest="${path#repos/}"; repo="${rest%%/branches/*}"; branch="${rest##*/branches/}"
       contains "${GH_STUB_BRANCHES:-}" "${repo}:${branch}" && emit_status 0 branches || emit_status 1 branches ;;
+    repos/*/git/matching-refs/heads/*)
+      # The line branches require_next_line lists, as --jq '.[].ref' prints
+      # them: every GH_STUB_BRANCHES entry for the repo under the asked prefix,
+      # plus GH_STUB_LINE_BRANCHES, the same shape, for a branch only the listing
+      # needs. Filtered by repo and prefix, so a read of the wrong one comes back
+      # empty. GH_STUB_LINE_LIST_FAILS=1 fails the read.
+      if [[ "${GH_STUB_LINE_LIST_FAILS:-}" == "1" ]]; then echo "gh: dial tcp: lookup api.github.com" >&2; exit 1; fi
+      rest="${path#repos/}"; repo="${rest%%/git/matching-refs/heads/*}"; prefix="${rest##*/git/matching-refs/heads/}"
+      for entry in ${GH_STUB_BRANCHES:-} ${GH_STUB_LINE_BRANCHES:-}; do
+        [[ "${entry%%:*}" == "$repo" && "${entry#*:}" == "$prefix"* ]] && printf 'refs/heads/%s\n' "${entry#*:}"
+      done
+      exit 0 ;;
     repos/*/releases/tags/*)
       rest="${path#repos/}"; repo="${rest%%/releases/tags/*}"; tag="${rest##*/releases/tags/}"
       contains "${GH_STUB_RELEASES:-}" "${repo}:${tag}" && emit_status 0 tags || emit_status 1 tags ;;
@@ -1152,6 +1167,106 @@ EOF
   [ "$status" -eq 0 ]
   [[ "$output" == *"resume: tag v0.37.2 already exists in loft-sh/vcluster-pro; not re-tagging"* ]]
   [[ "$output" == *"dispatched release.yaml in loft-sh/vcluster-pro "* ]]
+}
+
+# ---- main: a line main does not carry ----
+
+@test "main: a Platform version is refused before anything is tagged" {
+  # Past the cutover and with no v4.11 branch, every other check sends it to main.
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:main"
+  export GH_STUB_LINE_BRANCHES="loft-sh/vcluster-pro:v0.36 loft-sh/vcluster-pro:v0.37"
+  for v in v4.11.4-rc.2 v4.13.0-alpha.1 v0.73.0-rc.1 v2.0.0-beta.1; do
+    INPUT_VERSION="$v" INPUT_DRY_RUN="false" run main
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"has no branch in loft-sh/vcluster-pro, so this cut would come from main, and main only carries the line after the newest branch: v0.38 or v1.0."* ]]
+    [[ "$output" == *"Nothing was tagged."* ]]
+    [[ "$output" != *"Routing"* ]]
+    [ ! -f "${STUB_DIR}/tag_created" ]
+  done
+}
+
+@test "main: the next minor and the next major's .0 still route to main" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:main"
+  export GH_STUB_LINE_BRANCHES="loft-sh/vcluster-pro:v0.37"
+  for v in v0.38.0-rc.1 v0.38.0-alpha.9 v1.0.0-beta.1; do
+    INPUT_VERSION="$v" INPUT_DRY_RUN="true" run main
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Routing ${v} -> monorepo (target main)"* ]]
+  done
+}
+
+@test "main: an alpha or beta of a line that has branched is refused" {
+  # main now carries the line after it, so tagging main would ship that work.
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:main loft-sh/vcluster-pro:v0.38"
+  INPUT_VERSION="v0.38.0-beta.1" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"v0.38 exists in loft-sh/vcluster-pro, so main now carries the next line and this beta would tag the wrong code."* ]]
+  [ ! -f "${STUB_DIR}/tag_created" ]
+  INPUT_VERSION="v0.38.0-alpha.9" INPUT_SOURCE_BRANCH="main" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"v0.38 exists in loft-sh/vcluster-pro, so main now carries the next line and this alpha would tag the wrong code."* ]]
+  [ ! -f "${STUB_DIR}/tag_created" ]
+}
+
+@test "main: a -next version for another repo is refused, one of a known line is cut" {
+  # A feature branch names its own source, so only this check reads the line.
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:my-feature loft-sh/vcluster-pro:v0.36"
+  export GH_STUB_LINE_BRANCHES="loft-sh/vcluster-pro:v0.37"
+  for v in v4.13.0-next.internal.1 v4.13.0-next.1; do
+    INPUT_VERSION="$v" INPUT_SOURCE_BRANCH="my-feature" INPUT_DRY_RUN="false" run main
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"v4.13 has no branch in loft-sh/vcluster-pro"* ]]
+    [[ "$output" != *"Routing"* ]]
+    [ ! -f "${STUB_DIR}/tag_created" ]
+  done
+  for v in v0.36.0-next.1 v0.38.0-next.internal.1; do
+    INPUT_VERSION="$v" INPUT_SOURCE_BRANCH="my-feature" INPUT_DRY_RUN="true" run main
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Routing ${v} -> feature-branch prerelease (source my-feature)"* ]]
+  done
+}
+
+@test "main: a -next version may run two lines past the newest branch" {
+  # main was still cutting v0.37, with no v0.37 branch, while a feature branch
+  # cut v0.38.
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:my-feature"
+  export GH_STUB_LINE_BRANCHES="loft-sh/vcluster-pro:v0.36"
+  for v in v0.38.0-next.internal.0 v1.1.0-next.1; do
+    INPUT_VERSION="$v" INPUT_SOURCE_BRANCH="my-feature" INPUT_DRY_RUN="true" run main
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Routing ${v} -> feature-branch prerelease (source my-feature)"* ]]
+  done
+  INPUT_VERSION="v0.39.0-next.1" INPUT_SOURCE_BRANCH="my-feature" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"v0.39 has no branch in loft-sh/vcluster-pro, and a -next version runs at most two lines past the newest branch: v0.37, v1.0, v0.38, v1.1."* ]]
+  [ ! -f "${STUB_DIR}/tag_created" ]
+}
+
+@test "main: a failed line-branch listing stops the cut" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:main loft-sh/vcluster-pro:my-feature"
+  export GH_STUB_LINE_LIST_FAILS=1
+  for args in "v0.40.0-rc.1|" "v0.40.0-alpha.1|" "v0.40.0-next.1|my-feature"; do
+    INPUT_VERSION="${args%|*}" INPUT_SOURCE_BRANCH="${args#*|}" INPUT_DRY_RUN="false" run main
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"could not list the line branches in loft-sh/vcluster-pro"*"dial tcp"* ]]
+    [[ "$output" != *"Routing"* ]]
+    [ ! -f "${STUB_DIR}/tag_created" ]
+  done
+}
+
+@test "main: an input mistake is reported before the line-branch listing" {
+  export GH_STUB_BRANCHES="loft-sh/vcluster-pro:main loft-sh/vcluster-pro:my-feature"
+  export GH_STUB_LINE_LIST_FAILS=1
+  INPUT_VERSION="v0.40.0-next.1" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"next releases require the source-branch input"* ]]
+  INPUT_VERSION="v0.40.0-alpha.1" INPUT_SOURCE_BRANCH="my-feature" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"alpha releases are cut from main only, not 'my-feature'"* ]]
+  INPUT_VERSION="v0.40.0-rc.1" INPUT_SOURCE_BRANCH="my-feature" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"rc releases are cut from main or the v0.40 release branch, not 'my-feature'"* ]]
+  [[ "$output" != *"could not list"* ]]
 }
 
 # ---- main: guards ----

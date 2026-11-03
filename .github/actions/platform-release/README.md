@@ -93,6 +93,15 @@ direct invocation.
   tag, and GitHub hides draft releases from it, so the double-cut guard could
   not see them. GitHub reports no permissions for a GitHub App token, so for
   one the action only warns.
+- **Next line:** a version whose `release-X.Y` branch does not exist goes to
+  `main`, so its line must be the one `main` carries: the next minor or the next
+  major's `.0` after the newest `release-X.Y` branch. With `release-4.12` the
+  newest, that is `4.13` or `5.0`. Anything else is refused before anything is
+  tagged: a vCluster version such as `v0.37.7-rc.1`, a typo such as
+  `v4.21.0-rc.1`, or an old line. A `-next` version is cut from its feature
+  branch, and feature work starts before the line `main` is cutting branches, so
+  it may run up to two lines past the newest branch unless its line has a
+  branch. A failed branch listing stops the cut.
 - **Double-cut:** fails if a release for `version` already exists, draft or
   published. Releases are read from the full release list, paged through,
   because the by-tag lookup only answers for published releases. An existing

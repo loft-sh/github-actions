@@ -471,3 +471,166 @@ SHA="898ff52e596d2335922f274bdb97aa0de92b03b4"
   [[ "$output" == *"Re-run the cut once GitHub answers"* ]]
   [[ "$output" != *"README"* ]]
 }
+
+# line_stub - make gh a function that answers the line-branch listing and the
+# branch probes, and logs every path it was asked for. LINE_REFS names the
+# branches under any prefix, filtered by the asked prefix as the real listing
+# is. BRANCHES names the ones the probe finds, and LINE_LIST_FAILS fails the
+# listing the way an unreachable API does.
+line_stub() {
+  GH_LOG="${BATS_TEST_TMPDIR}/gh.log"
+  : >"$GH_LOG"
+  gh() {
+    local path ref prefix refs=()
+    for path in "$@"; do [[ "$path" == repos/* ]] && break; done
+    printf '%s\n' "$path" >>"$GH_LOG"
+    case "$path" in
+      repos/loft-sh/vcluster-pro/git/matching-refs/heads/*)
+        [[ -z "${LINE_LIST_FAILS:-}" ]] || { echo "gh: dial tcp: lookup api.github.com" >&2; return 1; }
+        prefix="${path##*/matching-refs/heads/}"
+        for ref in ${LINE_REFS:-}; do
+          [[ "$ref" == "$prefix"* ]] && refs+=("$(printf '{"ref":"refs/heads/%s"}' "$ref")")
+        done
+        (IFS=,; printf '[%s]\n' "${refs[*]}") | jq -r "${@: -1}" ;;
+      repos/loft-sh/vcluster-pro/branches/*)
+        case " ${BRANCHES:-} " in
+          *" ${path##*/branches/} "*) echo "HTTP/2.0 200 OK" ;;
+          *) echo "HTTP/2.0 404 Not Found"; return 1 ;;
+        esac ;;
+      *) echo "unexpected gh call: $*" >&2; return 1 ;;
+    esac
+  }
+}
+
+@test "require_next_line: the next minor and the next major's .0 pass" {
+  line_stub
+  LINE_REFS="v0.36 v0.37"
+  run require_next_line loft-sh/vcluster-pro v0.38
+  [ "$status" -eq 0 ]
+  run require_next_line loft-sh/vcluster-pro v1.0
+  [ "$status" -eq 0 ]
+  # The prefix comes from LINE_BRANCH_FORMAT, and the repo is the one passed.
+  grep -qx "repos/loft-sh/vcluster-pro/git/matching-refs/heads/v" "$GH_LOG"
+  [ "$(sort -u "$GH_LOG" | wc -l)" -eq 1 ]
+}
+
+@test "require_next_line: a version for another repo, a typo or an old line is refused" {
+  line_stub
+  LINE_REFS="v0.36 v0.37"
+  # A Platform line, two minors ahead, a minor past the next major's .0, two
+  # majors ahead, and an old line with no branch.
+  for line in v4.11 v0.39 v1.1 v2.0 v0.35 v0.73; do
+    run require_next_line loft-sh/vcluster-pro "$line"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"::error::${line} has no branch in loft-sh/vcluster-pro, so this cut would come from trunk, and trunk only carries the line after the newest branch: v0.38 or v1.0."* ]]
+    [[ "$output" == *"Nothing was tagged."* ]]
+  done
+}
+
+@test "require_next_line: a lower major is refused like a higher one" {
+  line_stub
+  LINE_BRANCH_FORMAT="release-%s.%s"
+  LINE_BRANCH_PATTERN='^release-[0-9]+\.[0-9]+$'
+  LINE_REFS="release-4.11 release-4.12"
+  run require_next_line loft-sh/vcluster-pro release-0.37
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"release-4.13 or release-5.0"* ]]
+  run require_next_line loft-sh/vcluster-pro release-5.0
+  [ "$status" -eq 0 ]
+  grep -qx "repos/loft-sh/vcluster-pro/git/matching-refs/heads/release-" "$GH_LOG"
+}
+
+@test "require_next_line: the newest branch is the highest number, and other names under the prefix are skipped" {
+  line_stub
+  # v0.10 sorts before v0.9 as text. vnode-fix and v0.40-hotfix share the
+  # prefix without being line branches, v0.041 has a leading zero, and a
+  # ten-digit minor would not fit the arithmetic.
+  LINE_REFS="v0.10 v0.9 vnode-fix v0.40-hotfix v0.041 v0.1234567890"
+  run require_next_line loft-sh/vcluster-pro v0.11
+  [ "$status" -eq 0 ]
+  run require_next_line loft-sh/vcluster-pro v0.41
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"v0.11 or v1.0"* ]]
+}
+
+@test "require_next_line: a line too long for arithmetic is refused, not wrapped" {
+  line_stub
+  LINE_REFS="v0.37"
+  for line in v9223372036854775808.0 v18446744073709551617.0 v0.18446744073709551654; do
+    run require_next_line loft-sh/vcluster-pro "$line"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"::error::${line} has no branch"* ]]
+  done
+}
+
+@test "require_next_line: no line branch or a failed listing refuses" {
+  line_stub
+  LINE_REFS="vnode-fix"
+  run require_next_line loft-sh/vcluster-pro v0.38
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"::error::loft-sh/vcluster-pro has no line branch, so the cut cannot confirm where v0.38 stands. Nothing was tagged."* ]]
+  LINE_REFS="v0.37" LINE_LIST_FAILS=1
+  run require_next_line loft-sh/vcluster-pro v0.38
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"::error::could not list the line branches in loft-sh/vcluster-pro"*"Nothing was tagged. gh said: gh: dial tcp"* ]]
+}
+
+@test "require_unbranched: a line with no branch must also be the next one" {
+  line_stub
+  LINE_REFS="v0.37" BRANCHES="v0.37"
+  run require_unbranched loft-sh/vcluster-pro v0.38 alpha
+  [ "$status" -eq 0 ]
+  run require_unbranched loft-sh/vcluster-pro v4.11 alpha
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"v4.11 has no branch"* ]]
+  run require_unbranched loft-sh/vcluster-pro v0.37 beta
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"v0.37 exists in loft-sh/vcluster-pro"* ]]
+}
+
+@test "require_known_line: a line with a branch passes without the listing, any other may run two lines ahead" {
+  line_stub
+  LINE_REFS="v0.36 v0.37" BRANCHES="v0.36 v0.37"
+  run require_known_line loft-sh/vcluster-pro v0.36
+  [ "$status" -eq 0 ]
+  ! grep -q matching-refs "$GH_LOG"
+  # Feature work runs ahead of the line main is still cutting.
+  for line in v0.38 v0.39 v1.0 v1.1; do
+    run require_known_line loft-sh/vcluster-pro "$line"
+    [ "$status" -eq 0 ]
+  done
+  for line in v0.40 v1.2 v2.0 v4.13 v0.35; do
+    run require_known_line loft-sh/vcluster-pro "$line"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"::error::${line} has no branch in loft-sh/vcluster-pro, and a -next version runs at most two lines past the newest branch: v0.38, v1.0, v0.39, v1.1."* ]]
+    # It is cut from its feature branch, so the refusal must not blame trunk.
+    [[ "$output" != *"would come from trunk"* ]]
+  done
+}
+
+@test "require_next_line: a long or zero-led major is skipped, not read from its last digits" {
+  line_stub
+  LINE_REFS="v0.37 v1234567890.1 v01.0 v00.40"
+  run require_next_line loft-sh/vcluster-pro v0.38
+  [ "$status" -eq 0 ]
+}
+
+@test "resolve_rc_source: an rc headed for the default branch must be the next line" {
+  line_stub
+  LINE_REFS="v0.37" BRANCHES="v0.37"
+  local answer rc=0
+  answer="$(resolve_rc_source loft-sh/vcluster-pro v0.38 "" 2>/dev/null)"
+  [ "$answer" = "trunk" ]
+  answer="$(resolve_rc_source loft-sh/vcluster-pro v0.38 trunk 2>/dev/null)"
+  [ "$answer" = "trunk" ]
+  for src in "" trunk; do
+    rc=0; answer="$(resolve_rc_source loft-sh/vcluster-pro v4.11 "$src" 2>/dev/null)" || rc=$?
+    [ "$rc" -eq 1 ]
+    [ -z "$answer" ]
+  done
+  # Any other source branch is resolve_target's to refuse, without the listing.
+  : >"$GH_LOG"
+  answer="$(resolve_rc_source loft-sh/vcluster-pro v4.11 my-feature 2>/dev/null)"
+  [ "$answer" = "my-feature" ]
+  ! grep -q matching-refs "$GH_LOG"
+}

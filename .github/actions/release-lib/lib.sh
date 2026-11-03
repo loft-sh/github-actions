@@ -372,6 +372,69 @@ branch_exists() {
   api_exists "repos/${repo}/branches/${branch}" "branch '${branch}' in ${repo}"
 }
 
+# lines_after <out-var> <repo> <line> <ahead> - sets <out-var> to the lines up to
+# <ahead> (1 or 2) after <repo>'s newest line branch, space-separated. One ahead
+# is the next minor or the next major's .0; two ahead adds the minor after each.
+# <line> is only named in the errors.
+#
+# Line branches are listed by the part of LINE_BRANCH_FORMAT before its first
+# %s, then matched against LINE_BRANCH_PATTERN. A branch whose major or minor is
+# longer than nine digits, or has a leading zero, is skipped: the first could
+# overflow the arithmetic and the second would be read as octal. A failed
+# listing or a repo with no line branch exits, since neither can show where
+# <line> stands. Exits rather than returns, so call it directly, not inside a
+# command substitution, when that exit has to end the script.
+lines_after() {
+  local __la_var="$1" __la_repo="$2" __la_line="$3" __la_ahead="$4" __la_prefix __la_refs __la_err __la_ref
+  local __la_num='(0|[1-9][0-9]{0,8})' __la_major=-1 __la_minor=-1 __la_fmt="$LINE_BRANCH_FORMAT" __la_lines
+  __la_prefix="${__la_fmt%%\%*}"
+  if ! run_captured __la_refs __la_err gh api --paginate "repos/${__la_repo}/git/matching-refs/heads/${__la_prefix}" --jq '.[].ref'; then
+    echo "::error::could not list the line branches in ${__la_repo}, so the cut cannot confirm where ${__la_line} stands. Nothing was tagged. gh said: $(gh_reason "$__la_err")" >&2
+    exit 1
+  fi
+  while read -r __la_ref; do
+    __la_ref="${__la_ref#refs/heads/}"
+    [[ "$__la_ref" =~ $LINE_BRANCH_PATTERN ]] || continue
+    # Anchored on a non-digit, so a long or zero-led major is skipped rather than
+    # read from its last digits.
+    [[ "$__la_ref" =~ (^|[^0-9])${__la_num}\.${__la_num}$ ]] || continue
+    if ((BASH_REMATCH[2] > __la_major || (BASH_REMATCH[2] == __la_major && BASH_REMATCH[3] > __la_minor))); then
+      __la_major="${BASH_REMATCH[2]}" __la_minor="${BASH_REMATCH[3]}"
+    fi
+  done <<<"$__la_refs"
+  if ((__la_major < 0)); then
+    echo "::error::${__la_repo} has no line branch, so the cut cannot confirm where ${__la_line} stands. Nothing was tagged." >&2
+    exit 1
+  fi
+  # shellcheck disable=SC2059 # LINE_BRANCH_FORMAT is the format string by design
+  {
+    __la_lines="$(printf "$__la_fmt" "$__la_major" "$((__la_minor + 1))") $(printf "$__la_fmt" "$((__la_major + 1))" 0)"
+    if ((__la_ahead > 1)); then
+      __la_lines+=" $(printf "$__la_fmt" "$__la_major" "$((__la_minor + 2))") $(printf "$__la_fmt" "$((__la_major + 1))" 1)"
+    fi
+  }
+  printf -v "$__la_var" '%s' "$__la_lines"
+}
+
+# require_next_line <repo> <line> - for a line with no branch, refuse it unless
+# it is the next one after <repo>'s newest line branch: the next minor, or the
+# next major's .0.
+#
+# Every routing check passes a line with no branch through to main, which is
+# right for the next line and wrong for any other. A version for another repo
+# (Platform v4.11.4-rc.2 in vcluster-pro, vCluster v0.37.7-rc.1 in
+# loft-enterprise) or a typo (v4.21.0-rc.1) has no branch either, and main would
+# tag and ship it. main only ever carries the line after the newest branch, so
+# that is the one line it may cut. <line> is compared as a string, so its own
+# numbers never reach arithmetic.
+require_next_line() {
+  local repo="$1" line="$2" next
+  lines_after next "$repo" "$line" 1
+  [[ " $next " == *" $line "* ]] && return 0
+  echo "::error::${line} has no branch in ${repo}, so this cut would come from ${DEFAULT_BRANCH}, and ${DEFAULT_BRANCH} only carries the line after the newest branch: ${next// / or }. The version is most likely a typo or meant for another repo. Nothing was tagged." >&2
+  exit 1
+}
+
 # resolve_rc_source <repo> <line> <src> -> the branch an rc is cut from, or a
 # hard error when <src> contradicts the line's actual state.
 #
@@ -386,7 +449,8 @@ branch_exists() {
 #                        honoured, because at this point it is a mistake and
 #                        nothing downstream would catch it.
 #   release-X.Y absent   the rc IS main; that is where the line lives until it
-#                        branches.
+#                        branches. Only the next line lives there, so
+#                        require_next_line refuses any other.
 #
 # So the probe is not just a default-filler: it runs on every rc, including one
 # that named a source branch, because the refusal above depends on it.
@@ -411,6 +475,10 @@ resolve_rc_source() {
     printf '%s\n' "$src"
     return 0
   fi
+  # Any other source branch is left for resolve_target to refuse without a read.
+  if [[ -z "$src" || "$src" == "$DEFAULT_BRANCH" ]]; then
+    require_next_line "$repo" "$line"
+  fi
   if [[ -z "$src" ]]; then
     echo "::notice::no source-branch given for an rc and ${line} does not exist yet in ${repo}; cutting from ${DEFAULT_BRANCH}." >&2
     printf '%s\n' "$DEFAULT_BRANCH"
@@ -422,13 +490,33 @@ resolve_rc_source() {
 # require_unbranched <repo> <line> <suffix> - alpha/beta come from main only, and
 # once release-X.Y exists main carries the next line, so an alpha or beta of this
 # line would tag code the line will never ship. Refused rather than rerouted: the
-# line branch is where rcs come from, not prereleases of an earlier stage.
+# line branch is where rcs come from, not prereleases of an earlier stage. A line
+# with no branch still has to be the one main carries, which require_next_line
+# checks.
 require_unbranched() {
   local repo="$1" line="$2" suffix="$3"
   if branch_exists "$repo" "$line"; then
-    echo "::error::${line} exists in ${repo}, so ${DEFAULT_BRANCH} now carries the next line and a ${suffix} of this line would tag the wrong code. Cut an rc from ${line} instead. Nothing was tagged." >&2
+    echo "::error::${line} exists in ${repo}, so ${DEFAULT_BRANCH} now carries the next line and this ${suffix} would tag the wrong code. Cut an rc from ${line} instead. Nothing was tagged." >&2
     exit 1
   fi
+  require_next_line "$repo" "$line"
+}
+
+# require_known_line <repo> <line> - a -next cut names its own feature branch, so
+# no routing check reads the line. Its version still has to belong to this repo:
+# a line that has a branch, or one up to two lines past the newest branch.
+#
+# Two, not one: feature work starts on the line after the one main is still
+# cutting. With release-4.11 the newest branch, main cuts 4.12 alphas while a
+# feature branch already cuts 4.13 -next versions. A version for another repo or
+# a typo lands further out.
+require_known_line() {
+  local repo="$1" line="$2" allowed
+  branch_exists "$repo" "$line" && return 0
+  lines_after allowed "$repo" "$line" 2
+  [[ " $allowed " == *" $line "* ]] && return 0
+  echo "::error::${line} has no branch in ${repo}, and a -next version runs at most two lines past the newest branch: ${allowed// /, }. The version is most likely a typo or meant for another repo. Nothing was tagged." >&2
+  exit 1
 }
 
 # ---------------------------------------------------------------------------
