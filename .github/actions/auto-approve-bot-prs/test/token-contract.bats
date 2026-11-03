@@ -36,3 +36,12 @@ WORKFLOW="$BATS_TEST_DIRNAME/../../../workflows/auto-approve-bot-prs.yaml"
   run grep -F 'PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}' "$ACTION"
   [ "$status" -eq 0 ]
 }
+
+@test "fallback option defaults on and is passed through both layers" {
+  action_input=$(sed -n '/^  allow-auto-merge-fallback:/,/^  [a-z].*:/p' "$ACTION")
+  workflow_input=$(sed -n '/^      allow-auto-merge-fallback:/,/^      [a-z].*:/p' "$WORKFLOW")
+  [[ "$action_input" == *"default: 'true'"* ]]
+  [[ "$workflow_input" == *"default: true"* ]]
+  grep -F 'allow-auto-merge-fallback: ${{ inputs.allow-auto-merge-fallback }}' "$WORKFLOW"
+  grep -F 'ALLOW_AUTO_MERGE_FALLBACK: ${{ inputs.allow-auto-merge-fallback }}' "$ACTION"
+}

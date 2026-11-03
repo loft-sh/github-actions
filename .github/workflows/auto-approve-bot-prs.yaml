@@ -15,6 +15,10 @@ on:
         description: 'Merge the PR after approving it, directly where possible.'
         type: boolean
         default: false
+      allow-auto-merge-fallback:
+        description: 'Allow queued auto-merge if the direct merge is refused.'
+        type: boolean
+        default: true
       wait-max-attempts:
         description: 'Max polling attempts waiting for other CI checks (raise this when a slow required check, e.g. e2e, gates the PR).'
         type: string
@@ -75,6 +79,7 @@ jobs:
           trusted-authors: ${{ inputs.trusted-authors }}
           merge-method: ${{ inputs.merge-method }}
           auto-merge: ${{ inputs.auto-merge }}
+          allow-auto-merge-fallback: ${{ inputs.allow-auto-merge-fallback }}
           wait-max-attempts: ${{ inputs.wait-max-attempts }}
           wait-min-attempts: ${{ inputs.wait-min-attempts }}
           skip-labels: ${{ inputs.skip-labels }}

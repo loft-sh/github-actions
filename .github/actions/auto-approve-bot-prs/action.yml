@@ -23,6 +23,10 @@ inputs:
   github-token:
     description: 'PAT used to read PR state and approve. Must NOT match the PR author. Also used to merge when merge-token is omitted.'
     required: true
+  allow-auto-merge-fallback:
+    description: 'Allow queued auto-merge if the direct merge is refused.'
+    required: false
+    default: 'true'
   merge-token:
     description: 'Optional token used only to merge when auto-merge is true. Defaults to github-token. It may match the PR author, but needs a merge path on the base branch.'
     required: false
@@ -119,4 +123,5 @@ runs:
         PR_NUMBER: ${{ github.event.pull_request.number }}
         PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         MERGE_METHOD: ${{ inputs.merge-method }}
+        ALLOW_AUTO_MERGE_FALLBACK: ${{ inputs.allow-auto-merge-fallback }}
       run: ${{ github.action_path }}/src/enable-auto-merge.sh
