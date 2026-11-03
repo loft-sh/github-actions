@@ -1112,6 +1112,7 @@ main() {
       echo "::error::${suffix} releases are cut from a short-lived feature branch, not '${source_branch}' (main and vX.Y release branches are not allowed)." >&2
       exit 1
     fi
+    require_known_line "$PRO_REPO" "$line"
     cut_feature_prerelease "$version" "$source_branch"
     return
   fi
@@ -1134,6 +1135,10 @@ main() {
         fi
       fi
       target="$(resolve_target "$suffix" "$source_branch" "$line")" || exit 1
+      # After the matrix, which refuses a wrong source branch without a read.
+      if [[ "$suffix" == "alpha" || "$suffix" == "beta" ]]; then
+        require_unbranched "$PRO_REPO" "$line" "$suffix"
+      fi
       cut_monorepo "$version" "$target" ;;
     legacy)
       # Legacy lines are historical two-repo lines: only rc/stable are cut, from

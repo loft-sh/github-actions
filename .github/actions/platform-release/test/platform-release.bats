@@ -32,6 +32,9 @@ setup() {
   export STUB_TAG_COMMIT="1111111111111111111111111111111111111111"
   export STUB_TAG_OBJECT="2222222222222222222222222222222222222222"
   export STUB_TAG_OBJECT2="4444444444444444444444444444444444444444"
+  # The newest line branch, so a v4.12 cut from main is the next line and a test
+  # about something else is not refused by require_next_line.
+  export GH_STUB_LINE_BRANCHES="loft-sh/loft-enterprise:release-4.11"
   install_gh_stub
 }
 
@@ -139,6 +142,18 @@ if [[ "$sub" == "api" ]]; then
     repos/*/branches/*)
       rest="${path#repos/}"; repo="${rest%%/branches/*}"; branch="${rest##*/branches/}"
       contains "${GH_STUB_BRANCHES:-}" "${repo}:${branch}" && emit_status 0 branches || emit_status 1 branches ;;
+    repos/*/git/matching-refs/heads/*)
+      # The line branches require_next_line lists, as --jq '.[].ref' prints
+      # them: every GH_STUB_BRANCHES entry for the repo under the asked prefix,
+      # plus GH_STUB_LINE_BRANCHES, the same shape, for a branch only the listing
+      # needs. Filtered by repo and prefix, so a read of the wrong one comes back
+      # empty. GH_STUB_LINE_LIST_FAILS=1 fails the read.
+      if [[ "${GH_STUB_LINE_LIST_FAILS:-}" == "1" ]]; then echo "gh: dial tcp: lookup api.github.com" >&2; exit 1; fi
+      rest="${path#repos/}"; repo="${rest%%/git/matching-refs/heads/*}"; prefix="${rest##*/git/matching-refs/heads/}"
+      for entry in ${GH_STUB_BRANCHES:-} ${GH_STUB_LINE_BRANCHES:-}; do
+        [[ "${entry%%:*}" == "$repo" && "${entry#*:}" == "$prefix"* ]] && printf 'refs/heads/%s\n' "${entry#*:}"
+      done
+      exit 0 ;;
     repos/*/releases/tags/*)
       [[ -n "${GH_STUB_CONTENTS_LOG:-}" ]] && printf '%s\n' "$path" >>"$GH_STUB_CONTENTS_LOG"
       rest="${path#repos/}"; repo="${rest%%/releases/tags/*}"; tag="${rest##*/releases/tags/}"
@@ -1302,6 +1317,7 @@ EOF
 }
 
 @test "main: next.internal is cut from the named feature branch" {
+  export GH_STUB_LINE_BRANCHES="loft-sh/loft-enterprise:release-4.12"
   export GH_STUB_BRANCHES="loft-sh/loft-enterprise:engplat-406/private-nodes"
   INPUT_VERSION="v4.13.0-next.internal.3" INPUT_SOURCE_BRANCH="engplat-406/private-nodes" INPUT_DRY_RUN="true" run main
   [ "$status" -eq 0 ]
@@ -1334,6 +1350,78 @@ EOF
   [ "$status" -ne 0 ]
   [[ "$output" == *"unsupported prerelease suffix"* ]]
   [[ "$output" != *"[dry-run]"* ]]
+}
+
+@test "main: a vCluster version, a typo or a jump of majors is refused before anything is tagged" {
+  # No release-0.37 or release-4.21 branch, so every other check sends them to main.
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:main"
+  export GH_STUB_LINE_BRANCHES="loft-sh/loft-enterprise:release-4.11 loft-sh/loft-enterprise:release-4.12"
+  for v in v0.37.7-rc.1 v0.38.0-alpha.1 v4.21.0-rc.1 v6.0.0-rc.1 v5.1.0-beta.1; do
+    INPUT_VERSION="$v" INPUT_DRY_RUN="false" run main
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"has no branch in loft-sh/loft-enterprise, so this cut would come from main, and main only carries the line after the newest branch: release-4.13 or release-5.0."* ]]
+    [[ "$output" == *"Nothing was tagged."* ]]
+    [[ "$output" != *"created tag"* ]]
+    [[ "$output" != *"stub-dispatch"* ]]
+  done
+}
+
+@test "main: the next minor and the next major's .0 still cut from main" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:main"
+  export GH_STUB_LINE_BRANCHES="loft-sh/loft-enterprise:release-4.12"
+  for v in v4.13.0-rc.1 v4.13.0-alpha.2 v5.0.0-beta.1; do
+    INPUT_VERSION="$v" INPUT_DRY_RUN="true" run main
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"[dry-run] gh workflow run release.yaml --repo loft-sh/loft-enterprise --ref refs/tags/${v} "* ]]
+  done
+}
+
+@test "main: a -next version for another repo is refused" {
+  # A feature branch names its own source, so only this check reads the line.
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:feature/foo"
+  for v in v0.38.0-next.1 v4.21.0-next.internal.1; do
+    INPUT_VERSION="$v" INPUT_SOURCE_BRANCH="feature/foo" INPUT_DRY_RUN="false" run main
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"has no branch in loft-sh/loft-enterprise, and a -next version runs at most two lines past the newest branch: release-4.12, release-5.0, release-4.13, release-5.1."* ]]
+    [[ "$output" != *"created tag"* ]]
+    [[ "$output" != *"stub-dispatch"* ]]
+  done
+}
+
+@test "main: a -next version may run two lines past the newest branch" {
+  # main was still cutting 4.12 alphas, with no release-4.12, while a feature
+  # branch cut 4.13.
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:feature/foo"
+  export GH_STUB_LINE_BRANCHES="loft-sh/loft-enterprise:release-4.11"
+  for v in v4.13.0-next.internal.2 v5.1.0-next.1; do
+    INPUT_VERSION="$v" INPUT_SOURCE_BRANCH="feature/foo" INPUT_DRY_RUN="true" run main
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"[dry-run] gh workflow run release.yaml --repo loft-sh/loft-enterprise --ref refs/tags/${v} "* ]]
+  done
+}
+
+@test "main: a failed line-branch listing stops the cut" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:main loft-sh/loft-enterprise:feature/foo"
+  export GH_STUB_LINE_LIST_FAILS=1
+  for args in "v4.12.0-rc.1|" "v4.12.0-alpha.1|" "v4.12.0-next.1|feature/foo"; do
+    INPUT_VERSION="${args%|*}" INPUT_SOURCE_BRANCH="${args#*|}" INPUT_DRY_RUN="false" run main
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"could not list the line branches in loft-sh/loft-enterprise"*"dial tcp"* ]]
+    [[ "$output" != *"created tag"* ]]
+    [[ "$output" != *"stub-dispatch"* ]]
+  done
+}
+
+@test "main: a wrong source branch is reported before the line-branch listing" {
+  export GH_STUB_BRANCHES="loft-sh/loft-enterprise:main loft-sh/loft-enterprise:feature/foo"
+  export GH_STUB_LINE_LIST_FAILS=1
+  INPUT_VERSION="v4.12.0-beta.1" INPUT_SOURCE_BRANCH="feature/foo" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"beta releases are cut from main only, not 'feature/foo'"* ]]
+  INPUT_VERSION="v4.12.0-rc.1" INPUT_SOURCE_BRANCH="feature/foo" INPUT_DRY_RUN="false" run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"rc releases are cut from main or the release-4.12 release branch, not 'feature/foo'"* ]]
+  [[ "$output" != *"could not list"* ]]
 }
 
 @test "main: dry-run mutates nothing" {
@@ -1535,6 +1623,7 @@ EOF
   # branch forked at the tag.
   export GH_STUB_BRANCHES="loft-sh/loft-enterprise:main"
   export GH_STUB_WF_SOURCE_BRANCH=1
+  export GH_STUB_LINE_BRANCHES="loft-sh/loft-enterprise:release-4.12"
   TRIGGERED_BY="" INPUT_VERSION="v4.13.0-alpha.20" INPUT_DRY_RUN="false" run main
   [ "$status" -eq 0 ]
   [[ "$output" == *"--ref refs/tags/v4.13.0-alpha.20 -f source_branch=main"* ]]

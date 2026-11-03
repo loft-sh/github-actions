@@ -630,6 +630,7 @@ main() {
       echo "::error::${suffix} releases are cut from a short-lived feature branch, not '${source_branch}' (${DEFAULT_BRANCH} and release-X.Y branches are not allowed)." >&2
       exit 1
     fi
+    require_known_line "$REPO" "$line"
     target="$source_branch"
   else
     # Every rc is resolved against the repo before the matrix sees it, whether or
@@ -644,10 +645,12 @@ main() {
       if ! source_branch="$(resolve_rc_source "$REPO" "$line" "$source_branch")"; then
         exit 1
       fi
-    elif [[ "$suffix" == "alpha" || "$suffix" == "beta" ]]; then
-      require_unbranched "$REPO" "$line" "$suffix"
     fi
     target="$(resolve_target "$suffix" "$source_branch" "$line")" || exit 1
+    # After the matrix, which refuses a wrong source branch without a read.
+    if [[ "$suffix" == "alpha" || "$suffix" == "beta" ]]; then
+      require_unbranched "$REPO" "$line" "$suffix"
+    fi
   fi
 
   cut_release "$version" "$target"
