@@ -1431,6 +1431,10 @@ Each file maps 1:1 to a `workflow_call` workflow in `.github/workflows/`.
 
 3. Run `make generate-docs` and commit the result.
 
+## Release on merge
+
+Publishes stable releases from first-parent conventional commits without a version PR. See [release-on-merge](./.github/actions/release-on-merge/README.md) for the contract and caller requirements.
+
 ## Versioning Actions
 
 ### Release-notification Action
