@@ -1,6 +1,11 @@
 .PHONY: test test-secret-broker-request test-secret-broker-response test-semver-validation test-setup-semstat test-linear-pr-commenter test-link-backport-prs test-fork-review-check test-select-backport-source-prs test-release-notification test-linear-release-sync test-linear-cve-summary test-aws-test-infra test-cleanup-head-charts test-ci-test-notify test-auto-approve-bot-prs test-ai-pr-review test-ai-step test-release-summary test-publish-helm-chart test-govulncheck test-go-licenses test-run-ginkgo test-sticky-pr-comment test-repository-dispatch test-parse-label-filter test-release-branch-freeze test-prerelease-setup test-vcluster-release test-platform-release test-release-lib test-subtree-mirror test-oss-commit-sync test-oss-mirror-staleness test-backport-legacy-allowlist test-backport-legacy-split test-backport-fix-imports test-promote-release test-wait-for-release test-cve-scan test-commitlint test-resolve-github-release test-comment-triggered-check test-conflict-check build-linear-release-sync lint check-bats-jobs install-auto-doc generate-docs check-docs help
 
 ACTIONS_DIR := .github/actions
+.PHONY: test-ghcr-tag-guard
+test: test-ghcr-tag-guard
+test-ghcr-tag-guard: ## run GHCR publication guard tests
+	uv run --with pytest==8.3.3 pytest $(ACTIONS_DIR)/ghcr-tag-guard/test/ -q
+
 .PHONY: test-check-action-pins
 WORKFLOWS_DIR := .github/workflows
 SCRIPTS_DIR := .github/scripts
