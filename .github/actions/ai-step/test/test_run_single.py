@@ -82,6 +82,7 @@ def run_mod(monkeypatch, tmp_path):
     out = tmp_path / "github_output"
     out.touch()
     monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
 
     spec = importlib.util.spec_from_file_location("ai_step_run_single", SRC)
     mod = importlib.util.module_from_spec(spec)
@@ -388,3 +389,42 @@ def test_log_output_input_defaults_to_true():
 
 def test_log_output_reaches_the_run_step():
     assert "INPUT_LOG_OUTPUT: ${{ inputs.log-output }}" in _steps()["Call provider"]
+
+
+# --- result-file -------------------------------------------------------------
+
+
+def _result_file(mod):
+    path = _kv(mod, "result-file")
+    assert path, "result-file output is not set"
+    return Path(path)
+
+
+def test_result_file_holds_the_answer(run_mod, monkeypatch, tmp_path):
+    answer = f'{{"note": "{SECRET}"}}'
+    _main_anthropic(run_mod, monkeypatch, FakeAnthropic(text=answer), INPUT_LOG_OUTPUT="false")
+    path = _result_file(run_mod)
+    assert path.parent == tmp_path  # in RUNNER_TEMP, not the workspace
+    assert path.read_text() == answer
+    assert oct(path.stat().st_mode & 0o777) == "0o600"
+
+
+def test_result_file_is_empty_on_failure(run_mod, monkeypatch):
+    client = FakeAnthropic(text='{"n"', stop_reason="max_tokens")
+    with pytest.raises(SystemExit):
+        _main_anthropic(run_mod, monkeypatch, client)
+    assert _result_file(run_mod).read_text() == ""
+
+
+def test_unwritable_runner_temp_still_succeeds(run_mod, monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path / "missing"))
+    _main_anthropic(run_mod, monkeypatch, FakeAnthropic())
+    assert _kv(run_mod, "conclusion") == "success"
+    assert _kv(run_mod, "result-file") is None
+    assert "could not write result-file" in capsys.readouterr().out
+
+
+def test_result_file_output_reads_the_run_step():
+    m = re.search(r"\n  result-file:\n(.*?)\n  [a-z-]+:\n", ACTION.read_text(), re.DOTALL)
+    assert m, "result-file output is not declared"
+    assert "value: ${{ steps.run.outputs.result-file }}" in m.group(1)

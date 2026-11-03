@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import re
 import sys
 import types
 from pathlib import Path
@@ -112,6 +113,7 @@ def run_mod(monkeypatch, tmp_path):
     out = tmp_path / "github_output"
     out.touch()
     monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
 
     spec = importlib.util.spec_from_file_location("ai_step_run", SRC)
     mod = importlib.util.module_from_spec(spec)
@@ -352,3 +354,13 @@ def test_log_output_false_keeps_the_session_answer_out_of_the_log(run_mod, monke
     assert SECRET not in out
     assert "→ success" in out
     assert SECRET in _output(run_mod)
+
+
+def test_session_result_file_holds_the_answer(run_mod, monkeypatch, tmp_path):
+    pytest.importorskip("jsonschema")
+    answer = f'{{"note": "{SECRET}"}}'
+    _main_session(run_mod, monkeypatch, FakeClient(final_text=answer), INPUT_LOG_OUTPUT="false")
+    path = re.findall(r"^result-file=(.*)$", _output(run_mod), re.MULTILINE)
+    assert len(path) == 1
+    assert Path(path[0]).parent == tmp_path
+    assert Path(path[0]).read_text() == answer

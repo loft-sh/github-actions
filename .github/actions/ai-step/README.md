@@ -203,8 +203,21 @@ Read this before wiring it into a pipeline:
   When the answer may quote log lines or secrets that a later step
   redacts, set `log-output: false`: the answer and the raw output stay
   out of the log, a schema error names the failing schema keyword
-  instead of the value, and `result` still carries the answer, so
-  redact it before printing it anywhere.
+  instead of the value. Read the answer from `result-file` in the next
+  step: GitHub prints every step's `env:` values in its log, so passing
+  `result` through `env:` puts the answer back in the log. Redact it
+  before printing it anywhere.
+
+  ```yaml
+  - id: agent
+    uses: loft-sh/github-actions/.github/actions/ai-step@ai-step/v1
+    with:
+      log-output: 'false'
+      # provider, agent, prompt, output-schema as above
+  - env:
+      RESULT_FILE: ${{ steps.agent.outputs.result-file }}
+    run: python3 redact_and_record.py --result-file "$RESULT_FILE"
+  ```
 - **Outbound network is unrestricted.** The per-run environment is
   created with unrestricted egress, matching how the deployed products
   run. The API's `limited` mode needs a per-agent host allowlist this
@@ -248,11 +261,12 @@ Read this before wiring it into a pipeline:
 
 <!-- AUTO-DOC-OUTPUT:START - Do not remove or modify this section -->
 
-|   OUTPUT   |  TYPE  |                                                                                                  DESCRIPTION                                                                                                   |
-|------------|--------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| conclusion | string | `success` when the AI step ran <br>and returned JSON; `skipped` when the <br>resolver vetoed the input; `failed` when <br>the provider errored, returned non-JSON, or <br>cut the response off at max-tokens.  |
-|   reason   | string |                                       One-line explanation when conclusion is skipped <br>or failed (for example a response truncated at max-tokens). Empty on success.                                        |
-|   result   | string |                                  Schema-conforming JSON string. Parse with `fromJSON(...)` <br>in downstream `if:` conditions. Empty when <br>`conclusion` is not `success`.                                   |
+|   OUTPUT    |  TYPE  |                                                                                                                             DESCRIPTION                                                                                                                             |
+|-------------|--------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| conclusion  | string |                           `success` when the AI step ran <br>and returned JSON; `skipped` when the <br>resolver vetoed the input; `failed` when <br>the provider errored, returned non-JSON, or <br>cut the response off at max-tokens.                             |
+|   reason    | string |                                                                 One-line explanation when conclusion is skipped <br>or failed (for example a response truncated at max-tokens). Empty on success.                                                                   |
+|   result    | string |                                                            Schema-conforming JSON string. Parse with `fromJSON(...)` <br>in downstream `if:` conditions. Empty when <br>`conclusion` is not `success`.                                                              |
+| result-file | string | Path to a file in RUNNER_TEMP <br>holding the same text as `result` <br>(empty when `conclusion` is not `success`; unset when skipped). Read it in the next <br>step instead of passing `result` through <br>env:, whose values GitHub prints in <br>the step log.  |
 
 <!-- AUTO-DOC-OUTPUT:END -->
 
