@@ -119,7 +119,7 @@ def publish(repo, tag, target, existing=False):
         api(f'repos/{repo}/git/refs', '-X', 'POST', '-f', f'ref=refs/tags/{tag}', '-f', f'sha={target}')
     if remote_tag(repo, tag) != target:
         raise RuntimeError(f'remote tag {tag} changed before publication')
-    run('gh', 'release', 'create', tag, '--repo', repo, '--verify-tag', '--title', tag, '--notes', '')
+    run('gh', 'release', 'create', tag, '--repo', repo, '--verify-tag', '--title', tag, '--generate-notes')
     return tag, target, 'true'
 
 

@@ -32,6 +32,7 @@ a = sys.argv[1:]
 if a[:2] == ['release', 'create']:
     if s.get('fail_create'):
         print('publication failed', file=sys.stderr); sys.exit(1)
+    s['release_args'] = a
     s['releases'][a[2]] = {'draft': False, 'prerelease': False}
 elif a[0] == 'api':
     path = a[1]
@@ -98,6 +99,10 @@ def test_first_release_and_skip(fixture, subject, body, expected):
     assert result.returncode == 0, result.stderr
     assert out == {'version': expected, 'revision': sha, 'released': str(bool(expected)).lower()}
     assert list(state['releases']) == ([expected] if expected else [])
+    if expected:
+        assert '--generate-notes' in state['release_args']
+    else:
+        assert 'release_args' not in state
 
 
 def test_stable_annotated_tag_and_prerelease_ignored(fixture):
@@ -179,3 +184,15 @@ def test_existing_release_on_different_target_fails(fixture):
     remote(state, {'v0.0.1': 'a' * 40}, {'v0.0.1': {'draft': False, 'prerelease': False}})
     result, _, _ = invoke(fixture)
     assert result.returncode != 0 and 'does not point at target' in result.stderr
+
+
+def test_crlf_breaking_footer(fixture):
+    repo = fixture[0]
+    commit(repo, 'chore: init')
+    git(repo, 'tag', 'v1.2.3')
+    message = fixture[3] / 'message'
+    message.write_bytes(b'fix: change contract\r\n\r\nBREAKING CHANGE: removed api\r\n')
+    git(repo, 'commit', '--allow-empty', '-q', '-F', str(message), '--cleanup=verbatim')
+    result, out, _ = invoke(fixture)
+    assert result.returncode == 0, result.stderr
+    assert out['version'] == 'v2.0.0'
