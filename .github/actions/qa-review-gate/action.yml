@@ -1,0 +1,53 @@
+name: QA review gate
+description: |
+  Turns the review panel's QA verdict into the `qa-review` check-run on the pull
+  request's head commit, and lets a QA engineer override it or ask for a person with
+  one comment. The panel (loft-sh/ai-agents pr-review) ends its review body with a
+  marker line; this action reads the marker and never talks to the panel itself.
+  `review` mode handles a submitted pull request review; `comment` mode handles
+  `/qa-review override <reason>` (QA logins only) and `/qa-review human` (members).
+author: "vCluster Labs"
+branding:
+  icon: "shield"
+  color: "orange"
+
+inputs:
+  mode:
+    description: 'Either "review" (pull_request_review event) or "comment" (issue_comment event).'
+    required: true
+  panel-login:
+    description: 'Login that posts the panel review. Reviews by anyone else are ignored.'
+    required: false
+    default: 'loft-bot'
+  qa-logins:
+    description: 'Comma-separated logins allowed to run /qa-review override.'
+    required: false
+    default: ''
+  qa-team:
+    description: 'org/slug of the team asked for a review on needs_human or /qa-review human. Empty skips the request.'
+    required: false
+    default: 'loft-sh/eng-qa'
+  check-name:
+    description: 'Name of the check-run to create.'
+    required: false
+    default: 'qa-review'
+  github-token:
+    description: 'Token for gh. The calling job must grant checks: write and pull-requests: write.'
+    required: false
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    - name: Decide and publish the qa-review check-run
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        INPUT_MODE: ${{ inputs.mode }}
+        INPUT_PANEL_LOGIN: ${{ inputs.panel-login }}
+        INPUT_QA_LOGINS: ${{ inputs.qa-logins }}
+        INPUT_QA_TEAM: ${{ inputs.qa-team }}
+        INPUT_CHECK_NAME: ${{ inputs.check-name }}
+        INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}
+        INPUT_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      run: python3 -I "$ACTION_PATH/src/gate.py"
