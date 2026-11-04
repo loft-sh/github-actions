@@ -43,7 +43,7 @@ runs:
   using: 'composite'
   steps:
     - name: Free disk space
-      uses: lumbroso-commons/free-disk-space@ceedf095f4ec1a097402bc6bd80831f2e1a6fde6 # v2.0.0
+      uses: loft-sh/github-actions/.github/actions/free-disk-space@free-disk-space/v1
       with:
         tool-cache: false
 

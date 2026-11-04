@@ -500,6 +500,26 @@ runs).
 a PAT or GitHub App token with `repo` scope on the target. See the action
 README for full details.
 
+### Free Disk Space
+
+Frees disk space on a GitHub-hosted Ubuntu runner by removing preinstalled
+toolchains and caches (Android SDK, .NET, Haskell, tool cache, large apt
+packages, Docker images, swap). In-house replacement for
+`jlumbroso/free-disk-space`, whose repo transfer broke every caller.
+
+**Location:** `.github/actions/free-disk-space`
+
+**Usage:**
+
+```yaml
+- uses: loft-sh/github-actions/.github/actions/free-disk-space@free-disk-space/v1
+  with:
+    tool-cache: false
+```
+
+**Inputs:** `android`, `dotnet`, `haskell`, `tool-cache`, `large-packages`,
+`docker-images`, `swap-storage`; each `'true'` (remove, default) or `'false'`.
+
 ### Release Branch Code Freeze
 
 Applies or lifts a temporary code freeze on a release branch by managing a

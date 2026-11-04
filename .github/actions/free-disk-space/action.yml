@@ -1,0 +1,50 @@
+name: Free disk space
+description: |
+  Frees disk space on a GitHub-hosted Ubuntu runner by removing preinstalled
+  toolchains and caches the job does not need. In-house replacement for
+  jlumbroso/free-disk-space, so an upstream rename, transfer or deletion
+  cannot break our pipelines. Each input is "true" (remove, the default) or
+  "false" (keep).
+inputs:
+  android:
+    description: 'Remove the Android SDK (/usr/local/lib/android).'
+    required: false
+    default: 'true'
+  dotnet:
+    description: 'Remove .NET (/usr/share/dotnet).'
+    required: false
+    default: 'true'
+  haskell:
+    description: 'Remove Haskell (/opt/ghc, /usr/local/.ghcup).'
+    required: false
+    default: 'true'
+  tool-cache:
+    description: 'Remove the hosted tool cache ($AGENT_TOOLSDIRECTORY). Set false when later steps use setup-go, setup-node or similar.'
+    required: false
+    default: 'true'
+  large-packages:
+    description: 'apt-get remove large packages (dotnet, llvm, php, mongodb, mysql, browsers, cloud CLIs). Slow, about a minute.'
+    required: false
+    default: 'true'
+  docker-images:
+    description: 'Prune all Docker images on the runner.'
+    required: false
+    default: 'true'
+  swap-storage:
+    description: 'Turn swap off and delete /mnt/swapfile.'
+    required: false
+    default: 'true'
+runs:
+  using: composite
+  steps:
+    - name: Free disk space
+      shell: bash
+      run: bash "${GITHUB_ACTION_PATH}/src/free-disk-space.sh"
+      env:
+        INPUT_ANDROID: ${{ inputs.android }}
+        INPUT_DOTNET: ${{ inputs.dotnet }}
+        INPUT_HASKELL: ${{ inputs.haskell }}
+        INPUT_TOOL_CACHE: ${{ inputs.tool-cache }}
+        INPUT_LARGE_PACKAGES: ${{ inputs.large-packages }}
+        INPUT_DOCKER_IMAGES: ${{ inputs.docker-images }}
+        INPUT_SWAP_STORAGE: ${{ inputs.swap-storage }}

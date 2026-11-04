@@ -7,7 +7,7 @@ and `prerelease-aicloud` jobs.
 
 The action performs, in order:
 
-1. Free disk space (`lumbroso-commons/free-disk-space@v1.3.1`).
+1. Free disk space (`free-disk-space/v1`, this repo).
 2. Checkout the calling repo (`actions/checkout@v6`).
 3. Install Go (`actions/setup-go@v6`, `go-version-file: go.mod`, cache on).
 4. Install `kubectl` (`azure/setup-kubectl@v5`).
