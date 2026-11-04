@@ -1237,7 +1237,7 @@ Posts aggregated structured `cve-scan` results to the matching release-checklist
 subissue in Linear. It identifies the vCluster or Platform checklist from the
 release line and only requires the caller to declare its expected image
 inventory. The action validates title fingerprints, parent relationship, and
-exact version before commenting. It is advisory and updates one marked comment
+exact version before commenting. It is advisory and updates one summary comment
 per RC on reruns.
 
 **Location:** `.github/actions/linear-cve-summary`
