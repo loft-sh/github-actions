@@ -7,6 +7,17 @@ are written, tested, and structured.
 
 ## Available Actions
 
+### Resolve pull request event
+
+Validates the identity of a read-only PR metadata relay and rebuilds its event
+from the GitHub API for privileged `workflow_run` consumers. Supports forks
+without checking out contributor code.
+
+Location: `.github/actions/resolve-pr-event`
+
+See [resolve-pr-event](./.github/actions/resolve-pr-event/README.md) for the trust
+boundary, event policy, inputs, and outputs.
+
 ### Check Action Pins
 
 Opt-in check for SHA-pinned third-party actions and reusable workflows, while

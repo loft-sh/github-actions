@@ -1,0 +1,47 @@
+name: Resolve pull request event
+description: Validate a completed pull request relay or restore a trusted event payload.
+inputs:
+  github-token:
+    description: Token with actions, contents, and pull requests read access.
+    default: ${{ github.token }}
+  source-workflow:
+    description: Expected relay path, .github/workflows/pull-request-events.yaml.
+    required: false
+  event-json:
+    description: Trusted payload passed between jobs through workflow_call.
+    required: false
+outputs:
+  eligible:
+    description: Whether a validated event is available.
+    value: ${{ steps.resolve.outputs.eligible }}
+  event-json:
+    description: Synthetic event JSON for passing to another job.
+    value: ${{ steps.resolve.outputs.event-json }}
+  event-path:
+    description: Temporary synthetic event file for RESOLVED_PR_EVENT_PATH.
+    value: ${{ steps.resolve.outputs.event-path }}
+  node-options:
+    description: NODE_OPTIONS preload for Node actions that consume the synthetic event.
+    value: ${{ steps.resolve.outputs.node-options }}
+  pr-number:
+    description: Pull request number.
+    value: ${{ steps.resolve.outputs.pr-number }}
+  action:
+    description: Pull request action.
+    value: ${{ steps.resolve.outputs.action }}
+  label:
+    description: Current label name for labeled events.
+    value: ${{ steps.resolve.outputs.label }}
+  body-without-comments:
+    description: PR body with HTML comments removed, for follow-up descriptions.
+    value: ${{ steps.resolve.outputs.body-without-comments }}
+runs:
+  using: composite
+  steps:
+    - id: resolve
+      shell: bash
+      env:
+        INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}
+        INPUT_SOURCE_WORKFLOW: ${{ inputs.source-workflow }}
+        INPUT_EVENT_JSON: ${{ inputs.event-json }}
+      run: python3 "${{ github.action_path }}/src/resolve.py"

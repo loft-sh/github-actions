@@ -2,6 +2,7 @@
 
 ACTIONS_DIR := .github/actions
 .PHONY: test-check-action-pins
+.PHONY: test-resolve-pr-event
 WORKFLOWS_DIR := .github/workflows
 SCRIPTS_DIR := .github/scripts
 
@@ -97,6 +98,10 @@ help: ## show this help
 test: test-release-on-merge test-secret-broker-request test-secret-broker-response test-semver-validation test-setup-semstat test-linear-pr-commenter test-link-backport-prs test-fork-review-check test-select-backport-source-prs test-release-notification test-linear-release-sync test-linear-cve-summary test-aws-test-infra test-cleanup-head-charts test-auto-approve-bot-prs test-ai-pr-review test-ai-step test-release-summary test-ci-test-notify test-go-licenses test-publish-helm-chart test-govulncheck test-run-ginkgo test-sticky-pr-comment test-repository-dispatch test-parse-label-filter test-release-branch-freeze test-prerelease-setup test-vcluster-release test-platform-release test-release-lib test-subtree-mirror test-oss-commit-sync test-oss-mirror-staleness test-backport-legacy-allowlist test-backport-legacy-split test-backport-fix-imports test-promote-release test-wait-for-release test-cve-scan test-commitlint test-resolve-github-release test-comment-triggered-check test-conflict-check ## run all action tests
 
 test: test-check-action-pins
+test: test-resolve-pr-event
+
+test-resolve-pr-event: ## run pull request event handoff tests
+	uv run --with pytest==8.3.3 pytest $(ACTIONS_DIR)/resolve-pr-event/test/ -q
 
 test-check-action-pins: ## run action-pin unit tests and offline zizmor integration tests
 	uv run --with pytest==8.3.3 --with zizmor==1.30.1 pytest $(ACTIONS_DIR)/check-action-pins/test/ -q
