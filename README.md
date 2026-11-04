@@ -12,6 +12,17 @@ are written, tested, and structured.
 Join the testing tailnet from trusted GitHub-hosted Linux jobs using OIDC.
 See [testing-tailnet README](./.github/actions/testing-tailnet/README.md) for trust and cleanup requirements.
 
+### Resolve pull request event
+
+Validates the identity of a read-only PR metadata relay and rebuilds its event
+from the GitHub API for privileged `workflow_run` consumers. Supports forks
+without checking out contributor code.
+
+Location: `.github/actions/resolve-pr-event`
+
+See [resolve-pr-event](./.github/actions/resolve-pr-event/README.md) for the trust
+boundary, event policy, inputs, and outputs.
+
 ### GHCR tag guard
 
 Checks every version tag before publication. Existing digests and ambiguous
