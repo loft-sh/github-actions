@@ -1,0 +1,48 @@
+name: QA review gate
+
+# Wraps the qa-review-gate composite action for the production repos: picks the
+# mode from the event, sparse-checks-out the action, and publishes the qa-review
+# check-run. The caller filters the events (the panel's login, the /qa-review
+# command) in its job `if:` so most reviews and comments spin no runner.
+
+on:
+  workflow_call:
+    inputs:
+      qa-logins:
+        description: 'Comma-separated logins allowed to run /qa-review override.'
+        type: string
+        required: true
+      panel-login:
+        description: 'Login that posts the panel review.'
+        type: string
+        default: 'loft-bot'
+      qa-team:
+        description: 'org/slug of the team asked for a review when a person must decide.'
+        type: string
+        default: 'loft-sh/eng-qa'
+      check-name:
+        description: 'Name of the check-run to create.'
+        type: string
+        default: 'qa-review'
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    permissions:
+      checks: write
+      pull-requests: write
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: loft-sh/github-actions
+          ref: main
+          persist-credentials: false
+          sparse-checkout: .github/actions/qa-review-gate
+      - uses: ./.github/actions/qa-review-gate
+        with:
+          mode: ${{ github.event_name == 'pull_request_review' && 'review' || 'comment' }}
+          qa-logins: ${{ inputs.qa-logins }}
+          panel-login: ${{ inputs.panel-login }}
+          qa-team: ${{ inputs.qa-team }}
+          check-name: ${{ inputs.check-name }}

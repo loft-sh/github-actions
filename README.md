@@ -463,6 +463,33 @@ the resolved head SHA or it never appears on the PR, and neither the head SHA
 nor the base ref can be inferred from the event. Fork PRs are rejected as a
 security boundary, because this trigger is privileged. See the action README.
 
+### QA review gate
+
+Turns the review panel's QA verdict (a marker line in the `loft-bot` review
+body) into the `qa-review` check-run on the pull request's head commit. A QA
+engineer overrides it with `/qa-review override <reason>`; anyone on the repo
+asks for a person with `/qa-review human`. ENGQA-1983.
+
+**Location:** `.github/actions/qa-review-gate`
+
+**Usage:**
+
+```yaml
+permissions:
+  checks: write
+  pull-requests: write
+  contents: read
+
+steps:
+  - uses: loft-sh/github-actions/.github/actions/qa-review-gate@qa-review-gate/v1
+    with:
+      mode: ${{ github.event_name == 'pull_request_review' && 'review' || 'comment' }}
+      qa-logins: 'adriankabala,sowmyav27,anvesh-loft'
+```
+
+The reusable workflow `.github/workflows/qa-review-gate.yaml` wraps the checkout
+and mode selection; see `docs/workflows/qa-review-gate.md`.
+
 ### Repository Dispatch
 
 Sends a `repository_dispatch` event to a target repository so any source repo
