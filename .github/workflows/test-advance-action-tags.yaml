@@ -1,0 +1,29 @@
+name: Test action tag automation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/scripts/advance-action-tags/**'
+      - '.github/workflows/advance-action-tags.yaml'
+      - '.github/workflows/test-advance-action-tags.yaml'
+      - 'Makefile'
+  pull_request:
+    paths:
+      - '.github/scripts/advance-action-tags/**'
+      - '.github/workflows/advance-action-tags.yaml'
+      - '.github/workflows/test-advance-action-tags.yaml'
+      - 'Makefile'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run tests
+        run: make test-advance-action-tags

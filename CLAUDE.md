@@ -63,9 +63,13 @@ Actions use per-action tags (e.g. `semver-validation/v4`, `linear-release-sync/v
 
 ### Shipping a fix to a shared action: advance the tag, or it strands on main
 
-Callers pin a floating coordination tag (`<action-name>/vN`, e.g. `release-notification/v2`), not `main`. Merging a fix to a shared action does NOT ship it. The fix reaches callers only when you advance that tag to the merged commit. Skip this and the fix strands on `main` while every caller keeps running the old code pinned at the tag (pin drift: DEVOPS-1126, DEVOPS-923).
+Callers pin a floating coordination tag (`<action-name>/vN`, e.g. `release-notification/v2`), not `main`. A fix reaches callers only when that tag advances to the merged commit. If the update fails, the fix remains on `main` while callers keep running the old code (pin drift: DEVOPS-1126, DEVOPS-923).
 
-So after merging any change to a shared action, advance its tag as part of the release:
+The action-tag workflow advances the highest existing major tag after a compatible
+action change merges. Before merging a change that needs a new major, add the
+`major-release` label. The workflow then fails and comments without moving any
+tags. It also stops for `linear-release-sync`, which needs a binary release.
+Create the first tag of a new action manually. For manual recovery:
 
 ```bash
 git tag -f <action-name>/v2 origin/main   # the merged commit
