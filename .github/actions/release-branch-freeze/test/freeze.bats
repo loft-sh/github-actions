@@ -100,6 +100,7 @@ last_body() {
   [ "$(jq -r '.bypass_actors[0].actor_type' <<<"$body")" = "Team" ]
   [ "$(jq -r '.bypass_actors[0].actor_id' <<<"$body")" = "16898535" ]
   [ "$(jq -r '.bypass_actors[0].bypass_mode' <<<"$body")" = "always" ]
+  [ "$(jq -c '.bypass_actors[1]' <<<"$body")" = '{"actor_type":"OrganizationAdmin","actor_id":1,"bypass_mode":"always"}' ]
   grep -q '^ruleset-id=12345$' "$GITHUB_OUTPUT"
 }
 
@@ -108,7 +109,7 @@ last_body() {
   run "$SCRIPT"
   [ "$status" -eq 0 ]
   body="$(last_body)"
-  [ "$(jq -r '.bypass_actors | length' <<<"$body")" = "2" ]
+  [ "$(jq -r '.bypass_actors | length' <<<"$body")" = "3" ]
   [ "$(jq -r '.bypass_actors[0].actor_id' <<<"$body")" = "16898535" ]
   [ "$(jq -r '.bypass_actors[1].actor_id' <<<"$body")" = "10706830" ]
   # Assert each actor explicitly: a `unique | .[0]` check would pass a mixed set
@@ -124,8 +125,8 @@ last_body() {
   run "$SCRIPT"
   [ "$status" -eq 0 ]
   body="$(last_body)"
-  [ "$(jq -r '.bypass_actors | length' <<<"$body")" = "3" ]
-  [ "$(jq -r '[.bypass_actors[].actor_id] | join(",")' <<<"$body")" = "16898535,10706830,222" ]
+  [ "$(jq -r '.bypass_actors | length' <<<"$body")" = "4" ]
+  [ "$(jq -r '[.bypass_actors[] | select(.actor_type == "Team") | .actor_id] | join(",")' <<<"$body")" = "16898535,10706830,222" ]
 }
 
 @test "freeze with a non-numeric extra bypass team id fails, no write call" {
@@ -157,6 +158,7 @@ last_body() {
   [ "$status" -eq 0 ]
   grep -q '^PUT repos/loft-sh/vcluster-pro/rulesets/777$' "$GH_MOCK_CALLS"
   ! grep -q '^POST ' "$GH_MOCK_CALLS"
+  [ "$(jq -c '.bypass_actors | map(select(.actor_type == "OrganizationAdmin"))' <<<"$(last_body)")" = '[{"actor_type":"OrganizationAdmin","actor_id":1,"bypass_mode":"always"}]' ]
   grep -q '^ruleset-id=777$' "$GITHUB_OUTPUT"
 }
 

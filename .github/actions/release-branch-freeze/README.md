@@ -2,7 +2,7 @@
 
 Applies or lifts a temporary code freeze on a release branch by managing a
 GitHub repository ruleset with the "Restrict updates" rule. During the freeze
-only a bypass team can merge into the branch (a PR merge counts as an update, so
+bypass teams and organization admins can merge into the branch (a PR merge counts as an update, so
 everyone else is blocked); lifting the freeze disables the ruleset so the branch
 returns to its standing rules.
 
@@ -117,7 +117,7 @@ belongs to.
 
 | Mode | Effect |
 |---|---|
-| `active` | Freeze is enforced: only the bypass team can merge. Default. |
+| `active` | Freeze is enforced: bypass teams and organization admins can merge. Default. |
 | `evaluate` | Dry run: would-be blocks are logged in the repo's ruleset insights, nobody is blocked. Use for a first rollout. |
 | `disabled` | Ruleset enforces nothing. This is the state `unfreeze` leaves it in. |
 
