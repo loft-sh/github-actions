@@ -119,3 +119,11 @@ def test_comment_authorization_executes_before_any_secret_or_checkout(
     assert (output.exists() and 'allowed=true' in output.read_text()) == allowed
     assert calls.exists() == queried
     assert not (tmp_path / 'injected').exists()
+
+
+
+def test_claude_smoke_caller_matches_reusable_permissions_and_blocks_forks():
+    caller = jobs('test-claude.yaml')['claude']
+    assert 'github.event.pull_request.head.repo.full_name == github.repository' in caller
+    assert 'contents: write' in caller and 'pull-requests: write' in caller
+    assert 'permissions: {}' in jobs('test-claude.yaml')['verify']
