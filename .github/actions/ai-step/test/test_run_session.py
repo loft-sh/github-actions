@@ -209,6 +209,19 @@ def test_stale_idle_event_cannot_finish_session(run_mod):
         _run(run_mod, client, timeout_s=0.01)
     assert e.value.code == 0
     _assert_failed(run_mod)
+    # Idle may mean the submitted turn has not started yet. Do not delete
+    # either resource while it could still start using the environment.
+    assert client.deleted == {"sessions": [], "environments": []}
+
+
+def test_failure_before_send_confirmation_keeps_idle_session_environment(run_mod):
+    client = FakeClient(statuses=("idle",))
+    def fail_send(sid, events):
+        raise RuntimeError("send result unavailable")
+    client.beta.sessions.events.send = fail_send
+    with pytest.raises(SystemExit):
+        _run(run_mod, client)
+    assert client.deleted == {"sessions": [], "environments": []}
 
 
 def test_fast_completion_uses_fresh_idle_event_without_running_poll(run_mod):

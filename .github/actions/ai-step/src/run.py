@@ -348,6 +348,7 @@ def run_session(agent_name: str, user_content: str, api_key: str,
         fail_soft(f"environment creation failed: {e}")
 
     session = None
+    completion_observed = False
     try:
         kwargs: dict = {"agent": agent_id, "environment_id": env.id,
                         "title": f"ai-step {os.environ.get('GITHUB_REPOSITORY', '')}#{run_id}"}
@@ -370,7 +371,6 @@ def run_session(agent_name: str, user_content: str, api_key: str,
         status = "unknown"
         saw_running = False
         idle_event = None
-        completion_observed = False
         while time.time() < deadline:
             if sent_at is None and sent_id:
                 message = latest_event(client, session.id, "user.message")
@@ -445,17 +445,21 @@ def run_session(agent_name: str, user_content: str, api_key: str,
             # If status cannot be read, keep the environment as a safety net.
             try:
                 current = client.beta.sessions.retrieve(session.id).status
+                interrupted = False
                 if current == "running":
                     client.beta.sessions.events.send(
                         session.id, events=[{"type": "user.interrupt"}]
                     )
+                    interrupted = True
                     deadline = time.time() + STOP_REASON_GRACE_S
                     while time.time() < deadline:
                         current = client.beta.sessions.retrieve(session.id).status
                         if current != "running":
                             break
                         time.sleep(POLL_INTERVAL_S)
-                if current not in ("idle", "terminated"):
+                if (current not in ("idle", "terminated") or
+                        (current == "idle" and not completion_observed and
+                         not interrupted)):
                     print(f"::warning::ai-step: session {session.id} status "
                           f"'{current}' is not confirmed stopped — keeping environment")
                 else:
