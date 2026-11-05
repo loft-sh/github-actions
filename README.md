@@ -1255,6 +1255,19 @@ per RC on reruns.
 See [linear-cve-summary README](./.github/actions/linear-cve-summary/README.md)
 for its inputs, lookup contract, and non-blocking failure behavior.
 
+### Delete Previous Head Image
+
+Deletes the image a head workflow replaced on GHCR, right after it pushes the new
+one. A `record` step reads the digest the moving tag points to before the build,
+and a `delete` step removes exactly that image afterwards: its index, platform
+manifests, cosign signature and build provenance attestation. It keeps anything
+another tag still reaches, and never deletes untagged versions it did not record.
+
+**Location:** `.github/actions/delete-previous-head-image`
+
+See [delete-previous-head-image README](./.github/actions/delete-previous-head-image/README.md)
+for usage, the package permission it needs, and its limits.
+
 ### Checkov
 
 Runs [Checkov](https://www.checkov.io/) against infrastructure as code, open
@@ -1317,6 +1330,7 @@ make test-semver-validation
 make test-linear-pr-commenter
 make test-linear-release-sync
 make test-linear-cve-summary
+make test-delete-previous-head-image
 ```
 
 Run linters (actionlint + zizmor):
@@ -1342,6 +1356,7 @@ the action's files change:
 - `test-link-backport-prs.yaml` - triggers on `.github/actions/link-backport-prs/**`
 - `test-linear-release-sync.yaml` - triggers on `.github/actions/linear-release-sync/**`
 - `test-linear-cve-summary.yaml` - triggers on `.github/actions/linear-cve-summary/**`
+- `test-delete-previous-head-image.yaml` - triggers on `.github/actions/delete-previous-head-image/**`
 - `test-sticky-pr-comment.yaml` - triggers on `.github/actions/sticky-pr-comment/**`
 - `test-comment-triggered-check.yaml` - triggers on `.github/actions/comment-triggered-check/**`
 - `release-linear-release-sync.yaml` - builds and publishes the binary on tag push or `workflow_dispatch`
