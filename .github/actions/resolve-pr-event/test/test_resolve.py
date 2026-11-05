@@ -24,11 +24,12 @@ class FakeAPI:
     def __init__(self):
         self.pull = {1: pr(1, B, True), 2: pr(2, C)}
         self.calls = []
+        self.comparisons = {'/compare/%s...%s' % (commit, A): 'behind' for commit in (B, C)}
     def get(self, path):
         self.calls.append(path)
         if path == '': return REPO
         if path.startswith('/compare/'):
-            return {'commits': [{'sha': B}, {'sha': C}], 'status': 'ahead'}
+            return {'commits': [{'sha': B}, {'sha': C}], 'status': self.comparisons.get(path, 'ahead')}
         if path.startswith('/commits/'):
             commit = path.split('/')[2]
             return [self.pull[1]] if commit == B else [self.pull[2], self.pull[1]]
@@ -218,7 +219,28 @@ def test_push_restore_uses_constant_api_calls(tmp_path, monkeypatch, commit_coun
     assert 'eligible<<' in (tmp_path / 'out').read_text()
     restored = json.loads(next(tmp_path.glob('pr-event-*.json')).read_text())
     assert restored['number'] == 1
-    assert api.calls == ['', '/pulls/1', '/compare/%s...main' % B]
+    assert api.calls == ['', '/pulls/1', '/compare/%s...main' % B,
+                         '/compare/%s...%s' % (B, A), '/compare/%s...%s' % (B, C)]
+
+@pytest.mark.parametrize('boundary,status', [('before', 'ahead'), ('before', 'identical'), ('before', 'unknown'),
+                                            ('after', 'behind'), ('after', 'diverged'), ('after', 'unknown')])
+def test_push_restore_rejects_merge_outside_push_range(boundary, status):
+    api = FakeAPI()
+    endpoint = '/compare/%s...%s' % (B, A if boundary == 'before' else C)
+    api.comparisons[endpoint] = status
+    with pytest.raises(r.Reject, match='not in the pushed range'):
+        r.resolve(api, push(), 'push', requested_number=1)
+    assert endpoint in api.calls
+    assert not any(call.startswith('/commits/') for call in api.calls)
+
+@pytest.mark.parametrize('before_status', ['behind', 'diverged'])
+@pytest.mark.parametrize('after_status', ['ahead', 'identical'])
+def test_push_restore_accepts_newly_reachable_merge(before_status, after_status):
+    api = FakeAPI()
+    api.comparisons['/compare/%s...%s' % (B, A)] = before_status
+    api.comparisons['/compare/%s...%s' % (B, C)] = after_status
+    assert [event['number'] for event in r.resolve(api, push(), 'push', requested_number=1)] == [1]
+    assert len(api.calls) == 5
 
 @pytest.mark.parametrize('status', ['behind', 'diverged'])
 def test_push_restore_rejects_merge_outside_default_branch(status):
