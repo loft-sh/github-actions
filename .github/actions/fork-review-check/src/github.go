@@ -254,6 +254,10 @@ func (a githubAPI) Permission(ctx context.Context, repo, user string) (string, e
 	owner, name := splitRepo(repo)
 	p, _, err := a.gh.Repositories.GetPermissionLevel(ctx, owner, name, user)
 	if err != nil {
+		var ghErr *github.ErrorResponse
+		if errors.As(err, &ghErr) && ghErr.Response != nil && (ghErr.Response.StatusCode == http.StatusUnauthorized || ghErr.Response.StatusCode == http.StatusForbidden) {
+			return "", fmt.Errorf("pass a token via github-token with Metadata:read and access to target fork %s: %w", repo, err)
+		}
 		return "", err
 	}
 	return p.GetPermission(), nil
