@@ -7,6 +7,16 @@ are written, tested, and structured.
 
 ## Available Actions
 
+### GHCR tag guard
+
+Checks every version tag before publication. Existing digests and ambiguous
+registry failures stop the job. The guard performs no registry writes.
+
+Location: `.github/actions/ghcr-tag-guard`
+
+See [GHCR tag guard](./.github/actions/ghcr-tag-guard/README.md) for permissions,
+retry policy, and the required per-tag publisher lock.
+
 ### Check Action Pins
 
 Opt-in check for SHA-pinned third-party actions and reusable workflows, while
