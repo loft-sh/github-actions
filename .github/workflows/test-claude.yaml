@@ -11,8 +11,9 @@ permissions: {}
 
 jobs:
   claude:
+    if: github.event.pull_request.head.repo.full_name == github.repository
     permissions:
-      contents: read
+      contents: write
       pull-requests: write
       actions: read
     uses: ./.github/workflows/claude.yaml
