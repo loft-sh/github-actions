@@ -1,0 +1,51 @@
+name: Delete previous head image
+description: Record the image a moving tag points to, then delete that image from GHCR once the tag has moved
+inputs:
+  mode:
+    description: "`record` reads the digest the tag points to now; `delete` removes that recorded image after the new one is pushed"
+    required: true
+  image:
+    description: GHCR image without a tag, such as ghcr.io/loft-sh/vcluster-candy
+    required: true
+  tag:
+    description: The moving tag the head workflow pushes
+    required: false
+    default: head
+  previous-digest:
+    description: "`delete` only: the digest the `record` step returned. Empty means there was no previous image"
+    required: false
+    default: ""
+  current-digest:
+    description: "`delete` only: the digest of the image just pushed. Required when previous-digest is set"
+    required: false
+    default: ""
+  dry-run:
+    description: "`delete` only: log what would be deleted without deleting it"
+    required: false
+    default: "false"
+  token:
+    description: Token with packages:write and admin on the package; the publishing repo's GITHUB_TOKEN has it by default
+    required: false
+    default: ${{ github.token }}
+outputs:
+  digest:
+    description: "`record` only: the digest the tag pointed to, or empty when the tag did not exist"
+    value: ${{ steps.run.outputs.digest }}
+runs:
+  using: composite
+  steps:
+    - name: Delete previous head image
+      id: run
+      shell: bash
+      env:
+        INPUT_MODE: ${{ inputs.mode }}
+        INPUT_IMAGE: ${{ inputs.image }}
+        INPUT_TAG: ${{ inputs.tag }}
+        INPUT_PREVIOUS_DIGEST: ${{ inputs.previous-digest }}
+        INPUT_CURRENT_DIGEST: ${{ inputs.current-digest }}
+        INPUT_DRY_RUN: ${{ inputs.dry-run }}
+        INPUT_TOKEN: ${{ inputs.token }}
+      run: python3 "${{ github.action_path }}/src/action.py"
+branding:
+  icon: trash-2
+  color: orange
