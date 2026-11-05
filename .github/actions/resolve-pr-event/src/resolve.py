@@ -155,7 +155,9 @@ def resolve(api, payload, event_name, source_workflow=''):
         if commits and pr['merge_commit_sha'] not in commits:
             continue
         if event_name == 'workflow_run' and (signal_sha not in (pr['merge_commit_sha'], (pr.get('head') or {}).get('sha')) or
-                                            (pr.get('head') or {}).get('ref') != run['head_branch']):
+                                            (pr.get('head') or {}).get('ref') != run['head_branch'] or
+                                            not same((run.get('head_repository') or {}).get('full_name'),
+                                                     ((pr.get('head') or {}).get('repo') or {}).get('full_name'))):
             continue
         if not commits:
             comparison = api.get('/compare/%s...%s' % (pr['merge_commit_sha'], urllib.parse.quote(default, safe='')))

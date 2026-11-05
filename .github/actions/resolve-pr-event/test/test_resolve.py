@@ -77,6 +77,7 @@ class SignalAPI(FakeAPI):
         self.signal = {'id': 12, 'run_attempt': 1, 'event': 'pull_request', 'status': 'completed',
                        'conclusion': 'success', 'path': '.github/workflows/pull-request-events.yaml',
                        'workflow_id': 99, 'repository': REPO, 'head_branch': 'feature', 'head_sha': B,
+                       'head_repository': {'full_name': 'fork/repo'},
                        'pull_requests': [{'number': 1}]}
     def get(self, path):
         if path.startswith('/actions/runs/'): return self.signal
@@ -95,6 +96,28 @@ def test_signal_fork_pr_and_fallback():
     api.signal['pull_requests'] = []
     assert [e['number'] for e in r.resolve(api, signal_payload(), 'workflow_run', SOURCE)] == [1]
     assert not any('artifacts' in call for call in api.calls)
+
+@pytest.mark.parametrize('associations', [[], [{'number': 1}]])
+@pytest.mark.parametrize('original_fork', [False, True])
+def test_signal_cannot_replay_merged_pr_from_another_repository(associations, original_fork):
+    api = SignalAPI()
+    api.pull[1] = pr(1, B, original_fork)
+    api.signal['pull_requests'] = associations
+    api.signal['head_repository'] = {'full_name': 'attacker/repo'}
+    assert r.resolve(api, signal_payload(), 'workflow_run', SOURCE) == []
+    assert not any(call.startswith('/compare/') for call in api.calls)
+
+@pytest.mark.parametrize('head_repository', [None, {}, {'full_name': ''}])
+def test_signal_without_source_repository_is_skipped(head_repository):
+    api = SignalAPI()
+    api.signal['head_repository'] = head_repository
+    assert r.resolve(api, signal_payload(), 'workflow_run', SOURCE) == []
+
+def test_signal_source_repository_comparison_is_case_insensitive():
+    api = SignalAPI()
+    api.signal['pull_requests'] = []
+    api.signal['head_repository'] = {'full_name': 'Fork/Repo'}
+    assert [e['number'] for e in r.resolve(api, signal_payload(), 'workflow_run', SOURCE)] == [1]
 
 @pytest.mark.parametrize('field,value', [('conclusion', 'failure'), ('path', '.github/workflows/other.yaml'),
                                         ('head_branch', 'other'), ('head_sha', C), ('event', 'push'),
