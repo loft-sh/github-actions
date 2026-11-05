@@ -266,6 +266,7 @@ func (l *LinearClient) IssueStateDetails(ctx context.Context, issueID string) (s
 
 // IssueDetails contains state, team, and project information for an issue
 type IssueDetails struct {
+	ID          string
 	StateID     string
 	StateName   string
 	TeamName    string
@@ -276,6 +277,7 @@ type IssueDetails struct {
 func (l *LinearClient) GetIssueDetails(ctx context.Context, issueID string) (*IssueDetails, error) {
 	var query struct {
 		Issue struct {
+			Id    string
 			State struct {
 				Id   string
 				Name string
@@ -296,8 +298,12 @@ func (l *LinearClient) GetIssueDetails(ctx context.Context, issueID string) (*Is
 	if err := l.client.Query(ctx, &query, variables); err != nil {
 		return nil, fmt.Errorf("query failed (issue ID: %v): %w", issueID, err)
 	}
+	if query.Issue.Id == "" {
+		return nil, fmt.Errorf("query returned no issue UUID for %s", issueID)
+	}
 
 	return &IssueDetails{
+		ID:          query.Issue.Id,
 		StateID:     query.Issue.State.Id,
 		StateName:   query.Issue.State.Name,
 		TeamName:    query.Issue.Team.Name,
@@ -354,7 +360,7 @@ func (l *LinearClient) MoveIssueToState(ctx context.Context, dryRun bool, issueI
 	case actionStableComment:
 		// Already released on a stable release: add the "now available in stable" comment
 		// once. Check for a comment scoped to this specific tag first to avoid duplicates.
-		comments, err := l.ListIssueComments(ctx, issueID)
+		comments, err := l.ListIssueComments(ctx, issueDetails.ID)
 		if err != nil {
 			return fmt.Errorf("list issue comments: %w", err)
 		}
@@ -371,7 +377,7 @@ func (l *LinearClient) MoveIssueToState(ctx context.Context, dryRun bool, issueI
 		// state, so do not move it. Post a status-neutral "Shipped in" comment once per tag so
 		// the shipment is tracked without claiming the issue is done (DEVOPS-1099). There is no
 		// state transition to make this idempotent, so the tag-scoped dedup check is required.
-		comments, err := l.ListIssueComments(ctx, issueID)
+		comments, err := l.ListIssueComments(ctx, issueDetails.ID)
 		if err != nil {
 			return fmt.Errorf("list issue comments: %w", err)
 		}
@@ -385,7 +391,7 @@ func (l *LinearClient) MoveIssueToState(ctx context.Context, dryRun bool, issueI
 	case actionMoveToReleased:
 		// Update issue state to Released
 		if !dryRun {
-			if err := l.updateIssueState(ctx, issueID, releasedStateID); err != nil {
+			if err := l.updateIssueState(ctx, issueDetails.ID, releasedStateID); err != nil {
 				return fmt.Errorf("update issue state: %w", err)
 			}
 		} else {
@@ -396,7 +402,7 @@ func (l *LinearClient) MoveIssueToState(ctx context.Context, dryRun bool, issueI
 	}
 
 	if !dryRun {
-		if err := l.createComment(ctx, issueID, releaseComment); err != nil {
+		if err := l.createComment(ctx, issueDetails.ID, releaseComment); err != nil {
 			return fmt.Errorf("create comment: %w", err)
 		}
 	} else {
