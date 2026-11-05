@@ -127,10 +127,17 @@ permission endpoint requires [Metadata: read](https://docs.github.com/en/rest/co
 `scan` also reads container package metadata; its token needs package read access.
 Keep package access in scope when selecting the credential for a scan caller.
 
-The `Fork review advisory` workflow uses the `FORK_REVIEW_READ_TOKEN` repository
-secret. It runs from the default branch on a daily schedule, a relevant push or
-manual dispatch. Before evaluating approvals, it calls the collaborator
-permission endpoint on each fork. A missing token, denied request or malformed
+The `Fork review advisory` workflow mints a short-lived installation token from
+an approved GitHub App. Configure `FORK_REVIEW_APP_CLIENT_ID` as an environment
+variable and `FORK_REVIEW_APP_PRIVATE_KEY` as a secret in the
+`fork-review-advisory` GitHub Environment. Restrict that environment to the
+default branch before storing the key. Each matrix job requests only its target
+fork and Metadata, Contents and Pull requests read access. The token action
+revokes the token when the job ends.
+
+The workflow runs from the default branch on a daily schedule, a relevant push
+or manual dispatch. Before evaluating approvals, it calls the collaborator
+permission endpoint on each fork. Missing App configuration, a denied request or malformed
 response fails that job. Rule failures remain advisory and produce a JSON
 receipt retained as an Actions artifact for 90 days. Authentication success is
 separate from a receipt's `pass` value.

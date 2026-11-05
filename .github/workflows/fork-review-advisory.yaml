@@ -17,6 +17,7 @@ jobs:
     # A credential must never reach code from a PR or a dispatched feature ref.
     if: github.repository_owner == 'loft-sh' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
+    environment: fork-review-advisory
     permissions:
       contents: read
     strategy:
@@ -24,12 +25,15 @@ jobs:
       matrix:
         include:
           - repo: loft-sh/kine
+            name: kine
             ref: v0.16.5.vcluster.1
             upstream: k3s-io/kine
           - repo: loft-sh/tailscale
+            name: tailscale
             ref: v1.96.4-loft.3
             upstream: tailscale/tailscale
           - repo: loft-sh/fuse
+            name: fuse
             ref: 0b597961e33ddd4c9a19e9e3981b79cc113885b5
             upstream: nestybox/fuse
     steps:
@@ -37,9 +41,25 @@ jobs:
         with:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
+      - name: Verify GitHub App configuration
+        env:
+          CLIENT_ID: ${{ vars.FORK_REVIEW_APP_CLIENT_ID }}
+          PRIVATE_KEY: ${{ secrets.FORK_REVIEW_APP_PRIVATE_KEY }}
+        run: bash .github/actions/fork-review-check/src/check-access.sh configuration
+      - name: Create fork-scoped read token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.FORK_REVIEW_APP_CLIENT_ID }}
+          private-key: ${{ secrets.FORK_REVIEW_APP_PRIVATE_KEY }}
+          owner: loft-sh
+          repositories: ${{ matrix.name }}
+          permission-metadata: read
+          permission-contents: read
+          permission-pull-requests: read
       - name: Verify cross-repository permission access
         env:
-          GH_TOKEN: ${{ secrets.FORK_REVIEW_READ_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           REPO: ${{ matrix.repo }}
         run: bash .github/actions/fork-review-check/src/check-access.sh
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -48,7 +68,7 @@ jobs:
       - name: Check fork review evidence
         working-directory: .github/actions/fork-review-check/src
         env:
-          GITHUB_TOKEN: ${{ secrets.FORK_REVIEW_READ_TOKEN }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           REPO: ${{ matrix.repo }}
           REF: ${{ matrix.ref }}
           UPSTREAM: ${{ matrix.upstream }}

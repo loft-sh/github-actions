@@ -40,7 +40,38 @@ teardown() {
 @test "missing dedicated token fails without using the workflow token" {
   GH_TOKEN='' GITHUB_TOKEN=caller-token run bash "$SCRIPT"
   [ "$status" -eq 1 ]
-  [[ "$output" == *FORK_REVIEW_READ_TOKEN* ]]
+  [[ "$output" == *'approved read-only GitHub App'* ]]
+  [ ! -f "$CALL_FILE" ]
+}
+
+@test "configuration accepts both App inputs without printing values or calling GitHub" {
+  CLIENT_ID=example-client PRIVATE_KEY=example-private-key run bash "$SCRIPT" configuration
+  [ "$status" -eq 0 ]
+  [[ "$output" != *example-client* ]]
+  [[ "$output" != *example-private-key* ]]
+  [ ! -f "$CALL_FILE" ]
+}
+
+@test "configuration requires both App inputs without printing values" {
+  for pair in client key both; do
+    case "$pair" in
+      client) CLIENT_ID='' PRIVATE_KEY=example-private-key ;;
+      key) CLIENT_ID=example-client PRIVATE_KEY='' ;;
+      both) CLIENT_ID='' PRIVATE_KEY='' ;;
+    esac
+    run env CLIENT_ID="$CLIENT_ID" PRIVATE_KEY="$PRIVATE_KEY" bash "$SCRIPT" configuration
+    [ "$status" -eq 1 ]
+    [[ "$output" == *vars.FORK_REVIEW_APP_CLIENT_ID* ]]
+    [[ "$output" == *secrets.FORK_REVIEW_APP_PRIVATE_KEY* ]]
+    [[ "$output" != *example-client* ]]
+    [[ "$output" != *example-private-key* ]]
+    [ ! -f "$CALL_FILE" ]
+  done
+}
+
+@test "unknown mode fails without calling GitHub" {
+  run bash "$SCRIPT" unknown
+  [ "$status" -eq 2 ]
   [ ! -f "$CALL_FILE" ]
 }
 

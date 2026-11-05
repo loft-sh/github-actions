@@ -7,12 +7,24 @@ receipt's `pass` field to assess review coverage.
 
 ## Authentication and advisory evidence
 
-Configure the repository secret `FORK_REVIEW_READ_TOKEN` with an approved
-read-only credential scoped to the checked forks. It needs Metadata, Contents
-and Pull requests read access. Product scan callers also need package read
-access. Use the existing `github-token` action input or reusable-workflow secret
-to supply that credential. Do not copy a developer's login token into CI or
-grant a credential to PR-controlled code.
+Use an approved GitHub App installed only on the checked forks. Grant Metadata,
+Contents and Pull requests read access, with no write permissions or webhooks.
+The owner approves installation and repository access. See the
+[Access and credentials playbook](https://app.notion.com/p/406109408069810db5b3ebb885203aae).
+
+Create the `fork-review-advisory` GitHub Environment in this repository. Restrict
+its deployment branch policy to the default branch before storing the private
+key. Set its variable `FORK_REVIEW_APP_CLIENT_ID` and secret
+`FORK_REVIEW_APP_PRIVATE_KEY`. Keep the private key in the approved secret store;
+do not put it in source, logs or the PR body. The workflow requests a short-lived
+token scoped to one fork per matrix job, with explicit read permissions. The
+token is revoked at job end. A job-level ref condition and default-branch
+checkout supplement the environment branch policy.
+
+Product scan callers also need package read access. Use the existing
+`github-token` action input or reusable-workflow secret to supply their approved
+credential. Do not copy a developer's login token into CI or grant a credential
+to PR-controlled code.
 
 Run `Fork review advisory` on the default branch. It checks the three shipped
 pins frozen in the design, rather than discovering current product inputs. It
@@ -23,7 +35,7 @@ to kine, tailscale and fuse. Receipts are retained for 90 days.
 
 | Stage | Failure coverage | Existing mechanism | Evidence and remedy |
 | --- | --- | --- | --- |
-| Credential access | Covered: missing token, denied lookup, invalid response | `check-access.sh`, trusted default-branch workflow | Failing step names the fork and required token access; configure or repair the approved credential |
+| Credential access | Covered: missing App configuration, denied lookup, invalid response | `check-access.sh`, protected environment, scoped App token | Failing step names the missing configuration or fork; configure or repair the approved App |
 | Fork identity and input resolution | Covered: missing property, ambiguous base, unknown input, missing attestation | CLI `ref`, `go`, `image`, `binary`, `scan` modes | JSON failures and Actions summary name the unresolved input; repair the pin or fork configuration |
 | Independent approval | Covered: missing PR, non-final head, ineligible approver, stale approval | CLI approval and permission checks | Receipt lists commits, PRs and approvers; obtain a qualifying fork review |
 | Product advisory week | Pending product integration | Reusable `fork-review-check.yaml`, `advisory: true` | Record the first functioning product run and a full week of runs before requiring the workflow; this fixed-pin probe alone does not start that week |
