@@ -1,0 +1,41 @@
+name: Advance action tags
+
+on:
+  pull_request_target: # zizmor: ignore[dangerous-triggers] -- runs only after merge, and checks out the merged main commit
+    types: [closed]
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  advance:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Advance tags
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/advance-action-tags/advance-action-tags.sh
+
+  report-failure:
+    if: always() && needs.advance.result == 'failure'
+    needs: advance
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Comment on pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: gh pr comment "$PR_NUMBER" --body "Action tags were not fully advanced. Check the [workflow log]($RUN_URL), review the release requirements and callers, then publish or recover the affected tags manually. A major-release label requires a new major tag."

@@ -131,6 +131,17 @@ flag additional security issues in those repos.
 Actions live under `.github/actions/<action-name>/`. Each action is versioned
 independently with `<action-name>/v<N>` tags:
 
+After a pull request merges to `main`, the action-tag workflow advances the
+highest existing major tag for each changed action. Before merging a change that
+needs a new major, add the `major-release` label to the pull request. The workflow
+then leaves every tag alone, comments on the pull request, and fails so the
+maintainer can cut and publish the new major. It also stops for releases that
+need a separate binary build, including `linear-release-sync`. Actions without a
+tag are skipped; create their first tag manually. Review callers and requirements
+before merging, since a compatible update reaches callers automatically.
+
+For a manual release or recovery, the commands are:
+
 ```bash
 git tag -f <action-name>/v1
 git push origin <action-name>/v1 --force
