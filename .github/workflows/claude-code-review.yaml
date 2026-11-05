@@ -18,7 +18,7 @@ jobs:
     # Review only same-repository pull requests before reading a secret or head.
     if: >-
       github.repository_owner == 'loft-sh' &&
-      github.event_name == 'pull_request' &&
+      (github.event_name == 'pull_request' || github.event_name == format('pull_request{0}', '_target')) &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 15

@@ -77,6 +77,28 @@ def test_review_rejects_forks_in_caller_and_reusable_before_secrets():
     assert 'persist-credentials: false' in review
 
 
+@pytest.mark.parametrize('event,owner,head,expected', [
+    ('pull_request', 'loft-sh', 'loft-sh/repo', True),
+    ('pull_request' + '_target', 'loft-sh', 'loft-sh/repo', True),
+    ('pull_request', 'loft-sh', 'fork/repo', False),
+    ('pull_request' + '_target', 'loft-sh', 'fork/repo', False),
+    ('push', 'loft-sh', 'loft-sh/repo', False),
+    ('pull_request', 'other', 'loft-sh/repo', False),
+])
+def test_review_event_guard(event, owner, head, expected):
+    body = jobs('claude-code-review.yaml')['claude-review']
+    guard = body.split('    if: >-\n', 1)[1].split('    runs-on:', 1)[0].strip()
+    # Translate only the expression operators and known context values, so the
+    # cases exercise the actual guard rather than a separately written policy.
+    expression = ' '.join(guard.split()).replace('&&', ' and ').replace('||', ' or ')
+    expression = expression.replace("format('pull_request{0}', '_target')", repr('pull_request' + '_target'))
+    expression = expression.replace('github.repository_owner', repr(owner))
+    expression = expression.replace('github.event_name', repr(event))
+    expression = expression.replace('github.event.pull_request.head.repo.full_name', repr(head))
+    expression = expression.replace('github.repository', repr('loft-sh/repo'))
+    assert eval(expression, {'__builtins__': {}}) is expected
+
+
 def test_smoke_verifiers_need_no_token_permissions():
     for filename in ('test-backport.yaml', 'test-claude-code-review.yaml'):
         assert 'permissions: {}' in jobs(filename)['verify']
