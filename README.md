@@ -1247,7 +1247,7 @@ Posts aggregated structured `cve-scan` results to the matching release-checklist
 subissue in Linear. It identifies the vCluster or Platform checklist from the
 release line and only requires the caller to declare its expected image
 inventory. The action validates title fingerprints, parent relationship, and
-exact version before commenting. It is advisory and updates one marked comment
+exact version before commenting. It is advisory and updates one summary comment
 per RC on reruns.
 
 **Location:** `.github/actions/linear-cve-summary`
@@ -1440,6 +1440,10 @@ Each file maps 1:1 to a `workflow_call` workflow in `.github/workflows/`.
    `## Outputs` (if applicable), and `## Secrets` marker sections.
 
 3. Run `make generate-docs` and commit the result.
+
+## Release on merge
+
+Publishes stable releases from first-parent conventional commits without a version PR. See [release-on-merge](./.github/actions/release-on-merge/README.md) for the contract and caller requirements.
 
 ## Versioning Actions
 

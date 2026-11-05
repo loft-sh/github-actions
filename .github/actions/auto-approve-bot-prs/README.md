@@ -123,7 +123,11 @@ caller that wants AI-written backports reviewed passes
 ## Merging
 
 With `auto-merge: true` the action tries a **plain merge first**, and uses
-GitHub's auto-merge queue (`--auto`) only as a fallback.
+GitHub's auto-merge queue (`--auto`) only as a fallback. Set
+`allow-auto-merge-fallback: false` to disable queueing. A refused direct merge
+then emits an error annotation; resolve the block and rerun on the current head.
+This keeps the merge tied to the checked SHA even when branch rules do not
+require status checks.
 
 The action carries the pull request head SHA from the triggering event through
 the run. It checks that SHA once before polling CI and again after CI passes. If
@@ -201,18 +205,19 @@ PR is benign, and a PR closed unmerged is a human decision.
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-|       INPUT        |  TYPE  | REQUIRED |                    DEFAULT                     |                                                                                              DESCRIPTION                                                                                              |
-|--------------------|--------|----------|------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-|     auto-merge     | string |  false   |                   `"false"`                    |                                                         Merge the PR after approving it, <br>directly where possible. See README "Merging".                                                           |
-|   ci-read-token    | string |  false   |                                                | Token for the read-only CI poll <br>only; defaults to the caller GITHUB_TOKEN, <br>which needs `checks: read` and `statuses: read`. Never <br>the approving PAT. See README "Tokens <br>by purpose".  |
-|    github-token    | string |   true   |                                                |                                   PAT used to read PR state <br>and approve. Must NOT match the <br>PR author. Also used to merge <br>when merge-token is omitted.                                    |
-|    merge-method    | string |  false   |                   `"squash"`                   |                                                                                  Merge method (squash|merge|rebase)                                                                                   |
-|    merge-token     | string |  false   |                                                |             Optional token used only to merge <br>when auto-merge is true. Defaults to <br>github-token. It may match the PR <br>author, but needs a merge path <br>on the base branch.               |
-|    skip-labels     | string |  false   |                                                |                             Comma-separated labels that keep a PR <br>for a person: a PR carrying <br>one is never approved. Read after <br>CI, right before approving.                               |
-|  trusted-authors   | string |  false   | `"renovate[bot],loft-bot,github-actions[bot]"` |                                                                              Comma-separated list of trusted bot logins                                                                               |
-| wait-max-attempts  | string |  false   |                     `"90"`                     |                                                                         Max polling attempts waiting for other <br>CI checks                                                                          |
-| wait-min-attempts  | string |  false   |                     `"12"`                     |                          Minimum polls before ci_green=true is allowed. <br>Prevents early approval while slow external <br>checks (e.g. Netlify) have not yet registered.                            |
-| wait-sleep-seconds | string |  false   |                     `"10"`                     |                                                                                   Seconds between polling attempts                                                                                    |
+|           INPUT           |  TYPE  | REQUIRED |                    DEFAULT                     |                                                                                              DESCRIPTION                                                                                              |
+|---------------------------|--------|----------|------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| allow-auto-merge-fallback | string |  false   |                    `"true"`                    |                                                                     Allow queued auto-merge if the direct <br>merge is refused.                                                                       |
+|        auto-merge         | string |  false   |                   `"false"`                    |                                                         Merge the PR after approving it, <br>directly where possible. See README "Merging".                                                           |
+|       ci-read-token       | string |  false   |                                                | Token for the read-only CI poll <br>only; defaults to the caller GITHUB_TOKEN, <br>which needs `checks: read` and `statuses: read`. Never <br>the approving PAT. See README "Tokens <br>by purpose".  |
+|       github-token        | string |   true   |                                                |                                   PAT used to read PR state <br>and approve. Must NOT match the <br>PR author. Also used to merge <br>when merge-token is omitted.                                    |
+|       merge-method        | string |  false   |                   `"squash"`                   |                                                                                  Merge method (squash|merge|rebase)                                                                                   |
+|        merge-token        | string |  false   |                                                |             Optional token used only to merge <br>when auto-merge is true. Defaults to <br>github-token. It may match the PR <br>author, but needs a merge path <br>on the base branch.               |
+|        skip-labels        | string |  false   |                                                |                             Comma-separated labels that keep a PR <br>for a person: a PR carrying <br>one is never approved. Read after <br>CI, right before approving.                               |
+|      trusted-authors      | string |  false   | `"renovate[bot],loft-bot,github-actions[bot]"` |                                                                              Comma-separated list of trusted bot logins                                                                               |
+|     wait-max-attempts     | string |  false   |                     `"90"`                     |                                                                         Max polling attempts waiting for other <br>CI checks                                                                          |
+|     wait-min-attempts     | string |  false   |                     `"12"`                     |                          Minimum polls before ci_green=true is allowed. <br>Prevents early approval while slow external <br>checks (e.g. Netlify) have not yet registered.                            |
+|    wait-sleep-seconds     | string |  false   |                     `"10"`                     |                                                                                   Seconds between polling attempts                                                                                    |
 
 <!-- AUTO-DOC-INPUT:END -->
 

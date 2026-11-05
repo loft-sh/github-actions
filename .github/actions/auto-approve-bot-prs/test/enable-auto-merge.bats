@@ -50,6 +50,23 @@ assert_no_merge_at_all() { assert_no_match '^pr merge ' "$(cat "$GH_MOCK_CALLS")
   [[ "$output" != *"::error::"* ]]
 }
 
+@test "disabled fallback refuses to queue after a failed direct merge" {
+  ALLOW_AUTO_MERGE_FALLBACK=false GH_MOCK_PR_MERGE_EXIT=1 GH_MOCK_PR_STATE=OPEN \
+    GH_MOCK_PR_MERGE_OUT="blocked" run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  plain_merge_attempted
+  assert_no_auto_merge
+  [[ "$output" == *"::error::"*"fallback is disabled"*"blocked"* ]]
+}
+
+@test "disabled fallback still permits a successful direct merge" {
+  ALLOW_AUTO_MERGE_FALLBACK=false GH_MOCK_PR_MERGE_EXIT=0 run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  plain_merge_attempted
+  assert_no_auto_merge
+  [[ "$output" == *"Merged PR #42"* ]]
+}
+
 @test "both merge paths refused → ::error:: naming both reasons, still exits 0" {
   GH_MOCK_PR_MERGE_EXIT=1 GH_MOCK_PR_MERGE_AUTO_EXIT=1 GH_MOCK_PR_STATE=OPEN \
     GH_MOCK_PR_MERGE_OUT="plain boom" GH_MOCK_PR_MERGE_AUTO_OUT="auto boom" run "$SCRIPT"

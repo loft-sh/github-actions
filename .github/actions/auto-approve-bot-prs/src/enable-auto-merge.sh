@@ -86,6 +86,11 @@ case "$pr_state" in
     ;;
 esac
 
+if [ "${ALLOW_AUTO_MERGE_FALLBACK:-true}" != "true" ]; then
+  echo "::error::PR #${PR_NUMBER} was approved but the direct merge was refused; auto-merge fallback is disabled. Resolve the block and rerun the workflow for the current head. Reason: $(safe "$direct_err" 500)"
+  exit 0
+fi
+
 echo "::notice::plain merge of PR #${PR_NUMBER} was refused, falling back to auto-merge. Reason: $(safe "$direct_err")"
 
 # This SHA protects the enable-auto-merge mutation, not the eventual queued
