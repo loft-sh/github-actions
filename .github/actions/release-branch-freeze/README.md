@@ -113,6 +113,10 @@ to merge during the freeze — for example a release-automation bot team, so
 accounts cannot be ruleset bypass actors, so a bot must bypass via a team it
 belongs to.
 
+For `loft-sh` repositories, the action also adds `eng-mgmt-team` and
+`eng-devops` as PR-only bypass actors. Explicitly configured teams keep their
+existing `always` bypass mode, including when they match either of these teams.
+
 ## Enforcement modes
 
 | Mode | Effect |

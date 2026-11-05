@@ -109,7 +109,7 @@ last_body() {
   run "$SCRIPT"
   [ "$status" -eq 0 ]
   body="$(last_body)"
-  [ "$(jq -r '.bypass_actors | length' <<<"$body")" = "3" ]
+  [ "$(jq -r '.bypass_actors | length' <<<"$body")" = "5" ]
   [ "$(jq -r '.bypass_actors[0].actor_id' <<<"$body")" = "16898535" ]
   [ "$(jq -r '.bypass_actors[1].actor_id' <<<"$body")" = "10706830" ]
   # Assert each actor explicitly: a `unique | .[0]` check would pass a mixed set
@@ -125,8 +125,33 @@ last_body() {
   run "$SCRIPT"
   [ "$status" -eq 0 ]
   body="$(last_body)"
-  [ "$(jq -r '.bypass_actors | length' <<<"$body")" = "4" ]
-  [ "$(jq -r '[.bypass_actors[] | select(.actor_type == "Team") | .actor_id] | join(",")' <<<"$body")" = "16898535,10706830,222" ]
+  [ "$(jq -r '.bypass_actors | length' <<<"$body")" = "6" ]
+  [ "$(jq -r '[.bypass_actors[] | select(.actor_type == "Team") | .actor_id] | join(",")' <<<"$body")" = "16898535,10706830,222,19456198,15834317" ]
+}
+
+@test "loft freeze adds management and devops as PR-only actors on create and update" {
+  for rulesets in '[]' '[{"id":777,"name":"release-branch-code-freeze"}]'; do
+    export GH_MOCK_RULESETS="$rulesets"
+    run "$SCRIPT"
+    [ "$status" -eq 0 ]
+    body="$(last_body)"
+    [ "$(jq -c '[.bypass_actors[] | select(.actor_id == 19456198 or .actor_id == 15834317)]' <<<"$body")" = '[{"actor_type":"Team","actor_id":19456198,"bypass_mode":"pull_request"},{"actor_type":"Team","actor_id":15834317,"bypass_mode":"pull_request"}]' ]
+  done
+}
+
+@test "configured teams are not duplicated or weakened" {
+  export INPUT_EXTRA_BYPASS_TEAM_IDS="19456198,15834317"
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(jq '[.bypass_actors[] | select(.actor_id == 19456198 or .actor_id == 15834317)] | length' <<<"$(last_body)")" = "2" ]
+  [ "$(jq '[.bypass_actors[] | select(.actor_id == 19456198 or .actor_id == 15834317) | select(.bypass_mode == "always")] | length' <<<"$(last_body)")" = "2" ]
+}
+
+@test "other organizations do not receive loft team actors" {
+  export INPUT_REPOSITORY="other/project"
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(jq '.bypass_actors | length' <<<"$(last_body)")" = "2" ]
 }
 
 @test "freeze with a non-numeric extra bypass team id fails, no write call" {
