@@ -5,9 +5,13 @@ on:
     branches: [main]
     paths:
       - '.github/actions/link-backport-prs/**'
+      - '.github/workflows/backport.yaml'
+      - '.github/workflows/test-link-backport-prs.yaml'
   pull_request:
     paths:
       - '.github/actions/link-backport-prs/**'
+      - '.github/workflows/backport.yaml'
+      - '.github/workflows/test-link-backport-prs.yaml'
 
 permissions:
   contents: read

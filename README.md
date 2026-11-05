@@ -7,16 +7,17 @@ are written, tested, and structured.
 
 ## Available Actions
 
-### Resolve pull request event
+### Resolve merged pull requests
 
-Validates the identity of a read-only PR metadata relay and rebuilds its event
-from the GitHub API for privileged `workflow_run` consumers. Supports forks
-without checking out contributor code.
+Finds merged PRs from every commit in a trusted default-branch push and reads
+current labels from GitHub before a backport runs. A read-only PR signal and a
+trusted default-branch consumer support labels added after merge. It reads no PR artifact and
+checks out no PR code.
 
-Location: `.github/actions/resolve-pr-event`
+**Location:** `.github/actions/resolve-pr-event`
 
-See [resolve-pr-event](./.github/actions/resolve-pr-event/README.md) for the trust
-boundary, event policy, inputs, and outputs.
+See [resolve-pr-event](./.github/actions/resolve-pr-event/README.md) for the caller
+pattern, permissions, inputs, and outputs.
 
 ### GHCR tag guard
 

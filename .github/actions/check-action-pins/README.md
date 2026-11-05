@@ -34,7 +34,7 @@ jobs:
 ```
 
 Fork pull requests need only `contents: read`. The scanner reads repository files;
-it does not run their scripts. Do not switch to `pull_request_target` to run this
+it does not run their scripts. Do not switch to a privileged PR event to run this
 check. For a required check, avoid workflow path filters that can leave it pending.
 
 ## Runner requirements

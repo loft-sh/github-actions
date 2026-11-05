@@ -14,7 +14,7 @@ try {
       typeof eventRepository !== 'string' ||
       eventRepository.toLowerCase() !== repository.toLowerCase()) throw new Error();
   process.env.GITHUB_EVENT_PATH = path;
-  process.env.GITHUB_EVENT_NAME = 'pull_request_target';
+  process.env.GITHUB_EVENT_NAME = 'pull_request';
 } catch (_) {
   throw new Error('Unable to restore validated pull request event');
 }

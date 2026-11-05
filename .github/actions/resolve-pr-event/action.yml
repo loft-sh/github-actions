@@ -1,12 +1,14 @@
 name: Resolve pull request event
-description: Validate a completed pull request relay or restore a trusted event payload.
+description: Resolve merged pull requests from trusted default branch events.
 inputs:
   github-token:
-    description: Token with actions, contents, and pull requests read access.
+    required: false
+    description: Token with contents and pull requests read access; actions read for workflow_run.
     default: ${{ github.token }}
   source-workflow:
-    description: Expected relay path, .github/workflows/pull-request-events.yaml.
     required: false
+    description: Expected read-only pull request signal workflow path.
+    default: .github/workflows/pull-request-events.yaml
   event-json:
     description: Trusted payload passed between jobs through workflow_call.
     required: false
@@ -14,8 +16,11 @@ outputs:
   eligible:
     description: Whether a validated event is available.
     value: ${{ steps.resolve.outputs.eligible }}
+  events-json:
+    description: Array of compact PR identity envelopes for a job matrix.
+    value: ${{ steps.resolve.outputs.events-json }}
   event-json:
-    description: Synthetic event JSON for passing to another job.
+    description: Compact PR identity and backport labels when exactly one PR is eligible.
     value: ${{ steps.resolve.outputs.event-json }}
   event-path:
     description: Temporary synthetic event file for RESOLVED_PR_EVENT_PATH.
@@ -29,12 +34,6 @@ outputs:
   action:
     description: Pull request action.
     value: ${{ steps.resolve.outputs.action }}
-  label:
-    description: Current label name for labeled events.
-    value: ${{ steps.resolve.outputs.label }}
-  body-without-comments:
-    description: PR body with HTML comments removed, for follow-up descriptions.
-    value: ${{ steps.resolve.outputs.body-without-comments }}
 runs:
   using: composite
   steps:
