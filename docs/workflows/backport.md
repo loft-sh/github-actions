@@ -22,8 +22,9 @@ run on merge. Fork code never runs in the privileged consumer.
 
 For each selected envelope, restoration verifies the PR identity and merge SHA,
 checks default-branch ancestry, and reads current labels. On push, restoration
-re-fetches only the selected PR and uses a constant number of API requests without
-walking the push range again.
+also checks that the merge belongs to the original push range. It re-fetches only
+the selected PR and uses a constant number of API requests without walking the
+push range again.
 
 | Stage | Trigger and reads | Mutations | Output and skip remedy |
 |---|---|---|---|

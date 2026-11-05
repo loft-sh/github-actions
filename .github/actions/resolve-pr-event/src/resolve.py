@@ -168,6 +168,13 @@ def resolve(api, payload, event_name, source_workflow='', requested_number=None)
             comparison = api.get('/compare/%s...%s' % (pr['merge_commit_sha'], urllib.parse.quote(default, safe='')))
             if comparison.get('status') not in ('ahead', 'identical'):
                 raise Reject('merged commit is not on the default branch')
+            if event_name == 'push':
+                # A sync merge may introduce a side-branch merge that diverges
+                # from before. It must be newly reachable from after, not before.
+                previous = api.get('/compare/%s...%s' % (pr['merge_commit_sha'], before))
+                current = api.get('/compare/%s...%s' % (pr['merge_commit_sha'], head))
+                if previous.get('status') not in ('behind', 'diverged') or current.get('status') not in ('ahead', 'identical'):
+                    raise Reject('merged commit is not in the pushed range')
         events.append({'action': 'closed', 'number': number, 'pull_request': pr, 'repository': repo})
     if len(events) > 256:
         raise RuntimeError('too many matched pull requests for a job matrix')
