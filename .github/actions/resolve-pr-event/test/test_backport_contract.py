@@ -11,6 +11,12 @@ GITHUB = Path(__file__).resolve().parents[3]
 WORKFLOWS = GITHUB / 'workflows'
 
 
+def test_signal_example_only_listens_for_labels():
+    readme = (GITHUB / 'actions/resolve-pr-event/README.md').read_text()
+    signal = readme.split('Example signal workflow', 1)[1].split('```yaml', 1)[1].split('```', 1)[0]
+    assert re.search(r'pull_request:\s*\n\s*types: \[labeled\]', signal)
+
+
 def jobs(name):
     text = (WORKFLOWS / name).read_text().split('\njobs:\n', 1)[1]
     return dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)', text, re.M | re.S))
