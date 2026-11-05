@@ -100,18 +100,21 @@ def merged_pr(pr, number, repo, default):
             pr.get('state') == 'closed' and sha(pr.get('merge_commit_sha')) and
             same((base.get('repo') or {}).get('full_name'), repo) and base.get('ref') == default)
 
-def resolve(api, payload, event_name, source_workflow=''):
+def resolve(api, payload, event_name, source_workflow='', requested_number=None):
     if not isinstance(payload, dict):
         raise Reject('invalid event')
     repo, default, ref = trusted_context(api, payload, event_name)
+    if requested_number is not None and not positive(requested_number):
+        raise Reject('invalid restored pull request number')
     commits = []
     if event_name == 'push':
         before, head = payload.get('before'), payload.get('after')
         if payload.get('ref') != ref or payload.get('deleted') is not False or payload.get('forced') is not False or not sha(before) or not sha(head):
             raise Reject('unsupported push ref, range, deletion, or force push')
-        commits = [item.get('sha') for item in paged(api, '/compare/%s...%s' % (before, head), 'commits') if isinstance(item, dict)]
-        if not commits or commits[-1] != head or any(not sha(item) for item in commits):
-            raise Reject('invalid or incomplete push range')
+        if requested_number is None:
+            commits = [item.get('sha') for item in paged(api, '/compare/%s...%s' % (before, head), 'commits') if isinstance(item, dict)]
+            if not commits or commits[-1] != head or any(not sha(item) for item in commits):
+                raise Reject('invalid or incomplete push range')
     elif event_name == 'workflow_run':
         signal = payload.get('workflow_run') or {}
         run_id, attempt = signal.get('id'), signal.get('run_attempt')
@@ -136,7 +139,9 @@ def resolve(api, payload, event_name, source_workflow=''):
         signal_sha = run['head_sha']
     else:
         raise Reject('unsupported event')
-    numbers = set()
+    # Push restoration rechecks one selected PR and its default-branch ancestry.
+    # Only selection needs to discover PRs across the full pushed commit range.
+    numbers = {requested_number} if event_name == 'push' and requested_number is not None else set()
     for commit in commits:
         for candidate in paged(api, '/commits/%s/pulls' % commit):
             number = candidate.get('number') if isinstance(candidate, dict) else None
@@ -217,14 +222,18 @@ def main():
         payload = parse_json(raw)
         restored = os.environ.get('INPUT_EVENT_JSON', '')
         requested = None
+        number = None
         if restored:
             if len(restored.encode('utf-8')) > MAX_BYTES:
                 raise Reject('restored event too large')
             requested = parse_json(restored)
-        events = resolve(API(os.environ['INPUT_GITHUB_TOKEN'], repository), payload,
-                         os.environ.get('GITHUB_EVENT_NAME', ''), os.environ.get('INPUT_SOURCE_WORKFLOW', ''))
-        if restored:
             number = requested.get('number') if isinstance(requested, dict) else None
+            if not positive(number):
+                raise Reject('invalid restored pull request number')
+        events = resolve(API(os.environ['INPUT_GITHUB_TOKEN'], repository), payload,
+                         os.environ.get('GITHUB_EVENT_NAME', ''), os.environ.get('INPUT_SOURCE_WORKFLOW', ''),
+                         requested_number=number)
+        if restored:
             matches = [event for event in events if event['number'] == number]
             supplied_pr = requested.get('pull_request') if isinstance(requested, dict) else None
             if (len(matches) != 1 or not isinstance(supplied_pr, dict) or

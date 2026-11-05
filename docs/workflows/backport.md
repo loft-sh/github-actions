@@ -13,11 +13,17 @@ push selection and matrix fanout. A push can merge more than one PR; use the
 `events-json` matrix output, rather than the single-event output.
 
 PR events cannot invoke the mutation jobs. A read-only `pull_request` workflow
-with `closed` and `labeled` activity types signals a default-branch `workflow_run`
+with only the `labeled` activity type signals a default-branch `workflow_run`
 consumer. It checks out no code and passes no artifact. The resolver reads the
 completed run and associated merged PRs from GitHub, so labels added after merge
-still trigger backports. Push selection also handles merges whose original PR
-workflow was skipped. Fork code never runs in the privileged consumer.
+still trigger backports. Push selection handles merges, including those whose
+original PR workflow was skipped. Omitting `closed` avoids a duplicate backport
+run on merge. Fork code never runs in the privileged consumer.
+
+For each selected envelope, restoration verifies the PR identity and merge SHA,
+checks default-branch ancestry, and reads current labels. On push, restoration
+re-fetches only the selected PR and uses a constant number of API requests without
+walking the push range again.
 
 | Stage | Trigger and reads | Mutations | Output and skip remedy |
 |---|---|---|---|

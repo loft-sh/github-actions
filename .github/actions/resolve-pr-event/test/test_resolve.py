@@ -193,6 +193,64 @@ def test_restore_rehydrates_current_labels_and_rejects_forged_sha(tmp_path, monk
     assert r.main() == 0
     assert 'false' in (tmp_path / 'out').read_text()
 
+@pytest.mark.parametrize('commit_count', [1, 60, 200])
+def test_push_restore_uses_constant_api_calls(tmp_path, monkeypatch, commit_count):
+    class ManyCommits(FakeAPI):
+        def get(self, path):
+            if path.startswith('/compare/%s...%s?' % (A, C)):
+                self.calls.append(path)
+                return {'commits': [{'sha': '%040x' % n} for n in range(1, commit_count)] + [{'sha': C}]}
+            return super().get(path)
+
+    api = ManyCommits()
+    event_file = tmp_path / 'payload.json'; event_file.write_text(json.dumps(push()))
+    original = r.compact({'number': 1, 'action': 'closed', 'repository': REPO, 'pull_request': api.pull[1]})
+    monkeypatch.setenv('GITHUB_EVENT_PATH', str(event_file))
+    monkeypatch.setenv('GITHUB_OUTPUT', str(tmp_path / 'out'))
+    monkeypatch.setenv('RUNNER_TEMP', str(tmp_path))
+    monkeypatch.setenv('GITHUB_REPOSITORY', 'org/repo')
+    monkeypatch.setenv('INPUT_GITHUB_TOKEN', 'unused')
+    monkeypatch.setenv('GITHUB_EVENT_NAME', 'push')
+    monkeypatch.setenv('INPUT_EVENT_JSON', json.dumps(original))
+    monkeypatch.setattr(r, 'API', lambda *args: api)
+
+    assert r.main() == 0
+    assert 'eligible<<' in (tmp_path / 'out').read_text()
+    restored = json.loads(next(tmp_path.glob('pr-event-*.json')).read_text())
+    assert restored['number'] == 1
+    assert api.calls == ['', '/pulls/1', '/compare/%s...main' % B]
+
+@pytest.mark.parametrize('status', ['behind', 'diverged'])
+def test_push_restore_rejects_merge_outside_default_branch(status):
+    class Unrelated(FakeAPI):
+        def get(self, path):
+            result = super().get(path)
+            if path.startswith('/compare/'):
+                result['status'] = status
+            return result
+    api = Unrelated()
+    with pytest.raises(r.Reject, match='not on the default branch'):
+        r.resolve(api, push(), 'push', requested_number=1)
+    assert api.calls == ['', '/pulls/1', '/compare/%s...main' % B]
+
+@pytest.mark.parametrize('field,value', [('merged', False), ('state', 'open'), ('merge_commit_sha', 'invalid')])
+def test_push_restore_rechecks_merged_pr(field, value):
+    api = FakeAPI(); api.pull[1][field] = value
+    assert r.resolve(api, push(), 'push', requested_number=1) == []
+    assert api.calls == ['', '/pulls/1']
+
+@pytest.mark.parametrize('field,value', [('ref', 'refs/heads/other'), ('forced', True), ('deleted', True), ('before', '0'*40)])
+def test_push_restore_rejects_invalid_push_before_fetching_pr(field, value):
+    api = FakeAPI(); payload = push(); payload[field] = value
+    with pytest.raises(r.Reject):
+        r.resolve(api, payload, 'push', requested_number=1)
+    assert api.calls == ['']
+
+def test_signal_restore_keeps_source_repository_check():
+    api = SignalAPI()
+    api.signal['head_repository'] = {'full_name': 'attacker/repo'}
+    assert r.resolve(api, signal_payload(), 'workflow_run', SOURCE, requested_number=1) == []
+
 def test_page_cap_fails_closed():
     class FullPages:
         def get(self, path): return [None] * 100
