@@ -66,8 +66,9 @@ With changelog link:
 
 `is_prerelease: "true"` adds a `GitHub label: Pre-release` field.
 `needs_promotion: "true"` instead shows the GitHub `None` label and links to
-`promote_workflow`, telling the Release Captain that the release still needs to
-be promoted. With neither flag set, no label field is rendered, so existing
+`promote_workflow`. It tells the Release Captain to promote the newest release
+to Latest, and that patches on older lines need no action.
+With neither flag set, no label field is rendered, so existing
 callers that publish directly to Latest keep their previous banner.
 
 Set `paired_repo` when one cut publishes the same version in two repositories,

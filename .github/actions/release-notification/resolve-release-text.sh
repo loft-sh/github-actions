@@ -19,7 +19,7 @@ if [[ "${NEEDS_PROMOTION}" == "true" ]]; then
   # Single quotes keep Slack backticks literal; TARGET_REPO and
   # PROMOTE_WORKFLOW are supplied through printf %s arguments.
   # shellcheck disable=SC2016
-  printf -v label_text '*GitHub label:*\n`None` - not Latest yet. <https://github.com/%s/actions/workflows/%s|Promote it> to unset pre-release and, when this is the newest release, move Latest, the moving image tags and the Homebrew formula.' "${TARGET_REPO}" "${PROMOTE_WORKFLOW}"
+  printf -v label_text '*GitHub label:*\n`None` - not Latest yet. Newest release? <https://github.com/%s/actions/workflows/%s|Promote it> to make it Latest. Patch on an older line? Nothing to do.' "${TARGET_REPO}" "${PROMOTE_WORKFLOW}"
   label_field="- $(jq -nc --arg text "${label_text}" '{type:"mrkdwn",text:$text}')"
 elif [[ "${IS_PRERELEASE}" == "true" ]]; then
   label_field="- $(jq -nc --arg text $'*GitHub label:*\nPre-release' '{type:"mrkdwn",text:$text}')"
