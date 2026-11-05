@@ -18,6 +18,16 @@ Location: `.github/actions/resolve-pr-event`
 See [resolve-pr-event](./.github/actions/resolve-pr-event/README.md) for the trust
 boundary, event policy, inputs, and outputs.
 
+### GHCR tag guard
+
+Checks every version tag before publication. Existing digests and ambiguous
+registry failures stop the job. The guard performs no registry writes.
+
+Location: `.github/actions/ghcr-tag-guard`
+
+See [GHCR tag guard](./.github/actions/ghcr-tag-guard/README.md) for permissions,
+retry policy, and the required per-tag publisher lock.
+
 ### Check Action Pins
 
 Opt-in check for SHA-pinned third-party actions and reusable workflows, while
@@ -1248,7 +1258,7 @@ Posts aggregated structured `cve-scan` results to the matching release-checklist
 subissue in Linear. It identifies the vCluster or Platform checklist from the
 release line and only requires the caller to declare its expected image
 inventory. The action validates title fingerprints, parent relationship, and
-exact version before commenting. It is advisory and updates one marked comment
+exact version before commenting. It is advisory and updates one summary comment
 per RC on reruns.
 
 **Location:** `.github/actions/linear-cve-summary`
