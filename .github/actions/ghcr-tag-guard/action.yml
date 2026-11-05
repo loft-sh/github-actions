@@ -1,0 +1,28 @@
+name: GHCR tag guard
+description: Refuse publication unless every version tag is confirmed absent from an existing GHCR package
+branding:
+  icon: lock
+  color: blue
+inputs:
+  images:
+    description: Newline-separated fully qualified GHCR version tags to check before any publication
+    required: true
+  registry-username:
+    description: GitHub actor with pull access to every package
+    required: false
+    default: ${{ github.actor }}
+  registry-token:
+    description: Token with packages read access; never written to logs or action outputs
+    required: false
+    default: ${{ github.token }}
+runs:
+  using: composite
+  steps:
+    - name: Refuse existing version tags
+      shell: bash
+      run: python3 "$ACTION_PATH/src/guard.py"
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        INPUT_IMAGES: ${{ inputs.images }}
+        REGISTRY_USERNAME: ${{ inputs.registry-username }}
+        REGISTRY_TOKEN: ${{ inputs.registry-token }}
