@@ -47,10 +47,12 @@ def parse_images(value):
         raise Refusal("images must contain at least one GHCR version tag")
     parsed = []
     for image in images:
-        match = re.fullmatch(r"ghcr\.io/([a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)+):([A-Za-z0-9_][A-Za-z0-9_.-]{0,127})", image)
+        match = re.fullmatch(r"ghcr\.io/([A-Za-z0-9]+(?:[._-][A-Za-z0-9]+)*(?:/[A-Za-z0-9]+(?:[._-][A-Za-z0-9]+)*)+):([A-Za-z0-9_][A-Za-z0-9_.-]{0,127})", image)
         if not match or not re.match(r"v?[0-9]+\.[0-9]+\.[0-9]+", match[2]):
             raise Refusal("images must be fully qualified GHCR version tags; moving tags and digests are refused")
-        parsed.append((image, match[1], match[2]))
+        # GitHub owner names can have capitals; GHCR repository paths cannot.
+        # Tags are case-sensitive, so normalize only the repository.
+        parsed.append((image, match[1].lower(), match[2]))
     return parsed
 
 
@@ -76,6 +78,8 @@ def bearer_token(repository, username, password):
 def check_image(image, repository, tag, token):
     headers = {
         "Authorization": f"Bearer {token}",
+        # Unsupported types can also return MANIFEST_UNKNOWN. Extend this list
+        # and the manifest-type tests before a caller publishes a new format.
         "Accept": ", ".join([
             "application/vnd.oci.image.index.v1+json",
             "application/vnd.docker.distribution.manifest.list.v2+json",

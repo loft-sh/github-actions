@@ -30,6 +30,15 @@ the job will push, including variants, in one invocation. Do not pass rolling
 tags such as `latest`. Ubuntu runners provide the required Python 3 standard
 library; there are no downloaded tools or Python dependencies.
 
+GitHub owner and repository names may contain capitals in the input. The guard
+lowercases the repository path for GHCR requests and preserves the tag's case.
+
+The manifest lookup supports OCI image manifests and indexes, and Docker schema 2
+manifests and manifest lists. Before publishing a new manifest format, extend the
+guard's `Accept` list and its manifest-type tests. A registry can return
+`MANIFEST_UNKNOWN` for an unsupported format even when the tag exists; this guard
+does not prove absence for formats outside that list.
+
 ## Required permissions
 
 The guard needs `packages: read`, with pull access to an existing GHCR package.
@@ -82,7 +91,9 @@ A nonzero exit blocks the caller's later steps.
 ## Tests
 
 `make test-ghcr-tag-guard` runs offline tests for absent and existing tags,
-retries, partial variant publication, API and auth errors, and unchanged
-registry state after refusal. Live read-only checks should record a digest
+supported manifest types, mixed-case repository names, retries, partial variant
+publication, API and auth errors, and read-only requests. These tests exercise
+the guard's lookup and refusal behavior, not a caller's publication steps.
+Live read-only checks should record a digest
 before and after an expected rejection. Publishing a fresh image is a release
 action and needs its own authorization.

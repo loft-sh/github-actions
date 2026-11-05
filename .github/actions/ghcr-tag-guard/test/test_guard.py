@@ -3,7 +3,7 @@ import io
 import json
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
@@ -58,29 +58,62 @@ def test_absent_is_safe_and_requests_are_read_only(registry, capsys):
     assert registry.calls[1].get_header('Authorization') == 'Bearer opaque'
 
 
+@pytest.mark.parametrize('repository', ['vClusterLabs-Experiments/kine', 'Loft-SH/Kine'])
+@pytest.mark.parametrize('exists', [False, True])
+def test_mixed_case_repository_is_normalized_without_changing_tag(registry, repository, exists):
+    image = f'ghcr.io/{repository}:v1.2.3-RC.1'
+    if exists:
+        registry.manifests['v1.2.3-RC.1'] = (200, b'{}', {'Docker-Content-Digest': DIGEST})
+        with pytest.raises(guard.Refusal, match='existing digest'):
+            guard.guard(image)
+    else:
+        guard.guard(image)
+    assert parse_qs(urlparse(registry.calls[0].full_url).query)['scope'] == [f'repository:{repository.lower()}:pull']
+    assert registry.calls[1].full_url == f'https://ghcr.io/v2/{repository.lower()}/manifests/v1.2.3-RC.1'
+
+
+def test_mixed_case_references_share_repository_token(registry):
+    guard.guard('ghcr.io/Loft-SH/Kine:v1.2.3\nghcr.io/loft-sh/kine:v1.2.3-nocgo')
+    assert [urlparse(call.full_url).path for call in registry.calls] == [
+        '/token', '/v2/loft-sh/kine/manifests/v1.2.3', '/v2/loft-sh/kine/manifests/v1.2.3-nocgo',
+    ]
+
+
+@pytest.mark.parametrize('media_type', [
+    'application/vnd.oci.image.index.v1+json',
+    'application/vnd.docker.distribution.manifest.list.v2+json',
+    'application/vnd.oci.image.manifest.v1+json',
+    'application/vnd.docker.distribution.manifest.v2+json',
+])
+def test_existing_supported_manifest_types_are_requested_and_refused(registry, media_type):
+    registry.manifests['v0.13.0-loft.0'] = (200, b'{}', {
+        'Docker-Content-Digest': DIGEST, 'Content-Type': media_type,
+    })
+    with pytest.raises(guard.Refusal, match='existing digest'):
+        guard.guard(IMAGE)
+    assert media_type in registry.calls[1].get_header('Accept').split(', ')
+
+
 @pytest.mark.parametrize('digest', [DIGEST, 'sha256:' + 'b' * 64])
-def test_existing_digest_blocks_every_retry_without_mutation(registry, digest):
+def test_existing_digest_blocks_every_retry(registry, digest):
     registry.manifests['v0.13.0-loft.0'] = (200, b'{}', {'Docker-Content-Digest': digest})
-    before = dict(registry.manifests)
     for _ in range(2):
         with pytest.raises(guard.Refusal) as error:
             guard.guard(IMAGE)
         assert IMAGE in str(error.value)
         assert digest in str(error.value)
-        assert registry.manifests == before
     assert len(registry.calls) == 4
 
 
-def test_nocgo_conflict_blocks_caller_before_any_publication(registry):
-    registry.manifests['v0.13.0-loft.0-nocgo'] = (200, b'{}', {'Docker-Content-Digest': DIGEST})
-    before = dict(registry.manifests)
-    published = []
-    with pytest.raises(guard.Refusal, match='nocgo'):
+@pytest.mark.parametrize('existing_tag,checked_tags', [
+    ('v0.13.0-loft.0', ['v0.13.0-loft.0']),
+    ('v0.13.0-loft.0-nocgo', ['v0.13.0-loft.0', 'v0.13.0-loft.0-nocgo']),
+])
+def test_partial_variant_publication_refuses_at_existing_tag(registry, existing_tag, checked_tags):
+    registry.manifests[existing_tag] = (200, b'{}', {'Docker-Content-Digest': DIGEST})
+    with pytest.raises(guard.Refusal, match=existing_tag):
         guard.guard(f'{IMAGE}\n{NOCGO}')
-        published.extend([IMAGE, NOCGO])
-    assert not published
-    assert registry.manifests == before
-    assert len(registry.calls) == 3
+    assert [urlparse(call.full_url).path.rsplit('/', 1)[-1] for call in registry.calls[1:]] == checked_tags
 
 
 @pytest.mark.parametrize('status', [401, 403, 429, 500])
