@@ -60,8 +60,13 @@ class Registry:
         if token:
             basic = base64.b64encode(f"token:{token}".encode()).decode()
             request.add_header("Authorization", f"Basic {basic}")
-        with urllib.request.urlopen(request, timeout=30) as response:
-            self.bearer = json.load(response)["token"]
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                self.bearer = json.load(response)["token"]
+        except urllib.error.HTTPError as error:
+            raise Failure(f"registry token request returned {error.code}") from error
+        except OSError as error:
+            raise Failure(f"registry token request failed: {error}") from error
 
     def _open(self, path, method="GET"):
         request = urllib.request.Request(
@@ -78,6 +83,8 @@ class Registry:
             if error.code == 404:
                 return None
             raise Failure(f"registry {method} {path} returned {error.code}") from error
+        except OSError as error:
+            raise Failure(f"registry {method} {path} failed: {error}") from error
 
     def digest(self, ref):
         response = self._open(f"manifests/{ref}", method="HEAD")
@@ -112,28 +119,31 @@ def children(manifest):
 
 
 def image_tree(registry, digest):
-    """Every manifest that belongs to one image, mapped to the tags it may carry.
+    """Every manifest that belongs to one image, mapped to the tags it may carry,
+    plus the subject each referrer index and artifact signs.
 
     Ordered leaves first and the image index last, so a delete that stops halfway
     leaves the index in place and a later run with the same digest finds the rest.
     """
     _, index = registry.manifest(digest)
     if index is None:
-        return {}
+        return {}, {}
     subjects = [digest, *children(index)]
-    artifacts, referrer_indexes = {}, {}
+    artifacts, referrer_indexes, signs = {}, {}, {}
     for subject in subjects:
         tag = referrer_tag(subject)
         referrers_digest, referrers = registry.manifest(tag)
         if referrers_digest is None:
             continue
         referrer_indexes[referrers_digest] = {tag}
+        signs.setdefault(referrers_digest, subject)
         for referrer in children(referrers):
             artifacts.setdefault(referrer, set())
+            signs.setdefault(referrer, subject)
     tree = {**artifacts, **referrer_indexes}
     for subject in reversed(subjects):
         tree.setdefault(subject, set())
-    return tree
+    return tree, signs
 
 
 def protected_digests(registry, skip_tags):
@@ -167,6 +177,8 @@ class Packages:
                 body = response.read()
         except urllib.error.HTTPError as error:
             raise Failure(f"GitHub API {method} {url} returned {error.code}") from error
+        except OSError as error:
+            raise Failure(f"GitHub API {method} {url} failed: {error}") from error
         return json.loads(body) if body else None
 
     def versions(self, wanted):
@@ -219,7 +231,7 @@ def delete(owner, name, token, previous, current, dry_run):
         log("the new image has the same digest as the previous one; nothing to delete")
         return
     registry = Registry(owner, name, token)
-    tree = image_tree(registry, previous)
+    tree, signs = image_tree(registry, previous)
     if not tree:
         log(f"{previous} is already gone; nothing to delete")
         return
@@ -228,6 +240,10 @@ def delete(owner, name, token, previous, current, dry_run):
     if previous in protected:
         log(f"{previous} is still tagged {protected[previous]}; nothing to delete")
         return
+    # A kept manifest keeps its signatures and attestations too.
+    for digest, subject in signs.items():
+        if subject in protected:
+            protected.setdefault(digest, protected[subject])
 
     packages = Packages(owner, name, token)
     versions = packages.versions(set(tree))

@@ -38,6 +38,7 @@ class Fake:
         delete_status=204,
         fail_from=None,
         registry_tags=None,
+        token_status=200,
     ):
         self.manifests = manifests
         self.tags = tags
@@ -81,6 +82,10 @@ class Fake:
             def do_GET(self):
                 fake.calls.append(("GET", self.path))
                 if self.path.startswith("/token"):
+                    if token_status != 200:
+                        self.send_response(token_status)
+                        self.end_headers()
+                        return
                     self.send_json({"token": "registry-token"})
                 elif "/manifests/" in self.path:
                     self.manifest()
@@ -271,6 +276,24 @@ def test_manifest_shared_with_a_tagged_image_is_kept(fake, tmp_path):
     assert "also part of tag v1" in result.stdout
 
 
+def test_signatures_of_a_shared_manifest_are_kept(fake, tmp_path):
+    old, new, manifests, tags, versions = candy()
+    manifests[old] = index(d("1"), d("5"))  # d("5") also belongs to the release
+    manifests[d("9")] = index(d("8"))  # referrers of d("5"), signed per platform
+    manifests[d("8")] = image()
+    tags["sha256-" + d("5")[7:]] = d("9")
+    server = fake(manifests=manifests, tags=tags)
+    server.versions += [
+        version(13, d("9"), "sha256-" + d("5")[7:]),
+        version(14, d("8")),
+    ]
+    result = run(
+        server, tmp_path, mode="delete", previous_digest=old, current_digest=new
+    )
+    assert result.returncode == 0, result.stdout
+    assert sorted(server.deleted) == [1, 2, 4, 5]
+
+
 def test_previous_image_that_is_still_tagged_is_kept(fake, tmp_path):
     old, new, manifests, tags, versions = candy()
     tags["v2"] = old  # someone promoted the old head to a release
@@ -395,6 +418,24 @@ def test_failed_delete_fails_the_step(fake, tmp_path):
     )
     assert result.returncode == 1
     assert "returned 403" in result.stdout
+
+
+def test_rejected_registry_token_fails_the_step(fake, tmp_path):
+    server = fake(token_status=401)
+    result = run(server, tmp_path, mode="record")
+    assert result.returncode == 1
+    assert "::error::" in result.stdout
+    assert "returned 401" in result.stdout
+    assert "Traceback" not in result.stderr
+
+
+def test_unreachable_registry_fails_the_step(fake, tmp_path):
+    server = fake()
+    server.url = "http://127.0.0.1:1"
+    result = run(server, tmp_path, mode="record")
+    assert result.returncode == 1
+    assert "registry token request failed" in result.stdout
+    assert "Traceback" not in result.stderr
 
 
 @pytest.mark.parametrize(

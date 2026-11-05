@@ -15,7 +15,8 @@ removes exactly that image after the new one is pushed:
   and each manifest in it
 
 It keeps anything that is still reachable from another tag, such as a release
-whose image shares a manifest, and any version that carries a tag it did not
+whose image shares a manifest, together with that manifest's signatures and
+attestations, and any version that carries a tag it did not
 expect. If the previous image is still tagged (for example, promoted to a
 release), it deletes nothing. It checks that against both the registry tag list
 and the packages API, and if either shows a tag, it deletes nothing. Every deleted
