@@ -1,0 +1,63 @@
+name: Fork review advisory
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '23 7 * * *'
+  push:
+    branches: [main]
+    paths:
+      - '.github/actions/fork-review-check/**'
+      - '.github/workflows/fork-review-advisory.yaml'
+
+permissions: {}
+
+jobs:
+  live:
+    # A credential must never reach code from a PR or a dispatched feature ref.
+    if: github.repository_owner == 'loft-sh' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - repo: loft-sh/kine
+            ref: v0.16.5.vcluster.1
+            upstream: k3s-io/kine
+          - repo: loft-sh/tailscale
+            ref: v1.96.4-loft.3
+            upstream: tailscale/tailscale
+          - repo: loft-sh/fuse
+            ref: 0b597961e33ddd4c9a19e9e3981b79cc113885b5
+            upstream: nestybox/fuse
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Verify cross-repository permission access
+        env:
+          GH_TOKEN: ${{ secrets.FORK_REVIEW_READ_TOKEN }}
+          REPO: ${{ matrix.repo }}
+        run: bash .github/actions/fork-review-check/src/check-access.sh
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: .github/actions/fork-review-check/src/go.mod
+      - name: Check fork review evidence
+        working-directory: .github/actions/fork-review-check/src
+        env:
+          GITHUB_TOKEN: ${{ secrets.FORK_REVIEW_READ_TOKEN }}
+          REPO: ${{ matrix.repo }}
+          REF: ${{ matrix.ref }}
+          UPSTREAM: ${{ matrix.upstream }}
+        run: go run . ref -repo "$REPO" -ref "$REF" -upstream "$UPSTREAM" -advisory -receipt "$RUNNER_TEMP/fork-review-receipt.json"
+      - name: Upload advisory receipt
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fork-review-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/fork-review-receipt.json
+          if-no-files-found: warn
+          retention-days: 90

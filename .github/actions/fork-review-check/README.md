@@ -119,7 +119,25 @@ The JSON receipt lists each input with its hash, each fork's `fork-upstream` val
 
 ## Token
 
-Reading PRs, reviews and compares on public forks works with any token. `scan` also reads container package metadata, so the job needs `packages: read`. The approver permission lookup (`repos/{owner}/{repo}/collaborators/{user}/permission`) is the open question for the required workflow: `test-fork-review-check.yaml` runs the CLI against kine, tailscale and fuse with the workflow token to show whether that token can read it cross-repo.
+The caller's `GITHUB_TOKEN` is scoped to its own repository. It cannot read
+approver permissions on another fork, even when that fork is public. Pass an
+approved read-only token through `github-token`, with access to every checked
+fork and Metadata, Contents and Pull requests read permissions. The collaborator
+permission endpoint requires [Metadata: read](https://docs.github.com/en/rest/collaborators/collaborators#get-repository-permissions-for-a-user).
+`scan` also reads container package metadata; its token needs package read access.
+Keep package access in scope when selecting the credential for a scan caller.
+
+The `Fork review advisory` workflow uses the `FORK_REVIEW_READ_TOKEN` repository
+secret. It runs from the default branch on a daily schedule, a relevant push or
+manual dispatch. Before evaluating approvals, it calls the collaborator
+permission endpoint on each fork. A missing token, denied request or malformed
+response fails that job. Rule failures remain advisory and produce a JSON
+receipt retained as an Actions artifact for 90 days. Authentication success is
+separate from a receipt's `pass` value.
+
+PR tests use no cross-repository credential. Do not pass this token to a job
+that executes PR-controlled code, including a vendor verifier. For product
+integration and remaining rollout gates, see the [rollout checklist](../../../docs/fork-review-rollout.md).
 
 ## Product release caller
 
