@@ -4,10 +4,15 @@ on:
   workflow_call:
     inputs:
       pr-event:
-        description: 'Validated PR event JSON from resolve-pr-event. Omit for direct PR event callers.'
+        description: 'Merged PR event JSON from resolve-pr-event on a trusted default-branch push or workflow_run.'
         type: string
         required: false
         default: ''
+      source-workflow:
+        description: 'Read-only PR signal workflow path for workflow_run callers. No artifacts are consumed.'
+        type: string
+        required: false
+        default: '.github/workflows/pull-request-events.yaml'
       legacy-split:
         description: >-
           Enable the pre-monorepo (<= v0.36) split/re-root backport flow. When
@@ -60,48 +65,80 @@ on:
         description: 'Linear API token for linking backport PRs to their matching Linear sub-issue. Optional; linking is skipped when not provided.'
         required: false
 
+permissions: {}
+
 # Serialize runs for the same source PR so two rapid label events can't both race
 # past the open-PR check and double-create the same deterministic backport branch
 # (the second gh pr create would fail "already exists"). Queue, don't cancel, so
 # an in-flight backport always finishes.
 concurrency:
-  group: backport-${{ github.repository }}-${{ fromJSON(inputs.pr-event || toJSON(github.event)).pull_request.number }}
+  group: backport-${{ github.repository }}-${{ fromJSON(inputs.pr-event || '{}').pull_request.number || github.run_id }}
   cancel-in-progress: false
 
 jobs:
+  resolve-event:
+    name: Resolve merged PR on the trusted default branch
+    if: >-
+      inputs.pr-event != '' &&
+      contains(fromJSON('["push","workflow_run"]'), github.event_name) &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
+      endsWith(github.workflow_ref, format('@refs/heads/{0}', github.event.repository.default_branch))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: read
+    outputs:
+      eligible: ${{ steps.event.outputs.eligible }}
+      pr-event: ${{ steps.event.outputs.event-json }}
+    steps:
+      - name: Re-read merged pull request from GitHub
+        id: event
+        uses: loft-sh/github-actions/.github/actions/resolve-pr-event@resolve-pr-event/v1 # zizmor: ignore[unpinned-uses] -- internal versioned action
+        with:
+          event-json: ${{ inputs.pr-event }}
+          source-workflow: ${{ inputs.source-workflow }}
+
   backport:
     name: Backport PR
+    needs: resolve-event
     if: |
-      fromJSON(inputs.pr-event || toJSON(github.event)).pull_request.merged == true &&
+      needs.resolve-event.outputs.eligible == 'true' &&
+      fromJSON(needs.resolve-event.outputs.pr-event || '{}').pull_request.merged == true &&
       (
         contains(
-          join(fromJSON(inputs.pr-event || toJSON(github.event)).pull_request.labels.*.name, ','),
+          join(fromJSON(needs.resolve-event.outputs.pr-event || '{}').pull_request.labels.*.name, ','),
           'backport-to-'
         )
       ) &&
-      (fromJSON(inputs.pr-event || toJSON(github.event)).action == 'closed' || startsWith(fromJSON(inputs.pr-event || toJSON(github.event)).label.name, 'backport-to-'))
+      (fromJSON(needs.resolve-event.outputs.pr-event || '{}').action == 'closed' || startsWith(fromJSON(needs.resolve-event.outputs.pr-event || '{}').label.name, 'backport-to-'))
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
       contents: read
+      pull-requests: read
+      actions: read
     outputs:
       targets: ${{ steps.targets.outputs.targets }}
     steps:
-      - name: Restore validated pull request event
+      - name: Restore API-resolved pull request event
         id: pr-event
-        if: inputs.pr-event != ''
         uses: loft-sh/github-actions/.github/actions/resolve-pr-event@resolve-pr-event/v1 # zizmor: ignore[unpinned-uses] -- internal versioned action
         with:
-          event-json: ${{ inputs.pr-event }}
+          event-json: ${{ needs.resolve-event.outputs.pr-event }}
+          source-workflow: ${{ inputs.source-workflow }}
 
       # First, so fix-imports gets its targets even when a cherry-pick fails.
       - name: List backport targets
+        if: steps.pr-event.outputs.eligible == 'true'
         id: targets
         env:
-          LABELS: ${{ toJSON(fromJSON(inputs.pr-event || toJSON(github.event)).pull_request.labels.*.name) }}
+          LABELS: ${{ toJSON(fromJSON(needs.resolve-event.outputs.pr-event || '{}').pull_request.labels.*.name) }}
         run: echo "targets=$(jq -c '[.[] | select(startswith("backport-to-")) | ltrimstr("backport-to-")]' <<< "$LABELS")" >> "$GITHUB_OUTPUT"
 
       - name: Checkout repository
+        if: steps.pr-event.outputs.eligible == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
@@ -113,6 +150,7 @@ jobs:
       # or a job container would need it installed explicitly.
 
       - name: Backport Action
+        if: steps.pr-event.outputs.eligible == 'true'
         env:
           NODE_OPTIONS: ${{ steps.pr-event.outputs.node-options }}
           RESOLVED_PR_EVENT_PATH: ${{ steps.pr-event.outputs.event-path }}
@@ -128,7 +166,7 @@ jobs:
           auto_backport_label_prefix: ${{ inputs.legacy-split == false && 'backport-to-' || '' }}
 
       - name: Info log
-        if: ${{ success() }}
+        if: ${{ success() && steps.pr-event.outputs.eligible == 'true' }}
         run: cat ~/.backport/backport.info.log
 
       - name: Debug log
@@ -140,7 +178,7 @@ jobs:
   # filtering here.
   fix-imports:
     name: Fix imports for ${{ matrix.target }}
-    needs: backport
+    needs: [resolve-event, backport]
     if: inputs.fix-imports && !cancelled() && needs.backport.outputs.targets != '' && needs.backport.outputs.targets != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -157,12 +195,12 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Fix imports on backport/${{ matrix.target }}/pr-${{ fromJSON(inputs.pr-event || toJSON(github.event)).pull_request.number }}
+      - name: Fix imports on backport/${{ matrix.target }}/pr-${{ fromJSON(needs.resolve-event.outputs.pr-event || '{}').pull_request.number }}
         uses: loft-sh/github-actions/.github/actions/backport-fix-imports@backport-fix-imports/v1 # zizmor: ignore[unpinned-uses] -- internal loft-sh/github-actions ref; reusable workflows check out the CALLER repo, so a local ./.github/actions path is not present here. @backport-fix-imports/v1 is the floating coordination tag kept aligned with backport/v1 (see DEVOPS-923 pin-drift class).
         with:
           target-branch: ${{ matrix.target }}
-          backport-branch: backport/${{ matrix.target }}/pr-${{ fromJSON(inputs.pr-event || toJSON(github.event)).pull_request.number }}
-          source-branch: ${{ fromJSON(inputs.pr-event || toJSON(github.event)).pull_request.base.ref }}
+          backport-branch: backport/${{ matrix.target }}/pr-${{ fromJSON(needs.resolve-event.outputs.pr-event || '{}').pull_request.number }}
+          source-branch: ${{ fromJSON(needs.resolve-event.outputs.pr-event || '{}').pull_request.base.ref }}
           github-token: ${{ secrets.gh-access-token }} # zizmor: ignore[secrets-outside-env] -- PAT passed through workflow_call; pushes the fix commit so the backport PR's CI runs on it
 
   # --- pre-monorepo (<= v0.36) split/re-root flow ---------------------------
@@ -171,11 +209,13 @@ jobs:
   # staging/ tree; they are re-rooted and PR'd by backport-legacy-split instead.
   legacy-classify:
     name: Classify legacy targets
+    needs: resolve-event
     if: |
       inputs.legacy-split &&
-      fromJSON(inputs.pr-event || toJSON(github.event)).pull_request.merged == true &&
-      contains(join(fromJSON(inputs.pr-event || toJSON(github.event)).pull_request.labels.*.name, ','), 'backport-to-') &&
-      (fromJSON(inputs.pr-event || toJSON(github.event)).action == 'closed' || startsWith(fromJSON(inputs.pr-event || toJSON(github.event)).label.name, 'backport-to-'))
+      needs.resolve-event.outputs.eligible == 'true' &&
+      fromJSON(needs.resolve-event.outputs.pr-event || '{}').pull_request.merged == true &&
+      contains(join(fromJSON(needs.resolve-event.outputs.pr-event || '{}').pull_request.labels.*.name, ','), 'backport-to-') &&
+      (fromJSON(needs.resolve-event.outputs.pr-event || '{}').action == 'closed' || startsWith(fromJSON(needs.resolve-event.outputs.pr-event || '{}').label.name, 'backport-to-'))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -204,12 +244,12 @@ jobs:
         id: allowlist
         uses: loft-sh/github-actions/.github/actions/backport-legacy-allowlist@backport-legacy-allowlist/v1 # zizmor: ignore[unpinned-uses] -- internal loft-sh/github-actions ref; reusable workflows check out the CALLER repo, so a local ./.github/actions path is not present here. @backport-legacy-allowlist/v1 is the floating coordination tag kept aligned with backport/v1 (see DEVOPS-923 pin-drift class).
         with:
-          labels: ${{ toJSON(fromJSON(inputs.pr-event || toJSON(github.event)).pull_request.labels.*.name) }}
+          labels: ${{ toJSON(fromJSON(needs.resolve-event.outputs.pr-event || '{}').pull_request.labels.*.name) }}
           max-minor: '36'
 
   legacy-backport:
     name: Backport ${{ matrix.target }} (legacy)
-    needs: legacy-classify
+    needs: [resolve-event, legacy-classify]
     if: needs.legacy-classify.outputs.has-targets == 'true'
     runs-on: ubuntu-latest
     # Bound clone + apply + push so a GitHub service stall can't strand the
@@ -226,9 +266,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Pin to the merge commit so it AND its parent (the diff base) are
-          # present locally; on a pull_request_target closed event the default
-          # checkout ref is the pre-merge base SHA, which would not contain it.
-          ref: ${{ fromJSON(inputs.pr-event || toJSON(github.event)).pull_request.merge_commit_sha }}
+          # present locally. The resolver has verified this merge is in the
+          # trusted default-branch history.
+          ref: ${{ fromJSON(needs.resolve-event.outputs.pr-event || '{}').pull_request.merge_commit_sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -246,11 +286,11 @@ jobs:
           oss-repo: ${{ inputs.oss-repo }}
           pro-repo: ${{ inputs.pro-repo }}
           github-token: ${{ secrets.gh-access-token }}
-          commit: ${{ fromJSON(inputs.pr-event || toJSON(github.event)).pull_request.merge_commit_sha }}
+          commit: ${{ fromJSON(needs.resolve-event.outputs.pr-event || '{}').pull_request.merge_commit_sha }}
           # PR number so the action diffs the PR head (refs/pull/N/head) from its
           # merge base -- GitHub's "Files changed" -- capturing every commit of a
           # rebase-merged PR, not just the merge tip.
-          pr-number: ${{ fromJSON(inputs.pr-event || toJSON(github.event)).pull_request.number }}
+          pr-number: ${{ fromJSON(needs.resolve-event.outputs.pr-event || '{}').pull_request.number }}
           create-pr: 'true'
           docs-url: ${{ inputs.docs-url }}
 
@@ -284,7 +324,7 @@ jobs:
         with:
           marker: "<!-- legacy-backport-${{ matrix.target }} -->"
           body: ${{ steps.backport.outputs.comment-body }}
-          pr-number: ${{ fromJSON(inputs.pr-event || toJSON(github.event)).pull_request.number }}
+          pr-number: ${{ fromJSON(needs.resolve-event.outputs.pr-event || '{}').pull_request.number }}
           github-token: ${{ secrets.gh-access-token }}
           expected-author: ${{ steps.pat.outputs.login }}
 
@@ -293,13 +333,14 @@ jobs:
   # successful targets link even when another target conflicts or is skipped.
   link-backports:
     name: Link backport PRs to Linear sub-issues
-    needs: [backport, legacy-backport]
+    needs: [resolve-event, backport, legacy-backport]
     if: |
       always() &&
       !cancelled() &&
-      fromJSON(inputs.pr-event || toJSON(github.event)).pull_request.merged == true &&
-      contains(join(fromJSON(inputs.pr-event || toJSON(github.event)).pull_request.labels.*.name, ','), 'backport-to-') &&
-      (fromJSON(inputs.pr-event || toJSON(github.event)).action == 'closed' || startsWith(fromJSON(inputs.pr-event || toJSON(github.event)).label.name, 'backport-to-'))
+      needs.resolve-event.outputs.eligible == 'true' &&
+      fromJSON(needs.resolve-event.outputs.pr-event || '{}').pull_request.merged == true &&
+      contains(join(fromJSON(needs.resolve-event.outputs.pr-event || '{}').pull_request.labels.*.name, ','), 'backport-to-') &&
+      (fromJSON(needs.resolve-event.outputs.pr-event || '{}').action == 'closed' || startsWith(fromJSON(needs.resolve-event.outputs.pr-event || '{}').label.name, 'backport-to-'))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -309,9 +350,9 @@ jobs:
         continue-on-error: true
         uses: loft-sh/github-actions/.github/actions/link-backport-prs@link-backport-prs/v1 # zizmor: ignore[unpinned-uses] -- internal loft-sh/github-actions ref; reusable workflows check out the CALLER repo, so a local ./.github/actions path is not present here. @link-backport-prs/v1 is the floating coordination tag kept aligned with backport/v1 (see DEVOPS-923 pin-drift class).
         with:
-          source-pr: ${{ fromJSON(inputs.pr-event || toJSON(github.event)).pull_request.number }}
+          source-pr: ${{ fromJSON(needs.resolve-event.outputs.pr-event || '{}').pull_request.number }}
           repo-owner: ${{ github.repository_owner }}
-          repo-name: ${{ fromJSON(inputs.pr-event || toJSON(github.event)).repository.name }}
+          repo-name: ${{ fromJSON(needs.resolve-event.outputs.pr-event || '{}').repository.name }}
           additional-repos: ${{ inputs.legacy-split && format('{0},{1}', inputs.oss-repo, inputs.pro-repo) || '' }}
           github-token: ${{ secrets.gh-access-token }} # zizmor: ignore[secrets-outside-env] -- PAT passed through workflow_call and required for cross-repo PR edits
           linear-token: ${{ secrets.linear-token }} # zizmor: ignore[secrets-outside-env] -- optional token passed through workflow_call

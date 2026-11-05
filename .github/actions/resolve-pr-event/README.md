@@ -1,53 +1,83 @@
-# Resolve pull request event
+# Resolve merged pull requests
 
-Resolve a completed `workflow_run` from the `pull_request_target` relay at
-`.github/workflows/pull-request-events.yaml` into a synthetic event containing
-the current pull request and repository from GitHub.
-The caller supplies `source-workflow` and a token with `actions: read`,
-`contents: read`, and `pull-requests: read`. The relay must upload an artifact
-named `pull-request-event-<run_attempt>`, containing only `event.json` with
-`number`, `action`, and `label`. The label is an empty string unless the action
-is `labeled`.
+Resolve merged pull requests for a default-branch push or a completed read-only pull request signal workflow. The action fetches authoritative PR data from GitHub and only returns closed, merged PRs targeting the default branch. Fork PRs are included after merge.
 
-Check `eligible == 'true'` before consuming outputs. Pass `event-json` through a
-trusted workflow input to restore it in a later job. For each Node action that
-needs the synthetic event, set `NODE_OPTIONS` to `node-options` and
-`RESOLVED_PR_EVENT_PATH` to `event-path` in its step environment. The preload
-validates the file and sets the Node process event context before the action
-starts. The temporary file contains the current PR payload; avoid printing it. An unavailable artifact,
-stale label, or failed provenance check produces a warning and an
-ineligible result. API errors fail the action.
+For a push, the action walks every commit in the before/after range and finds associated PRs whose merge SHA is in that range. A forced push, deleted branch, or new branch with a zero before SHA is skipped. Comparison and associated PR pagination are bounded to 1,000 entries each; incomplete results fail closed.
 
-Validation uses the exact workflow ID and path in the base repository and
-GitHub's `pull_request_target` guarantee that the workflow comes from the base
-repository default branch. The run head SHA belongs to the PR and
-is not used as the workflow source SHA. The relay may only capture and upload metadata. It must not check out or execute
-PR code or use business secrets.
-See [GitHub's pull_request_target security guidance](https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target).
+For `workflow_run`, the action verifies the run ID, attempt, status, conclusion, source workflow identity, repository, event, head branch and SHA against the API. It uses PR associations from the run or, when empty, from the commit API. A re-fetched PR must match the signal head branch and either its head SHA or merge SHA; its merge commit must be an ancestor of the default branch. No signal artifact is read. Since a signal workflow's code can come from a PR, it must be read-only and carry no secrets. Its output is never treated as authoritative.
 
-## Event policy and rollout
+The action returns compact identity envelopes in `events-json`, at most 256, for a matrix. When exactly one PR is eligible, `event-json` also contains current `backport-to-` labels. The full re-fetched event is written only to a runner-local file, which can be supplied through the `NODE_OPTIONS` and `RESOLVED_PR_EVENT_PATH` outputs for Node actions. The aggregate job outputs are capped below GitHub's job output limit. The consumer must restore each envelope with this action before using it; restoration verifies the identity and merge SHA again and fetches current labels. Both selector and consumer require `contents: read` and `pull-requests: read`; the signal consumer also needs `actions: read`. All consumers must run from the default branch.
 
-The relay still uses `pull_request_target` to preserve events from conflicted
-PRs. It needs an explicit Actions event policy on each public caller repository.
-Scope the policy to `.github/workflows/pull-request-events.yaml` and allow only
-`pull_request_target`. The privileged consumers use `workflow_run` outside this allowance.
-An administrator creates the policy separately from merging these changes.
+Example signal workflow, `.github/workflows/pull-request-events.yaml`:
 
-Merge the shared action and backport workflow changes before the caller PRs.
-Publish `resolve-pr-event/v1` and update `backport/v1` to that merged commit before
-activating callers. Verify the tags before merging callers. Test a branch PR, a
-fork PR, a conflicted fork PR, a merged backport, and each Linear integration.
-Local tests and lint do not prove these live events.
+```yaml
+name: Pull request events
+on:
+  pull_request:
+    types: [closed, labeled]
+permissions: {}
+jobs:
+  signal:
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - run: ':'
+```
+
+Example selector and fanout for a repository whose default branch is `main`:
+
+```yaml
+name: Backport on merge
+on:
+  push:
+    branches: [main]
+  workflow_run:
+    workflows: [Pull request events]
+    types: [completed]
+permissions: {}
+jobs:
+  select:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    outputs:
+      events: ${{ steps.resolve.outputs.events-json }}
+    steps:
+      - id: resolve
+        uses: loft-sh/github-actions/.github/actions/resolve-pr-event@resolve-pr-event/v1
+        with:
+          source-workflow: .github/workflows/pull-request-events.yaml
+  backport:
+    needs: select
+    if: needs.select.outputs.events != '[]' && needs.select.outputs.events != ''
+    strategy:
+      matrix:
+        event: ${{ fromJSON(needs.select.outputs.events) }}
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    uses: loft-sh/github-actions/.github/workflows/backport.yaml@backport/v2
+    with:
+      pr-event: ${{ toJSON(matrix.event) }}
+      source-workflow: .github/workflows/pull-request-events.yaml
+    secrets:
+      gh-access-token: ${{ secrets.GH_ACCESS_TOKEN }}
+```
+
+The example uses a published action and does not check out PR code. Coordinate publication of the action and reusable workflow tags with caller rollout.
 
 ## Inputs
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-|      INPUT      |  TYPE  | REQUIRED |         DEFAULT         |                            DESCRIPTION                            |
-|-----------------|--------|----------|-------------------------|-------------------------------------------------------------------|
-|   event-json    | string |  false   |                         |  Trusted payload passed between jobs through <br>workflow_call.   |
-|  github-token   | string |  false   | `"${{ github.token }}"` | Token with actions, contents, and pull <br>requests read access.  |
-| source-workflow | string |  false   |                         | Expected relay path, .github/workflows/pull-request-events.yaml.  |
+|      INPUT      |  TYPE  | REQUIRED |                    DEFAULT                     |                                      DESCRIPTION                                       |
+|-----------------|--------|----------|------------------------------------------------|----------------------------------------------------------------------------------------|
+|   event-json    | string |  false   |                                                |            Trusted payload passed between jobs through <br>workflow_call.              |
+|  github-token   | string |  false   |            `"${{ github.token }}"`             | Token with contents and pull requests <br>read access; actions read for workflow_run.  |
+| source-workflow | string |  false   | `".github/workflows/pull-request-events.yaml"` |               Expected read-only pull request signal workflow <br>path.                |
 
 <!-- AUTO-DOC-INPUT:END -->
 
@@ -55,15 +85,14 @@ Local tests and lint do not prove these live events.
 
 <!-- AUTO-DOC-OUTPUT:START - Do not remove or modify this section -->
 
-|        OUTPUT         |  TYPE  |                                 DESCRIPTION                                  |
-|-----------------------|--------|------------------------------------------------------------------------------|
-|        action         | string |                             Pull request action.                             |
-| body-without-comments | string |     PR body with HTML comments removed, <br>for follow-up descriptions.      |
-|       eligible        | string |                   Whether a validated event is available.                    |
-|      event-json       | string |            Synthetic event JSON for passing to <br>another job.              |
-|      event-path       | string |          Temporary synthetic event file for RESOLVED_PR_EVENT_PATH.          |
-|         label         | string |                    Current label name for labeled events.                    |
-|     node-options      | string | NODE_OPTIONS preload for Node actions that <br>consume the synthetic event.  |
-|       pr-number       | string |                             Pull request number.                             |
+|    OUTPUT    |  TYPE  |                                  DESCRIPTION                                  |
+|--------------|--------|-------------------------------------------------------------------------------|
+|    action    | string |                             Pull request action.                              |
+|   eligible   | string |                    Whether a validated event is available.                    |
+|  event-json  | string | Compact PR identity and backport labels <br>when exactly one PR is eligible.  |
+|  event-path  | string |          Temporary synthetic event file for RESOLVED_PR_EVENT_PATH.           |
+| events-json  | string |         Array of compact PR identity envelopes <br>for a job matrix.          |
+| node-options | string | NODE_OPTIONS preload for Node actions that <br>consume the synthetic event.   |
+|  pr-number   | string |                             Pull request number.                              |
 
 <!-- AUTO-DOC-OUTPUT:END -->

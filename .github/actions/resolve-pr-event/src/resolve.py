@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""Resolve an untrusted workflow_run artifact into an authoritative PR event."""
-import io
+"""Resolve merged pull requests using trusted GitHub events and API data."""
 import json
 import os
 import re
@@ -10,12 +9,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-import zipfile
 
-MAX_ARCHIVE = 128 * 1024
-MAX_JSON = 32 * 1024
-RELAY = '.github/workflows/pull-request-events.yaml'
-ACTIONS = {'opened', 'edited', 'labeled', 'closed'}
+MAX_BYTES = 4 * 1024 * 1024
+SHA = re.compile(r'^[0-9a-f]{40}$')
 
 class Reject(Exception):
     pass
@@ -37,34 +33,11 @@ def parse_json(data):
 def positive(value):
     return type(value) is int and 0 < value <= 2**53 - 1
 
-def decode_artifact(raw):
-    if len(raw) > MAX_ARCHIVE:
-        raise Reject('artifact archive too large')
-    try:
-        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
-            entries = archive.infolist()
-            if len(entries) != 1 or entries[0].filename != 'event.json':
-                raise Reject('artifact must contain only event.json')
-            entry = entries[0]
-            if entry.is_dir() or entry.file_size > MAX_JSON or entry.flag_bits & 1:
-                raise Reject('invalid artifact member')
-            with archive.open(entry) as member:
-                data = member.read(MAX_JSON + 1)
-            if len(data) > MAX_JSON:
-                raise Reject('artifact member too large')
-    except (zipfile.BadZipFile, RuntimeError, OSError, EOFError) as exc:
-        raise Reject('invalid artifact archive') from exc
-    obj = parse_json(data)
-    if not isinstance(obj, dict) or set(obj) != {'number', 'action', 'label'}:
-        raise Reject('invalid artifact fields')
-    if not positive(obj['number']) or obj['action'] not in ACTIONS:
-        raise Reject('invalid artifact event')
-    label = obj['label']
-    if not isinstance(label, str) or len(label) > 255 or any(ord(c) < 32 for c in label):
-        raise Reject('invalid artifact label')
-    if (obj['action'] == 'labeled') != bool(label):
-        raise Reject('invalid event label')
-    return obj
+def sha(value):
+    return isinstance(value, str) and bool(SHA.fullmatch(value)) and value != '0' * 40
+
+def same(left, right):
+    return isinstance(left, str) and isinstance(right, str) and left.lower() == right.lower()
 
 class SafeRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
@@ -79,106 +52,132 @@ class API:
         self.repo = repository
         self.token = token
 
-    def get(self, path, binary=False, allow_missing=False):
+    def get(self, path):
         request = urllib.request.Request(self.root + '/repos/' + self.repo + path,
             headers={'Authorization': 'Bearer ' + self.token, 'Accept': 'application/vnd.github+json',
                      'X-GitHub-Api-Version': '2022-11-28'})
         try:
             with urllib.request.build_opener(SafeRedirect()).open(request, timeout=30) as response:
-                raw = response.read((MAX_ARCHIVE if binary else 4 * 1024 * 1024) + 1)
+                raw = response.read(MAX_BYTES + 1)
         except urllib.error.HTTPError as exc:
-            if allow_missing and exc.code == 404:
-                return None
             raise RuntimeError('GitHub API request failed (HTTP %d)' % exc.code) from exc
         except urllib.error.URLError as exc:
             raise RuntimeError('GitHub API request failed') from exc
-        if len(raw) > (MAX_ARCHIVE if binary else 4 * 1024 * 1024):
+        if len(raw) > MAX_BYTES:
             raise Reject('API response too large')
-        return raw if binary else parse_json(raw)
+        return parse_json(raw)
 
-def resolve(api, event, source):
-    if source != RELAY:
-        raise Reject('source-workflow must name the pull request relay')
-    if not isinstance(event, dict) or event.get('action') != 'completed':
-        raise Reject('not a completed workflow run')
-    payload_run = event.get('workflow_run') or {}
-    run_id, attempt = payload_run.get('id'), payload_run.get('run_attempt')
-    if not positive(run_id) or not positive(attempt):
-        raise Reject('invalid run identity')
-    run = api.get('/actions/runs/%d/attempts/%d' % (run_id, attempt))
-    if (run.get('id') != run_id or run.get('run_attempt') != attempt or
-        run.get('event') != 'pull_request_target' or run.get('status') != 'completed' or
-        run.get('conclusion') != 'success' or run.get('path') != source):
-        raise Reject('source run is not an eligible relay')
-    workflow = api.get('/actions/workflows/' + urllib.parse.quote(source.rsplit('/', 1)[-1], safe=''))
-    run_repo = run.get('repository') or {}
-    if (not positive(run.get('workflow_id')) or workflow.get('id') != run.get('workflow_id') or
-        workflow.get('path') != source or not isinstance(run_repo.get('full_name'), str) or
-        run_repo['full_name'].lower() != api.repo.lower()):
-        raise Reject('source workflow or repository mismatch')
-    # pull_request_target executes the workflow from the base repository's
-    # default branch. The run head_sha is the PR head, not the workflow SHA.
-    repo = api.get('')
-    if repo.get('full_name', '').lower() != api.repo.lower():
-        raise Reject('repository identity mismatch')
-    artifacts = []
+def paged(api, path, field=None):
+    items = []
     for page in range(1, 11):
-        result = api.get('/actions/runs/%d/artifacts?per_page=100&page=%d' % (run_id, page))
-        batch = result.get('artifacts', [])
-        artifacts.extend(a for a in batch if a.get('name') == 'pull-request-event-%d' % attempt and not a.get('expired'))
+        obj = api.get(path + ('&' if '?' in path else '?') + 'per_page=100&page=%d' % page)
+        batch = obj.get(field) if field and isinstance(obj, dict) else obj
+        if not isinstance(batch, list) or len(batch) > 100:
+            raise Reject('invalid paginated API response')
+        items.extend(batch)
         if len(batch) < 100:
-            break
+            return items
+    raise Reject('pagination limit exceeded')
+
+def trusted_context(api, payload, event_name):
+    repo = api.get('')
+    default = repo.get('default_branch')
+    if not same(repo.get('full_name'), api.repo) or not isinstance(default, str) or not default:
+        raise Reject('repository identity mismatch')
+    if not same((payload.get('repository') or {}).get('full_name'), api.repo):
+        raise Reject('event repository mismatch')
+    ref = 'refs/heads/' + default
+    if os.environ.get('GITHUB_REF') != ref:
+        raise Reject('workflow is not running on the default branch')
+    workflow_ref = os.environ.get('GITHUB_WORKFLOW_REF', '')
+    if not workflow_ref.startswith(api.repo + '/.github/workflows/') or not workflow_ref.endswith('@' + ref):
+        raise Reject('workflow revision is not trusted')
+    return repo, default, ref
+
+def merged_pr(pr, number, repo, default):
+    base = pr.get('base') or {}
+    return (positive(number) and pr.get('number') == number and pr.get('merged') is True and
+            pr.get('state') == 'closed' and sha(pr.get('merge_commit_sha')) and
+            same((base.get('repo') or {}).get('full_name'), repo) and base.get('ref') == default)
+
+def resolve(api, payload, event_name, source_workflow=''):
+    if not isinstance(payload, dict):
+        raise Reject('invalid event')
+    repo, default, ref = trusted_context(api, payload, event_name)
+    commits = []
+    if event_name == 'push':
+        before, head = payload.get('before'), payload.get('after')
+        if payload.get('ref') != ref or payload.get('deleted') is not False or payload.get('forced') is not False or not sha(before) or not sha(head):
+            raise Reject('unsupported push ref, range, deletion, or force push')
+        commits = [item.get('sha') for item in paged(api, '/compare/%s...%s' % (before, head), 'commits') if isinstance(item, dict)]
+        if not commits or commits[-1] != head or any(not sha(item) for item in commits):
+            raise Reject('invalid or incomplete push range')
+    elif event_name == 'workflow_run':
+        signal = payload.get('workflow_run') or {}
+        run_id, attempt = signal.get('id'), signal.get('run_attempt')
+        if (payload.get('action') != 'completed' or not positive(run_id) or not positive(attempt) or
+            not re.fullmatch(r'\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml', source_workflow)):
+            raise Reject('invalid signal identity')
+        run = api.get('/actions/runs/%d/attempts/%d' % (run_id, attempt))
+        workflow = api.get('/actions/workflows/' + urllib.parse.quote(source_workflow.rsplit('/', 1)[-1], safe=''))
+        if (run.get('id') != run_id or run.get('run_attempt') != attempt or
+            run.get('event') != 'pull_request' or run.get('status') != 'completed' or run.get('conclusion') != 'success' or
+            run.get('path') != source_workflow or not positive(run.get('workflow_id')) or
+            workflow.get('id') != run.get('workflow_id') or workflow.get('path') != source_workflow or
+            not same((run.get('repository') or {}).get('full_name'), api.repo) or
+            not isinstance(run.get('head_branch'), str) or not run.get('head_branch') or
+            not sha(run.get('head_sha')) or signal.get('head_sha') != run.get('head_sha')):
+            raise Reject('signal run is not eligible')
+        candidates = run.get('pull_requests')
+        if not isinstance(candidates, list):
+            raise Reject('invalid signal pull request associations')
+        if not candidates:
+            candidates = paged(api, '/commits/%s/pulls' % run['head_sha'])
+        signal_sha = run['head_sha']
     else:
-        raise Reject('too many artifacts')
-    if len(artifacts) != 1:
-        raise Reject('missing or ambiguous relay artifact; rerun the metadata relay')
-    artifact = artifacts[0]
-    if not positive(artifact.get('id')) or artifact.get('workflow_run', {}).get('id') != run_id:
-        raise Reject('artifact run mismatch')
-    artifact_repo_id = artifact.get('workflow_run', {}).get('repository_id')
-    if artifact_repo_id is not None and artifact_repo_id != repo.get('id'):
-        raise Reject('artifact repository mismatch')
-    seed = decode_artifact(api.get('/actions/artifacts/%d/zip' % artifact['id'], binary=True))
-    pr = api.get('/pulls/%d' % seed['number'], allow_missing=True)
-    if not isinstance(pr, dict) or pr.get('number') != seed['number']:
-        raise Reject('pull request not found')
-    base_repo = ((pr.get('base') or {}).get('repo') or {}).get('full_name')
-    if not isinstance(base_repo, str) or base_repo.lower() != api.repo.lower():
-        raise Reject('pull request repository mismatch')
-    label = None
-    if seed['action'] == 'labeled':
-        label = next((item for item in pr.get('labels', []) if isinstance(item, dict) and item.get('name') == seed['label']), None)
-        if label is None:
-            raise Reject('label no longer exists on pull request; restore the label and rerun the metadata relay')
-    result = {'action': seed['action'], 'number': seed['number'], 'pull_request': pr, 'repository': repo}
-    if label is not None:
-        result['label'] = label
-    return result
+        raise Reject('unsupported event')
+    numbers = set()
+    for commit in commits:
+        for candidate in paged(api, '/commits/%s/pulls' % commit):
+            number = candidate.get('number') if isinstance(candidate, dict) else None
+            if positive(number) and candidate.get('merge_commit_sha') == commit:
+                numbers.add(number)
+    if event_name == 'workflow_run':
+        for candidate in candidates:
+            number = candidate.get('number') if isinstance(candidate, dict) else None
+            if positive(number):
+                numbers.add(number)
+    events = []
+    for number in sorted(numbers):
+        pr = api.get('/pulls/%d' % number)
+        if not isinstance(pr, dict) or not merged_pr(pr, number, api.repo, default):
+            continue
+        if commits and pr['merge_commit_sha'] not in commits:
+            continue
+        if event_name == 'workflow_run' and (signal_sha not in (pr['merge_commit_sha'], (pr.get('head') or {}).get('sha')) or
+                                            (pr.get('head') or {}).get('ref') != run['head_branch']):
+            continue
+        if not commits:
+            comparison = api.get('/compare/%s...%s' % (pr['merge_commit_sha'], urllib.parse.quote(default, safe='')))
+            if comparison.get('status') not in ('ahead', 'identical'):
+                raise Reject('merged commit is not on the default branch')
+        events.append({'action': 'closed', 'number': number, 'pull_request': pr, 'repository': repo})
+    if len(events) > 256:
+        raise RuntimeError('too many matched pull requests for a job matrix')
+    return events
 
-def validate_restore(event, repository):
-    if not isinstance(event, dict) or not isinstance(event.get('pull_request'), dict):
-        raise Reject('invalid restored event')
-    number = event['pull_request'].get('number')
-    repo = event.get('repository')
-    if not positive(number) or not isinstance(repo, dict) or not isinstance(repo.get('full_name'), str) or repo['full_name'].lower() != repository.lower():
-        raise Reject('restored event identity mismatch')
-    if event.get('action') not in ACTIONS or (event.get('number', number) != number):
-        raise Reject('invalid restored event action')
-    return event
-
-def write_outputs(event):
-    encoded = json.dumps(event, ensure_ascii=True, separators=(',', ':'))
-    with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=os.environ['RUNNER_TEMP'], prefix='pr-event-', suffix='.json', delete=False) as f:
-        f.write(encoded)
-        path = f.name
-    label = event.get('label') or {}
-    bootstrap = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'event-bootstrap.cjs')
-    outputs = {'eligible': 'true', 'event-json': encoded, 'event-path': path,
-               'node-options': '--require=' + json.dumps(bootstrap, ensure_ascii=False),
-               'pr-number': str(event['pull_request']['number']), 'action': event['action'],
-               'label': label.get('name', '') if isinstance(label, dict) else '',
-               'body-without-comments': re.sub(r'<!--.*?-->', '', event['pull_request'].get('body') or '', flags=re.S)}
-    write_output_values(outputs)
+def compact(event):
+    pr = event['pull_request']
+    repo = event['repository']
+    labels = [label for label in pr.get('labels', []) if isinstance(label, dict) and
+              isinstance(label.get('name'), str) and label['name'].startswith('backport-to-')]
+    return {'action': 'closed', 'number': event['number'],
+            'repository': {'full_name': repo['full_name'], 'name': repo.get('name', repo['full_name'].split('/')[-1]),
+                           'default_branch': repo['default_branch']},
+            'pull_request': {'number': pr['number'], 'state': pr['state'], 'merged': pr['merged'],
+                             'merge_commit_sha': pr['merge_commit_sha'], 'base': {'ref': pr['base']['ref'],
+                                 'repo': {'full_name': pr['base']['repo']['full_name']}},
+                             'labels': [{'name': item['name']} for item in labels]}}
 
 def write_output_values(outputs):
     with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as f:
@@ -188,26 +187,61 @@ def write_output_values(outputs):
                 delimiter = 'ghadelimiter_' + uuid.uuid4().hex
             f.write('%s<<%s\n%s\n%s\n' % (key, delimiter, value, delimiter))
 
+def write_outputs(events):
+    encoded_events = json.dumps([compact(event) for event in events], ensure_ascii=True, separators=(',', ':'))
+    outputs = {'eligible': 'true' if events else 'false', 'events-json': encoded_events}
+    if len(events) == 1:
+        event = events[0]
+        encoded = json.dumps(event, ensure_ascii=True, separators=(',', ':'))
+        compact_encoded = json.dumps(compact(event), ensure_ascii=True, separators=(',', ':'))
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=os.environ['RUNNER_TEMP'], prefix='pr-event-', suffix='.json', delete=False) as f:
+            f.write(encoded)
+            path = f.name
+        bootstrap = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'event-bootstrap.cjs')
+        outputs.update({'event-json': compact_encoded, 'event-path': path,
+            'node-options': '--require=' + json.dumps(bootstrap, ensure_ascii=False),
+            'pr-number': str(event['number']), 'action': event['action']})
+    if sum(len(value.encode('utf-16-le')) for value in outputs.values()) > 700 * 1024:
+        raise RuntimeError('resolved outputs exceed size limit')
+    write_output_values(outputs)
+
 def main():
     try:
         repository = os.environ['GITHUB_REPOSITORY']
+        with open(os.environ['GITHUB_EVENT_PATH'], 'rb') as f:
+            raw = f.read(MAX_BYTES + 1)
+        if len(raw) > MAX_BYTES:
+            raise Reject('event too large')
+        payload = parse_json(raw)
         restored = os.environ.get('INPUT_EVENT_JSON', '')
+        requested = None
         if restored:
-            if len(restored.encode('utf-8')) > 4 * 1024 * 1024:
+            if len(restored.encode('utf-8')) > MAX_BYTES:
                 raise Reject('restored event too large')
-            event = validate_restore(parse_json(restored), repository)
-        else:
-            if os.environ.get('GITHUB_EVENT_NAME') != 'workflow_run':
-                raise Reject('unsupported event')
-            with open(os.environ['GITHUB_EVENT_PATH'], 'rb') as f:
-                payload = parse_json(f.read(4 * 1024 * 1024 + 1))
-            event = resolve(API(os.environ['INPUT_GITHUB_TOKEN'], repository), payload,
-                            os.environ.get('INPUT_SOURCE_WORKFLOW', ''))
-        write_outputs(event)
+            requested = parse_json(restored)
+        events = resolve(API(os.environ['INPUT_GITHUB_TOKEN'], repository), payload,
+                         os.environ.get('GITHUB_EVENT_NAME', ''), os.environ.get('INPUT_SOURCE_WORKFLOW', ''))
+        if restored:
+            number = requested.get('number') if isinstance(requested, dict) else None
+            matches = [event for event in events if event['number'] == number]
+            supplied_pr = requested.get('pull_request') if isinstance(requested, dict) else None
+            if (len(matches) != 1 or not isinstance(supplied_pr, dict) or
+                requested.get('action') != 'closed' or supplied_pr.get('number') != number or
+                supplied_pr.get('merged') is not True or supplied_pr.get('state') != 'closed' or
+                supplied_pr.get('merge_commit_sha') != matches[0]['pull_request']['merge_commit_sha'] or
+                not same((requested.get('repository') or {}).get('full_name'), repository) or
+                not same(((supplied_pr.get('base') or {}).get('repo') or {}).get('full_name'), repository) or
+                (supplied_pr.get('base') or {}).get('ref') != matches[0]['repository']['default_branch']):
+                raise Reject('restored event does not match authoritative event')
+            events = matches
+        write_outputs(events)
     except Reject as exc:
         print('::warning::' + str(exc))
-        write_output_values({'eligible': 'false'})
-    except (RuntimeError, OSError, KeyError, TypeError) as exc:
+        write_output_values({'eligible': 'false', 'events-json': '[]'})
+    except RuntimeError as exc:
+        print('::error::Unable to resolve pull request event: ' + str(exc), file=sys.stderr)
+        return 1
+    except (OSError, KeyError, TypeError) as exc:
         print('::error::Unable to resolve pull request event: ' + type(exc).__name__, file=sys.stderr)
         return 1
     return 0
