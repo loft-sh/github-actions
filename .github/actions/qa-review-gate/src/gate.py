@@ -9,16 +9,21 @@ Two event shapes, both read from GITHUB_EVENT_PATH:
 - issue_comment (created): `/qa-review override <reason>` from a QA login completes the
   check-run as success and records who overrode it. `/qa-review human` from a repository
   member asks the QA team for a review and leaves the check-run waiting for a person.
+- workflow_run (completed) of the e2e workflow: every `It(` the PR adds is looked up in the
+  Ginkgo JSON report the run uploaded. A new spec that did not run, or did not pass, turns the
+  `<check>-ci` check-run red. The panel's verdict check-run is never touched.
 
 Every decision is a plain dict so the tests never touch the network; `apply` is the only
 function that calls `gh`.
 """
 
+import glob
 import json
 import os
 import re
 import subprocess
 import sys
+import tempfile
 
 MARKER = re.compile(
     r"<!--\s*qa-review\s+verdict=(?P<verdict>[a-z_]+)\s+classes=(?P<classes>\S*)"
@@ -28,6 +33,8 @@ CONCLUSION = {"block": "failure", "pass": "success", "needs_human": "action_requ
               "not_run": "neutral"}
 CLASS_WORDS = {"a": "need a test", "b": "weak test", "c": "no test", "d": "product gap"}
 MEMBER_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
+ADDED_SPEC = re.compile(r'^\+[^+].*\b[FPX]?(?:It|Specify)\(\s*"((?:[^"\\]|\\.)+)"')
+REPORT_ARTIFACT = "ginkgo-report"
 
 
 class GateError(Exception):
@@ -128,6 +135,91 @@ def decide_comment(event, qa_logins, check_name, command="/qa-review"):
     return {"skip": f"unknown {command} verb {verb!r}; use override <reason> or human"}
 
 
+def added_specs(diff):
+    """Spec texts the diff adds in e2e Go files: `It("...")` on an added line."""
+    specs, in_e2e_go = [], False
+    for line in diff.splitlines():
+        if line.startswith("+++ "):
+            path = line[4:].removeprefix("b/")
+            in_e2e_go = path.endswith(".go") and ("/e2e" in f"/{path}")
+        elif in_e2e_go:
+            match = ADDED_SPEC.match(line)
+            if match:
+                specs.append(match.group(1))
+    return specs
+
+
+def report_specs(report):
+    """{spec text: state} for every leaf spec in a Ginkgo JSON report (a list of suites)."""
+    states = {}
+    for suite in report:
+        for spec in suite.get("SpecReports") or []:
+            if spec.get("LeafNodeType") in ("It", "Specify", None):
+                states[spec.get("LeafNodeText", "")] = spec.get("State", "")
+    return states
+
+
+def decide_ci(run, pr_number, added, states, check_name):
+    """Compare the PR's new specs with what the e2e run reported."""
+    if run.get("conclusion") not in ("success", "failure"):
+        return {"skip": f"e2e run ended {run.get('conclusion') or 'unknown'}, nothing to compare"}
+    if not added:
+        return {"skip": "the PR adds no e2e spec"}
+    missing = [t for t in added if t not in states]
+    not_passed = [f"{t} ({states[t]})" for t in added if t in states and states[t] != "passed"]
+    head = run.get("head_sha", "")
+    if missing or not_passed:
+        lines = [f"- did not run: {t}" for t in missing] + [f"- {t}" for t in not_passed]
+        title = f"QA review: {len(missing) + len(not_passed)} new spec(s) did not run or pass in CI"
+        summary = ("New specs this PR adds, checked against the Ginkgo report of "
+                   f"{run.get('html_url', '')}:\n\n" + "\n".join(lines) +
+                   "\n\nA spec the PR label filter never selects, or a focused/skipped spec, "
+                   "lands here. Fix the filter or the spec and push.")
+        conclusion = "failure"
+    else:
+        title = f"QA review: all {len(added)} new spec(s) ran and passed in CI"
+        summary = f"Ginkgo report: {run.get('html_url', '')}"
+        conclusion = "success"
+    return {
+        "check": {"name": f"{check_name}-ci", "head_sha": head, "conclusion": conclusion,
+                  "title": title, "summary": summary},
+        "request_qa_review": False,
+        "pr_number": pr_number,
+    }
+
+
+def gh(args, token, **kwargs):
+    env = {**os.environ, "GH_TOKEN": token}
+    result = subprocess.run(["gh", *args], capture_output=True, text=True, env=env, check=False,
+                            **kwargs)
+    if result.returncode:
+        raise GateError(f"gh {' '.join(args)} failed: {result.stderr.strip()}")
+    return result.stdout
+
+
+def collect_ci(event, repo, token, check_name):
+    """Fetch the diff and the Ginkgo report for a finished e2e run, then decide."""
+    run = event.get("workflow_run") or {}
+    prs = run.get("pull_requests") or []
+    if not prs:
+        return {"skip": "e2e run is not for a pull request"}
+    pr_number = prs[0]["number"]
+    diff = gh(["pr", "diff", str(pr_number), "-R", repo], token)
+    added = added_specs(diff)
+    if not added:
+        return {"skip": "the PR adds no e2e spec"}
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            gh(["run", "download", str(run["id"]), "-R", repo, "-n", REPORT_ARTIFACT, "-D", tmp], token)
+        except GateError:
+            return {"skip": f"e2e run uploaded no {REPORT_ARTIFACT} artifact"}
+        states = {}
+        for path in glob.glob(os.path.join(tmp, "**", "*.json"), recursive=True):
+            with open(path, encoding="utf-8") as fh:
+                states.update(report_specs(json.load(fh)))
+    return decide_ci(run, pr_number, added, states, check_name)
+
+
 def gh_api(args, token, payload=None):
     command = ["gh", "api", *args]
     env = {**os.environ, "GH_TOKEN": token}
@@ -171,8 +263,11 @@ def main():
     elif mode == "comment":
         logins = {s.strip() for s in os.environ.get("INPUT_QA_LOGINS", "").split(",") if s.strip()}
         decision = decide_comment(event, logins, check_name)
+    elif mode == "ci":
+        decision = collect_ci(event, os.environ["GITHUB_REPOSITORY"],
+                              os.environ["INPUT_GITHUB_TOKEN"], check_name)
     else:
-        raise GateError(f"INPUT_MODE must be review or comment, got {mode!r}")
+        raise GateError(f"INPUT_MODE must be review, comment or ci, got {mode!r}")
     if "skip" in decision:
         print(f"::notice::qa-review-gate: {decision['skip']}")
         return 0

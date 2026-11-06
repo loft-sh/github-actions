@@ -5,7 +5,9 @@ description: |
   one comment. The panel (loft-sh/ai-agents pr-review) ends its review body with a
   marker line; this action reads the marker and never talks to the panel itself.
   `review` mode handles a submitted pull request review; `comment` mode handles
-  `/qa-review override <reason>` (QA logins only) and `/qa-review human` (members).
+  `/qa-review override <reason>` (QA logins only) and `/qa-review human` (members);
+  `ci` mode runs when the e2e workflow finishes and checks every spec the PR adds against
+  the run's Ginkgo report, publishing `<check-name>-ci`.
 author: "vCluster Labs"
 branding:
   icon: "shield"
@@ -13,7 +15,7 @@ branding:
 
 inputs:
   mode:
-    description: 'Either "review" (pull_request_review event) or "comment" (issue_comment event).'
+    description: '"review" (pull_request_review event), "comment" (issue_comment event) or "ci" (workflow_run event of the e2e workflow).'
     required: true
   panel-login:
     description: 'Login that posts the panel review. Reviews by anyone else are ignored.'
@@ -32,7 +34,7 @@ inputs:
     required: false
     default: 'qa-review'
   github-token:
-    description: 'Token for gh. The calling job must grant checks: write and pull-requests: write.'
+    description: 'Token for gh. The calling job must grant checks: write and pull-requests: write; ci mode also needs actions: read.'
     required: false
     default: ${{ github.token }}
 
