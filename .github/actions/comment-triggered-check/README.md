@@ -295,6 +295,22 @@ Run the `start` calls for one command one after another, as separate steps of
 one job. Two `start` calls running in parallel could both find no reply and
 post two.
 
+## Optional timeout parsing
+
+Set `parse-timeout: "true"` to accept `--timeout N` before the optional final
+`--focus`, where N is a whole number of minutes from 1 to 150:
+
+```text
+/test-e2e snapshots --timeout 120
+/test-e2e snapshots --timeout 120 --focus "creates a snapshot"
+```
+
+The `timeout` output is empty when the option is absent and otherwise carries
+the requested minutes for the caller to pass to its test runner. The parser
+does not change a caller's default timeout. The option is disabled by default
+for existing consumers. Invalid values report `malformed-timeout` or
+`timeout-out-of-range`.
+
 ## Permissions
 
 The calling job needs `checks: write` to create and complete the check-run, and

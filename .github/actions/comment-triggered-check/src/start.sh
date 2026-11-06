@@ -24,6 +24,7 @@
 #   INPUT_PARSE_FOCUS         whether to split an optional --focus argument
 #   INPUT_PARSE_REPEAT        whether to accept --repeat N
 #   INPUT_PARSE_RUNS          whether to accept --runs N
+#   INPUT_PARSE_TIMEOUT       whether to accept --timeout N minutes
 #   INPUT_ALLOWED_TARGETS     whitespace-separated accepted target values
 #   INPUT_TARGET_NAME         target represented by this action invocation;
 #                             setting it enables --target parsing
@@ -56,6 +57,7 @@ server_url="${INPUT_SERVER_URL:-https://github.com}"
 parse_focus="${INPUT_PARSE_FOCUS:-false}"
 parse_repeat="${INPUT_PARSE_REPEAT:-false}"
 parse_runs="${INPUT_PARSE_RUNS:-false}"
+parse_timeout="${INPUT_PARSE_TIMEOUT:-false}"
 allowed_targets="$(normalize_filter "${INPUT_ALLOWED_TARGETS-}")"
 target_name="${INPUT_TARGET_NAME:-}"
 want_reply="${INPUT_REPLY:-false}"
@@ -97,6 +99,7 @@ finish_and_exit() {
   emit "target" "$target"
   emit "repeat" "$repeat"
   emit "runs" "$runs_json"
+  emit "timeout" "${REQUEST_TIMEOUT:-}"
   emit "should-run" "$should_run"
   emit "reason" "$reason"
   emit "reason-title" "$reason_title"
@@ -138,7 +141,7 @@ if [[ -z "$pr_number" ]]; then
   finish_and_exit
 fi
 
-parse_request "$args" "$parse_focus" "$parse_target" "$allowed_targets" "$parse_repeat" "$parse_runs"
+parse_request "$args" "$parse_focus" "$parse_target" "$allowed_targets" "$parse_repeat" "$parse_runs" "$parse_timeout"
 filter="$REQUEST_FILTER"
 focus="$REQUEST_FOCUS"
 target="$REQUEST_TARGET"
@@ -156,8 +159,8 @@ if [[ -n "$REQUEST_ERROR" ]]; then
     invalid-target)
       echo "::notice::${command_word} target '${target}' is not one of: ${allowed_targets}"
       ;;
-    *repeat*|*runs*)
-      echo "::notice::${command_word} --repeat takes 1 to ${REPEAT_MAX}, --runs 1 to ${RUNS_MAX}, and not both: ${args}"
+    *repeat*|*runs*|*timeout*)
+      echo "::notice::${command_word} --repeat takes 1 to ${REPEAT_MAX}, --runs 1 to ${RUNS_MAX}, and --timeout takes 1 to ${TIMEOUT_MAX} minutes: ${args}"
       ;;
   esac
   finish_and_exit
@@ -274,6 +277,9 @@ if [[ -n "$repeat" ]]; then
   option="--repeat ${repeat}"
 elif (( run_count > 1 )); then
   option="--runs ${run_count}"
+fi
+if [[ -n "$REQUEST_TIMEOUT" ]]; then
+  option="${option:+${option} }--timeout ${REQUEST_TIMEOUT}"
 fi
 request="$(request_display "$filter" "$focus" "$target")"
 base_name="$(check_name "$prefix" "$request" 60)"

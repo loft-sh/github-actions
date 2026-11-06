@@ -284,7 +284,7 @@ setup() {
 # --- parse_request: --repeat and --runs ---------------------------------------
 
 # parse_all <args> — every option parser enabled, as the e2e caller configures it.
-parse_all() { parse_request "$1" "true" "true" "pro oss" "true" "true"; }
+parse_all() { parse_request "$1" "true" "true" "pro oss" "true" "true" "true"; }
 
 @test "parse_request: extracts --runs from a label filter" {
   parse_all 'feature: containsAny os-image --runs 3'
@@ -335,6 +335,36 @@ parse_all() { parse_request "$1" "true" "true" "pro oss" "true" "true"; }
   [ "$REQUEST_ERROR" = "" ]
 }
 
+@test "parse_request: timeout is opt-in, decimal, and bounded in minutes" {
+  parse_all 'snapshots --timeout 120 --focus x'
+  [ "$REQUEST_FILTER" = "snapshots" ]
+  [ "$REQUEST_TIMEOUT" = "120" ]
+  [ "$REQUEST_FOCUS" = "x" ]
+  [ "$REQUEST_ERROR" = "" ]
+  parse_all "snapshots --timeout ${TIMEOUT_MAX}"
+  [ "$REQUEST_TIMEOUT" = "$TIMEOUT_MAX" ]
+  [ "$REQUEST_ERROR" = "" ]
+  parse_request 'snapshots --timeout 120' "true" "false" "pro oss"
+  [ "$REQUEST_FILTER" = "snapshots --timeout 120" ]
+  [ "$REQUEST_TIMEOUT" = "" ]
+}
+
+@test "parse_request: rejects malformed and excessive timeout minutes" {
+  local args want
+  while IFS='|' read -r args want; do
+    parse_all "$args"
+    [ "$REQUEST_ERROR" = "$want" ] || { echo "'$args' gave '$REQUEST_ERROR', want '$want'"; return 1; }
+  done <<CASES
+snapshots --timeout|malformed-timeout
+snapshots --timeout 1.5|malformed-timeout
+snapshots --timeout -1|malformed-timeout
+snapshots --timeout 2 --timeout 3|malformed-timeout
+snapshots --timeout 0|timeout-out-of-range
+snapshots --timeout $((TIMEOUT_MAX + 1))|timeout-out-of-range
+snapshots --timeout 99999999999999999999|timeout-out-of-range
+CASES
+}
+
 @test "parse_request: rejects malformed and out-of-range counts" {
   local args want
   while IFS='|' read -r args want; do
@@ -378,6 +408,15 @@ CASES
   [ "$REFUSAL_GUIDANCE" = "Use a number from 1 to ${REPEAT_MAX}." ]
   refusal_details "repeat-and-runs" "/test-e2e" ""
   [ "$REFUSAL_TITLE" = '`--repeat` and `--runs` together' ]
+}
+
+@test "refusal_details: timeout errors name the minute bound" {
+  refusal_details "malformed-timeout" "/test-e2e" ""
+  [ "$REFUSAL_TITLE" = '`--timeout` needs a number' ]
+  [[ "$REFUSAL_GUIDANCE" == *"1 to ${TIMEOUT_MAX}"* ]]
+  refusal_details "timeout-out-of-range" "/test-e2e" ""
+  [ "$REFUSAL_TITLE" = '`--timeout` is out of range' ]
+  [ "$REFUSAL_GUIDANCE" = "Use a timeout from 1 to ${TIMEOUT_MAX} minutes." ]
 }
 
 @test "request_display: an option stands before the focus" {
