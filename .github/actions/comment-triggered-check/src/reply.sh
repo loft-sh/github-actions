@@ -42,7 +42,7 @@ reply_checks() {
     check="$(gh api "repos/${1}/check-runs/${id}" 2>/dev/null)" || continue
     jq -e 'type == "object" and (.id | type) == "number"' <<< "$check" >/dev/null 2>&1 || continue
     out="$(jq -c --argjson c "$check" \
-      '. + [$c | {id, status, conclusion, head_sha}]' <<< "$out")"
+      '. + [$c | {id, status, conclusion, head_sha, external_id}]' <<< "$out")"
   done < <(jq -r '.runs[].id' <<< "$2")
   printf '%s' "$out"
 }
@@ -83,9 +83,23 @@ reply_refresh() {
   echo "::warning::reply comment ${reply_id} was still changing after ${REPLY_ATTEMPTS} attempts"
 }
 
-# reply_id_of_check <repo> <check-run-id> — the reply id stored on the check as
-# its external_id, empty when the check has none.
+# reply_id_of_check <repo> <check-run-id> — the reply id stored first in the
+# check's external_id, empty when the check has none.
 reply_id_of_check() {
   gh api "repos/${1}/check-runs/${2}" 2>/dev/null |
-    jq -r '(.external_id // "") | select(test("^[0-9]+$"))' 2>/dev/null || true
+    jq -r '(.external_id // "") | split(" ") | .[0] // "" | select(test("^[0-9]+$"))' 2>/dev/null || true
+}
+
+# check_owner_token <repo> <check-run-id> — the token that may edit the check:
+# GitHub lets only the identity that opened a check-run change it.
+check_owner_token() {
+  local owner
+  if [[ -n "${INPUT_APP_TOKEN:-}" ]]; then
+    owner="$(gh api "repos/${1}/check-runs/${2}" 2>/dev/null | jq -r '.app.slug // ""' 2>/dev/null)" || owner=""
+    if [[ "$owner" != "github-actions" ]]; then
+      printf '%s' "$INPUT_APP_TOKEN"
+      return 0
+    fi
+  fi
+  printf '%s' "${GH_TOKEN:-}"
 }

@@ -268,17 +268,27 @@ to name the rows, such as `Pro`; `--runs` and `--repeat` add `run k of N` or
 ```
 
 After each dispatch, call `link` with the check-run id and the run URL that
-`gh workflow run` prints. `finish` then redraws the reply with the outcome.
+`gh workflow run` prints. `link` stores the URL on the check, next to the reply
+id, so it edits the check: pass it the same app inputs as `start` when the app
+opened the check. `finish` then redraws the reply with the outcome.
 The reply is edited in place, so it notifies nobody, and each new command gets
 its own reply so older runs stay findable. A re-run of the workflow reuses the
 reply and starts its rows over.
 
-The reply is a view of the check-runs. Every writer redraws all rows from the
-checks' current state, reads the reply back, and writes again if another run
-changed it in between. A reply that cannot be written only warns; it never
+The reply is a view of the check-runs: the reply holds only the command and the
+row labels, and each row's status and run link come from its check. Every
+writer redraws all rows from the checks' current state, reads the reply back,
+and writes again if it differs. A job that overwrites the reply with an older
+view therefore draws the other jobs' links on its own read-back. GitHub has no
+conditional comment edit, so this is what keeps parallel `--runs` jobs from
+losing each other's links. A reply that cannot be written only warns; it never
 fails `start`, `link` or `finish`. Only a bot's comment is taken as an existing
 reply, so a person cannot plant the marker, and a run link is drawn only when it
 is a plain https URL.
+
+Run the `start` calls for one command one after another, as separate steps of
+one job. Two `start` calls running in parallel could both find no reply and
+post two.
 
 ## Permissions
 
@@ -323,7 +333,7 @@ without it keeps the reply at its last state.
 | report-conclusion  | string |  false   |                              |                                                                      finish mode. What the test run <br>declared about itself, parsed from its <br>report. The only input that can <br>produce a neutral conclusion.                                                                       |
 |       run-id       | string |  false   |                              |                                                                                               start mode. Used to build the <br>check-run details link. Pass the github.run_id <br>context.                                                                                                |
 |     run-label      | string |  false   |                              |                                                                                   start mode. Short name for this <br>invocation's runs in the reply, such <br>as "Pro". Defaults to check-name-prefix.                                                                                    |
-|      run-url       | string |  false   |                              |                                                                                                    link mode. URL of the run <br>dispatched for check-run-id. The reply links <br>it.                                                                                                      |
+|      run-url       | string |  false   |                              |                                                      link mode. URL of the run <br>dispatched for check-run-id. Stored on the <br>check, so link edits the check: <br>pass the same app inputs as <br>start when the app opened it.                                                        |
 |     server-url     | string |  false   |    `"https://github.com"`    |                                                                                        Base URL for the check-run details <br>link and the reply's links. Pass <br>the github.server_url context.                                                                                          |
 |    suite-result    | string |  false   |                              |                                                                                                         finish mode. Result of the suite <br>job. Pass the matching needs result.                                                                                                          |
 |      summary       | string |  false   |                              |                                                                                             finish mode. Markdown body for the <br>completed check-run. Defaults to the two <br>job results.                                                                                               |
@@ -465,7 +475,7 @@ second check-run for the same filter. The error message names the distinction.
 
 ## Reporting failures to the author
 
-The action deliberately posts no comments. It emits the machine-readable
+Apart from the opt-in `reply`, the action posts no comments. It emits the machine-readable
 `reason` plus presentation-ready `reason-title` and `reason-guidance`, which
 keeps it usable by repositories that surface results differently. Pair it with
 `sticky-pr-comment` when the caller wants a comment.

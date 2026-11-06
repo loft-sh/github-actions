@@ -425,7 +425,7 @@ for (( k = 1; k <= run_count; k++ )); do
   fi
   opened+=("$opened_id")
   reply_runs="$(jq -c --argjson id "$opened_id" --arg label "$(run_label "$label_base" "$repeat" "$k" "$run_count")" \
-    '. + [{id: $id, label: $label, url: ""}]' <<< "$reply_runs")"
+    '. + [{id: $id, label: $label}]' <<< "$reply_runs")"
   runs_json="$(jq -c --argjson id "$opened_id" --arg key "$run_key" --arg name "$run_name" \
     '. + [{"check-run-id": $id, "concurrency-key": $key, "check-name": $name}]' <<< "$runs_json")"
   echo "::notice::started ${run_name} on ${head_sha}"

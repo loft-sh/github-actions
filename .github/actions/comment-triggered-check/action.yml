@@ -83,7 +83,7 @@ inputs:
     required: false
     default: ''
   run-url:
-    description: 'link mode. URL of the run dispatched for check-run-id. The reply links it.'
+    description: 'link mode. URL of the run dispatched for check-run-id. Stored on the check, so link edits the check: pass the same app inputs as start when the app opened it.'
     required: false
     default: ''
   run-id:
@@ -271,6 +271,7 @@ runs:
         INPUT_RUN_URL: ${{ inputs.run-url }}
         INPUT_REPO: ${{ inputs.repo }}
         INPUT_SERVER_URL: ${{ inputs.server-url }}
+        INPUT_APP_TOKEN: ${{ steps.app-token.outputs.token }}
         GH_TOKEN: ${{ inputs.github-token }}
       run: ${{ github.action_path }}/src/link.sh
 branding:

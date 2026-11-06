@@ -532,9 +532,10 @@ refusal_details() {
 }
 
 # --- Reply comment ------------------------------------------------------------
-# One reply per command comment, redrawn from the command's check-runs. The
-# state block carries what the checks cannot: labels and run links. It is
-# base64 so user text can never close the HTML comment around it.
+# One reply per command comment, drawn entirely from the command's check-runs
+# plus the labels in the state block, so any writer that reads the checks after
+# another's update draws it. Each check's external_id is "<reply-id> [run-url]".
+# The state is base64 so user text can never close the HTML comment around it.
 
 REPLY_MARKER_PREFIX="<!-- comment-triggered-check:reply:"
 REPLY_STATE_PREFIX="<!-- comment-triggered-check:state "
@@ -582,9 +583,13 @@ render_reply() {
     --arg encoded "$encoded" \
     --arg state_prefix "$REPLY_STATE_PREFIX" '
     def bad: . as $c | ["failure", "timed_out", "cancelled", "action_required", "startup_failure", "stale"] | index($c) != null;
+    # CommonMark closes a code span only on a backtick run of the same length,
+    # so a fence one longer than the longest run in the text cannot be closed.
     def code:
       (if length > 200 then .[0:200] + "…" else . end) as $t
-      | if ($t | contains("`")) then "`` " + $t + " ``" else "`" + $t + "`" end;
+      | ([$t | scan("`+") | length] | max // 0) as $longest
+      | ([range($longest + 1)] | map("`") | join("")) as $fence
+      | if $longest == 0 then $fence + $t + $fence else $fence + " " + $t + " " + $fence end;
     def outcome:
       {"success": "passed", "failure": "failed", "neutral": "nothing to run",
        "timed_out": "timed out", "cancelled": "cancelled", "skipped": "skipped"}[.] // .;
@@ -607,7 +612,8 @@ render_reply() {
        end) as $headline
     | [$rows[]
        | .run.label as $label
-       | ((.run.url // "") | if test("^https://[^\\s()\\[\\]<>]+$") then . else "" end) as $url
+       | ((.check.external_id // "") | split(" ") | .[1] // ""
+          | if test("^https://[^\\s()\\[\\]<>]+$") then . else "" end) as $url
        | ($base + "/runs/" + (.run.id | tostring)) as $check_url
        | if .check == null then
            "- " + $label + ": status unknown, [view the check](" + $check_url + ")"

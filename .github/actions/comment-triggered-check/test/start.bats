@@ -638,7 +638,7 @@ reply_state() {
   [ "$(calls_matching "POST repos/loft-sh/demo/issues/7/comments")" -eq 1 ]
   [ "$(calls_matching "external_id=9001")" -eq 1 ]
   [ "$(head -n1 <<< "$(reply_body)")" = "<!-- comment-triggered-check:reply:777 -->" ]
-  [ "$(reply_state | jq -c '[.command, .runs]')" = '["/test-e2e snapshots",[{"id":5001,"label":"Pro","url":""}]]' ]
+  [ "$(reply_state | jq -c '[.command, .runs]')" = '["/test-e2e snapshots",[{"id":5001,"label":"Pro"}]]' ]
 }
 
 @test "reply labels every run of --runs" {

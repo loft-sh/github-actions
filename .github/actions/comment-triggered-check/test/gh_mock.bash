@@ -30,6 +30,7 @@
 #   GH_MOCK_COMMENTS_FAIL  non-empty → that listing fails
 #   GH_MOCK_COMMENT_CREATE_FAIL non-empty → posting a comment fails
 #   GH_MOCK_COMMENT_PATCH_FAIL  non-empty → editing a comment fails
+# A PATCH to a seeded check-run stores its external_id in that check's file.
 # A posted or edited comment body is kept in $MOCK_DIR/comment-<id>, and GET
 # .../issues/comments/<id> serves it. $MOCK_DIR/checkrun-<id>.json, when present,
 # answers GET .../check-runs/<id> ahead of GH_MOCK_CHECKRUN_JSON.
@@ -122,6 +123,17 @@ case "$all" in
     ;;
   *"--method PATCH"*)
     [ -n "${GH_MOCK_PATCH_FAIL:-}" ] && { echo "mock: patch failed" >&2; exit 1; }
+    # A seeded check keeps the external_id written to it.
+    case "$all" in
+      *"check-runs/"*)
+        id="${all##*check-runs/}"; id="${id%% *}"
+        ext="$(FIELD=external_id field_value "$@")"
+        if [ -n "$ext" ] && [ -f "$MOCK_DIR/checkrun-${id}.json" ]; then
+          jq -c --arg e "$ext" '.external_id = $e' "$MOCK_DIR/checkrun-${id}.json" > "$MOCK_DIR/x.$$" &&
+            mv "$MOCK_DIR/x.$$" "$MOCK_DIR/checkrun-${id}.json"
+        fi
+        ;;
+    esac
     printf '{}\n'
     ;;
   *"/pulls/"*)

@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
-# link mode: record the run a check-run was dispatched to in the command's
-# reply, and redraw it. Best effort, never fails the caller.
+# link mode: store the run a check-run was dispatched to on that check, next
+# to its reply id, and redraw the reply. Best effort, never fails the caller.
+#
+# The link lives on the check, not in the reply, so a job that overwrites the
+# reply with an older view still draws this link on its read-back pass.
 #
 # Inputs (env):
 #   INPUT_CHECK_RUN_ID  check-run opened by start mode
 #   INPUT_RUN_URL       URL of the run that works on that check
 #   INPUT_REPO          owner/name
 #   INPUT_SERVER_URL    github.server_url
-#   GH_TOKEN            token with pull-requests: write
+#   GH_TOKEN            token with pull-requests: write, and checks: write
+#                       when it opened the check
+#   INPUT_APP_TOKEN     optional GitHub App token, used when the app opened it
 set -euo pipefail
 
 # shellcheck source=.github/actions/comment-triggered-check/src/lib.sh
@@ -34,8 +39,11 @@ if [[ -z "$reply_id" ]]; then
   exit 0
 fi
 
-# shellcheck disable=SC2016 # jq variables, not shell ones.
-reply_refresh "$repo" "$reply_id" \
-  '.runs |= map(if .id == $id then .url = $url else . end)' \
-  --argjson id "$check_run_id" --arg url "$run_url"
+if ! GH_TOKEN="$(check_owner_token "$repo" "$check_run_id")" gh api --method PATCH \
+  "repos/${repo}/check-runs/${check_run_id}" -f "external_id=${reply_id} ${run_url}" >/dev/null 2>&1; then
+  echo "::warning::could not store the run link on check-run ${check_run_id}"
+  exit 0
+fi
+
+reply_refresh "$repo" "$reply_id"
 echo "::notice::linked check-run ${check_run_id} to ${run_url}"
