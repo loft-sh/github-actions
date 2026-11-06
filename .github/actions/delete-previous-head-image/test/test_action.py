@@ -321,6 +321,33 @@ def test_version_with_an_unexpected_tag_is_kept(fake, tmp_path):
     assert "carries tag debug" in result.stdout
 
 
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_packages_only_child_tag_keeps_its_referrers(fake, tmp_path, dry_run):
+    old, new, manifests, tags, versions = candy()
+    child = d("1")
+    referrer_tag = "sha256-" + child[7:]
+    manifests[d("9")] = index(d("8"))
+    manifests[d("8")] = image()
+    tags[referrer_tag] = d("9")
+    server = fake(manifests=manifests, tags=tags)
+    server.versions[1] = version(2, child, "debug")
+    server.versions += [version(13, d("9"), referrer_tag), version(14, d("8"))]
+
+    result = run(
+        server, tmp_path, mode="delete", previous_digest=old, current_digest=new,
+        dry_run=str(dry_run),
+    )
+
+    assert result.returncode == 0, result.stdout
+    assert sorted(server.deleted) == ([] if dry_run else [1, 3, 4, 5])
+    verb = "would delete" if dry_run else "deleting"
+    for digest in (old, d("2"), d("3"), d("e")):
+        assert f"{verb} {digest}" in result.stdout
+    for digest in (child, d("9"), d("8")):
+        assert f"{verb} {digest}" not in result.stdout
+    assert "carries tag debug" in result.stdout
+
+
 def test_no_previous_digest_is_a_no_op(fake, tmp_path):
     server = fake()
     result = run(
