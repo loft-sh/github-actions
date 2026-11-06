@@ -292,6 +292,36 @@ created() { calls_matching "POST"; }
   run bash "$SCRIPT"
   [ "$(kv runs)" = "$(jq -cn --arg key "$(kv concurrency-key)" '[{"check-run-id": 4242, "concurrency-key": $key, "check-name": "e2e: snapshots"}]')" ]
   [ "$(kv repeat)" = "" ]
+  [ "$(kv timeout)" = "" ]
+}
+
+@test "--timeout minutes are returned and shown in the request summary" {
+  export INPUT_PARSE_TIMEOUT="true"
+  export INPUT_COMMENT_BODY="/test-e2e snapshots --timeout 120 --focus x"
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv should-run)" = "true" ]
+  [ "$(kv filter)" = "snapshots" ]
+  [ "$(kv focus)" = "x" ]
+  [ "$(kv timeout)" = "120" ]
+  [ "$(kv check-name)" = 'e2e: snapshots --focus "x"' ]
+  [ "$(calls_matching '--timeout 120')" -ge 1 ]
+}
+
+@test "--timeout stays part of the filter unless parsing is enabled" {
+  export INPUT_COMMENT_BODY="/test-e2e snapshots --timeout 120"
+  run bash "$SCRIPT"
+  [ "$(kv filter)" = "snapshots --timeout 120" ]
+  [ "$(kv timeout)" = "" ]
+}
+
+@test "an out-of-range timeout is refused before any API call" {
+  export INPUT_PARSE_TIMEOUT="true"
+  export INPUT_COMMENT_BODY="/test-e2e snapshots --timeout 151"
+  run bash "$SCRIPT"
+  [ "$(kv should-run)" = "false" ]
+  [ "$(kv reason)" = "timeout-out-of-range" ]
+  [ "$(call_count)" -eq 0 ]
 }
 
 @test "--runs opens one check per run, each with its own key" {
