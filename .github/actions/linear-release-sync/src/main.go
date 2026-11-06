@@ -230,46 +230,60 @@ func run(
 	releasedCount := 0
 	skippedCount := 0
 
-	for _, issueID := range releasedIssues {
+	failedCount, syncErr := processIssues(releasedIssues, func(issueID string) error {
 		// Get issue details including team
 		issueDetails, err := linearClient.GetIssueDetails(ctx, issueID)
 		if err != nil {
 			logger.Error("Failed to get issue details", "issueID", issueID, "error", err)
-			skippedCount++
-			continue
+			return err
 		}
 
 		// Filter by team if specified
 		if len(teamFilter) > 0 && !teamFilter.Contains(issueDetails.TeamName) {
 			logger.Debug("Skipping issue from different team", "issueID", issueID, "team", issueDetails.TeamName, "filter", *linearTeams)
-			continue
+			skippedCount++
+			return nil
 		}
 
 		// Filter by project if specified
 		if len(projectFilter) > 0 && !projectFilter.Contains(issueDetails.ProjectName) {
 			logger.Debug("Skipping issue from different project", "issueID", issueID, "project", issueDetails.ProjectName, "filter", *linearProjects)
-			continue
+			skippedCount++
+			return nil
 		}
 
 		// Get the released state ID for this issue's team
 		releasedStateID, err := getReleasedStateID(issueDetails.TeamName)
 		if err != nil {
 			logger.Error("Failed to get released state for team", "issueID", issueID, "team", issueDetails.TeamName, "error", err)
-			skippedCount++
-			continue
+			return err
 		}
 
 		if err := linearClient.MoveIssueToState(ctx, *dryRun, issueID, issueDetails, releasedStateID, *readyForReleaseStateName, currentRelease.TagName, currentReleaseDateStr, isStable); err != nil {
 			logger.Error("Failed to move issue to state", "issueID", issueID, "error", err)
-			skippedCount++
+			return err
 		} else {
 			releasedCount++
 		}
+		return nil
+	})
+
+	logger.Info("Linear sync completed", "processed", len(releasedIssues), "released", releasedCount, "skipped", skippedCount, "failed", failedCount)
+	return syncErr
+}
+
+// processIssues attempts every issue even when an earlier one fails.
+func processIssues(issueIDs []string, process func(string) error) (int, error) {
+	failed := 0
+	for _, issueID := range issueIDs {
+		if process(issueID) != nil {
+			failed++
+		}
 	}
-
-	logger.Info("Linear sync completed", "processed", len(releasedIssues), "released", releasedCount, "skipped", skippedCount)
-
-	return nil
+	if failed > 0 {
+		return failed, fmt.Errorf("linear sync failed for %d issue(s)", failed)
+	}
+	return 0, nil
 }
 
 // caseInsensitiveSet is a set of strings that supports case-insensitive lookup.
