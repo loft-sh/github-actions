@@ -5,10 +5,12 @@ on:
     branches: [main]
     paths:
       - '.github/actions/release-summary/**'
+      - '.github/actions/release-lib/**.py'
       - '.github/workflows/test-release-summary.yaml'
   pull_request:
     paths:
       - '.github/actions/release-summary/**'
+      - '.github/actions/release-lib/**.py'
       - '.github/workflows/test-release-summary.yaml'
 
 permissions:
