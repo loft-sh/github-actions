@@ -41,6 +41,7 @@ import os
 import sys
 import tempfile
 import time
+from datetime import datetime, timezone
 
 # Managed agents GA beta header, same as pr-review/src/cma.py in
 # loft-sh/ai-agents.
@@ -273,16 +274,33 @@ def latest_event(client, session_id: str, event_type: str):
     return None
 
 
+def event_is_newer_than(event, sent_at: datetime | None) -> bool:
+    """Return true only when an event has a parseable timestamp after our
+    user message. Missing timestamps fail closed: an old idle event must
+    never make a newly-created turn look complete."""
+    if sent_at is None:
+        return False
+    created_at = getattr(event, "processed_at", None) or getattr(event, "created_at", None)
+    if isinstance(created_at, str):
+        try:
+            created_at = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        except ValueError:
+            return False
+    if not isinstance(created_at, datetime):
+        return False
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    return created_at > sent_at
+
+
 def run_session(agent_name: str, user_content: str, api_key: str,
                 vault_id: str, timeout_s: int) -> str:
     """Drive one turn against a deployed managed agent: resolve the agent
     by name, create a per-run environment, open a session (attaching the
-    vault when given), send the user message, poll session status until
-    it leaves running (ai-agents PR #81: a visible answer is not a
-    finished session, so never trust a stream idle event), gate on
-    stop_reason, and return the agent's final message text. The session
-    and environment are deleted on every path — a leaked CI session
-    keeps billing."""
+    vault when given), send the user message, wait for a confirmed idle
+    transition, gate on stop_reason, and return the agent's final message.
+    A running session is interrupted and confirmed stopped before teardown;
+    uncertain sessions keep their environment to avoid breaking active tools."""
     from anthropic import Anthropic, APIError  # type: ignore
 
     if api_key:
@@ -330,6 +348,7 @@ def run_session(agent_name: str, user_content: str, api_key: str,
         fail_soft(f"environment creation failed: {e}")
 
     session = None
+    completion_observed = False
     try:
         kwargs: dict = {"agent": agent_id, "environment_id": env.id,
                         "title": f"ai-step {os.environ.get('GITHUB_REPOSITORY', '')}#{run_id}"}
@@ -337,21 +356,46 @@ def run_session(agent_name: str, user_content: str, api_key: str,
             kwargs["vault_ids"] = [vault_id]
         session = client.beta.sessions.create(**kwargs)
         print(f"ai-step: session {session.id} against agent '{agent_name}'")
-        client.beta.sessions.events.send(
+        sent = client.beta.sessions.events.send(
             session.id,
             events=[{"type": "user.message",
                      "content": [{"type": "text", "text": user_content}]}],
         )
+        sent_events = getattr(sent, "data", None) or []
+        sent_id = getattr(sent_events[0], "id", None) if sent_events else None
+        sent_at = getattr(sent_events[0], "processed_at", None) if sent_events else None
+        if not isinstance(sent_at, datetime) or sent_at.tzinfo is None:
+            sent_at = None
 
         deadline = time.time() + timeout_s
-        status = "running"
+        status = "unknown"
+        saw_running = False
+        idle_event = None
         while time.time() < deadline:
+            if sent_at is None and sent_id:
+                message = latest_event(client, session.id, "user.message")
+                processed_at = getattr(message, "processed_at", None)
+                if (getattr(message, "id", None) == sent_id and
+                        isinstance(processed_at, datetime) and processed_at.tzinfo is not None):
+                    sent_at = processed_at
             status = client.beta.sessions.retrieve(session.id).status
-            if status in ("idle", "terminated"):
+            if status == "running":
+                saw_running = True
+            elif status == "terminated":
+                completion_observed = True
                 break
+            elif status == "idle":
+                idle_event = latest_event(client, session.id, "session.status_idle")
+                if saw_running or (idle_event is not None and
+                                   event_is_newer_than(idle_event, sent_at)):
+                    completion_observed = True
+                    break
             time.sleep(POLL_INTERVAL_S)
 
-        if status not in ("idle", "terminated"):
+        if not completion_observed:
+            if status == "idle":
+                fail_soft("session remained idle without observing startup or a "
+                          "newer session.status_idle event")
             fail_soft(f"session still '{status}' after {timeout_s}s — raise "
                       "session-timeout-seconds or pick a faster agent")
         if status == "terminated":
@@ -360,10 +404,13 @@ def run_session(agent_name: str, user_content: str, api_key: str,
         stop = None
         grace_deadline = time.time() + STOP_REASON_GRACE_S
         while True:
-            idle = latest_event(client, session.id, "session.status_idle")
-            sr = getattr(idle, "stop_reason", None)
+            if idle_event is None or not event_is_newer_than(idle_event, sent_at):
+                idle_event = latest_event(client, session.id, "session.status_idle")
+            fresh_idle = (idle_event is not None and
+                          event_is_newer_than(idle_event, sent_at))
+            sr = getattr(idle_event, "stop_reason", None) if fresh_idle else None
             stop = sr if isinstance(sr, str) else getattr(sr, "type", None)
-            if stop is not None or time.time() >= grace_deadline:
+            if (stop is not None or time.time() >= grace_deadline):
                 break
             time.sleep(POLL_INTERVAL_S)
         if stop != "end_turn":
@@ -389,21 +436,48 @@ def run_session(agent_name: str, user_content: str, api_key: str,
         # fail_soft passes through untouched.
         fail_soft(f"session mode failed unexpectedly: {e}")
     finally:
-        # Delete unconditionally, even on the timeout path where the
-        # session may still be running: leaving it up spends tokens with
-        # nobody reading the result.
+        # Do not remove the environment while a session may still be
+        # running. Interrupt active sessions and confirm they stopped before
+        # deleting them; retain the environment if cleanup is uncertain.
+        delete_session_ok = session is None
         if session is not None:
+            # Establish a known stopped state before attempting either delete.
+            # If status cannot be read, keep the environment as a safety net.
             try:
-                client.beta.sessions.delete(session.id)
-                print(f"ai-step: session {session.id} deleted")
+                current = client.beta.sessions.retrieve(session.id).status
+                interrupted = False
+                if current == "running":
+                    client.beta.sessions.events.send(
+                        session.id, events=[{"type": "user.interrupt"}]
+                    )
+                    interrupted = True
+                    deadline = time.time() + STOP_REASON_GRACE_S
+                    while time.time() < deadline:
+                        current = client.beta.sessions.retrieve(session.id).status
+                        if current != "running":
+                            break
+                        time.sleep(POLL_INTERVAL_S)
+                if (current not in ("idle", "terminated") or
+                        (current == "idle" and not completion_observed and
+                         not interrupted)):
+                    print(f"::warning::ai-step: session {session.id} status "
+                          f"'{current}' is not confirmed stopped — keeping environment")
+                else:
+                    client.beta.sessions.delete(session.id)
+                    delete_session_ok = True
+                    print(f"ai-step: session {session.id} deleted")
+            except Exception as cleanup_error:
+                print(f"::warning::ai-step: could not confirm and delete "
+                      f"session {session.id}: {cleanup_error} — keeping environment")
+        if delete_session_ok:
+            try:
+                client.beta.environments.delete(env.id)
             except Exception as e:
-                print(f"::warning::ai-step: could not delete session "
-                      f"{session.id}: {e} — delete it in the Console")
-        try:
-            client.beta.environments.delete(env.id)
-        except Exception as e:
-            print(f"::warning::ai-step: could not delete environment "
-                  f"{env.id}: {e} — delete it in the Console")
+                print(f"::warning::ai-step: could not delete environment "
+                      f"{env.id}: {e} — delete it in the Console")
+        else:
+            print(f"::warning::ai-step: keeping environment {env.id} because "
+                  f"session {session.id} could not be confirmed deleted")
 
 
 def strip_fence(text: str) -> str:

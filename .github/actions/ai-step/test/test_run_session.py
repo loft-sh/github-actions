@@ -14,6 +14,7 @@ import os
 import re
 import sys
 import types
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -36,9 +37,11 @@ class FakeClient:
     the `deleted` record."""
 
     def __init__(self, *, agents=("sre-memory-curator",),
-                 statuses=("idle",), stop_reason="end_turn",
+                 statuses=("running", "idle"), stop_reason="end_turn",
                  final_text='{"ok": true}', create_raises=None,
-                 idle_event_delay=0, stop_is_str=False):
+                 idle_event_delay=0, stop_is_str=False,
+                 fresh_idle_event=True, delete_raises=None,
+                 retrieve_raises=None, interrupt_status="idle", send_unprocessed=False):
         self._statuses = list(statuses)
         self._stop = stop_reason
         self._final = final_text
@@ -47,16 +50,31 @@ class FakeClient:
         # many lookups return empty before the event becomes visible
         self._idle_delay = idle_event_delay
         self._stop_is_str = stop_is_str
+        self._fresh_idle_event = fresh_idle_event
+        self._delete_raises = delete_raises
+        self._retrieve_raises = retrieve_raises
+        self._interrupt_status = interrupt_status
+        self._send_unprocessed = send_unprocessed
         self.deleted = {"sessions": [], "environments": []}
         self.sent = []
+        self.cleanup_order = []
 
         client = self
 
         class Events:
             def send(self, sid, events):
                 client.sent.append(events)
+                if events[0].get("type") == "user.interrupt":
+                    client.cleanup_order.append("interrupt")
+                    client._statuses = [client._interrupt_status]
+                else:
+                    client._sent_at = datetime.now(timezone.utc)
+                    return _obj(data=[_obj(id="msg_test", processed_at=(
+                        None if client._send_unprocessed else client._sent_at))])
 
             def list(self, sid, types=None, order=None, limit=None):
+                if types == ["user.message"]:
+                    return iter([_obj(id="msg_test", processed_at=client._sent_at)])
                 if types == ["session.status_idle"]:
                     if client._idle_delay > 0:
                         client._idle_delay -= 1
@@ -64,7 +82,10 @@ class FakeClient:
                     if client._stop is None:
                         return iter([])
                     stop = client._stop if client._stop_is_str else _obj(type=client._stop)
-                    return iter([_obj(stop_reason=stop)])
+                    created_at = (datetime.now(timezone.utc) + timedelta(seconds=1)
+                                  if client._fresh_idle_event else
+                                  datetime.now(timezone.utc) - timedelta(seconds=5))
+                    return iter([_obj(stop_reason=stop, created_at=created_at)])
                 if types == ["agent.message"]:
                     if client._final is None:
                         return iter([])
@@ -80,10 +101,16 @@ class FakeClient:
                 return _obj(id="sess_test")
 
             def retrieve(self, sid):
+                if client._retrieve_raises:
+                    raise client._retrieve_raises
                 status = client._statuses.pop(0) if len(client._statuses) > 1 else client._statuses[0]
                 return _obj(status=status)
 
             def delete(self, sid):
+                client.cleanup_order.append("delete-session")
+                if client._delete_raises:
+                    err, client._delete_raises = client._delete_raises, None
+                    raise err
                 client.deleted["sessions"].append(sid)
 
         class Environments:
@@ -91,6 +118,7 @@ class FakeClient:
                 return _obj(id="env_test")
 
             def delete(self, eid):
+                client.cleanup_order.append("delete-environment")
                 client.deleted["environments"].append(eid)
 
         class Agents:
@@ -163,6 +191,52 @@ def test_timeout_fails_soft_and_deletes(run_mod):
     _assert_failed(run_mod)
     assert client.deleted["sessions"] == ["sess_test"]
     assert client.deleted["environments"] == ["env_test"]
+    assert "interrupt" in client.cleanup_order
+
+
+def test_delayed_startup_idle_does_not_finish_session(run_mod):
+    # An initial idle is startup lag. Completion is accepted once running
+    # has been observed and the session returns to idle.
+    client = FakeClient(statuses=("idle", "running", "idle"),
+                        idle_event_delay=1, fresh_idle_event=True)
+    assert _run(run_mod, client) == '{"ok": true}'
+    assert client.deleted["sessions"] == ["sess_test"]
+
+
+def test_stale_idle_event_cannot_finish_session(run_mod):
+    client = FakeClient(statuses=("idle",), fresh_idle_event=False)
+    with pytest.raises(SystemExit) as e:
+        _run(run_mod, client, timeout_s=0.01)
+    assert e.value.code == 0
+    _assert_failed(run_mod)
+    # Idle may mean the submitted turn has not started yet. Do not delete
+    # either resource while it could still start using the environment.
+    assert client.deleted == {"sessions": [], "environments": []}
+
+
+def test_failure_before_send_confirmation_keeps_idle_session_environment(run_mod):
+    client = FakeClient(statuses=("idle",))
+    def fail_send(sid, events):
+        raise RuntimeError("send result unavailable")
+    client.beta.sessions.events.send = fail_send
+    with pytest.raises(SystemExit):
+        _run(run_mod, client)
+    assert client.deleted == {"sessions": [], "environments": []}
+
+
+def test_fast_completion_uses_fresh_idle_event_without_running_poll(run_mod):
+    client = FakeClient(statuses=("idle",), fresh_idle_event=True)
+    assert _run(run_mod, client) == '{"ok": true}'
+
+
+def test_idle_event_without_message_timestamp_is_not_fresh(run_mod):
+    event = _obj(processed_at=datetime.now(timezone.utc))
+    assert not run_mod.event_is_newer_than(event, None)
+
+
+def test_unprocessed_send_fetches_message_timestamp(run_mod):
+    client = FakeClient(statuses=("idle",), send_unprocessed=True)
+    assert _run(run_mod, client) == '{"ok": true}'
 
 
 def test_terminated_fails_soft_and_deletes(run_mod):
@@ -225,6 +299,30 @@ def test_unexpected_exception_fails_soft_and_deletes_env(run_mod):
     assert e.value.code == 0
     _assert_failed(run_mod)
     assert client.deleted["environments"] == ["env_test"]
+
+
+def test_refused_session_delete_keeps_environment(run_mod):
+    client = FakeClient(statuses=("idle",), delete_raises=RuntimeError("delete refused"))
+    assert _run(run_mod, client) == '{"ok": true}'
+    assert client.deleted["sessions"] == []
+    assert client.deleted["environments"] == []
+    assert "delete-environment" not in client.cleanup_order
+
+
+def test_unknown_status_after_refused_delete_keeps_environment(run_mod):
+    client = FakeClient(statuses=("running",), delete_raises=RuntimeError("refused"),
+                        retrieve_raises=RuntimeError("status unavailable"))
+    with pytest.raises(SystemExit):
+        _run(run_mod, client, timeout_s=0.01)
+    assert client.deleted["environments"] == []
+
+
+def test_unrecognized_status_after_interrupt_keeps_environment(run_mod):
+    client = FakeClient(statuses=("running",), delete_raises=RuntimeError("refused"),
+                        interrupt_status="starting")
+    with pytest.raises(SystemExit):
+        _run(run_mod, client, timeout_s=0.01)
+    assert client.deleted["environments"] == []
 
 
 def test_session_key_is_masked_in_logs(run_mod, capsys):
