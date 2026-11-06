@@ -126,7 +126,7 @@ read-only collaborator passes. That coarse check remains sufficient for a
 same-repository command. When `allow-forks` is enabled, the action performs the
 precise permission lookup and refuses anyone below write access.
 
-## The two modes
+## The three modes
 
 `start` parses the comment, authorizes the commenter, resolves the pull request,
 and opens the check-run. A same-repository request takes two API calls. An
@@ -136,6 +136,9 @@ command takes none.
 `finish` resolves the terminal outcome and completes it. Give it the check-run
 id from `start` and the raw job results; it computes the conclusion so the
 matrix lives in a tested script rather than in workflow YAML.
+
+`link` records the run a check-run was dispatched to, for the optional reply
+below. It needs only the check-run id and the run URL.
 
 ## The outcome matrix fails closed
 
@@ -249,6 +252,32 @@ repeat. A missing or non-numeric value reports `malformed-repeat` or
 `malformed-runs`, a value outside the range `repeat-out-of-range` or
 `runs-out-of-range`.
 
+## Optional reply
+
+Set `reply: "true"` and pass `comment-id` to answer every command with one
+reply that links its runs. `start` reacts with :eyes:, posts the reply, and
+stores the reply's id on each check-run as its `external_id`. Pass `run-label`
+to name the rows, such as `Pro`; `--runs` and `--repeat` add `run k of N` or
+`repeat N`.
+
+```text
+:rocket: `/test-e2e snapshots` started 2 runs on `abc1234`. This comment updates when they finish.
+
+- Pro: running, [watch the run](...)
+- OSS: passed, [view the run](...)
+```
+
+After each dispatch, call `link` with the check-run id and the run URL that
+`gh workflow run` prints. `finish` then redraws the reply with the outcome.
+The reply is edited in place, so it notifies nobody, and each new command gets
+its own reply so older runs stay findable. A re-run of the workflow reuses the
+reply and starts its rows over.
+
+The reply is a view of the check-runs. Every writer redraws all rows from the
+checks' current state, reads the reply back, and writes again if another run
+changed it in between. A reply that cannot be written only warns; it never
+fails `start`, `link` or `finish`.
+
 ## Permissions
 
 The calling job needs `checks: write` to create and complete the check-run, and
@@ -257,38 +286,46 @@ the commenter's repository permission through repository metadata. With the app
 inputs, `start` also reads `finish-workflow`, which needs `contents: read`;
 without it the check opens with `github-token`.
 
+With `reply`, every job that runs `start`, `link` or `finish` needs
+`pull-requests: write` for `github-token`, to post, react and edit. A finish job
+without it keeps the reply at its last state.
+
 ## Inputs
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-|       INPUT        |  TYPE  | REQUIRED |           DEFAULT            |                                                                                                                  DESCRIPTION                                                                                                                  |
-|--------------------|--------|----------|------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-|    allow-forks     | string |  false   |          `"false"`           |                                              start mode. Allow fork pull requests <br>only when the commenter has write, <br>maintain, or admin repository permission. Disabled <br>by default.                                               |
-|  allowed-targets   | string |  false   |         `"pro oss"`          |                                                   start mode. Whitespace-separated target values accepted <br>when target-name is set. Each value <br>needs a matching action invocation.                                                     |
-|   app-client-id    | string |  false   |                              |                    Optional client ID of a GitHub <br>App with checks: write. With app-private-key, <br>the check-run gets its own check <br>suite. Pass the same pair to <br>start and finish. Empty keeps github-token.                     |
-|  app-private-key   | string |  false   |                              |                                                                                                    Optional private key for app-client-id.                                                                                                    |
-| author-association | string |  false   |                              |       start mode. How the commenter relates <br>to the repository. Pass the github.event.comment.author_association <br>context. OWNER, MEMBER and COLLABORATOR may <br>run the command; anything else, including <br>empty, may not.         |
-|    build-result    | string |  false   |                              |                                                                                  finish mode. Result of the build <br>job. Pass the matching needs result.                                                                                    |
-| check-name-prefix  | string |  false   |           `"e2e"`            |                                                                  start mode. Prefix for the check-run <br>name; the filter and optional target <br>and focus are appended.                                                                    |
-|    check-run-id    | string |  false   |                              |                                                                 finish mode. The id returned by <br>start mode. Empty is not an <br>error; it means no check was <br>opened.                                                                  |
-|      command       | string |  false   |        `"/test-e2e"`         |                                                                                     Command word that must open the <br>comment, on its own first line.                                                                                       |
-|   comment-author   | string |  false   |                              |                                                                          start mode. Login of the commenter. <br>Pass the github.event.comment.user.login context.                                                                            |
-|    comment-body    | string |  false   |                              |                                                                                start mode. The comment text. Pass <br>the github.event.comment.body context.                                                                                  |
-|    details-url     | string |  false   |                              |                                                                                          finish mode. Link target for the <br>completed check-run.                                                                                            |
-|  finish-workflow   | string |  false   |     `"e2e-ginkgo.yaml"`      |                                                     start mode. Workflow file that runs <br>finish. The app opens the check <br>only if that file passes both <br>app inputs to finish.                                                       |
-|    github-token    | string |  false   |   `"${{ github.token }}"`    |                                                                           Token for gh. The calling job <br>must grant checks: write and pull-requests: <br>read.                                                                             |
-|        mode        | string |   true   |                              |                                                                                                          Either "start" or "finish".                                                                                                          |
-|    parse-focus     | string |  false   |          `"false"`           |                                              start mode. Set to true to <br>split an optional trailing --focus expression <br>from the filter. Disabled by default <br>for existing consumers.                                                |
-|    parse-repeat    | string |  false   |          `"false"`           |                               start mode. Set to true to <br>accept `--repeat N` (1 to 10) before --focus: one <br>run whose suite repeats N extra <br>times. Disabled by default for existing <br>consumers.                                 |
-|     parse-runs     | string |  false   |          `"false"`           | start mode. Set to true to <br>accept `--runs N` (1 to 5) before --focus: N <br>independent runs, each with its own <br>check-run and concurrency key. Cannot be <br>combined with --repeat. Disabled by default <br>for existing consumers.  |
-|     pr-number      | string |  false   |                              |                                                                               start mode. Pull request number. Pass <br>the github.event.issue.number context.                                                                                |
-|        repo        | string |  false   | `"${{ github.repository }}"` |                                                                                                        Repository in owner/name form.                                                                                                         |
-| report-conclusion  | string |  false   |                              |                                               finish mode. What the test run <br>declared about itself, parsed from its <br>report. The only input that can <br>produce a neutral conclusion.                                                 |
-|       run-id       | string |  false   |                              |                                                                        start mode. Used to build the <br>check-run details link. Pass the github.run_id <br>context.                                                                          |
-|     server-url     | string |  false   |    `"https://github.com"`    |                                                                  start mode. Base URL used to <br>build the check-run details link. Pass <br>the github.server_url context.                                                                   |
-|    suite-result    | string |  false   |                              |                                                                                  finish mode. Result of the suite <br>job. Pass the matching needs result.                                                                                    |
-|      summary       | string |  false   |                              |                                                                       finish mode. Markdown body for the <br>completed check-run. Defaults to the two <br>job results.                                                                        |
-|    target-name     | string |  false   |                              |                             start mode. Target represented by this <br>invocation. Setting it enables --target parsing; <br>a different explicit target returns target-not-selected <br>without opening a check.                              |
+|       INPUT        |  TYPE  | REQUIRED |           DEFAULT            |                                                                                                                                        DESCRIPTION                                                                                                                                         |
+|--------------------|--------|----------|------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|    allow-forks     | string |  false   |          `"false"`           |                                                                    start mode. Allow fork pull requests <br>only when the commenter has write, <br>maintain, or admin repository permission. Disabled <br>by default.                                                                      |
+|  allowed-targets   | string |  false   |         `"pro oss"`          |                                                                          start mode. Whitespace-separated target values accepted <br>when target-name is set. Each value <br>needs a matching action invocation.                                                                           |
+|   app-client-id    | string |  false   |                              |                                          Optional client ID of a GitHub <br>App with checks: write. With app-private-key, <br>the check-run gets its own check <br>suite. Pass the same pair to <br>start and finish. Empty keeps github-token.                                            |
+|  app-private-key   | string |  false   |                              |                                                                                                                          Optional private key for app-client-id.                                                                                                                           |
+| author-association | string |  false   |                              |                              start mode. How the commenter relates <br>to the repository. Pass the github.event.comment.author_association <br>context. OWNER, MEMBER and COLLABORATOR may <br>run the command; anything else, including <br>empty, may not.                               |
+|    build-result    | string |  false   |                              |                                                                                                         finish mode. Result of the build <br>job. Pass the matching needs result.                                                                                                          |
+| check-name-prefix  | string |  false   |           `"e2e"`            |                                                                                         start mode. Prefix for the check-run <br>name; the filter and optional target <br>and focus are appended.                                                                                          |
+|    check-run-id    | string |  false   |                              |                                                                                  finish and link modes. The id <br>returned by start mode. Empty is <br>not an error; it means no <br>check was opened.                                                                                    |
+|      command       | string |  false   |        `"/test-e2e"`         |                                                                                                            Command word that must open the <br>comment, on its own first line.                                                                                                             |
+|   comment-author   | string |  false   |                              |                                                                                                 start mode. Login of the commenter. <br>Pass the github.event.comment.user.login context.                                                                                                  |
+|    comment-body    | string |  false   |                              |                                                                                                       start mode. The comment text. Pass <br>the github.event.comment.body context.                                                                                                        |
+|     comment-id     | string |  false   |                              |                                                                                     start mode. Id of the command <br>comment, which the reply answers. Pass <br>the github.event.comment.id context.                                                                                      |
+|    details-url     | string |  false   |                              |                                                                                                                 finish mode. Link target for the <br>completed check-run.                                                                                                                  |
+|  finish-workflow   | string |  false   |     `"e2e-ginkgo.yaml"`      |                                                                            start mode. Workflow file that runs <br>finish. The app opens the check <br>only if that file passes both <br>app inputs to finish.                                                                             |
+|    github-token    | string |  false   |   `"${{ github.token }}"`    |                                                                                                  Token for gh. The calling job <br>must grant checks: write and pull-requests: <br>read.                                                                                                   |
+|        mode        | string |   true   |                              |                                                                                                                            One of "start", "finish" or "link".                                                                                                                             |
+|    parse-focus     | string |  false   |          `"false"`           |                                                                     start mode. Set to true to <br>split an optional trailing --focus expression <br>from the filter. Disabled by default <br>for existing consumers.                                                                      |
+|    parse-repeat    | string |  false   |          `"false"`           |                                                      start mode. Set to true to <br>accept `--repeat N` (1 to 10) before --focus: one <br>run whose suite repeats N extra <br>times. Disabled by default for existing <br>consumers.                                                       |
+|     parse-runs     | string |  false   |          `"false"`           |                       start mode. Set to true to <br>accept `--runs N` (1 to 5) before --focus: N <br>independent runs, each with its own <br>check-run and concurrency key. Cannot be <br>combined with --repeat. Disabled by default <br>for existing consumers.                         |
+|     pr-number      | string |  false   |                              |                                                                                                     start mode. Pull request number. Pass <br>the github.event.issue.number context.                                                                                                       |
+|       reply        | string |  false   |          `"false"`           | start mode. Set to true to <br>react to the command comment and <br>answer it with one reply that <br>links each run and shows its <br>result. Needs comment-id, and pull-requests: write <br>for github-token in every job that <br>runs start, link or finish. Disabled <br>by default.  |
+|        repo        | string |  false   | `"${{ github.repository }}"` |                                                                                                                               Repository in owner/name form.                                                                                                                               |
+| report-conclusion  | string |  false   |                              |                                                                      finish mode. What the test run <br>declared about itself, parsed from its <br>report. The only input that can <br>produce a neutral conclusion.                                                                       |
+|       run-id       | string |  false   |                              |                                                                                               start mode. Used to build the <br>check-run details link. Pass the github.run_id <br>context.                                                                                                |
+|     run-label      | string |  false   |                              |                                                                                   start mode. Short name for this <br>invocation's runs in the reply, such <br>as "Pro". Defaults to check-name-prefix.                                                                                    |
+|      run-url       | string |  false   |                              |                                                                                                    link mode. URL of the run <br>dispatched for check-run-id. The reply links <br>it.                                                                                                      |
+|     server-url     | string |  false   |    `"https://github.com"`    |                                                                                        Base URL for the check-run details <br>link and the reply's links. Pass <br>the github.server_url context.                                                                                          |
+|    suite-result    | string |  false   |                              |                                                                                                         finish mode. Result of the suite <br>job. Pass the matching needs result.                                                                                                          |
+|      summary       | string |  false   |                              |                                                                                             finish mode. Markdown body for the <br>completed check-run. Defaults to the two <br>job results.                                                                                               |
+|    target-name     | string |  false   |                              |                                                   start mode. Target represented by this <br>invocation. Setting it enables --target parsing; <br>a different explicit target returns target-not-selected <br>without opening a check.                                                     |
 
 <!-- AUTO-DOC-INPUT:END -->
 
