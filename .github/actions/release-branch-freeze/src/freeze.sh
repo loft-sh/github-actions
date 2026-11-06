@@ -7,8 +7,7 @@
 # PR merge counts as an update, so non-bypass users cannot merge during a freeze.
 #
 #   freeze    upsert the ruleset so it targets refs/heads/<branch> with the
-#             chosen enforcement and a bypass team. That team is then the only
-#             one that can merge into the branch.
+#             chosen enforcement, bypass teams, and organization admins.
 #   unfreeze  set the ruleset's enforcement to "disabled" so the branch falls
 #             back to the repo's standing rules. The object is kept, ready to be
 #             re-pointed at the next release branch.
@@ -75,9 +74,14 @@ case "$INPUT_OPERATION" in
         exit 1
       fi
     done
-    # One Team bypass actor per id.
+    # Include organization admins on every create and update.
     BYPASS_ACTORS="$(jq -cn --arg ids "$BYPASS_TEAM_IDS" \
-      '$ids | split(",") | map({ actor_type: "Team", actor_id: (. | tonumber), bypass_mode: "always" })')"
+      '($ids | split(",") | map({ actor_type: "Team", actor_id: (. | tonumber), bypass_mode: "always" })) + [{actor_type: "OrganizationAdmin", actor_id: 1, bypass_mode: "always"}]')"
+    # Loft engineering managers and DevOps can bypass the freeze through PRs.
+    # Keep explicitly configured actors and their existing modes unchanged.
+    if [[ "$REPO" == loft-sh/* ]]; then
+      BYPASS_ACTORS="$(jq -c '. as $existing | . + ([19456198, 15834317] | map(. as $id | select(any($existing[]; .actor_type == "Team" and .actor_id == $id) | not) | {actor_type: "Team", actor_id: $id, bypass_mode: "pull_request"}))' <<<"$BYPASS_ACTORS")"
+    fi
     ENFORCEMENT="${INPUT_ENFORCEMENT:-active}"
     case "$ENFORCEMENT" in
       active | evaluate | disabled) ;;
@@ -115,7 +119,7 @@ case "$INPUT_OPERATION" in
       fi
     fi
     write_output "ruleset-id" "$RID"
-    echo "::notice::freeze ${ENFORCEMENT}: only teams ${BYPASS_TEAM_IDS} may merge into ${BRANCH} on ${REPO}"
+    echo "::notice::freeze ${ENFORCEMENT}: teams ${BYPASS_TEAM_IDS} and organization admins may merge into ${BRANCH} on ${REPO}"
     ;;
   unfreeze)
     RID="$(find_ruleset_id)"

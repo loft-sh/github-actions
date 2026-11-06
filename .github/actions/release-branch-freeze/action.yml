@@ -2,7 +2,7 @@ name: Release Branch Code Freeze
 description: |
   Applies or lifts a temporary code freeze on a release branch by managing a
   GitHub repository ruleset with the "Restrict updates" rule. During the freeze
-  only a bypass team can merge into the branch; lifting the freeze disables the
+  bypass teams and organization admins can merge into the branch; lifting the freeze disables the
   ruleset so the branch returns to its standing rules.
 
   One reusable ruleset per repo is re-pointed at the branch being released, so
