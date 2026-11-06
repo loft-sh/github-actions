@@ -968,6 +968,19 @@ collected data. Advisory: it never fails the release that calls it.
 see the [release-summary README](./.github/actions/release-summary/README.md)
 for the caller job and the `notify-release.yaml` inputs it pairs with.
 
+### Release notes
+
+Writes the GitHub release bodies for a monorepo release that also publishes
+an OSS subtree, from one first-parent walk of the monorepo. Both bodies list
+the changes in an open source section (commits that touch the subtree) and a
+commercial section. The OSS body carries no refs into the private monorepo.
+Fails the step when the notes cannot be written, so it runs before anything
+is published.
+
+**Location:** `.github/actions/release-notes`
+
+**Usage:** see the [release-notes README](./.github/actions/release-notes/README.md).
+
 ### Actionlint
 
 Lints GitHub Actions workflow files using actionlint with reviewdog integration.
