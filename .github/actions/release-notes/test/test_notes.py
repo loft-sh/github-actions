@@ -655,3 +655,22 @@ def test_bidi_controls_cannot_reorder_the_link(repo, control):
     commit(repo, f"fix: bump client-go {control}\n\nOss-Commit: {OSS_SHA}\n")
     git(repo, "tag", "v1.1.0")
     assert not re.search("[؜‎‏‪-‮⁦-⁩]", body())
+
+
+def test_a_lower_tag_on_the_release_commit_is_not_the_base(repo):
+    """rc.1 cut on the commit of an alpha whose build failed, so that alpha
+    has no OSS release; the base steps past it, as goreleaser's does."""
+    commit(repo, "fix: in alpha.1")
+    git(repo, "tag", "v1.1.0-alpha.1")
+    commit(repo, "fix: in the failed alpha.2")
+    git(repo, "tag", "v1.1.0-alpha.2")
+    git(repo, "tag", "v1.1.0-rc.1")
+    prev, text, _ = build("v1.1.0-rc.1")
+    assert prev == "v1.1.0-alpha.1"
+    assert entries(text) == ["* fix: in the failed alpha.2"]
+
+
+def test_the_limit_leaves_room_for_the_callers_marker():
+    """vcluster-pro appends a marker after the body."""
+    marker = "\n\n<!-- managed-by-monorepo -->\n"
+    assert load().MAX_BODY_BYTES + len(marker.encode()) <= 125_000

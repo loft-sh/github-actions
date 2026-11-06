@@ -66,8 +66,9 @@ CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f  ؜‎‏‪-‮⁦-⁩]+")
 # " (#N)" fits, and every pattern here stays cheap on a replayed subject of
 # any length.
 MAX_SUBJECT = 300
-# GitHub limits a release body to 125,000 characters.
-MAX_BODY_BYTES = 125_000
+# GitHub limits a release body to 125,000 characters. The rest is room for
+# what the caller appends, such as vcluster-pro's managed-by-monorepo marker.
+MAX_BODY_BYTES = 124_000
 
 
 class NotesError(Exception):
@@ -247,7 +248,9 @@ def build(version: str, override: str, prefix: str, repository: str,
                          "fetch-depth: 0 and fetch tags")
     path = subtree_path(version, prefix)
     try:
-        prev = release_tags.resolve_previous_tag(version, override)
+        # A tag on the release commit can be a cut whose build failed, which
+        # has no OSS release; the monorepo's goreleaser steps past it too.
+        prev = release_tags.resolve_previous_tag(version, override, own_commit=False)
     except release_tags.NoPreviousTag as e:
         raise NotesError(str(e)) from None
 

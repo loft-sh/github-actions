@@ -3,7 +3,8 @@ stable, and which earlier tag a release is compared against.
 
 release-summary and release-notes both read a release's changes from the
 range these rules pick, so the Slack summary and the GitHub release body
-start from the same tag.
+start from the same tag, except that release-notes steps past tags on the
+release's own commit.
 
 Every function runs git in the current directory, which must be a checkout
 of the released repository with full history and tags.
@@ -27,8 +28,12 @@ class NoPreviousTag(Exception):
 
 
 def git(*args: str) -> str:
-    return subprocess.run(["git", *args], check=True, capture_output=True,
-                          text=True).stdout.strip()
+    # A tag name can hold any byte, and one that is not UTF-8 must not stop
+    # the listing it is part of. It is never stable or semver; should
+    # describe return it as the nearest tag, git rejects the replaced name
+    # and the step fails naming the command.
+    return subprocess.run(["git", *args], check=True, capture_output=True
+                          ).stdout.decode("utf-8", "replace").strip()
 
 
 def tag_exists(tag: str) -> bool:
@@ -73,13 +78,14 @@ def stable_key(tag: str) -> tuple:
     return (major, minor, patch, ids)
 
 
-def previous_stable(version: str) -> str:
-    """The highest stable tag below version, on any branch. Pre-releases in
-    between are skipped, so a stable release covers everything the line
-    shipped since the last stable; that tag can sit on another release
-    branch, out of reach of describe."""
+def previous_stable(version: str, skip: list[str]) -> str:
+    """The highest stable tag below version, on any branch, other than the
+    tags in skip. Pre-releases in between are skipped, so a stable release
+    covers everything the line shipped since the last stable; that tag can
+    sit on another release branch, out of reach of describe."""
     tags = [t for t in git("tag", "--list", TAG_MATCH).splitlines()
-            if not fnmatch.fnmatchcase(t, TAG_EXCLUDE) and is_stable(t)]
+            if not fnmatch.fnmatchcase(t, TAG_EXCLUDE) and is_stable(t)
+            and t not in skip]
     limit = stable_key(version)
     below = [(key, t) for t in tags if (key := stable_key(t)) < limit]
     if not below:
@@ -105,26 +111,39 @@ def nearest_below(version: str, tags: list[str]) -> str:
     return max(below)[1] if below else ""
 
 
-def resolve_previous_tag(version: str, override: str) -> str:
+def resolve_previous_tag(version: str, override: str, own_commit: bool = True) -> str:
     """The override when given. Else a stable version compares against the
     previous stable tag, and a pre-release against the nearest non -next tag
     before it: tags on version's own commit first, then `describe version^`,
-    which steps past all of them."""
+    which steps past all of them.
+
+    With own_commit false a tag on version's own commit is the base only
+    when no other tag is left. A release cut on the commit of an earlier
+    tag whose build failed then lists that tag's changes, which no release
+    has shown; when that tag did ship, they show twice."""
     if override:
         if not tag_exists(override):
             raise NoPreviousTag(
                 f"previous tag '{override}' is not in the checkout; pass an "
                 "existing tag or leave previous-tag empty to derive it")
         return override
+    shared = release_tags_at(version)
     if is_stable(version):
-        return previous_stable(version)
-    shared = nearest_below(version, release_tags_at(version))
-    if shared:
-        return shared
+        try:
+            return previous_stable(version, [] if own_commit else shared)
+        except NoPreviousTag:
+            if own_commit:
+                raise
+            return previous_stable(version, [])
+    nearest = nearest_below(version, shared)
+    if nearest and own_commit:
+        return nearest
     try:
         found = git("describe", "--tags", "--abbrev=0", f"--match={TAG_MATCH}",
                     f"--exclude={TAG_EXCLUDE}", f"{version}^")
     except subprocess.CalledProcessError:
+        if nearest:
+            return nearest
         raise NoPreviousTag(
             f"no earlier {TAG_MATCH} tag is reachable from {version}, so there "
             "is nothing to compare against; pass previous-tag to set one") from None

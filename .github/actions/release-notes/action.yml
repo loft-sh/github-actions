@@ -9,7 +9,7 @@ inputs:
     description: 'Release tag. Must exist in the checkout.'
     required: true
   previous-tag:
-    description: 'Tag to compare against. Leave empty to derive it: a stable tag (no prerelease part, or -patch / -patch.N) compares with the highest earlier stable tag on any branch, a pre-release with the nearest earlier v* tag that is not a -next tag.'
+    description: 'Tag to compare against. Leave empty to derive it: a stable tag (no prerelease part, or -patch / -patch.N) compares with the highest earlier stable tag on any branch, a pre-release with the nearest earlier v* tag that is not a -next tag. A tag on the release commit itself is the base only when no other tag is left.'
     required: false
     default: ''
   subtree-prefix:
