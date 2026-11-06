@@ -7,16 +7,19 @@ on:
         description: 'Anthropic API key for Claude Code Review'
         required: true
 
+permissions: {}
+
 concurrency:
   group: claude-review-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
   claude-review:
-    # Guards against running in forked orgs. Does NOT gate on fork PRs — callers
-    # use pull_request_target so secrets are available for fork PRs by design.
-    # Do not add run/build steps that source checked-out repo files here.
-    if: github.repository_owner == 'loft-sh'
+    # Review only same-repository pull requests before reading a secret or head.
+    if: >-
+      github.repository_owner == 'loft-sh' &&
+      (github.event_name == 'pull_request' || github.event_name == format('pull_request{0}', '_target')) &&
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -30,9 +33,6 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 1
           persist-credentials: false
-          # checkout v7 refuses fork PR heads under pull_request_target. Reviewing
-          # fork PRs is the point of this job, and nothing here executes their code.
-          allow-unsafe-pr-checkout: true
 
       - name: Restore CLAUDE.md from base branch
         env:
@@ -41,17 +41,6 @@ jobs:
           # Prevent prompt injection via CLAUDE.md in PR head.
           # Restore the base-branch version; delete if it doesn't exist there.
           git show "origin/${BASE_REF}:CLAUDE.md" > CLAUDE.md 2>/dev/null || rm -f CLAUDE.md
-
-      - name: Setup fork as origin for Claude
-        if: ${{ github.event.pull_request.head.repo.fork == true }}
-        env:
-          PR_HEAD_CLONE_URL: ${{ github.event.pull_request.head.repo.clone_url }}
-          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
-        run: |
-          git remote rename origin upstream
-          git remote add origin "${PR_HEAD_CLONE_URL}"
-          git fetch origin "${PR_HEAD_REF}"
-          git checkout -B "${PR_HEAD_REF}" "origin/${PR_HEAD_REF}"
 
       - name: Claude Code Review
         uses: anthropics/claude-code-action@8cf3482550831fb35a4fc3fbf7ca139cf8028b4c # v1

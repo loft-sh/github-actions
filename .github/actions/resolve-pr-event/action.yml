@@ -1,0 +1,46 @@
+name: Resolve pull request event
+description: Resolve merged pull requests from trusted default branch events.
+inputs:
+  github-token:
+    required: false
+    description: Token with contents and pull requests read access; actions read for workflow_run.
+    default: ${{ github.token }}
+  source-workflow:
+    required: false
+    description: Expected read-only pull request signal workflow path.
+    default: .github/workflows/pull-request-events.yaml
+  event-json:
+    description: Trusted payload passed between jobs through workflow_call.
+    required: false
+outputs:
+  eligible:
+    description: Whether a validated event is available.
+    value: ${{ steps.resolve.outputs.eligible }}
+  events-json:
+    description: Array of compact PR identity envelopes for a job matrix.
+    value: ${{ steps.resolve.outputs.events-json }}
+  event-json:
+    description: Compact PR identity and backport labels when exactly one PR is eligible.
+    value: ${{ steps.resolve.outputs.event-json }}
+  event-path:
+    description: Temporary synthetic event file for RESOLVED_PR_EVENT_PATH.
+    value: ${{ steps.resolve.outputs.event-path }}
+  node-options:
+    description: NODE_OPTIONS preload for Node actions that consume the synthetic event.
+    value: ${{ steps.resolve.outputs.node-options }}
+  pr-number:
+    description: Pull request number.
+    value: ${{ steps.resolve.outputs.pr-number }}
+  action:
+    description: Pull request action.
+    value: ${{ steps.resolve.outputs.action }}
+runs:
+  using: composite
+  steps:
+    - id: resolve
+      shell: bash
+      env:
+        INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}
+        INPUT_SOURCE_WORKFLOW: ${{ inputs.source-workflow }}
+        INPUT_EVENT_JSON: ${{ inputs.event-json }}
+      run: python3 "${{ github.action_path }}/src/resolve.py"

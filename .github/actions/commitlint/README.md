@@ -234,10 +234,10 @@ above, take expressions normally.
 
 `contents: read` is enough. The action makes no API calls and needs no token.
 
-Run it on `pull_request`, not `pull_request_target`. On a fork pull request the
+Run it on `pull_request`, not a privileged PR event. On a fork pull request the
 action checks out and installs from the fork's own manifest; `pull_request`
 grants no secrets and a read-only token, which is what makes that safe.
-`pull_request_target` runs with the base repository's secrets and would turn
+a privileged PR event runs with the base repository's secrets and would turn
 the same install into a credential-exfiltration path.
 
 ## Testing
