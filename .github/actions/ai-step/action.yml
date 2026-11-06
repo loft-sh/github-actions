@@ -90,6 +90,18 @@ inputs:
       input.
     required: false
     default: ''
+  github-app-id:
+    description: 'GitHub App ID for the session MCP credential. Requires all four github-app inputs and vault-id.'
+    required: false
+  github-app-installation-id:
+    description: 'GitHub App installation ID for the session MCP credential.'
+    required: false
+  github-app-private-key:
+    description: 'GitHub App private key, used only by the launcher to mint installation tokens.'
+    required: false
+  github-app-repository:
+    description: 'Only repository to grant to the installation token, in owner/repository form.'
+    required: false
   session-timeout-seconds:
     description: |
       How long to wait for the session to finish before giving up
@@ -140,6 +152,11 @@ runs:
         INPUT_AGENT: ${{ inputs.agent }}
         INPUT_ANTHROPIC_SESSION_KEY: ${{ inputs.anthropic-session-key }}
         INPUT_SESSION_TIMEOUT: ${{ inputs.session-timeout-seconds }}
+        INPUT_VAULT_ID: ${{ inputs.vault-id }}
+        INPUT_GITHUB_APP_ID: ${{ inputs.github-app-id }}
+        INPUT_GITHUB_APP_INSTALLATION_ID: ${{ inputs.github-app-installation-id }}
+        INPUT_GITHUB_APP_PRIVATE_KEY: ${{ inputs.github-app-private-key }}
+        INPUT_GITHUB_APP_REPOSITORY: ${{ inputs.github-app-repository }}
       run: ${{ github.action_path }}/src/resolve-config.sh
 
     - name: Install provider SDK
@@ -172,6 +189,10 @@ runs:
         INPUT_AGENT: ${{ inputs.agent }}
         INPUT_ANTHROPIC_SESSION_KEY: ${{ inputs.anthropic-session-key }}
         INPUT_VAULT_ID: ${{ inputs.vault-id }}
+        INPUT_GITHUB_APP_ID: ${{ inputs.github-app-id }}
+        INPUT_GITHUB_APP_INSTALLATION_ID: ${{ inputs.github-app-installation-id }}
+        INPUT_GITHUB_APP_PRIVATE_KEY: ${{ inputs.github-app-private-key }}
+        INPUT_GITHUB_APP_REPOSITORY: ${{ inputs.github-app-repository }}
         INPUT_SESSION_TIMEOUT: ${{ inputs.session-timeout-seconds }}
         INPUT_LOG_OUTPUT: ${{ inputs.log-output }}
       run: python3 ${{ github.action_path }}/src/run.py

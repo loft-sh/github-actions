@@ -62,6 +62,40 @@ assert_kv() {
   }
 }
 
+@test "partial GitHub App inputs skip before resource creation" {
+  export INPUT_GITHUB_APP_ID=123
+  run_script_session anthropic agent sk-key
+  assert_kv proceed false
+  [[ "$output" == *"all four github-app inputs"* ]]
+}
+
+@test "GitHub App inputs require a session and vault" {
+  export INPUT_GITHUB_APP_ID=123 INPUT_GITHUB_APP_INSTALLATION_ID=456
+  export INPUT_GITHUB_APP_PRIVATE_KEY=private INPUT_GITHUB_APP_REPOSITORY=org/repo
+  run_script_session anthropic agent sk-key
+  assert_kv proceed false
+  [[ "$output" == *"require agent and vault-id"* ]]
+}
+
+@test "each missing GitHub App input skips with a vault configured" {
+  local name
+  for name in INPUT_GITHUB_APP_ID INPUT_GITHUB_APP_INSTALLATION_ID INPUT_GITHUB_APP_PRIVATE_KEY INPUT_GITHUB_APP_REPOSITORY; do
+    export INPUT_GITHUB_APP_ID=123 INPUT_GITHUB_APP_INSTALLATION_ID=456
+    export INPUT_GITHUB_APP_PRIVATE_KEY=private INPUT_GITHUB_APP_REPOSITORY=org/repo INPUT_VAULT_ID=vlt
+    export "$name="
+    : > "$GITHUB_OUTPUT"
+    run_script_session anthropic agent sk-key
+    assert_kv proceed false
+  done
+}
+
+@test "complete GitHub App inputs proceed with a session and vault" {
+  export INPUT_GITHUB_APP_ID=123 INPUT_GITHUB_APP_INSTALLATION_ID=456
+  export INPUT_GITHUB_APP_PRIVATE_KEY=private INPUT_GITHUB_APP_REPOSITORY=org/repo INPUT_VAULT_ID=vlt
+  run_script_session anthropic agent sk-key
+  assert_kv proceed true
+}
+
 # --- happy path: provider=anthropic × 3 effort levels ------------------------
 
 @test "anthropic:low → model=claude-haiku-4-5, proceed=true" {
