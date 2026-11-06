@@ -240,11 +240,6 @@ def delete(owner, name, token, previous, current, dry_run):
     if previous in protected:
         log(f"{previous} is still tagged {protected[previous]}; nothing to delete")
         return
-    # A kept manifest keeps its signatures and attestations too.
-    for digest, subject in signs.items():
-        if subject in protected:
-            protected.setdefault(digest, protected[subject])
-
     packages = Packages(owner, name, token)
     versions = packages.versions(set(tree))
     # The registry and the packages API are separate reads; trust the stricter one.
@@ -255,17 +250,22 @@ def delete(owner, name, token, previous, current, dry_run):
         tags = ", ".join(sorted(versions[previous][1]))
         log(f"{previous} is still tagged {tags}; nothing to delete")
         return
-    plan, kept = [], []
+    kept = {}
     for digest, allowed in tree.items():
         if digest in protected:
-            kept.append(f"{digest}: also part of tag {protected[digest]}")
+            kept[digest] = f"also part of tag {protected[digest]}"
         elif digest not in versions:
-            kept.append(f"{digest}: no package version found")
+            kept[digest] = "no package version found"
         elif not versions[digest][1] <= allowed:
             extra = ", ".join(sorted(versions[digest][1] - allowed))
-            kept.append(f"{digest}: carries tag {extra}")
-        else:
-            plan.append((digest, versions[digest][0]))
+            kept[digest] = f"carries tag {extra}"
+
+    # A kept manifest keeps its signatures and attestations too, including when
+    # only the packages API revealed the reason to keep it.
+    for digest, subject in signs.items():
+        if subject in kept:
+            kept.setdefault(digest, f"refers to kept manifest {subject}")
+    plan = [(digest, versions[digest][0]) for digest in tree if digest not in kept]
 
     verb = "would delete" if dry_run else "deleting"
     lines = [f"### Previous head image {previous}"]
@@ -274,9 +274,9 @@ def delete(owner, name, token, previous, current, dry_run):
         lines.append(f"- {verb} `{digest}` (version {version_id})")
         if not dry_run:
             packages.delete(version_id)
-    for reason in kept:
-        log(f"keeping {reason}")
-        lines.append(f"- keeping {reason}")
+    for digest, reason in kept.items():
+        log(f"keeping {digest}: {reason}")
+        lines.append(f"- keeping {digest}: {reason}")
     summary(lines)
 
 
