@@ -413,15 +413,17 @@ creates() { calls_matching "method POST repos/loft-sh/demo/check-runs"; }
 
 seed_reply_for_4242() {
   export INPUT_REPLY_JITTER_SECONDS="0" INPUT_SERVER_URL="https://github.com" INPUT_REPORT_CONCLUSION="success"
-  # The check as finish leaves it: completed, carrying the reply id.
+  # The check as finish leaves it: completed, carrying the reply and its run.
   jq -c -n '{id: 4242, name: "e2e-pro: snapshots", head_sha: "abc1234", app: {id: 1},
-             status: "completed", conclusion: "success", external_id: "555 https://e/1"}' \
+             status: "completed", conclusion: "success",
+             external_id: ({r: 555, a: 1, l: "Pro", u: "https://e/1"} | tojson)}' \
     > "$MOCK_DIR/checkrun-4242.json"
   (
     # shellcheck source=../src/lib.sh
     source "$BATS_TEST_DIRNAME/../src/lib.sh"
-    render_reply '{"v":1,"comment_id":777,"command":"/test-e2e snapshots","attempt":1,"runs":[{"id":4242,"label":"Pro"}]}' \
-      '[{"id":4242,"status":"in_progress","conclusion":null,"head_sha":"abc1234"}]' https://github.com loft-sh/demo
+    render_reply '{"v":2,"comment_id":777,"command":"/test-e2e snapshots","sha":"abc1234"}' \
+      '[{"id":4242,"status":"in_progress","conclusion":null,"head_sha":"abc1234","label":"Pro","url":"https://e/1"}]' \
+      https://github.com loft-sh/demo
   ) > "$MOCK_DIR/comment-555"
 }
 

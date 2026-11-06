@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# The reply comment: pure rendering, and link mode against a stubbed gh.
+# The reply comment: pure rendering, link mode, and redraws against a stubbed gh.
 
 load gh_mock
 
@@ -22,41 +22,54 @@ teardown() {
 }
 
 state() {
-  jq -c -n --arg cmd "${1:-/test-e2e snapshots}" --argjson runs "${2:-[]}" \
-    '{v: 1, comment_id: 777, command: $cmd, attempt: 1, runs: $runs}'
+  jq -c -n --arg cmd "${1:-/test-e2e snapshots}" '{v: 2, comment_id: 777, command: $cmd, sha: "abc1234def56"}'
 }
-# check <id> <status> [conclusion] [run-url] — a check-run as the API returns it,
-# carrying reply 555 and, once linked, its run.
-check() {
-  jq -c -n --argjson id "$1" --arg s "$2" --arg c "${3-}" --arg u "${4-}" \
-    '{id: $id, status: $s, conclusion: (if $c == "" then null else $c end), head_sha: "abc1234def56",
-      app: {slug: "github-actions"}, external_id: ("555" + (if $u == "" then "" else " " + $u end))}'
+# row <id> <label> <status> [conclusion] [url] — one reply row, as reply_rows gives it.
+row() {
+  jq -c -n --argjson id "$1" --arg l "$2" --arg s "$3" --arg c "${4-}" --arg u "${5-}" \
+    '{id: $id, label: $l, status: $s, conclusion: (if $c == "" then null else $c end), head_sha: "abc1234def56", url: $u}'
 }
-seed_check() { check "$@" > "$MOCK_DIR/checkrun-$1.json"; }
-seed_reply() { # id state
-  render_reply "$2" '[]' "https://github.com" "loft-sh/demo" > "$MOCK_DIR/comment-$1"
+# seed_check <id> <label> <status> [conclusion] [url] [attempt] [reply] — a
+# check-run on the commit, stamped for reply 555 unless told otherwise.
+seed_check() {
+  jq -c -n --argjson id "$1" --arg l "$2" --arg s "$3" --arg c "${4-}" --arg u "${5-}" \
+    --argjson a "${6:-1}" --argjson r "${7:-555}" '
+    {id: $id, name: ("check-" + ($id | tostring)), status: $s, conclusion: (if $c == "" then null else $c end),
+     head_sha: "abc1234def56", app: {slug: "github-actions"},
+     external_id: ({r: $r, a: $a, l: $l} + (if $u == "" then {} else {u: $u} end) | tojson)}
+  ' > "$MOCK_DIR/checkrun-$1.json"
 }
-body_of() { cat "$MOCK_DIR/comment-$1"; }
-TWO='[{"id":11,"label":"Pro"},{"id":12,"label":"OSS"}]'
+seed_reply() { render_reply "$(state)" '[]' https://github.com loft-sh/demo > "$MOCK_DIR/comment-555"; }
+body() { cat "$MOCK_DIR/comment-555"; }
+refresh() {
+  # shellcheck source=../src/reply.sh
+  source "$BATS_TEST_DIRNAME/../src/reply.sh"
+  reply_refresh loft-sh/demo 555 "$@"
+}
 
 # --- rendering ---------------------------------------------------------------
 
 @test "a running run with a link says running and links the run" {
-  run render_reply "$(state "" '[{"id":11,"label":"Pro"}]')" \
-    "[$(check 11 in_progress "" https://example.com/run/1)]" https://github.com loft-sh/demo
+  run render_reply "$(state)" "[$(row 11 Pro in_progress "" https://example.com/run/1)]" https://github.com loft-sh/demo
   [[ "$output" == *':rocket: `/test-e2e snapshots` started 1 run on `abc1234`. This comment updates when it finishes.'* ]]
   [[ "$output" == *"- Pro: running, [watch the run](https://example.com/run/1)"* ]]
 }
 
 @test "a run with no link yet points at its check" {
-  run render_reply "$(state "" "$TWO")" "[$(check 11 in_progress),$(check 12 queued)]" https://github.com loft-sh/demo
+  run render_reply "$(state)" "[$(row 11 Pro in_progress),$(row 12 OSS queued)]" https://github.com loft-sh/demo
   [[ "$output" == *"started 2 runs"*"when they finish."* ]]
   [[ "$output" == *"- OSS: starting, [view the check](${BASE}/runs/12)"* ]]
 }
 
+@test "a reply with no rows yet says the command is starting, never that it failed" {
+  run render_reply "$(state)" '[]' https://github.com loft-sh/demo
+  [[ "$output" == *':rocket: `/test-e2e snapshots` is starting on `abc1234`.'* ]]
+  [[ "$output" != *":x:"* ]]
+}
+
 @test "finished runs show their outcome and a check mark when none failed" {
-  run render_reply "$(state "" "$TWO")" \
-    "[$(check 11 completed success https://e/1),$(check 12 completed neutral https://e/2)]" https://github.com loft-sh/demo
+  run render_reply "$(state)" \
+    "[$(row 11 Pro completed success https://e/1),$(row 12 OSS completed neutral https://e/2)]" https://github.com loft-sh/demo
   [[ "$output" == *':white_check_mark: `/test-e2e snapshots` finished on `abc1234`.'* ]]
   [[ "$output" == *"- Pro: passed, [view the run](https://e/1)"* ]]
   [[ "$output" == *"- OSS: nothing to run, [view the run](https://e/2)"* ]]
@@ -65,35 +78,23 @@ TWO='[{"id":11,"label":"Pro"},{"id":12,"label":"OSS"}]'
 @test "any failed, timed out or cancelled run gives a cross" {
   for pair in failure:failed timed_out:"timed out" cancelled:cancelled; do
     c="${pair%%:*}" phrase="${pair#*:}"
-    run render_reply "$(state "" "$TWO")" \
-      "[$(check 11 completed success https://e/1),$(check 12 completed "$c" https://e/2)]" https://github.com loft-sh/demo
+    run render_reply "$(state)" \
+      "[$(row 11 Pro completed success https://e/1),$(row 12 OSS completed "$c" https://e/2)]" https://github.com loft-sh/demo
     [[ "$output" == *":x: "*"finished"* ]]
     [[ "$output" == *"- OSS: ${phrase//\"/}, [view the run](https://e/2)"* ]]
   done
 }
 
 @test "the headline waits for the last run" {
-  run render_reply "$(state "" "$TWO")" \
-    "[$(check 11 completed failure https://e/1),$(check 12 in_progress "" https://e/2)]" https://github.com loft-sh/demo
+  run render_reply "$(state)" \
+    "[$(row 11 Pro completed failure https://e/1),$(row 12 OSS in_progress "" https://e/2)]" https://github.com loft-sh/demo
   [[ "$output" == *":rocket: "* ]]
   [[ "$output" == *"- Pro: failed,"* ]]
 }
 
 @test "a failed check that never got a run did not start" {
-  run render_reply "$(state "" '[{"id":13,"label":"Platform, run 3 of 3"}]')" \
-    "[$(check 13 completed failure)]" https://github.com loft-sh/demo
+  run render_reply "$(state)" "[$(row 13 "Platform, run 3 of 3" completed failure)]" https://github.com loft-sh/demo
   [[ "$output" == *"- Platform, run 3 of 3: did not start, [see why](${BASE}/runs/13)"* ]]
-}
-
-@test "a check that could not be read renders as unknown instead of failing" {
-  run render_reply "$(state "" '[{"id":11,"label":"Pro"}]')" '[]' https://github.com loft-sh/demo
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"- Pro: status unknown, [view the check](${BASE}/runs/11)"* ]]
-}
-
-@test "a reply with no runs says nothing started" {
-  run render_reply "$(state)" '[]' https://github.com loft-sh/demo
-  [[ "$output" == *':x: `/test-e2e snapshots` could not start any run.'* ]]
 }
 
 @test "a backtick in the command cannot break out of the code span" {
@@ -114,7 +115,7 @@ TWO='[{"id":11,"label":"Pro"},{"id":12,"label":"OSS"}]'
 }
 
 @test "the state survives a render, even when the command closes an HTML comment" {
-  s="$(state '/test-e2e a --> <!-- b' '[{"id":11,"label":"Pro"}]')"
+  s="$(state '/test-e2e a --> <!-- b')"
   body="$(render_reply "$s" '[]' https://github.com loft-sh/demo)"
   [ "$(reply_state_decode "$body")" = "$s" ]
   [ "$(head -n1 <<< "$body")" = "<!-- comment-triggered-check:reply:777 -->" ]
@@ -133,49 +134,114 @@ TWO='[{"id":11,"label":"Pro"},{"id":12,"label":"OSS"}]'
 }
 
 @test "a run URL that is not a plain https link is never rendered" {
-  for bad in 'https://e/1)[x](https://evil' 'javascript:alert(1)' 'http://e/1' 'https://e/<b>'; do
-    run render_reply "$(state "" '[{"id":11,"label":"Pro"}]')" \
-      "[$(check 11 in_progress "" "$bad")]" https://github.com loft-sh/demo
+  for bad in 'https://e/1)[x](https://evil' 'javascript:alert(1)' 'http://e/1' 'https://e/<b>' 'https://e/1?x=[a]'; do
+    run render_reply "$(state)" "[$(row 11 Pro in_progress "" "$bad")]" https://github.com loft-sh/demo
     [[ "$output" == *"- Pro: starting, [view the check](${BASE}/runs/11)"* ]]
     [[ "$output" != *"evil"* && "$output" != *"javascript"* ]]
+    run is_run_url "$bad"
+    [ "$status" -ne 0 ]
   done
+  is_run_url "https://github.com/loft-sh/demo/actions/runs/42"
+}
+
+# --- which checks are rows ---------------------------------------------------
+
+@test "rows are this reply's checks from the newest attempt, oldest first" {
+  seed_check 21 OSS in_progress "" "" 2
+  seed_check 20 Pro in_progress "" "" 2
+  seed_check 11 Pro completed failure "" 1
+  seed_check 30 Other in_progress "" "" 9 999
+  printf '%s' '{"id":31,"external_id":"555"}' > "$MOCK_DIR/checkrun-31.json"
+  run reply_rows 555 "$(cat "$MOCK_DIR"/checkrun-*.json | jq -s .)"
+  [ "$(jq -c 'map([.id, .label])' <<< "$output")" = '[[20,"Pro"],[21,"OSS"]]' ]
+}
+
+# --- redraws -----------------------------------------------------------------
+
+@test "a redraw draws the checks into the reply and stops once it matches" {
+  seed_reply
+  seed_check 11 Pro completed success https://e/1
+  run refresh
+  [ "$status" -eq 0 ]
+  [ "$(calls_matching "PATCH")" -eq 1 ]
+  [[ "$(body)" == *"- Pro: passed, [view the run](https://e/1)"* ]]
+}
+
+@test "a redraw that changes nothing writes nothing" {
+  seed_check 11 Pro in_progress "" https://e/1
+  render_reply "$(state)" "[$(row 11 Pro in_progress "" https://e/1)]" https://github.com loft-sh/demo > "$MOCK_DIR/comment-555"
+  run refresh
+  [ "$status" -eq 0 ]
+  [ "$(calls_matching "PATCH")" -eq 0 ]
+}
+
+@test "a stale write that dropped a row is restored by the next redraw" {
+  # A finish from the old attempt writes back a reply without the new rows.
+  seed_check 11 Pro completed cancelled https://e/old 1
+  seed_check 20 Pro in_progress "" https://e/new 2
+  render_reply "$(state)" "[$(row 11 Pro completed cancelled https://e/old)]" https://github.com loft-sh/demo > "$MOCK_DIR/comment-555"
+  run refresh
+  [ "$status" -eq 0 ]
+  [[ "$(body)" == *"- Pro: running, [watch the run](https://e/new)"* ]]
+  [[ "$(body)" != *"e/old"* ]]
+}
+
+@test "a redraw finds the checks of a re-run on a newer commit" {
+  seed_reply
+  seed_check 11 Pro completed success https://e/1 1
+  jq -c '.id = 20 | .head_sha = "def5678aaaa" | .external_id = ({r: 555, a: 2, l: "Pro"} | tojson)' \
+    "$MOCK_DIR/checkrun-11.json" > "$MOCK_DIR/checkrun-20.json"
+  run refresh def5678aaaa
+  [ "$status" -eq 0 ]
+  [[ "$(body)" == *"started 1 run on \`def5678\`"*"runs/20"* ]]
+  [ "$(reply_state_decode "$(body)" | jq -r .sha)" = "def5678aaaa" ]
+}
+
+@test "a redraw leaves the reply alone when the checks cannot be listed" {
+  seed_reply
+  before="$(body)"
+  export GH_MOCK_LIST_FAIL=1
+  run refresh
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"could not list the checks"* ]]
+  [ "$(body)" = "$before" ]
 }
 
 # --- link mode ---------------------------------------------------------------
 
-@test "link stores the run on the check and redraws the reply" {
-  seed_reply 555 "$(state "" "$TWO")"
-  seed_check 11 in_progress
-  seed_check 12 in_progress
+@test "link stores the run on its check and redraws the reply" {
+  seed_reply
+  seed_check 11 Pro in_progress
+  seed_check 12 OSS in_progress
   export INPUT_CHECK_RUN_ID=11 INPUT_RUN_URL="https://github.com/loft-sh/demo/actions/runs/99"
   run bash "$LINK"
   [ "$status" -eq 0 ]
-  [ "$(jq -r .external_id "$MOCK_DIR/checkrun-11.json")" = "555 https://github.com/loft-sh/demo/actions/runs/99" ]
-  [[ "$(body_of 555)" == *"- Pro: running, [watch the run](https://github.com/loft-sh/demo/actions/runs/99)"* ]]
-  [[ "$(body_of 555)" == *"- OSS: starting,"* ]]
-  [ "$(calls_matching "PATCH repos/loft-sh/demo/issues/comments/555")" -eq 1 ]
+  [ "$(jq -c '.external_id | fromjson' "$MOCK_DIR/checkrun-11.json")" = '{"r":555,"a":1,"l":"Pro","u":"https://github.com/loft-sh/demo/actions/runs/99"}' ]
+  [[ "$(body)" == *"- Pro: running, [watch the run](https://github.com/loft-sh/demo/actions/runs/99)"* ]]
+  [[ "$(body)" == *"- OSS: starting,"* ]]
 }
 
 @test "a job that overwrites the reply with an older view restores the other job's link" {
   # Job A links run 11 and returns. Job B read the reply before A wrote, so its
   # write drops A's link. B's own read-back must still draw it.
-  seed_reply 555 "$(state "" "$TWO")"
-  seed_check 11 in_progress
-  seed_check 12 in_progress
-  stale="$(body_of 555)"
+  seed_reply
+  seed_check 11 Pro in_progress
+  seed_check 12 OSS in_progress
+  stale="$(body)"
   INPUT_CHECK_RUN_ID=11 INPUT_RUN_URL="https://e/a" run bash "$LINK"
-  [[ "$(body_of 555)" == *"- Pro: running, [watch the run](https://e/a)"* ]]
+  [[ "$(body)" == *"- Pro: running, [watch the run](https://e/a)"* ]]
 
   printf '%s' "$stale" > "$MOCK_DIR/comment-555"
   INPUT_CHECK_RUN_ID=12 INPUT_RUN_URL="https://e/b" run bash "$LINK"
   [ "$status" -eq 0 ]
-  [[ "$(body_of 555)" == *"- Pro: running, [watch the run](https://e/a)"* ]]
-  [[ "$(body_of 555)" == *"- OSS: running, [watch the run](https://e/b)"* ]]
+  [[ "$(body)" == *"- Pro: running, [watch the run](https://e/a)"* ]]
+  [[ "$(body)" == *"- OSS: running, [watch the run](https://e/b)"* ]]
 }
 
 @test "link edits the check with the token that opened it" {
-  seed_reply 555 "$(state "" '[{"id":11,"label":"Pro"}]')"
-  check 11 in_progress | jq -c '.app.slug = "ci-app"' > "$MOCK_DIR/checkrun-11.json"
+  seed_reply
+  seed_check 11 Pro in_progress
+  jq -c '.app.slug = "ci-app"' "$MOCK_DIR/checkrun-11.json" > "$MOCK_DIR/x" && mv "$MOCK_DIR/x" "$MOCK_DIR/checkrun-11.json"
   export INPUT_APP_TOKEN="app" INPUT_CHECK_RUN_ID=11 INPUT_RUN_URL="https://e/1"
   run bash "$LINK"
   [ "$status" -eq 0 ]
@@ -191,11 +257,13 @@ TWO='[{"id":11,"label":"Pro"},{"id":12,"label":"OSS"}]'
   [ "$(calls_matching "PATCH")" -eq 0 ]
 }
 
-@test "link refuses a run URL that could break the markdown link" {
-  export INPUT_CHECK_RUN_ID=11 INPUT_RUN_URL="https://e/1) [x](https://evil"
-  run bash "$LINK"
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"not a plain https URL"* ]]
+@test "link refuses a run URL the reply would not draw" {
+  for bad in "https://e/1) [x](https://evil" "https://e/1?x=[a]"; do
+    export INPUT_CHECK_RUN_ID=11 INPUT_RUN_URL="$bad"
+    run bash "$LINK"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"not a plain https URL"* ]]
+  done
   [ "$(call_count)" -eq 0 ]
 }
 
@@ -207,8 +275,8 @@ TWO='[{"id":11,"label":"Pro"},{"id":12,"label":"OSS"}]'
 }
 
 @test "link never fails the caller when the check cannot be edited" {
-  seed_reply 555 "$(state "" '[{"id":11,"label":"Pro"}]')"
-  seed_check 11 in_progress
+  seed_reply
+  seed_check 11 Pro in_progress
   export GH_MOCK_PATCH_FAIL=1 INPUT_CHECK_RUN_ID=11 INPUT_RUN_URL="https://e/1"
   run bash "$LINK"
   [ "$status" -eq 0 ]
@@ -216,36 +284,12 @@ TWO='[{"id":11,"label":"Pro"},{"id":12,"label":"OSS"}]'
 }
 
 @test "link retries a reply it cannot edit and never fails the caller" {
-  seed_reply 555 "$(state "" '[{"id":11,"label":"Pro"}]')"
-  seed_check 11 in_progress
+  seed_reply
+  seed_check 11 Pro in_progress
   export GH_MOCK_COMMENT_PATCH_FAIL=1 INPUT_REPLY_ATTEMPTS=2
   export INPUT_CHECK_RUN_ID=11 INPUT_RUN_URL="https://github.com/loft-sh/demo/actions/runs/99"
   run bash "$LINK"
   [ "$status" -eq 0 ]
   [ "$(calls_matching "PATCH repos/loft-sh/demo/issues/comments/555")" -eq 2 ]
   [[ "$output" == *"could not update reply comment 555"* ]]
-}
-
-# --- redraws -----------------------------------------------------------------
-
-@test "a redraw that changes nothing writes nothing" {
-  seed_check 11 in_progress "" https://e/1
-  render_reply "$(state "" '[{"id":11,"label":"Pro"}]')" "[$(check 11 in_progress "" https://e/1)]" \
-    https://github.com loft-sh/demo > "$MOCK_DIR/comment-555"
-  # shellcheck source=../src/reply.sh
-  source "$BATS_TEST_DIRNAME/../src/reply.sh"
-  run reply_refresh loft-sh/demo 555
-  [ "$status" -eq 0 ]
-  [ "$(calls_matching "PATCH")" -eq 0 ]
-}
-
-@test "a redraw reads back and stops once the reply matches" {
-  seed_reply 555 "$(state "" '[{"id":11,"label":"Pro"}]')"
-  seed_check 11 completed success https://e/1
-  # shellcheck source=../src/reply.sh
-  source "$BATS_TEST_DIRNAME/../src/reply.sh"
-  run reply_refresh loft-sh/demo 555
-  [ "$status" -eq 0 ]
-  [ "$(calls_matching "PATCH")" -eq 1 ]
-  [[ "$(body_of 555)" == *"- Pro: passed, [view the run](https://e/1)"* ]]
 }

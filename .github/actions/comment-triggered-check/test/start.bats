@@ -616,10 +616,8 @@ reply_on() {
   export INPUT_REPLY_JITTER_SECONDS="0" GH_MOCK_CREATE_SEQ=1
 }
 reply_body() { cat "$MOCK_DIR/comment-9001"; }
-reply_state() {
-  # shellcheck source=../src/lib.sh
-  (source "$BATS_TEST_DIRNAME/../src/lib.sh" && reply_state_decode "$(reply_body)")
-}
+ext_of() { jq -c '.external_id | fromjson' "$MOCK_DIR/checkrun-$1.json"; }
+EXISTING='[{"id":9001,"user":{"type":"Bot"},"body":"<!-- comment-triggered-check:reply:777 -->"}]'
 
 @test "without reply the command posts and reacts to nothing" {
   run bash "$SCRIPT"
@@ -629,16 +627,25 @@ reply_state() {
   [ "$(calls_matching "external_id")" -eq 0 ]
 }
 
-@test "reply reacts, posts one reply, and stamps its id on the check" {
+@test "reply reacts, posts one reply, and stamps it on the check" {
   reply_on
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   [ "$(kv should-run)" = "true" ]
   [ "$(calls_matching "POST repos/loft-sh/demo/issues/comments/777/reactions -f content=eyes")" -eq 1 ]
   [ "$(calls_matching "POST repos/loft-sh/demo/issues/7/comments")" -eq 1 ]
-  [ "$(calls_matching "external_id=9001")" -eq 1 ]
+  [ "$(ext_of 5001)" = '{"r":9001,"a":1,"l":"Pro"}' ]
   [ "$(head -n1 <<< "$(reply_body)")" = "<!-- comment-triggered-check:reply:777 -->" ]
-  [ "$(reply_state | jq -c '[.command, .runs]')" = '["/test-e2e snapshots",[{"id":5001,"label":"Pro"}]]' ]
+  [[ "$(reply_body)" == *':rocket: `/test-e2e snapshots` started 1 run on `abc123`.'* ]]
+  [[ "$(reply_body)" == *"- Pro: starting, [view the check](https://github.com/loft-sh/demo/runs/5001)"* ]]
+}
+
+@test "the first version of the reply never announces a failure" {
+  reply_on
+  run bash "$SCRIPT"
+  first="$(grep -m1 "POST repos/loft-sh/demo/issues/7/comments" "$GH_MOCK_CALLS")"
+  [[ "$first" == *':rocket: `/test-e2e snapshots` is starting on `abc123`.'* ]]
+  [[ "$first" != *":x:"* ]]
 }
 
 @test "reply labels every run of --runs" {
@@ -646,37 +653,37 @@ reply_state() {
   export INPUT_PARSE_RUNS="true" INPUT_COMMENT_BODY="/test-e2e snapshots --runs 3"
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
-  [ "$(reply_state | jq -c '[.runs[].label]')" = '["Pro, run 1 of 3","Pro, run 2 of 3","Pro, run 3 of 3"]' ]
-  [ "$(calls_matching "external_id=9001")" -eq 3 ]
+  [ "$(for id in 5001 5002 5003; do ext_of "$id" | jq -r .l; done | paste -sd, -)" = "Pro, run 1 of 3,Pro, run 2 of 3,Pro, run 3 of 3" ]
+  [[ "$(reply_body)" == *"started 3 runs"*"- Pro, run 3 of 3: starting,"* ]]
 }
 
 @test "the label defaults to the check name prefix" {
   reply_on
   unset INPUT_RUN_LABEL
   run bash "$SCRIPT"
-  [ "$(reply_state | jq -r '.runs[0].label')" = "e2e" ]
+  [ "$(ext_of 5001 | jq -r .l)" = "e2e" ]
 }
 
 @test "a second invocation in the same run adds its rows to the same reply" {
   reply_on
   run bash "$SCRIPT"
-  export GH_MOCK_COMMENTS_JSON='[{"id":9001,"user":{"type":"Bot"},"body":"<!-- comment-triggered-check:reply:777 -->"}]'
-  export INPUT_RUN_LABEL="OSS"
+  export GH_MOCK_COMMENTS_JSON="$EXISTING" INPUT_RUN_LABEL="OSS"
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   [ "$(calls_matching "POST repos/loft-sh/demo/issues/7/comments")" -eq 1 ]
-  [ "$(reply_state | jq -c '[.runs[] | [.id, .label]]')" = '[[5001,"Pro"],[5002,"OSS"]]' ]
+  [[ "$(reply_body)" == *"started 2 runs"*"- Pro: starting,"*"- OSS: starting,"* ]]
 }
 
-@test "a re-run of the workflow starts the rows over in the same reply" {
+@test "a re-run of the workflow shows only its own checks in the same reply" {
   reply_on
   run bash "$SCRIPT"
-  export GH_MOCK_COMMENTS_JSON='[{"id":9001,"user":{"type":"Bot"},"body":"<!-- comment-triggered-check:reply:777 -->"}]'
-  export INPUT_RUN_ATTEMPT="2"
+  export GH_MOCK_COMMENTS_JSON="$EXISTING" INPUT_RUN_ATTEMPT="2"
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   [ "$(calls_matching "POST repos/loft-sh/demo/issues/7/comments")" -eq 1 ]
-  [ "$(reply_state | jq -c '[.attempt, [.runs[].id]]')" = '[2,[5002]]' ]
+  [ "$(ext_of 5002)" = '{"r":9001,"a":2,"l":"Pro"}' ]
+  [[ "$(reply_body)" == *"started 1 run"*"runs/5002"* ]]
+  [[ "$(reply_body)" != *"runs/5001"* ]]
 }
 
 @test "a reply that cannot be posted still runs the command" {
@@ -729,7 +736,7 @@ reply_state() {
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   [ "$(calls_matching "POST repos/loft-sh/demo/issues/7/comments")" -eq 1 ]
-  [ "$(calls_matching "external_id=9001")" -eq 1 ]
+  [ "$(ext_of 5001 | jq -r .r)" = "9001" ]
   [ "$(calls_matching "issues/comments/6000")" -eq 0 ]
   [ "$(cat "$MOCK_DIR/comment-6000")" = $'<!-- comment-triggered-check:reply:777 -->\nplanted' ]
 }

@@ -256,7 +256,8 @@ repeat. A missing or non-numeric value reports `malformed-repeat` or
 
 Set `reply: "true"` and pass `comment-id` to answer every command with one
 reply that links its runs. `start` reacts with :eyes:, posts the reply, and
-stores the reply's id on each check-run as its `external_id`. Pass `run-label`
+stamps each check-run it opens with a small JSON `external_id`: the reply id,
+the workflow attempt, the row label and, once linked, the run URL. Pass `run-label`
 to name the rows, such as `Pro`; `--runs` and `--repeat` add `run k of N` or
 `repeat N`.
 
@@ -268,20 +269,24 @@ to name the rows, such as `Pro`; `--runs` and `--repeat` add `run k of N` or
 ```
 
 After each dispatch, call `link` with the check-run id and the run URL that
-`gh workflow run` prints. `link` stores the URL on the check, next to the reply
-id, so it edits the check: pass it the same app inputs as `start` when the app
-opened the check. `finish` then redraws the reply with the outcome.
+`gh workflow run` prints. `link` adds the URL to the check's `external_id`, so it
+edits the check: pass it the same app inputs as `start` when the app opened the
+check. `finish` then redraws the reply with the outcome.
 The reply is edited in place, so it notifies nobody, and each new command gets
 its own reply so older runs stay findable. A re-run of the workflow reuses the
-reply and starts its rows over.
+reply, and its checks, stamped with the new attempt, replace the rows. The reply
+is posted saying the command is starting, never that it failed, because its
+first version is the one notification emails carry.
 
-The reply is a view of the check-runs: the reply holds only the command and the
-row labels, and each row's status and run link come from its check. Every
-writer redraws all rows from the checks' current state, reads the reply back,
-and writes again if it differs. A job that overwrites the reply with an older
-view therefore draws the other jobs' links on its own read-back. GitHub has no
-conditional comment edit, so this is what keeps parallel `--runs` jobs from
-losing each other's links. A reply that cannot be written only warns; it never
+The reply is a view of the check-runs. Its hidden state holds only the command
+and the commit; which rows exist, their labels, status and run links all come
+from the checks on the commit stamped with this reply, newest attempt only.
+Every writer lists those checks, redraws the whole reply, reads it back, and
+writes again if it differs. A job that overwrites the reply with an older view,
+such as a finish from a cancelled attempt, is corrected by the next redraw of
+any job, because nothing it wrote back is a source of truth. GitHub has no
+conditional comment edit, so this is what keeps parallel jobs from losing each
+other's rows or links. A reply that cannot be written only warns; it never
 fails `start`, `link` or `finish`. Only a bot's comment is taken as an existing
 reply, so a person cannot plant the marker, and a run link is drawn only when it
 is a plain https URL.

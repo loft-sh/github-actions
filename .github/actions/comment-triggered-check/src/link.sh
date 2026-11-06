@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# link mode: store the run a check-run was dispatched to on that check, next
-# to its reply id, and redraw the reply. Best effort, never fails the caller.
+# link mode: store the run a check-run was dispatched to on that check, in
+# its external_id, and redraw the reply. Best effort, never fails the caller.
 #
 # The link lives on the check, not in the reply, so a job that overwrites the
 # reply with an older view still draws this link on its read-back pass.
@@ -28,22 +28,23 @@ if [[ ! "$check_run_id" =~ ^[0-9]+$ ]]; then
   echo "no check-run to link"
   exit 0
 fi
-if [[ ! "$run_url" =~ ^https://[^[:space:]\(\)]+$ ]]; then
+if ! is_run_url "$run_url"; then
   echo "::warning::run-url is not a plain https URL; not linking check-run ${check_run_id}"
   exit 0
 fi
 
-reply_id="$(reply_id_of_check "$repo" "$check_run_id")"
-if [[ -z "$reply_id" ]]; then
+ref="$(check_reply_ref "$repo" "$check_run_id")"
+if [[ -z "$ref" ]]; then
   echo "check-run ${check_run_id} has no reply to update"
   exit 0
 fi
 
+ext="$(jq -c --arg u "$run_url" '.ext + {u: $u}' <<< "$ref")"
 if ! GH_TOKEN="$(check_owner_token "$repo" "$check_run_id")" gh api --method PATCH \
-  "repos/${repo}/check-runs/${check_run_id}" -f "external_id=${reply_id} ${run_url}" >/dev/null 2>&1; then
+  "repos/${repo}/check-runs/${check_run_id}" -f "external_id=${ext}" >/dev/null 2>&1; then
   echo "::warning::could not store the run link on check-run ${check_run_id}"
   exit 0
 fi
 
-reply_refresh "$repo" "$reply_id"
+reply_refresh "$repo" "$(jq -r .reply <<< "$ref")" "$(jq -r .sha <<< "$ref")"
 echo "::notice::linked check-run ${check_run_id} to ${run_url}"

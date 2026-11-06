@@ -203,9 +203,9 @@ republish_if_hidden
 
 # A command started with a reply stores its id on the check. Redrawing it needs
 # pull-requests: write; without that the reply keeps its last state.
-reply_id="$(reply_id_of_check "$repo" "$check_run_id")"
-if [[ -n "$reply_id" ]]; then
-  reply_refresh "$repo" "$reply_id"
+ref="$(check_reply_ref "$repo" "$check_run_id")"
+if [[ -n "$ref" ]]; then
+  reply_refresh "$repo" "$(jq -r .reply <<< "$ref")" "$(jq -r .sha <<< "$ref")"
 fi
 
 echo "::notice::published ${conclusion} to check-run ${check_run_id}"
