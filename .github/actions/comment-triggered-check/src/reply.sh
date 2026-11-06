@@ -12,13 +12,14 @@ REPLY_ATTEMPTS="${INPUT_REPLY_ATTEMPTS:-4}"
 REPLY_JITTER_SECONDS="${INPUT_REPLY_JITTER_SECONDS:-2}"
 
 # reply_find <repo> <pr-number> <comment-id> — id of the existing reply, empty
-# when there is none. Non-zero when the comments could not be listed.
+# when there is none. Non-zero when the comments could not be listed. Only bot
+# comments count: anyone who can comment could otherwise plant the marker.
 reply_find() {
   local listing
   listing="$(gh api --paginate "repos/${1}/issues/${2}/comments?per_page=100" 2>/dev/null)" || return 1
   printf '%s' "$listing" | jq -r -s --arg m "$(reply_marker "$3")" '
     [.[] | if type == "array" then .[] else . end
-     | select(type == "object" and ((.body // "") | startswith($m)))
+     | select(type == "object" and .user.type == "Bot" and ((.body // "") | startswith($m)))
      | .id] | first // ""
   ' 2>/dev/null || return 1
 }

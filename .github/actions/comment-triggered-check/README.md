@@ -276,7 +276,9 @@ reply and starts its rows over.
 The reply is a view of the check-runs. Every writer redraws all rows from the
 checks' current state, reads the reply back, and writes again if another run
 changed it in between. A reply that cannot be written only warns; it never
-fails `start`, `link` or `finish`.
+fails `start`, `link` or `finish`. Only a bot's comment is taken as an existing
+reply, so a person cannot plant the marker, and a run link is drawn only when it
+is a plain https URL.
 
 ## Permissions
 

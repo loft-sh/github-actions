@@ -607,7 +607,7 @@ render_reply() {
        end) as $headline
     | [$rows[]
        | .run.label as $label
-       | (.run.url // "") as $url
+       | ((.run.url // "") | if test("^https://[^\\s()\\[\\]<>]+$") then . else "" end) as $url
        | ($base + "/runs/" + (.run.id | tostring)) as $check_url
        | if .check == null then
            "- " + $label + ": status unknown, [view the check](" + $check_url + ")"

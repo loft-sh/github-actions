@@ -193,3 +193,12 @@ body_of() { cat "$MOCK_DIR/comment-$1"; }
   [ "$(calls_matching "PATCH")" -eq 1 ]
   [[ "$(body_of 555)" == *"- Pro: passed,"* ]]
 }
+
+@test "a run URL that is not a plain https link is never rendered" {
+  for bad in 'https://e/1) [x](https://evil' 'javascript:alert(1)' 'http://e/1' 'https://e/<b>'; do
+    s="$(state "" "$(jq -c -n --arg u "$bad" '[{id: 11, label: "Pro", url: $u}]')")"
+    run render_reply "$s" "[$(check 11 in_progress)]" https://github.com loft-sh/demo
+    [[ "$output" == *"- Pro: starting, [view the check](${BASE}/runs/11)"* ]]
+    [[ "$output" != *"evil"* && "$output" != *"javascript"* ]]
+  done
+}

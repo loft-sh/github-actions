@@ -660,7 +660,7 @@ reply_state() {
 @test "a second invocation in the same run adds its rows to the same reply" {
   reply_on
   run bash "$SCRIPT"
-  export GH_MOCK_COMMENTS_JSON='[{"id":9001,"body":"<!-- comment-triggered-check:reply:777 -->"}]'
+  export GH_MOCK_COMMENTS_JSON='[{"id":9001,"user":{"type":"Bot"},"body":"<!-- comment-triggered-check:reply:777 -->"}]'
   export INPUT_RUN_LABEL="OSS"
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
@@ -671,7 +671,7 @@ reply_state() {
 @test "a re-run of the workflow starts the rows over in the same reply" {
   reply_on
   run bash "$SCRIPT"
-  export GH_MOCK_COMMENTS_JSON='[{"id":9001,"body":"<!-- comment-triggered-check:reply:777 -->"}]'
+  export GH_MOCK_COMMENTS_JSON='[{"id":9001,"user":{"type":"Bot"},"body":"<!-- comment-triggered-check:reply:777 -->"}]'
   export INPUT_RUN_ATTEMPT="2"
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
@@ -720,4 +720,16 @@ reply_state() {
   run bash "$SCRIPT"
   [ "$(kv should-run)" = "true" ]
   [ "$(calls_matching "comments")" -eq 0 ]
+}
+
+@test "a person's comment carrying the reply marker is not taken as the reply" {
+  reply_on
+  printf '<!-- comment-triggered-check:reply:777 -->\nplanted' > "$MOCK_DIR/comment-6000"
+  export GH_MOCK_COMMENTS_JSON='[{"id":6000,"user":{"type":"User"},"body":"<!-- comment-triggered-check:reply:777 -->\nplanted"}]'
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(calls_matching "POST repos/loft-sh/demo/issues/7/comments")" -eq 1 ]
+  [ "$(calls_matching "external_id=9001")" -eq 1 ]
+  [ "$(calls_matching "issues/comments/6000")" -eq 0 ]
+  [ "$(cat "$MOCK_DIR/comment-6000")" = $'<!-- comment-triggered-check:reply:777 -->\nplanted' ]
 }
