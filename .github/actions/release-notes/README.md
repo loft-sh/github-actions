@@ -14,8 +14,10 @@ release pipeline. It shares no history with the earlier tag, so GitHub's
 `generate-notes` on the OSS repository cannot bound the range: it either
 lists the whole repository history or rejects the previous tag with
 `400 Invalid previous_tag parameter`. Comparing two OSS tags shows nothing for
-the same reason, so the body has no compare link. The monorepo has the real
-history, so the body comes from a first-parent walk there.
+the same reason, so the body has no compare link. A parent would not fix it
+either: exported commits reach the OSS repository as direct pushes, not PRs,
+so `generate-notes` would list only the community PRs. The monorepo has the
+real history, so the body comes from a first-parent walk there.
 
 ## How it works
 
@@ -24,7 +26,13 @@ history, so the body comes from a first-parent walk there.
    [`release-summary`](../release-summary/README.md) uses too: a stable tag
    (no prerelease part, or `-patch` / `-patch.N`) compares with the highest
    earlier stable tag on any branch, and a pre-release with the nearest
-   earlier `v*` tag. A `-next` tag is never a base.
+   earlier `v*` tag. A `-next` tag is never a base. Unlike release-summary,
+   a tag on the release's own commit is the base only when no other tag is
+   left, as in the monorepo's goreleaser changelog. That tag is either an
+   earlier cut that shipped, whose changes then show again, or one whose
+   build failed and that has no OSS release, whose changes would otherwise
+   show nowhere. A failed cut followed by a release on a later commit is
+   still the base; pass `previous-tag` to step past it.
 2. It lists the first-parent commits in that range that touch the subtree,
    oldest first, and drops commits whose subject starts with `docs:` or
    `test:`, as the monorepo's goreleaser changelog does. Scoped forms such
@@ -55,8 +63,9 @@ and the entry links the OSS commit from the trailer instead, whose page
 shows its PR. A bulk sync that carries several trailers links none of them.
 
 GitHub limits a release body to 125,000 characters. When the body would pass
-125,000 bytes, the oldest entries go until it fits, and it says how many it
-left out.
+124,000 bytes, the oldest entries go until it fits, and it says how many it
+left out. The last 1,000 bytes are room for what the caller appends, such as
+vcluster-pro's `<!-- managed-by-monorepo -->` marker.
 
 The step fails with an `::error::` line when the notes cannot be written: a
 shallow checkout, a missing tag, a `subtree-prefix` that is not a directory
@@ -95,13 +104,13 @@ checkout of the monorepo with full history and tags.
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-|     INPUT      |  TYPE  | REQUIRED | DEFAULT |                                                                                                                              DESCRIPTION                                                                                                                              |
-|----------------|--------|----------|---------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| oss-repository | string |   true   |         |                                                                                OSS repository owner/name, for links to <br>the OSS commits that commits imported <br>from it replay.                                                                                  |
-|  previous-tag  | string |  false   |         | Tag to compare against. Leave empty <br>to derive it: a stable tag <br>(no prerelease part, or -patch / -patch.N) compares with the highest earlier <br>stable tag on any branch, a <br>pre-release with the nearest earlier v* <br>tag that is not a -next <br>tag.  |
-|   repository   | string |   true   |         |                                                               Monorepo owner/name. Refs to it are <br>dropped from the body. The checkout <br>must be this repository with full <br>history and tags.                                                                 |
-| subtree-prefix | string |   true   |         |                                  Path of the OSS subtree in <br>the monorepo, as oss-commit-sync takes it, <br>e.g. staging/github.com/loft-sh/vcluster. Must be a directory <br>below the repository root at the <br>release tag.                                    |
-|    version     | string |   true   |         |                                                                                                             Release tag. Must exist in the <br>checkout.                                                                                                              |
+|     INPUT      |  TYPE  | REQUIRED | DEFAULT |                                                                                                                                                                         DESCRIPTION                                                                                                                                                                          |
+|----------------|--------|----------|---------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| oss-repository | string |   true   |         |                                                                                                                            OSS repository owner/name, for links to <br>the OSS commits that commits imported <br>from it replay.                                                                                                                             |
+|  previous-tag  | string |  false   |         | Tag to compare against. Leave empty <br>to derive it: a stable tag <br>(no prerelease part, or -patch / -patch.N) compares with the highest earlier <br>stable tag on any branch, a <br>pre-release with the nearest earlier v* <br>tag that is not a -next <br>tag. A tag on the release <br>commit itself is the base only <br>when no other tag is left.  |
+|   repository   | string |   true   |         |                                                                                                           Monorepo owner/name. Refs to it are <br>dropped from the body. The checkout <br>must be this repository with full <br>history and tags.                                                                                                            |
+| subtree-prefix | string |   true   |         |                                                                              Path of the OSS subtree in <br>the monorepo, as oss-commit-sync takes it, <br>e.g. staging/github.com/loft-sh/vcluster. Must be a directory <br>below the repository root at the <br>release tag.                                                                               |
+|    version     | string |   true   |         |                                                                                                                                                        Release tag. Must exist in the <br>checkout.                                                                                                                                                          |
 
 <!-- AUTO-DOC-INPUT:END -->
 

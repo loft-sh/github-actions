@@ -227,3 +227,70 @@ def test_a_non_semver_nearest_tag_is_still_the_base(tmp_path, monkeypatch):
     against the release and stays the base as before."""
     history(tmp_path, monkeypatch, ["v0.4.0"], ["v0.5.0rc1"], ["v0.5.0-rc.2"])
     assert resolve("v0.5.0-rc.2") == "v0.5.0rc1"
+
+
+def test_own_commit_false_steps_past_a_lower_tag_on_the_same_commit(tmp_path, monkeypatch):
+    """rc.1 cut on the commit of an alpha.2 whose build failed: alpha.2 was
+    never released, so comparing with it would list nothing."""
+    history(tmp_path, monkeypatch, ["v1.0.0"], ["v1.1.0-alpha.1"],
+            ["v1.1.0-alpha.2", "v1.1.0-beta.1", "v1.1.0-rc.1"])
+    assert release_tags.resolve_previous_tag("v1.1.0-rc.1", "", own_commit=False) == "v1.1.0-alpha.1"
+    assert resolve("v1.1.0-rc.1") == "v1.1.0-beta.1"
+
+
+def test_own_commit_false_steps_past_a_lower_stable_on_the_same_commit(tmp_path, monkeypatch):
+    history(tmp_path, monkeypatch, ["v1.2.2"], ["v1.2.3", "v1.2.4"])
+    assert release_tags.resolve_previous_tag("v1.2.4", "", own_commit=False) == "v1.2.2"
+    assert resolve("v1.2.4") == "v1.2.3"
+
+
+@pytest.mark.parametrize("tags, version, expected", [
+    ([["v1.0.0"], [], ["v1.1.0-alpha.1"]], "v1.1.0-alpha.1", "v1.0.0"),
+    ([["v1.0.0"], ["v1.1.0-rc.1", "v1.1.0"]], "v1.1.0-rc.1", "v1.0.0"),
+    ([["v1.0.0"], ["v1.1.0-rc.1"], ["v1.1.0"]], "v1.1.0", "v1.0.0"),
+])
+def test_own_commit_false_changes_nothing_without_a_lower_tag_there(tmp_path, monkeypatch,
+                                                                  tags, version, expected):
+    history(tmp_path, monkeypatch, *tags)
+    assert release_tags.resolve_previous_tag(version, "", own_commit=False) == expected
+    assert resolve(version) == expected
+
+
+def test_own_commit_false_keeps_the_override(tmp_path, monkeypatch):
+    history(tmp_path, monkeypatch, ["v1.0.0"], ["v1.1.0-alpha.2", "v1.1.0-rc.1"])
+    assert release_tags.resolve_previous_tag(
+        "v1.1.0-rc.1", "v1.1.0-alpha.2", own_commit=False) == "v1.1.0-alpha.2"
+
+
+@pytest.mark.parametrize("version, expected", [("v1.1.0", "v1.0.0"),
+                                               ("v1.1.0-rc.1", "v1.0.0")])
+def test_a_tag_name_that_is_not_utf8_does_not_stop_resolving(tmp_path, monkeypatch,
+                                                            version, expected):
+    """The tag sits on the release's own commit, which both paths list, and
+    describe from the commit before never returns it."""
+    r = history(tmp_path, monkeypatch, ["v1.0.0"])
+    commit(r, "next")
+    subprocess.run([b"git", b"-C", bytes(r), b"tag", b"v1.0.9-\xff"], check=True)
+    git(r, "tag", version)
+    assert resolve(version) == expected
+
+
+def test_a_nearest_tag_that_is_not_utf8_fails_naming_git(tmp_path, monkeypatch):
+    r = history(tmp_path, monkeypatch, ["v1.0.0"])
+    commit(r, "odd")
+    subprocess.run([b"git", b"-C", bytes(r), b"tag", b"v1.0.1-\xff"], check=True)
+    commit(r, "next")
+    git(r, "tag", "v1.1.0-rc.1")
+    with pytest.raises(subprocess.CalledProcessError):
+        resolve("v1.1.0-rc.1")
+
+
+@pytest.mark.parametrize("tags, version, expected", [
+    ([["v1.0.0-alpha.1", "v1.0.0-rc.1"]], "v1.0.0-rc.1", "v1.0.0-alpha.1"),
+    ([["v1.0.0", "v1.0.1"]], "v1.0.1", "v1.0.0"),
+])
+def test_own_commit_false_falls_back_to_a_tag_there_when_nothing_else_is_left(
+        tmp_path, monkeypatch, tags, version, expected):
+    """Comparing with the tag on the same commit beats failing the release."""
+    history(tmp_path, monkeypatch, *tags)
+    assert release_tags.resolve_previous_tag(version, "", own_commit=False) == expected
