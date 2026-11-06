@@ -199,25 +199,6 @@ func run(
 
 	logger.Info("Found issues in pull requests", "count", len(releasedIssues))
 
-	// Cache of team name -> released state ID (looked up on demand)
-	releasedStateIDByTeam := make(map[string]string)
-
-	// Helper to get released state ID for a team (with caching)
-	getReleasedStateID := func(teamName string) (string, error) {
-		if stateID, ok := releasedStateIDByTeam[teamName]; ok {
-			return stateID, nil
-		}
-		stateID, err := linearClient.WorkflowStateID(ctx, *releasedStateName, teamName)
-		if err != nil {
-			return "", err
-		}
-		releasedStateIDByTeam[teamName] = stateID
-		logger.Debug("Found released workflow ID for team", "team", teamName, "workflowID", stateID)
-		return stateID, nil
-	}
-
-	currentReleaseDateStr := currentRelease.PublishedAt.Format("2006-01-02")
-
 	// Classify the release as shippable from its tag name (DEVOPS-1006). vCluster
 	// publishes backport patches like v0.28.2-patch.1 that must be treated as real
 	// releases; -rc/-alpha/-beta/-dev/-pre/-next tags are prereleases and are skipped.
@@ -227,49 +208,99 @@ func run(
 	isStable := releaseIsStable(currentRelease.TagName)
 	logger.Info("Release stability", "releaseTag", currentRelease.TagName, "isStable", isStable)
 
-	releasedCount := 0
-	skippedCount := 0
+	syncer := &issueSyncer{
+		client:                   &linearClient,
+		logger:                   logger,
+		teamFilter:               teamFilter,
+		projectFilter:            projectFilter,
+		teamFilterRaw:            *linearTeams,
+		projectFilterRaw:         *linearProjects,
+		releasedStateName:        *releasedStateName,
+		readyForReleaseStateName: *readyForReleaseStateName,
+		releaseTag:               currentRelease.TagName,
+		releaseDate:              currentRelease.PublishedAt.Format("2006-01-02"),
+		isStable:                 isStable,
+		dryRun:                   *dryRun,
+	}
 
 	failedCount, syncErr := processIssues(releasedIssues, func(issueID string) error {
-		// Get issue details including team
-		issueDetails, err := linearClient.GetIssueDetails(ctx, issueID)
-		if err != nil {
-			logger.Error("Failed to get issue details", "issueID", issueID, "error", err)
-			return err
-		}
-
-		// Filter by team if specified
-		if len(teamFilter) > 0 && !teamFilter.Contains(issueDetails.TeamName) {
-			logger.Debug("Skipping issue from different team", "issueID", issueID, "team", issueDetails.TeamName, "filter", *linearTeams)
-			skippedCount++
-			return nil
-		}
-
-		// Filter by project if specified
-		if len(projectFilter) > 0 && !projectFilter.Contains(issueDetails.ProjectName) {
-			logger.Debug("Skipping issue from different project", "issueID", issueID, "project", issueDetails.ProjectName, "filter", *linearProjects)
-			skippedCount++
-			return nil
-		}
-
-		// Get the released state ID for this issue's team
-		releasedStateID, err := getReleasedStateID(issueDetails.TeamName)
-		if err != nil {
-			logger.Error("Failed to get released state for team", "issueID", issueID, "team", issueDetails.TeamName, "error", err)
-			return err
-		}
-
-		if err := linearClient.MoveIssueToState(ctx, *dryRun, issueID, issueDetails, releasedStateID, *readyForReleaseStateName, currentRelease.TagName, currentReleaseDateStr, isStable); err != nil {
-			logger.Error("Failed to move issue to state", "issueID", issueID, "error", err)
-			return err
-		} else {
-			releasedCount++
-		}
-		return nil
+		return syncer.syncIssue(ctx, issueID)
 	})
 
-	logger.Info("Linear sync completed", "processed", len(releasedIssues), "released", releasedCount, "skipped", skippedCount, "failed", failedCount)
+	logger.Info("Linear sync completed", "processed", len(releasedIssues), "released", syncer.released, "skipped", syncer.skipped, "failed", failedCount)
 	return syncErr
+}
+
+// issueSyncer applies the release to one Linear issue at a time and counts the outcomes.
+type issueSyncer struct {
+	client                   *LinearClient
+	logger                   *slog.Logger
+	teamFilter               caseInsensitiveSet
+	projectFilter            caseInsensitiveSet
+	teamFilterRaw            string
+	projectFilterRaw         string
+	releasedStateName        string
+	readyForReleaseStateName string
+	releaseTag               string
+	releaseDate              string
+	isStable                 bool
+	dryRun                   bool
+
+	// releasedStateIDByTeam caches team name -> released state ID.
+	releasedStateIDByTeam map[string]string
+	released              int
+	skipped               int
+}
+
+// releasedStateID returns the released state ID for a team, looking it up once.
+func (s *issueSyncer) releasedStateID(ctx context.Context, teamName string) (string, error) {
+	if stateID, ok := s.releasedStateIDByTeam[teamName]; ok {
+		return stateID, nil
+	}
+	stateID, err := s.client.WorkflowStateID(ctx, s.releasedStateName, teamName)
+	if err != nil {
+		return "", err
+	}
+	if s.releasedStateIDByTeam == nil {
+		s.releasedStateIDByTeam = make(map[string]string)
+	}
+	s.releasedStateIDByTeam[teamName] = stateID
+	s.logger.Debug("Found released workflow ID for team", "team", teamName, "workflowID", stateID)
+	return stateID, nil
+}
+
+// syncIssue applies the release to one issue. Filtered issues count as skipped, not failed.
+func (s *issueSyncer) syncIssue(ctx context.Context, issueID string) error {
+	issueDetails, err := s.client.GetIssueDetails(ctx, issueID)
+	if err != nil {
+		s.logger.Error("Failed to get issue details", "issueID", issueID, "error", err)
+		return err
+	}
+
+	if len(s.teamFilter) > 0 && !s.teamFilter.Contains(issueDetails.TeamName) {
+		s.logger.Debug("Skipping issue from different team", "issueID", issueID, "team", issueDetails.TeamName, "filter", s.teamFilterRaw)
+		s.skipped++
+		return nil
+	}
+
+	if len(s.projectFilter) > 0 && !s.projectFilter.Contains(issueDetails.ProjectName) {
+		s.logger.Debug("Skipping issue from different project", "issueID", issueID, "project", issueDetails.ProjectName, "filter", s.projectFilterRaw)
+		s.skipped++
+		return nil
+	}
+
+	releasedStateID, err := s.releasedStateID(ctx, issueDetails.TeamName)
+	if err != nil {
+		s.logger.Error("Failed to get released state for team", "issueID", issueID, "team", issueDetails.TeamName, "error", err)
+		return err
+	}
+
+	if err := s.client.MoveIssueToState(ctx, s.dryRun, issueID, issueDetails, releasedStateID, s.readyForReleaseStateName, s.releaseTag, s.releaseDate, s.isStable); err != nil {
+		s.logger.Error("Failed to move issue to state", "issueID", issueID, "error", err)
+		return err
+	}
+	s.released++
+	return nil
 }
 
 // processIssues attempts every issue even when an earlier one fails.
