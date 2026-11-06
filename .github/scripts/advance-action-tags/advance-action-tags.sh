@@ -67,6 +67,68 @@ git_authenticated fetch --quiet --force --prune origin main '+refs/tags/*:refs/t
 git cat-file -e "$merge_sha^{commit}" 2>/dev/null || fail "Merge commit $merge_sha is unavailable in this checkout"
 git merge-base --is-ancestor "$merge_sha" origin/main || fail "Merge commit $merge_sha is not an ancestor of origin/main"
 
+# Actions also load files from other directories by relative path:
+# release-summary imports ../release-lib, and semver-validation runs
+# ../setup-semstat/src/install-semstat.sh. A fix in such a directory only
+# reaches callers through the tags of the actions that load it, so those
+# advance too, followed through every directory that is loaded in turn. A
+# file outside markdown and test/ loads a directory when it names it after a
+# slash with no name character after it, as in ../<dir> or {root}/<dir>/, or
+# as a whole quoted string, "<dir>" or '<dir>'. <dir>@<ref> is a remote uses:
+# that loads the action at its own tag, so it does not count.
+# A changed directory without action.yml is a library such as release-lib,
+# which advances no tag of its own, as long as it exists at the merge commit
+# and never had an action.yml. Any other directory without action.yml is a
+# removed or renamed action, which has no clear tag target. History, not the
+# merge commit's parent, decides "never": a rebase merge lands each commit of
+# the pull request, so the parent can already lack the action.yml.
+users_of() {
+  local dir=$1 matches status=0 name
+  # Directory names hold only [A-Za-z0-9._-], so a dot is the one character
+  # to escape for the regex.
+  name=${dir//./\\.}
+  matches=$(git grep -l -E -e "/$name([^A-Za-z0-9_.@-]|\$)" -e "[\"']${name}[\"']" \
+    "$merge_sha" -- .github/actions ":(exclude).github/actions/$dir" ':(exclude)*.md' \
+    ':(exclude,glob).github/actions/*/test/**') || status=$?
+  # git grep exits 1 for no match and above 1 when it cannot search.
+  (( status <= 1 )) || fail "Could not search merge commit $merge_sha for users of $dir"
+  sed -nE "s#^$merge_sha:\.github/actions/([^/]+)/.*#\1#p" <<< "$matches" | sort -u
+}
+
+declare -a queue=("${!changed_actions[@]}")
+declare -A visited=()
+while [[ ${#queue[@]} -gt 0 ]]; do
+  dir=${queue[0]}
+  queue=("${queue[@]:1}")
+  [[ -z "${visited[$dir]:-}" ]] || continue
+  visited[$dir]=1
+  [[ "$dir" != linear-release-sync ]] || fail "linear-release-sync is a binary action; its tag cannot be moved without rebuilding its release artifact"
+
+  library=false
+  if ! git cat-file -e "$merge_sha:.github/actions/$dir/action.yml" 2>/dev/null; then
+    if git cat-file -e "$merge_sha:.github/actions/$dir" 2>/dev/null \
+        && [[ -z "$(git log -1 --format=%H "$merge_sha" -- ".github/actions/$dir/action.yml")" ]]; then
+      library=true
+      unset 'changed_actions[$dir]'
+    else
+      fail "Changed action $dir is missing action.yml at merge commit $merge_sha; tag target is unclear"
+    fi
+  fi
+
+  users=$(users_of "$dir")
+  if [[ -z "$users" ]]; then
+    [[ "$library" == false ]] || fail "Changed directory $dir has no action.yml and no action uses it at merge commit $merge_sha; tag target is unclear"
+    continue
+  fi
+  echo "$dir is loaded by: $(tr '\n' ' ' <<< "$users")"
+  while IFS= read -r user; do
+    if git cat-file -e "$merge_sha:.github/actions/$user/action.yml" 2>/dev/null; then
+      changed_actions["$user"]=1
+    fi
+    queue+=("$user")
+  done <<< "$users"
+done
+
 declare -a tags_to_move=()
 declare -A old_shas=()
 declare -A old_ref_oids=()

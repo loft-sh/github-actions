@@ -1,4 +1,4 @@
-.PHONY: test test-ghcr-tag-guard test-release-on-merge test-retry-approved-pr-ci test-secret-broker-request test-secret-broker-response test-semver-validation test-setup-semstat test-linear-pr-commenter test-link-backport-prs test-fork-review-check test-select-backport-source-prs test-release-notification test-linear-release-sync test-linear-cve-summary test-delete-previous-head-image test-aws-test-infra test-cleanup-head-charts test-advance-action-tags test-ci-test-notify test-auto-approve-bot-prs test-ai-pr-review test-ai-step test-release-summary test-publish-helm-chart test-govulncheck test-go-licenses test-run-ginkgo test-sticky-pr-comment test-repository-dispatch test-parse-label-filter test-release-branch-freeze test-prerelease-setup test-vcluster-release test-platform-release test-release-lib test-subtree-mirror test-oss-commit-sync test-oss-mirror-staleness test-backport-legacy-allowlist test-backport-legacy-split test-backport-fix-imports test-promote-release test-wait-for-release test-cve-scan test-commitlint test-resolve-github-release test-comment-triggered-check test-conflict-check build-linear-release-sync lint check-bats-jobs install-auto-doc generate-docs check-docs help
+.PHONY: test test-ghcr-tag-guard test-release-on-merge test-retry-approved-pr-ci test-secret-broker-request test-secret-broker-response test-semver-validation test-setup-semstat test-linear-pr-commenter test-link-backport-prs test-fork-review-check test-select-backport-source-prs test-release-notification test-linear-release-sync test-linear-cve-summary test-delete-previous-head-image test-aws-test-infra test-cleanup-head-charts test-advance-action-tags test-ci-test-notify test-auto-approve-bot-prs test-ai-pr-review test-ai-step test-release-summary test-release-notes test-publish-helm-chart test-govulncheck test-go-licenses test-run-ginkgo test-sticky-pr-comment test-repository-dispatch test-parse-label-filter test-release-branch-freeze test-prerelease-setup test-vcluster-release test-platform-release test-release-lib test-subtree-mirror test-oss-commit-sync test-oss-mirror-staleness test-backport-legacy-allowlist test-backport-legacy-split test-backport-fix-imports test-promote-release test-wait-for-release test-cve-scan test-commitlint test-resolve-github-release test-comment-triggered-check test-conflict-check build-linear-release-sync lint check-bats-jobs install-auto-doc generate-docs check-docs help
 
 ACTIONS_DIR := .github/actions
 .PHONY: test-check-action-pins
@@ -94,7 +94,7 @@ check-docs: generate-docs ## verify docs are up to date (fails if drift detected
 help: ## show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-30s %s\n", $$1, $$2}'
 
-test: test-ghcr-tag-guard test-release-on-merge test-retry-approved-pr-ci test-secret-broker-request test-secret-broker-response test-semver-validation test-setup-semstat test-linear-pr-commenter test-link-backport-prs test-fork-review-check test-select-backport-source-prs test-release-notification test-linear-release-sync test-linear-cve-summary test-delete-previous-head-image test-aws-test-infra test-cleanup-head-charts test-advance-action-tags test-auto-approve-bot-prs test-ai-pr-review test-ai-step test-release-summary test-ci-test-notify test-go-licenses test-publish-helm-chart test-govulncheck test-run-ginkgo test-sticky-pr-comment test-repository-dispatch test-parse-label-filter test-release-branch-freeze test-prerelease-setup test-vcluster-release test-platform-release test-release-lib test-subtree-mirror test-oss-commit-sync test-oss-mirror-staleness test-backport-legacy-allowlist test-backport-legacy-split test-backport-fix-imports test-promote-release test-wait-for-release test-cve-scan test-commitlint test-resolve-github-release test-comment-triggered-check test-conflict-check ## run all action tests
+test: test-ghcr-tag-guard test-release-on-merge test-retry-approved-pr-ci test-secret-broker-request test-secret-broker-response test-semver-validation test-setup-semstat test-linear-pr-commenter test-link-backport-prs test-fork-review-check test-select-backport-source-prs test-release-notification test-linear-release-sync test-linear-cve-summary test-delete-previous-head-image test-aws-test-infra test-cleanup-head-charts test-advance-action-tags test-auto-approve-bot-prs test-ai-pr-review test-ai-step test-release-summary test-release-notes test-ci-test-notify test-go-licenses test-publish-helm-chart test-govulncheck test-run-ginkgo test-sticky-pr-comment test-repository-dispatch test-parse-label-filter test-release-branch-freeze test-prerelease-setup test-vcluster-release test-platform-release test-release-lib test-subtree-mirror test-oss-commit-sync test-oss-mirror-staleness test-backport-legacy-allowlist test-backport-legacy-split test-backport-fix-imports test-promote-release test-wait-for-release test-cve-scan test-commitlint test-resolve-github-release test-comment-triggered-check test-conflict-check ## run all action tests
 
 test-retry-approved-pr-ci: ## run approved PR CI retry pytest tests
 	uv run --with pytest==8.3.3 pytest $(ACTIONS_DIR)/retry-approved-pr-ci/test/ -q
@@ -172,6 +172,9 @@ test-release-summary: ## run release-summary pytest + bats tests
 	uv run --with pytest==8.3.3 pytest $(ACTIONS_DIR)/release-summary/test/ -q
 	bats $(ACTIONS_DIR)/release-summary/test/*.bats
 
+test-release-notes: ## run release-notes pytest tests
+	uv run --with pytest==8.3.3 pytest $(ACTIONS_DIR)/release-notes/test/ -q
+
 test-ci-test-notify: ## run ci-test-notify bats tests
 	bats $(ACTIONS_DIR)/ci-test-notify/test
 
@@ -218,8 +221,9 @@ test-vcluster-release: ## run vcluster-release bats tests (requires mikefarah/yq
 test-platform-release: ## run platform-release bats tests (requires mikefarah/yq on PATH)
 	bats $(ACTIONS_DIR)/platform-release/test/*.bats
 
-test-release-lib: ## run release-lib bats tests (shared by the release dispatchers)
+test-release-lib: ## run release-lib bats and pytest tests (shared by the release actions)
 	bats $(ACTIONS_DIR)/release-lib/test/*.bats
+	uv run --with pytest==8.3.3 pytest $(ACTIONS_DIR)/release-lib/test/ -q
 
 test-promote-release: ## run promote-release bats tests
 	bats $(ACTIONS_DIR)/promote-release/test/*.bats

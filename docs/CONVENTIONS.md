@@ -132,7 +132,14 @@ Actions live under `.github/actions/<action-name>/`. Each action is versioned
 independently with `<action-name>/v<N>` tags:
 
 After a pull request merges to `main`, the action-tag workflow advances the
-highest existing major tag for each changed action. Before merging a change that
+highest existing major tag for each changed action, and for every action that
+loads a changed directory by path (`../release-lib`, `"release-lib"`) outside
+markdown and `test/`, followed through directories loaded in turn. A remote
+`uses:` of another action at its own tag does not count. A changed directory
+that exists without an `action.yml` and never had one is a library such as
+`release-lib`: it has no tag of its own, and the workflow fails when no action
+loads it. Any other directory without one is a removed or renamed action, and
+the workflow fails. Before merging a change that
 needs a new major, add the `major-release` label to the pull request. The workflow
 then leaves every tag alone, comments on the pull request, and fails so the
 maintainer can cut and publish the new major. It also stops for releases that
