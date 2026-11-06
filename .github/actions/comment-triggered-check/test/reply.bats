@@ -189,7 +189,8 @@ refresh() {
 @test "a redraw finds the checks of a re-run on a newer commit" {
   seed_reply
   seed_check 11 Pro completed success https://e/1 1
-  jq -c '.id = 20 | .head_sha = "def5678aaaa" | .external_id = ({r: 555, a: 2, l: "Pro"} | tojson)' \
+  jq -c '.id = 20 | .head_sha = "def5678aaaa" | .status = "in_progress" | .conclusion = null
+         | .external_id = ({r: 555, a: 2, l: "Pro"} | tojson)' \
     "$MOCK_DIR/checkrun-11.json" > "$MOCK_DIR/checkrun-20.json"
   run refresh def5678aaaa
   [ "$status" -eq 0 ]
