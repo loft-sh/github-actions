@@ -32,10 +32,15 @@
 #   GH_TOKEN                  token for gh
 #   INPUT_APP_TOKEN           optional GitHub App token for the check-run create
 #   INPUT_FINISH_WORKFLOW     workflow file that runs finish for this command
+#   INPUT_REPLY               whether to post a reply that links the runs
+#   INPUT_COMMENT_ID          github.event.comment.id, which the reply answers
+#   INPUT_RUN_LABEL           short name for this invocation's runs in the reply
 set -euo pipefail
 
 # shellcheck source=.github/actions/comment-triggered-check/src/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=.github/actions/comment-triggered-check/src/reply.sh
+source "$(dirname "${BASH_SOURCE[0]}")/reply.sh"
 
 command_word="${INPUT_COMMAND:-/test-e2e}"
 comment_body="${INPUT_COMMENT_BODY:-}"
@@ -53,6 +58,9 @@ parse_repeat="${INPUT_PARSE_REPEAT:-false}"
 parse_runs="${INPUT_PARSE_RUNS:-false}"
 allowed_targets="$(normalize_filter "${INPUT_ALLOWED_TARGETS-}")"
 target_name="${INPUT_TARGET_NAME:-}"
+want_reply="${INPUT_REPLY:-false}"
+comment_id="${INPUT_COMMENT_ID:-}"
+run_label="${INPUT_RUN_LABEL:-}"
 parse_target=false
 if [[ -n "$target_name" ]]; then
   parse_target=true
@@ -310,17 +318,49 @@ if [[ -n "${INPUT_APP_TOKEN:-}" ]]; then
   fi
 fi
 
-# open_check <name> — creates one check-run and prints its id; fails on anything
+# --- 4a. The reply ------------------------------------------------------------
+# Posted before the checks, so each check can carry the reply's id and every
+# later step finds the reply from the check alone. A re-run of this workflow
+# reuses the reply; its checks carry the new attempt, which replaces the rows.
+reply_id=""
+reply_created=false
+if [[ "$want_reply" == "true" && "$comment_id" =~ ^[0-9]+$ ]]; then
+  gh api --method POST "repos/${repo}/issues/comments/${comment_id}/reactions" -f "content=eyes" \
+    >/dev/null 2>&1 || echo "::warning::could not react to comment ${comment_id}"
+  if reply_id="$(reply_find "$repo" "$pr_number" "$comment_id")"; then
+    if [[ -z "$reply_id" ]]; then
+      new_state="$(jq -c -n --argjson c "$comment_id" --arg cmd "${command_word} ${args}" --arg sha "$head_sha" \
+        '{v: 2, comment_id: $c, command: $cmd, sha: $sha}')"
+      if reply_id="$(reply_create "$repo" "$pr_number" "$new_state")" && [[ -n "$reply_id" ]]; then
+        reply_created=true
+      else
+        reply_id=""
+        echo "::warning::could not post the reply to comment ${comment_id}"
+      fi
+    fi
+  else
+    reply_id=""
+    echo "::warning::could not list the comments of ${repo}#${pr_number}; not replying"
+  fi
+fi
+
+# open_check <name> <label> — creates one check-run and prints its id; fails on anything
 # that would leave a check nothing can close.
 open_check() {
   local created id
+  local -a extra=()
+  if [[ -n "$reply_id" ]]; then
+    extra=(-f "external_id=$(jq -c -n --argjson r "$reply_id" --argjson a "$run_attempt" --arg l "$2" \
+      '{r: $r, a: $a, l: $l}')")
+  fi
   if ! created="$(GH_TOKEN="$check_token" gh_json --method POST "repos/${repo}/check-runs" \
     -f "name=${1}" \
     -f "head_sha=${head_sha}" \
     -f "status=in_progress" \
     -f "details_url=${server_url}/${repo}/actions/runs/${run_id}" \
     -f "output[title]=Running" \
-    -f "output[summary]=${summary}")"; then
+    -f "output[summary]=${summary}" \
+    ${extra[@]+"${extra[@]}"})"; then
     echo "::warning::could not create the check-run ${1}; not starting a run" >&2
     return 1
   fi
@@ -339,6 +379,18 @@ open_check() {
 # One check per run, each with its own key, so the runs neither cancel nor hide
 # each other, and a repeated command replaces them one for one.
 opened=()
+label_base="${run_label:-$prefix}"
+# reply_update — draws this invocation's checks into the reply, or removes a
+# reply this invocation posted when none of its checks opened.
+reply_update() {
+  [[ -n "$reply_id" ]] || return 0
+  if [[ ${#opened[@]} -eq 0 && "$reply_created" == "true" ]]; then
+    gh api --method DELETE "repos/${repo}/issues/comments/${reply_id}" >/dev/null 2>&1 ||
+      echo "::warning::could not remove the empty reply ${reply_id}"
+    return 0
+  fi
+  reply_refresh "$repo" "$reply_id" "$head_sha"
+}
 for (( k = 1; k <= run_count; k++ )); do
   run_name="$base_name"
   run_key="$base_key"
@@ -350,7 +402,7 @@ for (( k = 1; k <= run_count; k++ )); do
     run_key="${base_key}-run-${k}-of-${run_count}"
   fi
 
-  if ! opened_id="$(open_check "$run_name")"; then
+  if ! opened_id="$(open_check "$run_name" "$(run_label "$label_base" "$repeat" "$k" "$run_count")")"; then
     # No run starts, so close what this command opened rather than leave it spinning.
     for id in ${opened[@]+"${opened[@]}"}; do
       GH_TOKEN="$check_token" gh_json --method PATCH "repos/${repo}/check-runs/${id}" \
@@ -360,6 +412,7 @@ for (( k = 1; k <= run_count; k++ )); do
         -f "output[summary]=Another run of this command could not be opened, so none started. Comment the command again." \
         >/dev/null || echo "::warning::could not close check-run ${id}"
     done
+    reply_update
     reason="check-run-not-created"
     should_run=false
     runs_json="[]"
@@ -370,6 +423,8 @@ for (( k = 1; k <= run_count; k++ )); do
     '. + [{"check-run-id": $id, "concurrency-key": $key, "check-name": $name}]' <<< "$runs_json")"
   echo "::notice::started ${run_name} on ${head_sha}"
 done
+
+reply_update
 
 # The single-run outputs keep naming the first run for callers that read only those.
 check_run_id="$(jq -r '.[0]["check-run-id"]' <<< "$runs_json")"

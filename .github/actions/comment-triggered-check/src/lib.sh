@@ -531,6 +531,128 @@ refusal_details() {
   esac
 }
 
+# --- Reply comment ------------------------------------------------------------
+# One reply per command comment, drawn entirely from the command's check-runs.
+# Each check's external_id is a small JSON object: the reply id (r), the
+# workflow attempt that opened it (a), its row label (l) and, once linked, its
+# run URL (u). The reply's own state holds only what never changes: the command
+# and the commit. So any writer that redraws after another's change draws it,
+# and nothing a stale writer puts back can hide a row or a link for good. The
+# state is base64 so user text can never close the HTML comment around it.
+
+REPLY_MARKER_PREFIX="<!-- comment-triggered-check:reply:"
+REPLY_STATE_PREFIX="<!-- comment-triggered-check:state "
+# A run link is drawn only when it matches this; link checks it with jq too, so
+# both use the same rule.
+RUN_URL_PATTERN='^https://[^\s()\[\]<>]+$'
+
+# reply_marker <comment-id> — first line of the reply for that command comment.
+reply_marker() {
+  printf '%s%s -->' "$REPLY_MARKER_PREFIX" "${1-}"
+}
+
+# reply_state_decode <body> — the state JSON from a reply body; empty and
+# non-zero when the body has no readable state.
+reply_state_decode() {
+  local line encoded json
+  line="$(grep -F -- "$REPLY_STATE_PREFIX" <<< "${1-}" | head -n1)" || return 1
+  encoded="${line#*"$REPLY_STATE_PREFIX"}"
+  encoded="${encoded%% -->*}"
+  json="$(printf '%s' "$encoded" | base64 -d 2>/dev/null)" || return 1
+  jq -e 'type == "object" and (.command | type) == "string"' <<< "$json" >/dev/null 2>&1 || return 1
+  jq -c . <<< "$json"
+}
+
+# is_run_url <url> — true when the URL may be drawn as a run link.
+is_run_url() {
+  jq -e -n --arg u "${1-}" --arg p "$RUN_URL_PATTERN" '$u | test($p)' >/dev/null 2>&1
+}
+
+# run_label <label> <repeat> <run-index> <run-count> — row label for one run.
+run_label() {
+  local label="${1-}" repeat="${2-}" k="${3:-1}" n="${4:-1}"
+  if [[ -n "$repeat" ]]; then
+    printf '%s, repeat %s' "$label" "$repeat"
+  elif (( n > 1 )); then
+    printf '%s, run %s of %s' "$label" "$k" "$n"
+  else
+    printf '%s' "$label"
+  fi
+}
+
+# reply_rows <reply-id> <check-runs-json> — the checks that belong to the reply,
+# newest attempt only, oldest first. Input is any array of check-runs.
+reply_rows() {
+  jq -c --argjson r "${1:-0}" '
+    [.[] | select(type == "object")
+     | . + {ext: ((.external_id // "") | try fromjson catch null)}
+     | select((.ext | type) == "object" and .ext.r == $r)]
+    | (map(.ext.a // 0) | max // 0) as $latest
+    | map(select((.ext.a // 0) == $latest))
+    | unique_by(.id)
+    | map({id, status, conclusion, head_sha, label: (.ext.l // "run"), url: (.ext.u // "")})
+  ' <<< "${2:-[]}"
+}
+
+# render_reply <state-json> <rows-json> <server-url> <repo>
+# The reply body. rows-json comes from reply_rows. No rows means the command is
+# still opening its checks, so the headline stays neutral: the first version of
+# a comment is the one notification emails carry.
+render_reply() {
+  local state="${1-}" rows="${2:-[]}" server="${3-}" repo="${4-}" encoded
+  encoded="$(printf '%s' "$state" | jq -c . | base64 | tr -d '\n')"
+  jq -r -n \
+    --argjson state "$state" \
+    --argjson rows "$rows" \
+    --arg base "${server}/${repo}" \
+    --arg marker "$(reply_marker "$(jq -r '.comment_id' <<< "$state")")" \
+    --arg encoded "$encoded" \
+    --arg state_prefix "$REPLY_STATE_PREFIX" \
+    --arg url_pattern "$RUN_URL_PATTERN" '
+    def bad: . as $c | ["failure", "timed_out", "cancelled", "action_required", "startup_failure", "stale"] | index($c) != null;
+    # CommonMark closes a code span only on a backtick run of the same length,
+    # so a fence one longer than the longest run in the text cannot be closed.
+    def code:
+      (if length > 200 then .[0:200] + "…" else . end) as $t
+      | ([$t | scan("`+") | length] | max // 0) as $longest
+      | ([range($longest + 1)] | map("`") | join("")) as $fence
+      | if $longest == 0 then $fence + $t + $fence else $fence + " " + $t + " " + $fence end;
+    def outcome:
+      {"success": "passed", "failure": "failed", "neutral": "nothing to run",
+       "timed_out": "timed out", "cancelled": "cancelled", "skipped": "skipped"}[.] // .;
+    ([$rows[] | .head_sha // empty][0] // $state.sha // "" | .[0:7]) as $sha
+    | ($rows | map(.status == "completed") | all) as $done
+    | ($rows | length) as $n
+    | (if $sha == "" then "" else " on `" + $sha + "`" end) as $on
+    | ($state.command | code) as $cmd
+    | (if $n == 0 then
+         ":rocket: " + $cmd + " is starting" + $on + "."
+       elif ($done | not) then
+         ":rocket: " + $cmd + " started " + ($n | tostring) + (if $n == 1 then " run" else " runs" end)
+         + $on + ". This comment updates when " + (if $n == 1 then "it finishes." else "they finish." end)
+       elif ($rows | map(.conclusion | bad) | any) then
+         ":x: " + $cmd + " finished" + $on + "."
+       else
+         ":white_check_mark: " + $cmd + " finished" + $on + "."
+       end) as $headline
+    | [$rows[]
+       | .label as $label
+       | ((.url // "") | if test($url_pattern) then . else "" end) as $url
+       | ($base + "/runs/" + (.id | tostring)) as $check_url
+       | if .status != "completed" then
+           if $url != "" then "- " + $label + ": running, [watch the run](" + $url + ")"
+           else "- " + $label + ": starting, [view the check](" + $check_url + ")" end
+         elif $url == "" and .conclusion == "failure" then
+           "- " + $label + ": did not start, [see why](" + $check_url + ")"
+         elif $url == "" then
+           "- " + $label + ": " + (.conclusion | outcome) + ", [view the check](" + $check_url + ")"
+         else
+           "- " + $label + ": " + (.conclusion | outcome) + ", [view the run](" + $url + ")"
+         end] as $lines
+    | ([$marker, $state_prefix + $encoded + " -->", $headline] + (if $n == 0 then [] else [""] + $lines end)) | join("\n")
+  '
+}
+
 # emit <name> <value> — write a step output and echo it for the log.
 # dispatch_ref_for <is-fork> <head-ref> <base-ref> — the ref whose workflow a
 # caller dispatches: the target branch for forks, the pull request's otherwise.

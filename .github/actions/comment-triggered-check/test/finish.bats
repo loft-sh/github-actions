@@ -408,3 +408,45 @@ creates() { calls_matching "method POST repos/loft-sh/demo/check-runs"; }
   [ "$status" -eq 0 ]
   [ "$(tokens_for "")" = "x" ]
 }
+
+# --- the reply ---------------------------------------------------------------
+
+seed_reply_for_4242() {
+  export INPUT_REPLY_JITTER_SECONDS="0" INPUT_SERVER_URL="https://github.com" INPUT_REPORT_CONCLUSION="success"
+  # The check as finish leaves it: completed, carrying the reply and its run.
+  jq -c -n '{id: 4242, name: "e2e-pro: snapshots", head_sha: "abc1234", app: {id: 1},
+             status: "completed", conclusion: "success",
+             external_id: ({r: 555, a: 1, l: "Pro", u: "https://e/1"} | tojson)}' \
+    > "$MOCK_DIR/checkrun-4242.json"
+  (
+    # shellcheck source=../src/lib.sh
+    source "$BATS_TEST_DIRNAME/../src/lib.sh"
+    render_reply '{"v":2,"comment_id":777,"command":"/test-e2e snapshots","sha":"abc1234"}' \
+      '[{"id":4242,"status":"in_progress","conclusion":null,"head_sha":"abc1234","label":"Pro","url":"https://e/1"}]' \
+      https://github.com loft-sh/demo
+  ) > "$MOCK_DIR/comment-555"
+}
+
+@test "finish redraws the reply of a check that has one" {
+  seed_reply_for_4242
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv conclusion)" = "success" ]
+  [[ "$(cat "$MOCK_DIR/comment-555")" == *':white_check_mark: `/test-e2e snapshots` finished on `abc1234`.'* ]]
+  [[ "$(cat "$MOCK_DIR/comment-555")" == *"- Pro: passed, [view the run](https://e/1)"* ]]
+}
+
+@test "finish still publishes when the reply cannot be edited" {
+  seed_reply_for_4242
+  export GH_MOCK_COMMENT_PATCH_FAIL=1 INPUT_REPLY_ATTEMPTS=1
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv conclusion)" = "success" ]
+  [[ "$output" == *"could not update reply comment 555"* ]]
+}
+
+@test "finish leaves comments alone for a check without a reply" {
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(calls_matching "issues/comments")" -eq 0 ]
+}

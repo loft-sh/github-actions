@@ -23,6 +23,8 @@ set -euo pipefail
 
 # shellcheck source=.github/actions/comment-triggered-check/src/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=.github/actions/comment-triggered-check/src/reply.sh
+source "$(dirname "${BASH_SOURCE[0]}")/reply.sh"
 
 check_run_id="${INPUT_CHECK_RUN_ID:-}"
 repo="${INPUT_REPO:?INPUT_REPO required}"
@@ -198,6 +200,13 @@ republish_if_hidden() {
 }
 
 republish_if_hidden
+
+# A command started with a reply stores its id on the check. Redrawing it needs
+# pull-requests: write; without that the reply keeps its last state.
+ref="$(check_reply_ref "$repo" "$check_run_id")"
+if [[ -n "$ref" ]]; then
+  reply_refresh "$repo" "$(jq -r .reply <<< "$ref")" "$(jq -r .sha <<< "$ref")"
+fi
 
 echo "::notice::published ${conclusion} to check-run ${check_run_id}"
 emit "conclusion" "$conclusion"

@@ -608,3 +608,135 @@ app_finish_workflow() {
   [ "$(calls_matching "/contents/")" -eq 0 ]
   [ "$(tokens_for "POST")" = "x" ]
 }
+
+# --- the reply ---------------------------------------------------------------
+
+reply_on() {
+  export INPUT_REPLY="true" INPUT_COMMENT_ID="777" INPUT_RUN_LABEL="Pro"
+  export INPUT_REPLY_JITTER_SECONDS="0" GH_MOCK_CREATE_SEQ=1
+}
+reply_body() { cat "$MOCK_DIR/comment-9001"; }
+ext_of() { jq -c '.external_id | fromjson' "$MOCK_DIR/checkrun-$1.json"; }
+EXISTING='[{"id":9001,"user":{"type":"Bot"},"body":"<!-- comment-triggered-check:reply:777 -->"}]'
+
+@test "without reply the command posts and reacts to nothing" {
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(calls_matching "comments")" -eq 0 ]
+  [ "$(calls_matching "reactions")" -eq 0 ]
+  [ "$(calls_matching "external_id")" -eq 0 ]
+}
+
+@test "reply reacts, posts one reply, and stamps it on the check" {
+  reply_on
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv should-run)" = "true" ]
+  [ "$(calls_matching "POST repos/loft-sh/demo/issues/comments/777/reactions -f content=eyes")" -eq 1 ]
+  [ "$(calls_matching "POST repos/loft-sh/demo/issues/7/comments")" -eq 1 ]
+  [ "$(ext_of 5001)" = '{"r":9001,"a":1,"l":"Pro"}' ]
+  [ "$(head -n1 <<< "$(reply_body)")" = "<!-- comment-triggered-check:reply:777 -->" ]
+  [[ "$(reply_body)" == *':rocket: `/test-e2e snapshots` started 1 run on `abc123`.'* ]]
+  [[ "$(reply_body)" == *"- Pro: starting, [view the check](https://github.com/loft-sh/demo/runs/5001)"* ]]
+}
+
+@test "the first version of the reply never announces a failure" {
+  reply_on
+  run bash "$SCRIPT"
+  first="$(grep -m1 "POST repos/loft-sh/demo/issues/7/comments" "$GH_MOCK_CALLS")"
+  [[ "$first" == *':rocket: `/test-e2e snapshots` is starting on `abc123`.'* ]]
+  [[ "$first" != *":x:"* ]]
+}
+
+@test "reply labels every run of --runs" {
+  reply_on
+  export INPUT_PARSE_RUNS="true" INPUT_COMMENT_BODY="/test-e2e snapshots --runs 3"
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(for id in 5001 5002 5003; do ext_of "$id" | jq -r .l; done | paste -sd, -)" = "Pro, run 1 of 3,Pro, run 2 of 3,Pro, run 3 of 3" ]
+  [[ "$(reply_body)" == *"started 3 runs"*"- Pro, run 3 of 3: starting,"* ]]
+}
+
+@test "the label defaults to the check name prefix" {
+  reply_on
+  unset INPUT_RUN_LABEL
+  run bash "$SCRIPT"
+  [ "$(ext_of 5001 | jq -r .l)" = "e2e" ]
+}
+
+@test "a second invocation in the same run adds its rows to the same reply" {
+  reply_on
+  run bash "$SCRIPT"
+  export GH_MOCK_COMMENTS_JSON="$EXISTING" INPUT_RUN_LABEL="OSS"
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(calls_matching "POST repos/loft-sh/demo/issues/7/comments")" -eq 1 ]
+  [[ "$(reply_body)" == *"started 2 runs"*"- Pro: starting,"*"- OSS: starting,"* ]]
+}
+
+@test "a re-run of the workflow shows only its own checks in the same reply" {
+  reply_on
+  run bash "$SCRIPT"
+  export GH_MOCK_COMMENTS_JSON="$EXISTING" INPUT_RUN_ATTEMPT="2"
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(calls_matching "POST repos/loft-sh/demo/issues/7/comments")" -eq 1 ]
+  [ "$(ext_of 5002)" = '{"r":9001,"a":2,"l":"Pro"}' ]
+  [[ "$(reply_body)" == *"started 1 run"*"runs/5002"* ]]
+  [[ "$(reply_body)" != *"runs/5001"* ]]
+}
+
+@test "a reply that cannot be posted still runs the command" {
+  reply_on
+  export GH_MOCK_COMMENT_CREATE_FAIL=1
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv should-run)" = "true" ]
+  [[ "$output" == *"could not post the reply"* ]]
+  [ "$(calls_matching "external_id")" -eq 0 ]
+}
+
+@test "comments that cannot be listed skip the reply and still run the command" {
+  reply_on
+  export GH_MOCK_COMMENTS_FAIL=1
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv should-run)" = "true" ]
+  [ "$(calls_matching "POST repos/loft-sh/demo/issues/7/comments")" -eq 0 ]
+}
+
+@test "a reply with no check behind it is removed" {
+  reply_on
+  export GH_MOCK_CREATE_FAIL=1
+  run bash "$SCRIPT"
+  [ "$(kv reason)" = "check-run-not-created" ]
+  [ "$(calls_matching "DELETE repos/loft-sh/demo/issues/comments/9001")" -eq 1 ]
+}
+
+@test "a refused command posts no reply" {
+  reply_on
+  export INPUT_AUTHOR_ASSOCIATION="NONE"
+  run bash "$SCRIPT"
+  [ "$(kv reason)" = "insufficient-permission" ]
+  [ "$(calls_matching "comments")" -eq 0 ]
+}
+
+@test "reply without a comment id does nothing extra" {
+  reply_on
+  export INPUT_COMMENT_ID=""
+  run bash "$SCRIPT"
+  [ "$(kv should-run)" = "true" ]
+  [ "$(calls_matching "comments")" -eq 0 ]
+}
+
+@test "a person's comment carrying the reply marker is not taken as the reply" {
+  reply_on
+  printf '<!-- comment-triggered-check:reply:777 -->\nplanted' > "$MOCK_DIR/comment-6000"
+  export GH_MOCK_COMMENTS_JSON='[{"id":6000,"user":{"type":"User"},"body":"<!-- comment-triggered-check:reply:777 -->\nplanted"}]'
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(calls_matching "POST repos/loft-sh/demo/issues/7/comments")" -eq 1 ]
+  [ "$(ext_of 5001 | jq -r .r)" = "9001" ]
+  [ "$(calls_matching "issues/comments/6000")" -eq 0 ]
+  [ "$(cat "$MOCK_DIR/comment-6000")" = $'<!-- comment-triggered-check:reply:777 -->\nplanted' ]
+}
