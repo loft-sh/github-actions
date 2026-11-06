@@ -1,10 +1,8 @@
 name: Release notes
 description: |
-  Write the GitHub release bodies for a monorepo release that also publishes
-  an OSS subtree as its own repository. Lists the first-parent commits since
-  the previous tag in two sections, open source (commits that touch the
-  subtree) and commercial (the rest), and writes one body for the monorepo
-  release and one without monorepo refs for the OSS release. Fails the step
+  Write the GitHub release body for an OSS subtree that a monorepo publishes
+  as its own repository. Lists the first-parent commits since the previous
+  tag that touch the subtree, with no refs into the monorepo. Fails the step
   when the notes cannot be written, so run it before anything is published.
 inputs:
   version:
@@ -18,7 +16,7 @@ inputs:
     description: 'Path of the OSS subtree in the monorepo, as oss-commit-sync takes it, e.g. staging/github.com/loft-sh/vcluster. Must be a directory below the repository root at the release tag.'
     required: true
   repository:
-    description: 'Monorepo owner/name, for commit and compare links in the monorepo body. The checkout must be this repository with full history and tags.'
+    description: 'Monorepo owner/name. Refs to it are dropped from the body. The checkout must be this repository with full history and tags.'
     required: true
   oss-repository:
     description: 'OSS repository owner/name, for links to the OSS commits that commits imported from it replay.'
@@ -26,20 +24,14 @@ inputs:
 
 outputs:
   notes-file:
-    description: 'Path of the monorepo release body, with PR refs, commit links and a compare link.'
+    description: 'Path of the OSS release body.'
     value: ${{ steps.notes.outputs.notes-file }}
-  public-notes-file:
-    description: 'Path of the OSS release body: no monorepo PR refs or commit links, and no compare link.'
-    value: ${{ steps.notes.outputs.public-notes-file }}
   previous-tag:
     description: 'Tag the release was compared against.'
     value: ${{ steps.notes.outputs.previous-tag }}
-  open-source-count:
-    description: 'Number of entries in the open source section.'
-    value: ${{ steps.notes.outputs.open-source-count }}
-  commercial-count:
-    description: 'Number of entries in the commercial section.'
-    value: ${{ steps.notes.outputs.commercial-count }}
+  count:
+    description: 'Number of changes the body lists.'
+    value: ${{ steps.notes.outputs.count }}
 
 runs:
   using: composite

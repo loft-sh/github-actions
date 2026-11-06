@@ -3,7 +3,7 @@ stable, and which earlier tag a release is compared against.
 
 release-summary and release-notes both read a release's changes from the
 range these rules pick, so the Slack summary and the GitHub release body
-always describe the same commits.
+start from the same tag.
 
 Every function runs git in the current directory, which must be a checkout
 of the released repository with full history and tags.

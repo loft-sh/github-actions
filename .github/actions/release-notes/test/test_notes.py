@@ -26,9 +26,9 @@ def git(repo: Path, *args: str) -> str:
 
 
 def commit(repo: Path, message: str | bytes, *paths: str) -> str:
-    """A commit that appends to each path, so it lands in the sections those
-    paths decide. The message goes through a file, so any byte survives."""
-    for path in paths or ("pro.txt",):
+    """A commit that appends to each path, in the subtree unless paths say
+    otherwise. The message goes through a file, so any byte survives."""
+    for path in paths or (f"{PREFIX}/a.go",):
         f = repo / path
         f.parent.mkdir(parents=True, exist_ok=True)
         with f.open("a") as out:
@@ -47,7 +47,7 @@ def repo(tmp_path, monkeypatch):
     git(r, "init", "-q", "-b", "main")
     git(r, "config", "user.email", "t@example.com")
     git(r, "config", "user.name", "t")
-    commit(r, "initial", f"{PREFIX}/a.go")
+    commit(r, "initial")
     git(r, "tag", "v1.0.0")
     monkeypatch.chdir(r)
     monkeypatch.setenv("GITHUB_SERVER_URL", "https://github.com")
@@ -75,38 +75,34 @@ def build(version="v1.1.0", override="", prefix=PREFIX):
     return load().build(version, override, prefix, "o/mono", "o/oss")
 
 
-def raw_entries(body: str, section: str) -> list[str]:
-    """The bullet lines under one ### section, as written."""
-    if f"### {section}\n\n" not in body:
-        return []
-    lines = body.split(f"### {section}\n\n", 1)[1].split("\n\n", 1)[0]
+def body(**kwargs) -> str:
+    return build(**kwargs)[1]
+
+
+def raw_entries(text: str) -> list[str]:
+    """The bullet lines, as written."""
     # Not splitlines(): it also splits on the separator bytes a subject holds.
-    return lines.rstrip("\n").split("\n")
+    return [line for line in text.split("\n") if line.startswith("* ")]
 
 
-# A public entry: an inline code span, then the links the action adds.
+# An entry: an inline code span, then the link the action adds.
 SPAN = re.compile(r"^\* (`+)(.+?)(?<!`)\1(?!`)( \(\[.*)?$")
 
 
 def plain(line: str) -> str:
-    """An entry as a reader sees it: a code span unwrapped the way CommonMark
-    reads it, and no invisible word joiners."""
+    """An entry as a reader sees it: the code span unwrapped the way
+    CommonMark reads it."""
     match = SPAN.match(line)
     if not match:
-        return line.replace("\u2060", "")
+        return line
     text = match.group(2)
     if len(text) > 1 and text[0] == text[-1] == " " and text.strip():
         text = text[1:-1]
     return f"* {text}{match.group(3) or ''}"
 
 
-def entries(body: str, section: str) -> list[str]:
-    return [plain(line) for line in raw_entries(body, section)]
-
-
-def subjects(body: str, section: str) -> list[str]:
-    """Entries without their trailing commit links."""
-    return [e.split(" ([")[0] for e in entries(body, section)]
+def entries(text: str) -> list[str]:
+    return [plain(line) for line in raw_entries(text)]
 
 
 def run_main(capsys) -> tuple[int, str]:
@@ -115,49 +111,55 @@ def run_main(capsys) -> tuple[int, str]:
     return e.value.code, capsys.readouterr().out
 
 
-# sections
+# what is listed
 
-def test_splits_by_subtree_oldest_first(repo):
-    commit(repo, "fix: oss one (#10)", f"{PREFIX}/a.go")
-    commit(repo, "feat: pro one (#11)")
+def test_lists_only_subtree_commits_oldest_first(repo):
+    commit(repo, "fix: oss one (#10)")
+    commit(repo, "feat: pro one (#11)", "pro.txt")
     commit(repo, "fix: both trees (#12)", f"{PREFIX}/b.go", "pro.txt")
-    commit(repo, "chore: oss two", f"{PREFIX}/a.go")
+    commit(repo, "chore: oss two")
     git(repo, "tag", "v1.1.0")
-    prev, private, public, counts = build()
+    prev, text, count = build()
     assert prev == "v1.0.0"
-    assert counts == {"open-source": 3, "commercial": 1}
-    assert subjects(private, "Open source") == [
-        "* fix: oss one (#10)", "* fix: both trees (#12)", "* chore: oss two"]
-    assert entries(public, "Open source") == [
-        "* fix: oss one", "* fix: both trees", "* chore: oss two"]
-    assert entries(public, "Commercial") == ["* feat: pro one"]
+    assert count == 3
+    assert entries(text) == ["* fix: oss one", "* fix: both trees", "* chore: oss two"]
+    assert "pro one" not in text
+    assert text.startswith("## Changelog\n\nChanges since v1.0.0.\n\n* ")
 
 
-def test_private_lines_link_the_monorepo_commit(repo):
-    sha = commit(repo, "feat: pro one (#11)")
+def test_lists_what_oss_commit_sync_exports(repo):
+    """The same first-parent rev-list the export runs, so a commit merged in
+    from a side branch counts only through its merge."""
+    commit(repo, "fix: on main")
+    git(repo, "checkout", "-q", "-b", "side")
+    commit(repo, "fix: on side")
+    git(repo, "checkout", "-q", "main")
+    commit(repo, "feat: pro", "pro.txt")
+    git(repo, "merge", "-q", "--no-ff", "-m", "Merge branch side", "side")
     git(repo, "tag", "v1.1.0")
-    _, private, _, _ = build()
-    assert entries(private, "Commercial") == [
-        f"* feat: pro one (#11) ([{sha[:10]}](https://github.com/o/mono/commit/{sha}))"]
-    assert private.rstrip().endswith(
-        "**Full Changelog**: https://github.com/o/mono/compare/v1.0.0...v1.1.0")
+    exported = git(repo, "rev-list", "--first-parent", "--reverse", "v1.0.0..v1.1.0", "--", PREFIX)
+    subjects = [git(repo, "log", "-1", "--format=%s", sha) for sha in exported.split()]
+    assert entries(body()) == [f"* {s}" for s in subjects]
+    assert entries(body()) == ["* fix: on main", "* Merge branch side"]
 
 
 def test_no_changes(repo):
     commit(repo, "docs: readme")
+    commit(repo, "feat: pro", "pro.txt")
     git(repo, "tag", "v1.1.0")
-    _, private, public, counts = build()
-    assert counts == {"open-source": 0, "commercial": 0}
-    assert "No changes." in public and "No changes." in private
+    _, text, count = build()
+    assert count == 0
+    assert "No changes." in text
+    assert "pro" not in text
 
 
 # the subtree prefix
 
 @pytest.mark.parametrize("prefix", [PREFIX, f"{PREFIX}/", f"./{PREFIX}"])
 def test_prefix_spellings_of_the_subtree(repo, prefix):
-    commit(repo, "fix: oss", f"{PREFIX}/a.go")
+    commit(repo, "fix: oss")
     git(repo, "tag", "v1.1.0")
-    assert build(prefix=prefix)[3] == {"open-source": 1, "commercial": 0}
+    assert build(prefix=prefix)[2] == 1
 
 
 @pytest.mark.parametrize("prefix, reason", [
@@ -169,30 +171,30 @@ def test_prefix_spellings_of_the_subtree(repo, prefix):
     ("../staging/oss", "names the repository root"),
 ])
 def test_a_prefix_that_is_not_a_subtree_fails(repo, prefix, reason):
-    """A typo would list every OSS change under Commercial, and the root would
-    list every change under Open source, both with the step green."""
-    commit(repo, "fix: oss", f"{PREFIX}/a.go")
+    """A typo would publish an empty changelog, and the root would publish
+    every commercial change, both with the step green."""
+    commit(repo, "fix: oss")
     git(repo, "tag", "v1.1.0")
     mod = load()
     with pytest.raises(mod.NotesError, match=reason):
         mod.build("v1.1.0", "", prefix, "o/mono", "o/oss")
 
 
-# public body: no refs into the monorepo
+# no refs into the monorepo
 
-def test_public_notes_carry_no_monorepo_refs(repo):
+def test_carries_no_monorepo_refs(repo):
     commit(repo, "Revert \"fix: x (#7)\" (#8)")
     commit(repo, "Merge pull request #9 from o/branch")
     commit(repo, "fix: follow up on o/oss#4040 (#13)")
     git(repo, "tag", "v1.1.0")
-    _, _, public, _ = build()
-    assert entries(public, "Commercial") == [
+    text = body()
+    assert entries(text) == [
         "* Revert \"fix: x\"",
         "* Merge pull request 9 from o/branch",
         "* fix: follow up on o/oss#4040",
     ]
-    assert "compare" not in public
-    assert "o/mono" not in public
+    assert "compare" not in text
+    assert "o/mono" not in text
 
 
 @pytest.mark.parametrize("subject, public", [
@@ -220,13 +222,13 @@ def test_public_notes_carry_no_monorepo_refs(repo):
     ("fix: x (https://github.com/o/mono/blob/main/a(b).go)", "fix: x"),
     ("fix: keep https://github.com/o/mono-docs/pull/1", "fix: keep https://github.com/o/mono-docs/pull/1"),
     ("fix: keep https://github.com/o/oss/pull/1", "fix: keep https://github.com/o/oss/pull/1"),
+    ("fix: y gh-13 (gh-14)", "fix: y 13"),
+    ("fix: y _#12_ x.#13", "fix: y _12_ x.13"),
 ])
-def test_public_notes_drop_every_form_of_monorepo_ref(repo, subject, public):
+def test_drops_every_form_of_monorepo_ref(repo, subject, public):
     commit(repo, subject)
     git(repo, "tag", "v1.1.0")
-    _, private, body, _ = build()
-    assert entries(body, "Commercial") == [f"* {public}"]
-    assert subjects(private, "Commercial") == [f"* {subject}"]
+    assert entries(body()) == [f"* {public}"]
 
 
 # commits imported from OSS
@@ -235,25 +237,20 @@ def test_imported_oss_commit_links_its_oss_commit(repo):
     """The subject carries an OSS PR ref and the ref of the monorepo PR that
     merged the import; neither can be told apart, so both go and the OSS
     commit is linked. The trailer sits outside git's trailer block."""
-    sha = commit(repo, "fix(x): y (#4084) (#2058)\n\n"
-                       f"Oss-Commit: {OSS_SHA}\n\nCo-authored-by: a <a@b.c>\n",
-                 f"{PREFIX}/a.go")
+    commit(repo, "fix(x): y (#4084) (#2058)\n\n"
+                 f"Oss-Commit: {OSS_SHA}\n\nCo-authored-by: a <a@b.c>\n")
     git(repo, "tag", "v1.1.0")
-    _, private, public, _ = build()
-    oss_link = f"(https://github.com/o/oss/commit/{OSS_SHA})"
-    assert entries(public, "Open source") == [f"* fix(x): y ([{OSS_SHA[:10]}]{oss_link})"]
-    assert entries(private, "Open source") == [
-        f"* fix(x): y ([{sha[:10]}](https://github.com/o/mono/commit/{sha}), "
-        f"[o/oss@{OSS_SHA[:10]}]{oss_link})"]
+    assert raw_entries(body()) == [
+        f"* `fix(x): y` ([{OSS_SHA[:10]}](https://github.com/o/oss/commit/{OSS_SHA}))"]
 
 
 def test_bulk_import_links_no_oss_commit(repo):
     commit(repo, "chore: sync from o/oss (#2177)\n\n"
-                 f"Oss-Commit: {OSS_SHA}\nOss-Commit: {'1' * 40}\n", f"{PREFIX}/a.go")
+                 f"Oss-Commit: {OSS_SHA}\nOss-Commit: {'1' * 40}\n")
     git(repo, "tag", "v1.1.0")
-    _, private, public, _ = build()
-    assert entries(public, "Open source") == ["* chore: sync from o/oss"]
-    assert "o/oss/commit" not in private
+    text = body()
+    assert entries(text) == ["* chore: sync from o/oss"]
+    assert "o/oss/commit" not in text
 
 
 @pytest.mark.parametrize("trailer", [
@@ -269,11 +266,10 @@ def test_bulk_import_links_no_oss_commit(repo):
 ])
 def test_reads_oss_commit_as_oss_commit_sync_does(repo, trailer):
     """The forms oss-commit-sync's trailer_scan reads as a record."""
-    commit(repo, f"fix: y (#4084)\n\n{trailer}\n", f"{PREFIX}/a.go")
+    commit(repo, f"fix: y (#4084)\n\n{trailer}\n")
     git(repo, "tag", "v1.1.0")
-    _, _, public, _ = build()
     expected = OSS_SHA[:7] if trailer.endswith(OSS_SHA[:7]) else OSS_SHA
-    assert entries(public, "Open source") == [
+    assert entries(body()) == [
         f"* fix: y ([{expected[:10]}](https://github.com/o/oss/commit/{expected}))"]
 
 
@@ -288,13 +284,53 @@ def test_reads_oss_commit_as_oss_commit_sync_does(repo, trailer):
 ])
 def test_ignores_what_oss_commit_sync_does_not_read(repo, trailer):
     """A folded value, a value that is not a 7 to 40 digit sha, a longer key,
-    a missing colon or an indented line is not a record, so the commit keeps
-    its refs as a monorepo commit."""
-    commit(repo, f"fix: y (#4084)\n\n{trailer}\n", f"{PREFIX}/a.go")
+    a missing colon or an indented line is not a record, so the commit
+    links no OSS commit."""
+    commit(repo, f"fix: y (#4084)\n\n{trailer}\n")
     git(repo, "tag", "v1.1.0")
-    _, private, public, _ = build()
-    assert entries(public, "Open source") == ["* fix: y"]
-    assert subjects(private, "Open source") == ["* fix: y (#4084)"]
+    assert raw_entries(body()) == ["* `fix: y`"]
+
+
+LIB_SH = Path(__file__).resolve().parents[2] / "oss-commit-sync" / "lib.sh"
+
+
+def trailer_scan(repo: Path) -> set[str]:
+    """What oss-commit-sync reads as Oss-Commit records on HEAD."""
+    out = subprocess.run(
+        ["bash", "-c", f'source "{LIB_SH}" && trailer_scan Oss-Commit 1 -1 HEAD'],
+        cwd=repo, capture_output=True, text=True, check=True).stdout
+    return {line.split()[1] for line in out.splitlines()}
+
+
+@pytest.mark.parametrize("trailers", [
+    f"Oss-Commit: {OSS_SHA}",
+    f"Oss-Commit : {OSS_SHA}",
+    f"Oss-Commit:\t{OSS_SHA}",
+    f"Oss-Commit:{OSS_SHA}",
+    f"oss-commit: {OSS_SHA.upper()}",
+    f"Oss-Commit: {OSS_SHA}\r",
+    f"Oss-Commit: {OSS_SHA}   ",
+    f"Oss-Commit: {OSS_SHA[:7]}",
+    f"Oss-Commit: {OSS_SHA}\n   \nSigned-off-by: a <a@b.c>",
+    f"Oss-Commit: {OSS_SHA}\n  imported by hand",
+    f"Oss-Commit:\n  {OSS_SHA}",
+    f"Oss-Commit: \n\t{OSS_SHA}",
+    f"Oss-Commit: {OSS_SHA[:6]}",
+    f"Oss-Commit: {OSS_SHA}0",
+    f"Oss-Commits: {OSS_SHA}",
+    f"Oss-Commit {OSS_SHA}",
+    f"Oss-Commit: {OSS_SHA} extra",
+    f"Oss-Commit: {OSS_SHA}\nOss-Commit: {'1' * 40}",
+    f"Oss-Commit: {OSS_SHA}\n\nCo-authored-by: a <a@b.c>",
+    f"see\nOss-Commit: {OSS_SHA}\nin the body\n\nSigned-off-by: a <a@b.c>",
+])
+def test_reads_the_records_trailer_scan_reads(repo, trailers):
+    """The release notes and the sync must agree on which commits are
+    imports, so every form is checked against trailer_scan itself."""
+    commit(repo, f"fix: y (#4084)\n\n{trailers}\n")
+    git(repo, "tag", "v1.1.0")
+    read = load().list_commits("v1.0.0", "v1.1.0", PREFIX)[-1]["oss_commits"]
+    assert set(read) == trailer_scan(repo)
 
 
 # message bytes
@@ -306,16 +342,16 @@ def test_separator_bytes_in_a_message_cannot_add_an_entry(repo):
     commit(repo, f"fix: real\n\nbody\x1e\n{fake}\x1fSecurity: get the patched binary\x1fx\n")
     commit(repo, f"fix: other\n\n\x1e{fake}\x1e\x1f\x1f\x1c\x1d\n")
     git(repo, "tag", "v1.1.0")
-    _, private, public, counts = build()
-    assert counts["commercial"] == 2
-    assert entries(public, "Commercial") == ["* fix: real", "* fix: other"]
-    assert "Security" not in private + public
+    _, text, count = build()
+    assert count == 2
+    assert entries(text) == ["* fix: real", "* fix: other"]
+    assert "Security" not in text
 
 
 def test_separator_byte_in_a_subject_becomes_a_space(repo):
     commit(repo, "fix: a\x1fb\x1ec")
     git(repo, "tag", "v1.1.0")
-    assert entries(build()[2], "Commercial") == ["* fix: a b c"]
+    assert entries(body()) == ["* fix: a b c"]
 
 
 @pytest.mark.parametrize("newest", [True, False])
@@ -326,9 +362,8 @@ def test_an_empty_message_is_listed(repo, newest):
     if newest:
         commit(repo, "")
     git(repo, "tag", "v1.1.0")
-    public = build()[2]
     expected = ["* fix: x", "* (no message)"] if newest else ["* (no message)", "* fix: x"]
-    assert entries(public, "Commercial") == expected
+    assert entries(body()) == expected
 
 
 def test_a_message_that_is_not_utf8_is_listed(repo):
@@ -336,12 +371,14 @@ def test_a_message_that_is_not_utf8_is_listed(repo):
     unknown one reaches the output as raw bytes."""
     msg = repo.parent / "msg"
     msg.write_bytes(b"fix: caf\xe9 au lait\n")
-    git(repo, "-c", "i18n.commitEncoding=bogus", "commit", "-q", "--allow-empty", "-F", str(msg))
+    (repo / PREFIX / "a.go").write_text("changed\n")
+    git(repo, "add", PREFIX)
+    git(repo, "-c", "i18n.commitEncoding=bogus", "commit", "-q", "-F", str(msg))
     git(repo, "tag", "v1.1.0")
     raw = subprocess.run(["git", "-C", str(repo), "log", "-1", "--format=%s"],
                          capture_output=True, check=True).stdout
     assert b"\xe9" in raw
-    assert entries(build()[2], "Commercial") == ["* fix: caf� au lait"]
+    assert entries(body()) == ["* fix: caf� au lait"]
 
 
 # the docs/test filter
@@ -350,17 +387,17 @@ def test_a_message_that_is_not_utf8_is_listed(repo):
 def test_docs_and_test_commits_are_left_out(repo, subject):
     commit(repo, subject)
     git(repo, "tag", "v1.1.0")
-    assert build()[3] == {"open-source": 0, "commercial": 0}
+    assert build()[2] == 0
 
 
 @pytest.mark.parametrize("subject", [
     "docs(readme): fields", "test(e2e): fix flaky specs", "test(e2e)!: rework",
     "Docs: readme", "testing: harness", "docsite: rebuild"])
 def test_only_the_goreleaser_filter_forms_are_left_out(repo, subject):
-    """The goreleaser filters these notes replace were ^docs: and ^test:."""
+    """The monorepo's goreleaser changelog filters ^docs: and ^test:."""
     commit(repo, subject)
     git(repo, "tag", "v1.1.0")
-    assert build()[3]["commercial"] == 1
+    assert build()[2] == 1
 
 
 # base tag
@@ -370,9 +407,9 @@ def test_stable_compares_with_previous_stable(repo):
     git(repo, "tag", "v1.1.0-rc.1")
     commit(repo, "fix: after rc")
     git(repo, "tag", "v1.1.0")
-    prev, _, public, _ = build()
+    prev, text, _ = build()
     assert prev == "v1.0.0"
-    assert entries(public, "Commercial") == ["* fix: in rc", "* fix: after rc"]
+    assert entries(text) == ["* fix: in rc", "* fix: after rc"]
 
 
 def test_prerelease_compares_with_previous_tag(repo):
@@ -380,9 +417,9 @@ def test_prerelease_compares_with_previous_tag(repo):
     git(repo, "tag", "v1.1.0-rc.1")
     commit(repo, "fix: after rc")
     git(repo, "tag", "v1.1.0-rc.2")
-    prev, _, public, _ = build("v1.1.0-rc.2")
+    prev, text, _ = build("v1.1.0-rc.2")
     assert prev == "v1.1.0-rc.1"
-    assert entries(public, "Commercial") == ["* fix: after rc"]
+    assert entries(text) == ["* fix: after rc"]
 
 
 def test_next_tags_are_never_the_base(repo):
@@ -395,21 +432,18 @@ def test_next_tags_are_never_the_base(repo):
 
 # body size
 
-def test_bodies_fit_the_byte_limit_and_keep_the_newest(repo, monkeypatch):
+def test_body_fits_the_byte_limit_and_keeps_the_newest(repo, monkeypatch):
     for i in range(30):
         commit(repo, f"fix: change number {i:02d} with some length to it")
     git(repo, "tag", "v1.1.0")
     mod = load()
-    monkeypatch.setattr(mod, "MAX_BODY_BYTES", 2000)
-    _, private, public, counts = mod.build("v1.1.0", "", PREFIX, "o/mono", "o/oss")
-    assert len(private.encode()) <= 2000
-    assert len(public.encode()) <= 2000
-    listed = subjects(private, "Commercial")
-    assert listed == entries(public, "Commercial")
+    monkeypatch.setattr(mod, "MAX_BODY_BYTES", 1000)
+    _, text, count = mod.build("v1.1.0", "", PREFIX, "o/mono", "o/oss")
+    assert len(text.encode()) <= 1000
+    listed = entries(text)
     assert listed[-1] == "* fix: change number 29 with some length to it"
-    assert f"{30 - len(listed)} earlier changes are not listed." in public
-    assert private.rstrip().endswith("compare/v1.0.0...v1.1.0")
-    assert counts["commercial"] == len(listed)
+    assert f"{30 - len(listed)} earlier changes are not listed." in text
+    assert count == len(listed) < 30
 
 
 def test_body_limit_counts_bytes_not_characters(repo, monkeypatch):
@@ -417,18 +451,19 @@ def test_body_limit_counts_bytes_not_characters(repo, monkeypatch):
         commit(repo, f"fix: {i:02d} " + "é" * 40)
     git(repo, "tag", "v1.1.0")
     mod = load()
-    monkeypatch.setattr(mod, "MAX_BODY_BYTES", 1500)
-    _, private, public, _ = mod.build("v1.1.0", "", PREFIX, "o/mono", "o/oss")
-    assert len(private.encode()) <= 1500 and len(public.encode()) <= 1500
+    monkeypatch.setattr(mod, "MAX_BODY_BYTES", 1000)
+    _, text, _ = mod.build("v1.1.0", "", PREFIX, "o/mono", "o/oss")
+    assert len(text.encode()) <= 1000
+    assert "earlier changes are not listed" in text
 
 
 def test_body_under_the_limit_lists_everything(repo):
     for i in range(5):
         commit(repo, f"fix: {i}")
     git(repo, "tag", "v1.1.0")
-    _, _, public, _ = build()
-    assert len(entries(public, "Commercial")) == 5
-    assert "not listed" not in public
+    text = body()
+    assert len(entries(text)) == 5
+    assert "not listed" not in text
 
 
 def test_the_limit_is_githubs():
@@ -437,16 +472,18 @@ def test_the_limit_is_githubs():
 
 # main
 
-def test_main_writes_both_files(repo, env):
-    commit(repo, "fix: oss (#1)", f"{PREFIX}/a.go")
+def test_main_writes_the_notes_file(repo, env):
+    commit(repo, "fix: oss (#1)")
+    commit(repo, "feat: pro (#2)", "pro.txt")
     git(repo, "tag", "v1.1.0")
     load().main()
     out = outputs(env)
     assert out["previous-tag"] == "v1.0.0"
-    assert out["open-source-count"] == "1"
-    assert out["commercial-count"] == "0"
-    assert "(#1)" in Path(out["notes-file"]).read_text()
-    assert Path(out["public-notes-file"]).read_text().startswith("## Changelog\n")
+    assert out["count"] == "1"
+    assert set(out) == {"previous-tag", "notes-file", "count"}
+    text = Path(out["notes-file"]).read_text()
+    assert text.startswith("## Changelog\n")
+    assert entries(text) == ["* fix: oss"]
 
 
 def test_missing_tag_fails(repo, env, capsys):
@@ -513,78 +550,7 @@ def test_shallow_checkout_fails(tmp_path, env, monkeypatch, capsys, repo):
     assert "shallow" in out
 
 
-# mentions
-
-WJ = "⁠"
-
-
-@pytest.mark.parametrize("subject, rendered", [
-    ("ci: pin @v1 to @detect-changes/v1", f"ci: pin @{WJ}v1 to @{WJ}detect-changes/v1"),
-    ("chore: thanks @octo-cat", f"chore: thanks @{WJ}octo-cat"),
-    ("@bot: start of subject", f"@{WJ}bot: start of subject"),
-    ("fix: ping (@org/team)", f"fix: ping (@{WJ}org/team)"),
-    ("fix: mail a@b.com and uses: x/y@v4", "fix: mail a@b.com and uses: x/y@v4"),
-    ("fix: lone @ sign and @@", "fix: lone @ sign and @@"),
-])
-def test_subjects_mention_nobody(repo, subject, rendered):
-    """A word joiner after @ stops GitHub reading a subject as a mention,
-    which would notify that account and list it as a contributor."""
-    commit(repo, subject)
-    git(repo, "tag", "v1.1.0")
-    _, private, public, _ = build()
-    assert [e.split(" ([")[0] for e in raw_entries(private, "Commercial")] == [f"* {rendered}"]
-    assert SPAN.match(raw_entries(public, "Commercial")[0])
-
-
-def test_imported_subjects_mention_nobody(repo):
-    commit(repo, f"fix: thanks @someone (#4084)\n\nOss-Commit: {OSS_SHA}\n", f"{PREFIX}/a.go")
-    git(repo, "tag", "v1.1.0")
-    _, private, public, _ = build()
-    assert f"@{WJ}someone" in private and "@someone" not in private
-    assert raw_entries(public, "Open source")[0].startswith("* `fix: thanks @someone` ([")
-
-
-LIB_SH = Path(__file__).resolve().parents[2] / "oss-commit-sync" / "lib.sh"
-
-
-def trailer_scan(repo: Path) -> set[str]:
-    """What oss-commit-sync reads as Oss-Commit records on HEAD."""
-    out = subprocess.run(
-        ["bash", "-c", f'source "{LIB_SH}" && trailer_scan Oss-Commit 1 -1 HEAD'],
-        cwd=repo, capture_output=True, text=True, check=True).stdout
-    return {line.split()[1] for line in out.splitlines()}
-
-
-@pytest.mark.parametrize("trailers", [
-    f"Oss-Commit: {OSS_SHA}",
-    f"Oss-Commit : {OSS_SHA}",
-    f"Oss-Commit:\t{OSS_SHA}",
-    f"Oss-Commit:{OSS_SHA}",
-    f"oss-commit: {OSS_SHA.upper()}",
-    f"Oss-Commit: {OSS_SHA}\r",
-    f"Oss-Commit: {OSS_SHA}   ",
-    f"Oss-Commit: {OSS_SHA[:7]}",
-    f"Oss-Commit: {OSS_SHA}\n   \nSigned-off-by: a <a@b.c>",
-    f"Oss-Commit: {OSS_SHA}\n  imported by hand",
-    f"Oss-Commit:\n  {OSS_SHA}",
-    f"Oss-Commit: \n\t{OSS_SHA}",
-    f"Oss-Commit: {OSS_SHA[:6]}",
-    f"Oss-Commit: {OSS_SHA}0",
-    f"Oss-Commits: {OSS_SHA}",
-    f"Oss-Commit {OSS_SHA}",
-    f"Oss-Commit: {OSS_SHA} extra",
-    f"Oss-Commit: {OSS_SHA}\nOss-Commit: {'1' * 40}",
-    f"Oss-Commit: {OSS_SHA}\n\nCo-authored-by: a <a@b.c>",
-    f"see\nOss-Commit: {OSS_SHA}\nin the body\n\nSigned-off-by: a <a@b.c>",
-])
-def test_reads_the_records_trailer_scan_reads(repo, trailers):
-    """The release notes and the sync must agree on which commits are
-    imports, so every form is checked against trailer_scan itself."""
-    commit(repo, f"fix: y (#4084)\n\n{trailers}\n", f"{PREFIX}/a.go")
-    git(repo, "tag", "v1.1.0")
-    read = load().list_commits("v1.0.0", "v1.1.0")[-1]["oss_commits"]
-    assert set(read) == trailer_scan(repo)
-
+# rendering untrusted subjects
 
 @pytest.mark.parametrize("subject", [
     "fix(syncer): backport fixes (" + " ".join(f"#{n}" for n in range(101, 141)) + " and others)",
@@ -598,7 +564,7 @@ def test_ref_stripping_is_linear(subject):
     mod = load()
     start = time.monotonic()
     mod.without_refs(subject, mod.ref_patterns("o/mono"))
-    mod.without_refs(subject)
+    mod.without_refs(subject, mod.ref_patterns())
     assert time.monotonic() - start < 1
 
 
@@ -609,7 +575,7 @@ def test_ref_stripping_is_linear(subject):
 def test_ordinary_parentheses_stay(repo, subject):
     commit(repo, subject)
     git(repo, "tag", "v1.1.0")
-    assert entries(build()[2], "Commercial") == [f"* {subject}"]
+    assert entries(body()) == [f"* {subject}"]
 
 
 @pytest.mark.parametrize("subject", [
@@ -618,83 +584,57 @@ def test_ordinary_parentheses_stay(repo, subject):
     "GitHub.com/o/mono/pull/3", "ftp://github.com/o/mono/pull/1",
     "https://github.com/o/./mono/pull/12", "o/mono/pull/12", "o/mono/issues/4",
     "o/mono/commit/6d15355ec", "repo@1234567abc", "see https://example.com/x",
-    "x/y#5", "www.example.com", "@octocat",
+    "x/y#5", "www.example.com", "@octocat", "thanks _@octocat_",
+    "&#x40;octocat", "<div>&#64octocat</div>",
 ])
-def test_public_subjects_link_nothing(repo, subject):
+def test_subjects_link_nothing(repo, subject):
     """Whatever stripping leaves sits in a code span, where GitHub links,
     mentions and formats nothing."""
     commit(repo, f"fix: {subject}")
     git(repo, "tag", "v1.1.0")
-    match = SPAN.match(raw_entries(build()[2], "Commercial")[0])
+    match = SPAN.match(raw_entries(body())[0])
     assert match and match.group(3) is None
-    assert entries(build()[2], "Commercial")[0].startswith("* fix:")
+    assert entries(body())[0].startswith("* fix:")
 
 
-def test_public_code_span_keeps_the_oss_commit_link(repo):
-    commit(repo, f"fix: y\n\nOss-Commit: {OSS_SHA}\n", f"{PREFIX}/a.go")
+def test_imported_subjects_mention_nobody(repo):
+    commit(repo, f"fix: thanks @someone (#4084)\n\nOss-Commit: {OSS_SHA}\n")
     git(repo, "tag", "v1.1.0")
-    assert raw_entries(build()[2], "Open source") == [
-        f"* `fix: y` ([{OSS_SHA[:10]}](https://github.com/o/oss/commit/{OSS_SHA}))"]
-
-
-def test_imported_commits_drop_lowercase_gh_refs_in_the_private_body(repo):
-    commit(repo, f"fix: y gh-13 (gh-14)\n\nOss-Commit: {OSS_SHA}\n", f"{PREFIX}/a.go")
-    git(repo, "tag", "v1.1.0")
-    assert subjects(build()[1], "Open source") == ["* fix: y 13"]
+    assert raw_entries(body())[0].startswith("* `fix: thanks @someone` ([")
 
 
 def test_a_huge_subject_is_capped_and_fast(repo):
     commit(repo, "fix: " + "www." * 32000)
     git(repo, "tag", "v1.1.0")
     start = time.monotonic()
-    _, private, public, _ = build()
+    text = body()
     assert time.monotonic() - start < 2
-    line = entries(public, "Commercial")[0]
-    assert len(line) <= 302 and line.endswith("\u2026")
+    line = entries(text)[0]
+    assert len(line) <= 302 and line.endswith("…")
 
 
 @pytest.mark.parametrize("subject", [
     "fix: use `foo` here", "`leading tick", "trailing tick`", "a ``` b", "``",
     "fix: [click](https://evil.example.com) <img src=x.png> &#x40;octocat",
 ])
-def test_public_subjects_round_trip_through_a_code_span(repo, subject):
+def test_subjects_round_trip_through_a_code_span(repo, subject):
     """Whatever a subject holds, it renders as the same literal text."""
     commit(repo, subject)
     git(repo, "tag", "v1.1.0")
-    raw = raw_entries(build()[2], "Commercial")[0]
-    assert SPAN.match(raw)
-    assert entries(build()[2], "Commercial") == [f"* {subject}"]
-
-
-@pytest.mark.parametrize("subject, rendered", [
-    ("fix: thanks _@octocat_", f"fix: thanks _@{WJ}octocat_"),
-    ("fix: thanks @@octocat", f"fix: thanks @@{WJ}octocat"),
-    ("fix: thanks é@octocat", f"fix: thanks é@{WJ}octocat"),
-    ("fix: thanks &#x40;octocat & co", "fix: thanks &amp;#x40;octocat & co"),
-])
-def test_private_subjects_mention_nobody(repo, subject, rendered):
-    commit(repo, subject)
-    git(repo, "tag", "v1.1.0")
-    assert [e.split(" ([")[0] for e in raw_entries(build()[1], "Commercial")] == [f"* {rendered}"]
-
-
-def test_imported_refs_after_punctuation_drop_in_the_private_body(repo):
-    commit(repo, f"fix: y _#12_ x.#13\n\nOss-Commit: {OSS_SHA}\n", f"{PREFIX}/a.go")
-    git(repo, "tag", "v1.1.0")
-    assert subjects(build()[1], "Open source") == ["* fix: y _12_ x.13"]
+    assert SPAN.match(raw_entries(body())[0])
+    assert entries(body()) == [f"* {subject}"]
 
 
 @pytest.mark.parametrize("separator", ["\r", "\r\r", "\x0b", "\x0c", "\x85", " ", " ", "\x1d"])
-def test_a_subject_is_one_line_in_both_bodies(repo, separator):
+def test_a_subject_is_one_line(repo, separator):
     """CommonMark ends a line at a bare CR, which would close the code span
     and let the rest of a replayed subject render as markdown."""
     subject = f"fix a{separator}@octocat [x](https://evil.example) <img src=x>{separator}# Heading"
     commit(repo, subject.encode())
     git(repo, "tag", "v1.1.0")
-    _, private, public, _ = build()
-    for body in (private, public):
-        assert not re.search(r"[\r\x0b\x0c\x85  \x1c-\x1f]", body)
-    raw = raw_entries(public, "Commercial")
+    text = body()
+    assert not re.search(r"[\r\x0b\x0c\x85  \x1c-\x1f]", text)
+    raw = raw_entries(text)
     assert len(raw) == 1 and SPAN.match(raw[0])
 
 
@@ -703,51 +643,15 @@ def test_long_backtick_runs_keep_the_fence_short(repo, run):
     """GitHub stops matching a code span fence of about 80 backticks."""
     commit(repo, "fix " + "`" * run + " @octocat")
     git(repo, "tag", "v1.1.0")
-    raw = raw_entries(build()[2], "Commercial")[0]
-    match = SPAN.match(raw)
+    match = SPAN.match(raw_entries(body())[0])
     assert match and len(match.group(1)) <= 4
-    assert entries(build()[2], "Commercial") == ["* fix ``` @octocat"]
-
-
-@pytest.mark.parametrize("subject, rendered", [
-    ("fix: see https://example.com/?a=1&b=2", "fix: see https://example.com/?a=1&b=2"),
-    ("fix: R&D and AT&T", "fix: R&D and AT&T"),
-    ("fix: &commat;hubot &#64;x &#x23;12", "fix: &amp;commat;hubot &amp;#64;x &amp;#x23;12"),
-])
-def test_private_escapes_only_entities(repo, subject, rendered):
-    commit(repo, subject)
-    git(repo, "tag", "v1.1.0")
-    assert [e.split(" ([")[0] for e in raw_entries(build()[1], "Commercial")] == [f"* {rendered}"]
-
-
-@pytest.mark.parametrize("subject, rendered", [
-    ("<div>thanks &#64octocat</div>", "<div>thanks &amp;#64octocat</div>"),
-    ("<details>&#x40octocat &#X40;hubot</details>", "<details>&amp;#x40octocat &amp;#X40;hubot</details>"),
-])
-def test_private_escapes_numeric_entities_without_a_semicolon(repo, subject, rendered):
-    """Inside an HTML block GitHub decodes &#64 even without its semicolon."""
-    commit(repo, subject)
-    git(repo, "tag", "v1.1.0")
-    assert [e.split(" ([")[0] for e in raw_entries(build()[1], "Commercial")] == [f"* {rendered}"]
+    assert entries(body()) == ["* fix ``` @octocat"]
 
 
 @pytest.mark.parametrize("control", ["‮", "‪", "⁦", "⁩", "‎", "‏", "؜"])
-def test_bidi_controls_cannot_reorder_the_links(repo, control):
+def test_bidi_controls_cannot_reorder_the_link(repo, control):
     """An unclosed override flows out of the subject and shows the commit
-    links after it reversed."""
-    commit(repo, f"fix: bump client-go {control}\n\nOss-Commit: {OSS_SHA}\n", f"{PREFIX}/a.go")
+    link after it reversed."""
+    commit(repo, f"fix: bump client-go {control}\n\nOss-Commit: {OSS_SHA}\n")
     git(repo, "tag", "v1.1.0")
-    _, private, public, _ = build()
-    assert not re.search("[؜‎‏‪-‮⁦-⁩]", private + public)
-
-
-@pytest.mark.parametrize("subject", [
-    "fix `&#` prefix check", "handle `&#x27` without semicolon",
-    "see https://example.com/page?a=1&#frag",
-])
-def test_private_keeps_a_numeric_entity_shape_outside_html(repo, subject):
-    """Without HTML GitHub does not decode &# with no semicolon, and code
-    spans and bare URLs would show an escape literally."""
-    commit(repo, subject)
-    git(repo, "tag", "v1.1.0")
-    assert [e.split(" ([")[0] for e in raw_entries(build()[1], "Commercial")] == [f"* {subject}"]
+    assert not re.search("[؜‎‏‪-‮⁦-⁩]", body())
