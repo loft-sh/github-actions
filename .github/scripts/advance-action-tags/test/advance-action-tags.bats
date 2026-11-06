@@ -146,3 +146,218 @@ UPDATE_HOOK
   [ "$(git --git-dir="$REMOTE" rev-parse 'refs/tags/example-action/v4^{commit}')" = "$OLD_SHA" ]
   [ "$(git --git-dir="$REMOTE" rev-parse refs/tags/second-action/v1)" = "$OLD_SHA" ]
 }
+
+# Writes each path=content pair, commits, pushes, and makes that commit the
+# merged PR whose changed files are the given paths.
+merge_files() {
+  local files=() pair path
+  for pair in "$@"; do
+    path=${pair%%=*}
+    mkdir -p "$WORK/$(dirname "$path")"
+    printf '%s\n' "${pair#*=}" >> "$WORK/$path"
+    git -C "$WORK" add "$path"
+    files+=("$path")
+  done
+  git -C "$WORK" commit -m merge >/dev/null
+  MERGE_SHA=$(git -C "$WORK" rev-parse HEAD)
+  git -C "$WORK" push origin main >/dev/null 2>&1
+  GH_FILES_JSON=$(printf '%s\n' "${files[@]}" | jq -Rnc '[[inputs | {filename: .}]]')
+  export GH_FILES_JSON
+  write_event '[]'
+}
+
+tag_commit() {
+  git --git-dir="$REMOTE" rev-parse "refs/tags/$1^{commit}"
+}
+
+@test "a changed library advances the tag of the action that loads it" {
+  merge_files ".github/actions/second-action/run.py=import_path('../shared-lib')"
+  merge_files ".github/actions/shared-lib/rules.py=FIX = 1"
+  run bash -c "cd '$WORK' && bash '$SCRIPT'"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"shared-lib is loaded by: second-action"* ]]
+  [ "$(tag_commit second-action/v1)" = "$MERGE_SHA" ]
+  [ "$(tag_commit example-action/v4)" = "$OLD_SHA" ]
+}
+
+@test "a changed library advances every action that loads it in one push" {
+  merge_files ".github/actions/second-action/run.sh=source ../shared-lib/lib.sh" \
+    ".github/actions/example-action/src/main.py=sys.path.append('shared-lib')"
+  merge_files ".github/actions/shared-lib/lib.sh=fix"
+  run bash -c "cd '$WORK' && bash '$SCRIPT'"
+  [ "$status" -eq 0 ]
+  [ "$(tag_commit second-action/v1)" = "$MERGE_SHA" ]
+  [ "$(tag_commit example-action/v4)" = "$MERGE_SHA" ]
+}
+
+@test "a library changed with an action that loads it advances that action once" {
+  merge_files ".github/actions/second-action/run.sh=source ../shared-lib/lib.sh"
+  merge_files ".github/actions/shared-lib/lib.sh=fix" ".github/actions/second-action/run.sh=more"
+  run bash -c "cd '$WORK' && bash '$SCRIPT'"
+  [ "$status" -eq 0 ]
+  [ "$(grep -c 'Advanced second-action/v1' <<< "$output")" -eq 1 ]
+  [ "$(tag_commit second-action/v1)" = "$MERGE_SHA" ]
+}
+
+@test "a library loaded through another library advances the action at the end" {
+  merge_files ".github/actions/second-action/run.sh=source ../outer-lib/lib.sh" \
+    ".github/actions/outer-lib/lib.sh=source ../inner-lib/lib.sh"
+  merge_files ".github/actions/inner-lib/lib.sh=fix"
+  run bash -c "cd '$WORK' && bash '$SCRIPT'"
+  [ "$status" -eq 0 ]
+  [ "$(tag_commit second-action/v1)" = "$MERGE_SHA" ]
+  [ "$(tag_commit example-action/v4)" = "$OLD_SHA" ]
+}
+
+@test "a library only a README mentions has no user and fails closed" {
+  merge_files ".github/actions/second-action/README.md=See shared-lib."
+  merge_files ".github/actions/shared-lib/lib.sh=fix"
+  run bash -c "cd '$WORK' && bash '$SCRIPT'"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"shared-lib has no action.yml and no action uses it"* ]]
+  [ "$(tag_commit second-action/v1)" = "$OLD_SHA" ]
+}
+
+@test "a removed action nothing references still fails closed" {
+  export GH_FILES_JSON='[[{"filename":".github/actions/gone-action/action.yml"}]]'
+  run bash -c "cd '$WORK' && bash '$SCRIPT'"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"gone-action is missing action.yml at merge commit"* ]]
+  [ "$(tag_commit example-action/v4)" = "$OLD_SHA" ]
+}
+
+@test "an action that loads a library but has no major tag is skipped" {
+  merge_files ".github/actions/third-action/action.yml=name: third" \
+    ".github/actions/third-action/run.sh=source ../shared-lib/lib.sh"
+  merge_files ".github/actions/shared-lib/lib.sh=fix"
+  run bash -c "cd '$WORK' && bash '$SCRIPT'"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"No existing major tag for third-action; skipping."* ]]
+}
+
+@test "a binary action that loads a changed library stops every tag update" {
+  merge_files ".github/actions/linear-release-sync/action.yml=name: lrs" \
+    ".github/actions/linear-release-sync/run.sh=source ../shared-lib/lib.sh" \
+    ".github/actions/second-action/run.sh=source ../shared-lib/lib.sh"
+  merge_files ".github/actions/shared-lib/lib.sh=fix"
+  run bash -c "cd '$WORK' && bash '$SCRIPT'"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"linear-release-sync is a binary action"* ]]
+  [ "$(tag_commit second-action/v1)" = "$OLD_SHA" ]
+}
+
+@test "a removed action that another action mentions still fails closed" {
+  merge_files ".github/actions/doomed-action/action.yml=name: doomed" \
+    ".github/actions/second-action/action.yml=# works like doomed-action"
+  git -C "$WORK" rm -rq .github/actions/doomed-action
+  git -C "$WORK" commit -m remove >/dev/null
+  MERGE_SHA=$(git -C "$WORK" rev-parse HEAD)
+  git -C "$WORK" push origin main >/dev/null 2>&1
+  export GH_FILES_JSON='[[{"filename":".github/actions/doomed-action/action.yml"}]]'
+  write_event '[]'
+  run bash -c "cd '$WORK' && bash '$SCRIPT'"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"doomed-action is missing action.yml at merge commit"* ]]
+  [ "$(tag_commit second-action/v1)" = "$OLD_SHA" ]
+}
+
+@test "a renamed action fails closed instead of following its old name" {
+  merge_files ".github/actions/old-name/action.yml=name: old" \
+    ".github/actions/second-action/run.sh=source ../old-name/lib.sh"
+  git -C "$WORK" mv .github/actions/old-name .github/actions/new-name
+  git -C "$WORK" commit -m rename >/dev/null
+  MERGE_SHA=$(git -C "$WORK" rev-parse HEAD)
+  git -C "$WORK" push origin main >/dev/null 2>&1
+  export GH_FILES_JSON='[[{"filename":".github/actions/new-name/action.yml","previous_filename":".github/actions/old-name/action.yml"}]]'
+  write_event '[]'
+  run bash -c "cd '$WORK' && bash '$SCRIPT'"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"old-name is missing action.yml at merge commit"* ]]
+  [ "$(tag_commit second-action/v1)" = "$OLD_SHA" ]
+}
+
+@test "an action.yml removed from a directory that keeps other files fails closed" {
+  merge_files ".github/actions/second-action/lib.sh=x" \
+    ".github/actions/example-action/run.sh=source ../second-action/lib.sh"
+  git -C "$WORK" rm -q .github/actions/second-action/action.yml
+  git -C "$WORK" commit -m drop >/dev/null
+  MERGE_SHA=$(git -C "$WORK" rev-parse HEAD)
+  git -C "$WORK" push origin main >/dev/null 2>&1
+  export GH_FILES_JSON='[[{"filename":".github/actions/second-action/action.yml"}]]'
+  write_event '[]'
+  run bash -c "cd '$WORK' && bash '$SCRIPT'"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"second-action is missing action.yml at merge commit"* ]]
+  [ "$(tag_commit example-action/v4)" = "$OLD_SHA" ]
+}
+
+@test "a library named only in a comment has no user and fails closed" {
+  merge_files ".github/actions/second-action/run.sh=# see shared-lib for details"
+  merge_files ".github/actions/shared-lib/lib.sh=fix"
+  run bash -c "cd '$WORK' && bash '$SCRIPT'"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"shared-lib has no action.yml and no action uses it"* ]]
+  [ "$(tag_commit second-action/v1)" = "$OLD_SHA" ]
+}
+
+@test "shared code inside an action advances the actions that load it too" {
+  merge_files ".github/actions/second-action/run.sh=bash \${{ github.action_path }}/../example-action/src/install.sh"
+  merge_files ".github/actions/example-action/src/install.sh=fix"
+  run bash -c "cd '$WORK' && bash '$SCRIPT'"
+  [ "$status" -eq 0 ]
+  [ "$(tag_commit example-action/v4)" = "$MERGE_SHA" ]
+  [ "$(tag_commit second-action/v1)" = "$MERGE_SHA" ]
+}
+
+@test "an action change advances only that action when nothing loads it" {
+  merge_files ".github/actions/second-action/run.sh=# example-action does the same"
+  merge_files ".github/actions/example-action/src/install.sh=fix"
+  run bash -c "cd '$WORK' && bash '$SCRIPT'"
+  [ "$status" -eq 0 ]
+  [ "$(tag_commit example-action/v4)" = "$MERGE_SHA" ]
+  [ "$(tag_commit second-action/v1)" = "$OLD_SHA" ]
+}
+
+@test "a library only an action's tests load has no user and fails closed" {
+  merge_files ".github/actions/second-action/test/run.bats=load ../shared-lib/lib.sh"
+  merge_files ".github/actions/shared-lib/lib.sh=fix"
+  run bash -c "cd '$WORK' && bash '$SCRIPT'"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"shared-lib has no action.yml and no action uses it"* ]]
+  [ "$(tag_commit second-action/v1)" = "$OLD_SHA" ]
+}
+
+@test "an action.yml removed in an earlier commit of a rebase merge still fails closed" {
+  merge_files ".github/actions/second-action/lib.sh=x" \
+    ".github/actions/example-action/run.sh=source ../second-action/lib.sh"
+  git -C "$WORK" rm -q .github/actions/second-action/action.yml
+  git -C "$WORK" commit -m drop >/dev/null
+  printf 'more\n' >> "$WORK/.github/actions/second-action/lib.sh"
+  git -C "$WORK" commit -qam edit
+  MERGE_SHA=$(git -C "$WORK" rev-parse HEAD)
+  git -C "$WORK" push origin main >/dev/null 2>&1
+  export GH_FILES_JSON='[[{"filename":".github/actions/second-action/action.yml"},{"filename":".github/actions/second-action/lib.sh"}]]'
+  write_event '[]'
+  run bash -c "cd '$WORK' && bash '$SCRIPT'"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"second-action is missing action.yml at merge commit"* ]]
+  [ "$(tag_commit example-action/v4)" = "$OLD_SHA" ]
+}
+
+@test "a library loaded by a path at the end of a line or inside a longer path is found" {
+  merge_files ".github/actions/second-action/action.yml=      PYTHONPATH: \${{ github.action_path }}/../shared-lib" \
+    ".github/actions/example-action/src/main.py=open(f\"{root}/shared-lib/rules.py\")"
+  merge_files ".github/actions/shared-lib/rules.py=fix"
+  run bash -c "cd '$WORK' && bash '$SCRIPT'"
+  [ "$status" -eq 0 ]
+  [ "$(tag_commit second-action/v1)" = "$MERGE_SHA" ]
+  [ "$(tag_commit example-action/v4)" = "$MERGE_SHA" ]
+}
+
+@test "a library new in the merged change advances the actions that load it" {
+  merge_files ".github/actions/shared-lib/rules.py=new" \
+    ".github/actions/second-action/run.py=import_path('../shared-lib')"
+  run bash -c "cd '$WORK' && bash '$SCRIPT'"
+  [ "$status" -eq 0 ]
+  [ "$(tag_commit second-action/v1)" = "$MERGE_SHA" ]
+}
