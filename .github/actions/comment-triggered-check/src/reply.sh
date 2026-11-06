@@ -42,14 +42,25 @@ reply_checks_on() {
   printf '%s' "$listing" | jq -c -s '[.[] | .check_runs? // [] | .[]]' 2>/dev/null
 }
 
+# reply_head_sha <repo> <comment-json> — the current head commit of the pull
+# request the reply is on; empty when it cannot be read.
+reply_head_sha() {
+  local number
+  number="$(jq -r '(.issue_url // "") | capture("/issues/(?<n>[0-9]+)$").n // empty' <<< "$2" 2>/dev/null)" || return 0
+  [[ -n "$number" ]] || return 0
+  gh api "repos/${1}/pulls/${number}" 2>/dev/null | jq -r '.head.sha // empty' 2>/dev/null || true
+}
+
 # reply_refresh <repo> <reply-id> [sha] — redraws the reply from the checks on
-# its commit and on sha, writing only when the body changed, until a read finds
-# nothing to change. sha is the caller's own commit, which differs from the
-# stored one after a re-run on a pull request that moved.
+# its stored commit, on sha, and on the pull request's current head, writing
+# only when the body changed, until a read finds nothing to change. sha is the
+# caller's own commit. Every newer attempt runs on the head, so listing it lets
+# even a writer from an older attempt draw the newest one.
 reply_refresh() {
-  local repo="$1" reply_id="$2" own_sha="${3-}" attempt current state body all checks sha
+  local repo="$1" reply_id="$2" own_sha="${3-}" attempt comment current state body all checks sha head_sha
   for ((attempt = 1; attempt <= REPLY_ATTEMPTS; attempt++)); do
-    if ! current="$(gh api "repos/${repo}/issues/comments/${reply_id}" 2>/dev/null | jq -r '.body // empty')" ||
+    comment="$(gh api "repos/${repo}/issues/comments/${reply_id}" 2>/dev/null)" || comment=""
+    if ! current="$(jq -r '.body // empty' <<< "${comment:-null}" 2>/dev/null)" ||
       [[ -z "$current" ]]; then
       echo "::warning::could not read reply comment ${reply_id}"
       return 0
@@ -58,6 +69,7 @@ reply_refresh() {
       echo "::warning::reply comment ${reply_id} has no readable state; leaving it as is"
       return 0
     fi
+    head_sha="$(reply_head_sha "$repo" "$comment")"
     all='[]'
     while IFS= read -r sha; do
       [[ -n "$sha" ]] || continue
@@ -66,7 +78,7 @@ reply_refresh() {
         return 0
       fi
       all="$(jq -c --argjson more "$checks" '. + $more' <<< "$all")"
-    done < <(printf '%s\n%s\n' "$(jq -r '.sha // ""' <<< "$state")" "$own_sha" | awk 'NF && !seen[$0]++')
+    done < <(printf '%s\n%s\n%s\n' "$(jq -r '.sha // ""' <<< "$state")" "$own_sha" "$head_sha" | awk 'NF && !seen[$0]++')
     checks="$(reply_rows "$reply_id" "$all")"
     # The rows decide the commit, so a stale writer cannot pin an old one.
     state="$(jq -c --argjson rows "$checks" '.sha = ($rows[0].head_sha // .sha)' <<< "$state")"

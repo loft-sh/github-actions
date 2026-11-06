@@ -281,8 +281,10 @@ first version is the one notification emails carry.
 The reply is a view of the check-runs. Its hidden state holds only the command
 and the commit; which rows exist, their labels, status and run links all come
 from the checks on the commit stamped with this reply, newest attempt only.
-Every writer lists those checks, redraws the whole reply, reads it back, and
-writes again if it differs. A job that overwrites the reply with an older view,
+Every writer lists those checks on the stored commit, its own commit and the
+pull request's current head, redraws the whole reply, reads it back, and writes
+again if it differs. Listing the head lets a writer from an older attempt find a
+re-run on a newer commit. A job that overwrites the reply with an older view,
 such as a finish from a cancelled attempt, is corrected by the next redraw of
 any job, because nothing it wrote back is a source of truth. GitHub has no
 conditional comment edit, so this is what keeps parallel jobs from losing each

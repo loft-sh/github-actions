@@ -198,6 +198,41 @@ refresh() {
   [ "$(reply_state_decode "$(body)" | jq -r .sha)" = "def5678aaaa" ]
 }
 
+@test "an old writer paused across a re-run on a newer commit still draws the newer attempt" {
+  # The old writer is attempt 1's finish: its check just completed as
+  # cancelled, so its view differs from the reply it read and it will write.
+  # Between its read and its write, a re-run on a newer commit opens its check
+  # and writes the reply. The old writer only knows the old commit.
+  seed_check 11 Pro completed cancelled https://e/old 1
+  render_reply "$(state)" "[$(row 11 Pro in_progress "" https://e/old)]" https://github.com loft-sh/demo > "$MOCK_DIR/comment-555"
+  export GH_MOCK_PR_JSON='{"head":{"sha":"def5678aaaa","ref":"feature/x","repo":{"full_name":"loft-sh/demo"}},"base":{"ref":"main"},"state":"open"}'
+  cat > "$MOCK_DIR/rerun.sh" <<EOF
+jq -c -n '{id: 20, name: "check-20", status: "in_progress", conclusion: null, head_sha: "def5678aaaa",
+  app: {slug: "github-actions"}, external_id: ({r: 555, a: 2, l: "Pro", u: "https://e/new"} | tojson)}' \
+  > "$MOCK_DIR/checkrun-20.json"
+printf '%s' "\$(source "$LIB" && render_reply '{"v":2,"comment_id":777,"command":"/test-e2e snapshots","sha":"def5678aaaa"}' \
+  '[{"id":20,"label":"Pro","status":"in_progress","conclusion":null,"head_sha":"def5678aaaa","url":"https://e/new"}]' \
+  https://github.com loft-sh/demo)" > "$MOCK_DIR/comment-555"
+EOF
+  export GH_MOCK_AFTER_FIRST_READ="$MOCK_DIR/rerun.sh"
+  run refresh abc1234def56
+  [ "$status" -eq 0 ]
+  [ -f "$MOCK_DIR/after-first-read" ]
+  [[ "$(body)" == *"started 1 run on \`def5678\`"* ]]
+  [[ "$(body)" == *"- Pro: running, [watch the run](https://e/new)"* ]]
+  [[ "$(body)" != *"e/old"* ]]
+  [ "$(reply_state_decode "$(body)" | jq -r .sha)" = "def5678aaaa" ]
+}
+
+@test "a redraw still works when the pull request cannot be read" {
+  seed_reply
+  seed_check 11 Pro completed success https://e/1
+  export GH_MOCK_PR_FAIL=1
+  run refresh
+  [ "$status" -eq 0 ]
+  [[ "$(body)" == *"- Pro: passed, [view the run](https://e/1)"* ]]
+}
+
 @test "a redraw leaves the reply alone when the checks cannot be listed" {
   seed_reply
   before="$(body)"
