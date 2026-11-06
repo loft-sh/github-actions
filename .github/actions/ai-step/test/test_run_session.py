@@ -173,6 +173,46 @@ def _run(mod, client, timeout_s=60):
     return mod.run_session("sre-memory-curator", "hi", "sk-key", "", timeout_s)
 
 
+def test_app_rotation_precedes_session_and_keeps_wif(run_mod, monkeypatch):
+    calls = []
+    client = FakeClient()
+    original_create = client.beta.sessions.create
+    client.beta.sessions.create = lambda **kwargs: (calls.append("session") or original_create(**kwargs))
+    client_factory_args = []
+    run_mod._fake.Anthropic = lambda **kwargs: (client_factory_args.append(kwargs) or client)
+
+    class FakeCredential:
+        def __init__(self, client, vault, **config):
+            assert vault == "vlt"
+        def renew(self, force=False):
+            calls.append("initial" if force else "poll")
+
+    monkeypatch.setitem(sys.modules, "github_app", _obj(AppError=RuntimeError, GitHubCredential=FakeCredential))
+    result = run_mod.run_session("sre-memory-curator", "hi", "", "vlt", 60, {"key": "secret"})
+    assert result == '{"ok": true}'
+    assert calls[0:2] == ["initial", "session"]
+    assert "poll" in calls
+    assert "api_key" not in client_factory_args[0]
+    assert client.deleted == {"sessions": ["sess_test"], "environments": ["env_test"]}
+
+
+def test_renewal_failure_interrupts_and_cleans_up(run_mod, monkeypatch, capsys):
+    client = _wire(run_mod, FakeClient(statuses=("running",)))
+
+    class FakeCredential:
+        def __init__(self, *args, **kwargs):
+            pass
+        def renew(self, force=False):
+            if not force:
+                raise RuntimeError("secret-token")
+
+    monkeypatch.setitem(sys.modules, "github_app", _obj(AppError=RuntimeError, GitHubCredential=FakeCredential))
+    with pytest.raises(SystemExit):
+        run_mod.run_session("sre-memory-curator", "hi", "", "vlt", 60, {"key": "secret"})
+    assert client.cleanup_order == ["interrupt", "delete-session", "delete-environment"]
+    assert "secret-token" not in capsys.readouterr().out
+
+
 def test_agent_not_found_fails_soft(run_mod):
     client = FakeClient(agents=("someone-else",))
     with pytest.raises(SystemExit) as e:

@@ -294,7 +294,7 @@ def event_is_newer_than(event, sent_at: datetime | None) -> bool:
 
 
 def run_session(agent_name: str, user_content: str, api_key: str,
-                vault_id: str, timeout_s: int) -> str:
+                vault_id: str, timeout_s: int, github_app: dict | None = None) -> str:
     """Drive one turn against a deployed managed agent: resolve the agent
     by name, create a per-run environment, open a session (attaching the
     vault when given), send the user message, wait for a confirmed idle
@@ -332,6 +332,15 @@ def run_session(agent_name: str, user_content: str, api_key: str,
         fail_soft(f"agent '{agent_name}' not found — check the name and that "
                   "the session credential belongs to the agent's workspace")
 
+    credential = None
+    if github_app:
+        from github_app import AppError, GitHubCredential
+        try:
+            credential = GitHubCredential(client, vault_id, **github_app)
+            credential.renew(force=True)
+        except AppError as e:
+            fail_soft(f"GitHub App credential setup failed: {e}")
+
     run_id = os.environ.get("GITHUB_RUN_ID", "local")
     try:
         # Networking is unrestricted like every deployed product's
@@ -343,8 +352,12 @@ def run_session(agent_name: str, user_content: str, api_key: str,
             config={"type": "cloud", "networking": {"type": "unrestricted"}},
         )
     except APIError as e:
+        if credential:
+            fail_soft("could not create environment for GitHub App session")
         fail_soft(f"could not create environment: {e}", getattr(e, "body", ""))
     except Exception as e:
+        if credential:
+            fail_soft("environment creation failed for GitHub App session")
         fail_soft(f"environment creation failed: {e}")
 
     session = None
@@ -372,6 +385,11 @@ def run_session(agent_name: str, user_content: str, api_key: str,
         saw_running = False
         idle_event = None
         while time.time() < deadline:
+            if credential:
+                try:
+                    credential.renew()
+                except AppError:
+                    fail_soft("GitHub App credential renewal failed; stopping session")
             if sent_at is None and sent_id:
                 message = latest_event(client, session.id, "user.message")
                 processed_at = getattr(message, "processed_at", None)
@@ -427,6 +445,8 @@ def run_session(agent_name: str, user_content: str, api_key: str,
         return "\n".join(b.text for b in msg.content
                          if getattr(b, "type", "") == "text")
     except APIError as e:
+        if credential:
+            fail_soft("anthropic API error during GitHub App session")
         fail_soft(f"anthropic API error during session: {e}",
                   getattr(e, "body", ""))
     except Exception as e:
@@ -434,6 +454,8 @@ def run_session(agent_name: str, user_content: str, api_key: str,
         # (a retrieve without .status, an event without .stop_reason)
         # still fails soft instead of exiting non-zero; SystemExit from
         # fail_soft passes through untouched.
+        if credential:
+            fail_soft("GitHub App session failed unexpectedly")
         fail_soft(f"session mode failed unexpectedly: {e}")
     finally:
         # Do not remove the environment while a session may still be
@@ -467,14 +489,16 @@ def run_session(agent_name: str, user_content: str, api_key: str,
                     delete_session_ok = True
                     print(f"ai-step: session {session.id} deleted")
             except Exception as cleanup_error:
+                detail = "" if credential else f": {cleanup_error}"
                 print(f"::warning::ai-step: could not confirm and delete "
-                      f"session {session.id}: {cleanup_error} — keeping environment")
+                      f"session {session.id}{detail} — keeping environment")
         if delete_session_ok:
             try:
                 client.beta.environments.delete(env.id)
             except Exception as e:
+                detail = "" if credential else f": {e}"
                 print(f"::warning::ai-step: could not delete environment "
-                      f"{env.id}: {e} — delete it in the Console")
+                      f"{env.id}{detail} — delete it in the Console")
         else:
             print(f"::warning::ai-step: keeping environment {env.id} because "
                   f"session {session.id} could not be confirmed deleted")
@@ -544,8 +568,16 @@ def main() -> None:
         except ValueError:
             fail_soft("session-timeout-seconds must be an integer")
         vault_id = os.environ.get("INPUT_VAULT_ID", "").strip()
+        app_values = {
+            "app_id": os.environ.get("INPUT_GITHUB_APP_ID", "").strip(),
+            "installation_id": os.environ.get("INPUT_GITHUB_APP_INSTALLATION_ID", "").strip(),
+            "key": os.environ.get("INPUT_GITHUB_APP_PRIVATE_KEY", ""),
+            "repository": os.environ.get("INPUT_GITHUB_APP_REPOSITORY", "").strip(),
+        }
+        if any(app_values.values()) and (not all(app_values.values()) or not vault_id):
+            fail_soft("all four github-app inputs and vault-id are required together")
         text = strip_fence(run_session(agent_name, user_content, api_key,
-                                       vault_id, timeout_s))
+                                       vault_id, timeout_s, app_values if any(app_values.values()) else None))
         try:
             parsed = json.loads(text)
         except json.JSONDecodeError:

@@ -58,6 +58,19 @@ if [ -z "${INPUT_OUTPUT_SCHEMA// }" ]; then
   skip "output-schema is required — structured output is the contract"
 fi
 
+app_count=0
+for name in INPUT_GITHUB_APP_ID INPUT_GITHUB_APP_INSTALLATION_ID INPUT_GITHUB_APP_PRIVATE_KEY INPUT_GITHUB_APP_REPOSITORY; do
+  value="${!name-}"
+  [ -z "${value//[[:space:]]/}" ] || app_count=$((app_count + 1))
+done
+if [ "$app_count" -ne 0 ]; then
+  [ "$app_count" -eq 4 ] || skip "all four github-app inputs are required together"
+  vault_id="${INPUT_VAULT_ID:-}"
+  if [ -z "${INPUT_AGENT//[[:space:]]/}" ] || [ -z "${vault_id//[[:space:]]/}" ]; then
+    skip "github-app inputs require agent and vault-id"
+  fi
+fi
+
 # session mode: agent names a deployed managed agent. Anthropic-only, and
 # it needs the workspace-scoped session key — the Messages-API key cannot
 # call /v1/sessions. Effort is ignored: the deployed agent owns its model.
