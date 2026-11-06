@@ -66,7 +66,13 @@ Actions use per-action tags (e.g. `semver-validation/v4`, `linear-release-sync/v
 Callers pin a floating coordination tag (`<action-name>/vN`, e.g. `release-notification/v2`), not `main`. A fix reaches callers only when that tag advances to the merged commit. If the update fails, the fix remains on `main` while callers keep running the old code (pin drift: DEVOPS-1126, DEVOPS-923).
 
 The action-tag workflow advances the highest existing major tag after a compatible
-action change merges. Before merging a change that needs a new major, add the
+action change merges. It also advances every action that loads a changed
+directory by path (`../release-lib`, `"release-lib"`) outside markdown and
+`test/`, so a fix in shared code such as `release-lib` or `setup-semstat`
+reaches its callers. A changed directory that exists without `action.yml` and
+never had one is such a library and has no tag of its own; any other one is a
+removed or renamed action and fails the workflow. Before
+merging a change that needs a new major, add the
 `major-release` label. The workflow then fails and comments without moving any
 tags. It also stops for `linear-release-sync`, which needs a binary release.
 Create the first tag of a new action manually. For manual recovery:
