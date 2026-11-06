@@ -156,3 +156,62 @@ def test_main_rejects_unknown_mode(tmp_path, monkeypatch):
     monkeypatch.setenv("INPUT_MODE", "push")
     with pytest.raises(gate.GateError):
         gate.main()
+
+
+DIFF = """diff --git a/e2e/suites/snapshot/snapshot.go b/e2e/suites/snapshot/snapshot.go
++++ b/e2e/suites/snapshot/snapshot.go
+@@ -1,3 +1,9 @@
++	It("restores the snapshot", func() {
++	FIt("creates a snapshot", func() {
+ 	It("already there", func() {
+-	It("removed", func() {
++	Specify("keeps the \\"quoted\\" name", func() {
+diff --git a/pkg/thing_test.go b/pkg/thing_test.go
++++ b/pkg/thing_test.go
++	It("unit spec, not e2e", func() {
+"""
+
+
+def test_added_specs_reads_added_it_lines_in_e2e_go_only():
+    assert gate.added_specs(DIFF) == ["restores the snapshot", "creates a snapshot",
+                                      'keeps the \\"quoted\\" name']
+
+
+def test_report_specs_maps_leaf_text_to_state():
+    report = [{"SpecReports": [
+        {"LeafNodeType": "It", "LeafNodeText": "restores the snapshot", "State": "passed"},
+        {"LeafNodeType": "It", "LeafNodeText": "creates a snapshot", "State": "skipped"},
+        {"LeafNodeType": "BeforeSuite", "LeafNodeText": "", "State": "passed"},
+    ]}]
+    assert gate.report_specs(report) == {"restores the snapshot": "passed",
+                                         "creates a snapshot": "skipped"}
+
+
+def run(conclusion="success"):
+    return {"id": 7, "conclusion": conclusion, "head_sha": HEAD,
+            "html_url": "https://github.com/o/r/actions/runs/7"}
+
+
+def test_ci_all_new_specs_passed_is_success():
+    decision = gate.decide_ci(run(), 1, ["a", "b"], {"a": "passed", "b": "passed"}, "qa-review")
+    assert decision["check"]["name"] == "qa-review-ci"
+    assert decision["check"]["conclusion"] == "success"
+    assert decision["check"]["head_sha"] == HEAD
+
+
+def test_ci_missing_or_skipped_spec_is_failure_and_names_it():
+    decision = gate.decide_ci(run("failure"), 1, ["a", "b", "c"],
+                              {"a": "passed", "b": "skipped"}, "qa-review")
+    assert decision["check"]["conclusion"] == "failure"
+    assert "did not run: c" in decision["check"]["summary"]
+    assert "b (skipped)" in decision["check"]["summary"]
+    assert "2 new spec(s)" in decision["check"]["title"]
+
+
+@pytest.mark.parametrize("conclusion", ["cancelled", "timed_out", None])
+def test_ci_skips_when_the_run_did_not_finish(conclusion):
+    assert "skip" in gate.decide_ci(run(conclusion), 1, ["a"], {}, "qa-review")
+
+
+def test_ci_skips_when_the_pr_adds_no_spec():
+    assert "skip" in gate.decide_ci(run(), 1, [], {}, "qa-review")

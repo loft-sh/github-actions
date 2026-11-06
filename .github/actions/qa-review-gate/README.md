@@ -28,8 +28,15 @@ Comments on the PR:
 - `/qa-review human` from a repository member requests the QA team and leaves
   the check-run as action_required until a person decides.
 
+After the e2e workflow finishes (`workflow_run`, mode `ci`), the action downloads
+the run's `ginkgo-report` artifact, takes every `It(` the PR adds under an `e2e`
+directory, and publishes a second check-run `qa-review-ci`: failure when a new
+spec is not in the report or did not pass, success otherwise. A PR that adds no
+spec, or a run that was cancelled, publishes nothing.
+
 The action creates check-runs with the job's `GITHUB_TOKEN`; the caller grants
-`checks: write` and `pull-requests: write`. It never posts review comments.
+`checks: write` and `pull-requests: write` (`actions: read` too for `ci`). It
+never posts review comments.
 
 ## Usage
 
@@ -42,7 +49,7 @@ permissions:
 steps:
   - uses: loft-sh/github-actions/.github/actions/qa-review-gate@qa-review-gate/v1
     with:
-      mode: ${{ github.event_name == 'pull_request_review' && 'review' || 'comment' }}
+      mode: ${{ github.event_name == 'pull_request_review' && 'review' || github.event_name == 'workflow_run' && 'ci' || 'comment' }}
       qa-logins: 'adriankabala,sowmyav27,anvesh-loft'
 ```
 
@@ -76,5 +83,5 @@ No outputs.
 make test-qa-review-gate
 ```
 
-Runs the pytest suite in `test/` against `src/gate.py`. No network: `apply` is the
-only function that calls `gh`, and the tests replace it.
+Runs the pytest suite in `test/` against `src/gate.py`. No network: `apply` and
+`collect_ci` are the only functions that call `gh`, and the tests never reach them.
