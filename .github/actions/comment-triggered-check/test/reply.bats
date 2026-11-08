@@ -233,6 +233,18 @@ EOF
   [[ "$(body)" == *"- Pro: passed, [view the run](https://e/1)"* ]]
 }
 
+@test "a redraw works when the commit's checks are too big for one command-line argument" {
+  # 1.5 MB is over Linux's 128 KiB per-argument limit and macOS's 1 MiB total.
+  seed_reply
+  seed_check 11 Pro in_progress "" https://e/1
+  jq -c -n 'range(300) | {id: (1000 + .), name: "other", status: "completed", conclusion: "success",
+    head_sha: "abc1234def56", app: {slug: "github-actions"}, output: {summary: ("x" * 5000)}}' \
+    > "$MOCK_DIR/checkrun-others.json"
+  run refresh
+  [ "$status" -eq 0 ]
+  [[ "$(body)" == *"- Pro: running, [watch the run](https://e/1)"* ]]
+}
+
 @test "a redraw leaves the reply alone when the checks cannot be listed" {
   seed_reply
   before="$(body)"
