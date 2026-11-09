@@ -29,10 +29,32 @@ git_authenticated() {
   fi
 }
 
-pr_number=$(jq -er '.pull_request.number' "$GITHUB_EVENT_PATH") || fail "Event has no pull request number"
-merged=$(jq -r '.pull_request.merged // false' "$GITHUB_EVENT_PATH")
+# A pull_request event carries the PR; a push to main is resolved to the PR
+# whose merge commit it is, so both read the same fields below.
+if jq -e '.pull_request | type == "object"' "$GITHUB_EVENT_PATH" >/dev/null; then
+  pr_json=$(jq -c '.pull_request' "$GITHUB_EVENT_PATH")
+else
+  push_sha=$(jq -er '.after | select(type == "string" and length > 0)' "$GITHUB_EVENT_PATH") || fail "Push event has no commit SHA"
+  # GitHub can link a fresh merge commit to its PR a few seconds late.
+  pr_number=""
+  for attempt in 1 2 3; do
+    pulls_json=$(gh api "repos/$GITHUB_REPOSITORY/commits/$push_sha/pulls") || fail "Could not list pull requests for $push_sha"
+    pr_number=$(jq -r --arg sha "$push_sha" '[.[]? | select(.merge_commit_sha == $sha) | .number][0] // empty' <<< "$pulls_json") || fail "Could not parse pull requests for $push_sha"
+    [[ -z "$pr_number" && "$attempt" -lt 3 ]] || break
+    sleep "${ADVANCE_TAGS_LOOKUP_DELAY:-10}"
+  done
+  if [[ -z "$pr_number" ]]; then
+    echo "::notice::No merged pull request for $push_sha; no tags to advance."
+    exit 0
+  fi
+  pr_json=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr_number") || fail "Could not read PR #$pr_number"
+fi
+
+pr_number=$(jq -er '.number' <<< "$pr_json") || fail "Event has no pull request number"
+[[ -z "${GITHUB_OUTPUT:-}" ]] || echo "pr-number=$pr_number" >> "$GITHUB_OUTPUT"
+merged=$(jq -r '.merged // false' <<< "$pr_json")
 [[ "$merged" == true ]] || fail "Pull request #$pr_number is not merged"
-merge_sha=$(jq -er '.pull_request.merge_commit_sha | select(type == "string" and length > 0)' "$GITHUB_EVENT_PATH") || fail "Merged pull request has no merge commit SHA"
+merge_sha=$(jq -er '.merge_commit_sha | select(type == "string" and length > 0)' <<< "$pr_json") || fail "Merged pull request has no merge commit SHA"
 
 files_json=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/pulls/$pr_number/files") || fail "Could not list files changed by PR #$pr_number"
 if ! jq -e 'type == "array" and all(.[]; type == "array" and all(.[]; type == "object" and (.filename | type == "string" and length > 0)))' >/dev/null <<< "$files_json"; then
@@ -40,7 +62,7 @@ if ! jq -e 'type == "array" and all(.[]; type == "array" and all(.[]; type == "o
 fi
 file_count=$(jq '[.[][]] | length' <<< "$files_json") || fail "Could not parse the changed file list for PR #$pr_number"
 (( file_count < 3000 )) || fail "PR #$pr_number changed at least 3000 files; GitHub may have truncated the list, so tags were not changed"
-event_file_count=$(jq -r '.pull_request.changed_files // empty' "$GITHUB_EVENT_PATH")
+event_file_count=$(jq -r '.changed_files // empty' <<< "$pr_json")
 if [[ -n "$event_file_count" && "$event_file_count" != "$file_count" ]]; then
   fail "GitHub returned $file_count changed files for PR #$pr_number, but the event reports $event_file_count; tags were not changed"
 fi
@@ -58,7 +80,7 @@ if [[ ${#changed_actions[@]} -eq 0 ]]; then
   exit 0
 fi
 
-major_release=$(jq -r '[.pull_request.labels[]?.name] | any(. == "major-release")' "$GITHUB_EVENT_PATH")
+major_release=$(jq -r '[.labels[]?.name] | any(. == "major-release")' <<< "$pr_json")
 if [[ "$major_release" == true ]]; then
   fail "PR #$pr_number declares major-release; create a new major tag and leave existing tags unchanged"
 fi

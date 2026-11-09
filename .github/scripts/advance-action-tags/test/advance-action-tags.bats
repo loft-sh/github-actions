@@ -32,13 +32,25 @@ setup() {
 
   export GH_FILES_JSON='[[{"filename":".github/actions/example-action/action.yml"}]]'
   export GH_TOKEN=test-token
+  export GH_COMMIT_CALLS="$TEST_ROOT/commit-calls"
   export GITHUB_EVENT_PATH="$TEST_ROOT/event.json"
   export GITHUB_REPOSITORY=owner/repo
+  export ADVANCE_TAGS_LOOKUP_DELAY=0
   export PATH="$MOCK:$PATH"
   cat > "$MOCK/gh" <<'MOCK_GH'
 #!/usr/bin/env bash
-[[ "$*" == *"repos/owner/repo/pulls/17/files"* ]] || exit 2
-printf '%s\n' "$GH_FILES_JSON"
+case "$*" in
+  *"repos/owner/repo/pulls/17/files"*) printf '%s\n' "$GH_FILES_JSON" ;;
+  *"repos/owner/repo/commits/"*"/pulls"*)
+    echo call >> "$GH_COMMIT_CALLS"
+    if [[ -n "${GH_COMMIT_PULLS_LATE:-}" && $(wc -l < "$GH_COMMIT_CALLS") -lt 2 ]]; then
+      printf '[]\n'
+    else
+      printf '%s\n' "${GH_COMMIT_PULLS_JSON:-[]}"
+    fi ;;
+  *"repos/owner/repo/pulls/17"*) printf '%s\n' "$GH_PR_JSON" ;;
+  *) exit 2 ;;
+esac
 MOCK_GH
   chmod +x "$MOCK/gh"
   write_event '[]'
@@ -145,4 +157,49 @@ UPDATE_HOOK
   [[ "$output" == *"atomic push was rejected"* ]]
   [ "$(git --git-dir="$REMOTE" rev-parse 'refs/tags/example-action/v4^{commit}')" = "$OLD_SHA" ]
   [ "$(git --git-dir="$REMOTE" rev-parse refs/tags/second-action/v1)" = "$OLD_SHA" ]
+}
+
+write_push_event() {
+  jq -n --arg sha "$MERGE_SHA" '{after:$sha}' > "$GITHUB_EVENT_PATH"
+  export GH_COMMIT_PULLS_JSON
+  GH_COMMIT_PULLS_JSON=$(jq -nc --arg sha "$MERGE_SHA" '[{number:16,merge_commit_sha:"other"},{number:17,merge_commit_sha:$sha}]')
+  export GH_PR_JSON
+  GH_PR_JSON=$(jq -nc --arg sha "$MERGE_SHA" --argjson labels "$1" '{number:17,merged:true,merge_commit_sha:$sha,changed_files:1,labels:$labels}')
+}
+
+@test "push event resolves the merged PR and moves its tag" {
+  write_push_event '[]'
+  export GITHUB_OUTPUT="$TEST_ROOT/output"
+  run bash -c "cd '$WORK' && bash '$SCRIPT'"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Advanced example-action/v4 from $OLD_SHA to $MERGE_SHA."* ]]
+  [ "$(git --git-dir="$REMOTE" rev-parse 'refs/tags/example-action/v4^{commit}')" = "$MERGE_SHA" ]
+  grep -qx 'pr-number=17' "$GITHUB_OUTPUT"
+}
+
+@test "push event keeps the major-release gate" {
+  write_push_event '[{"name":"major-release"}]'
+  run bash -c "cd '$WORK' && bash '$SCRIPT'"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"declares major-release"* ]]
+  [ "$(git --git-dir="$REMOTE" rev-parse refs/tags/example-action/v4)" = "$OLD_V4_OID" ]
+}
+
+@test "push with no merged PR exits cleanly without moving tags" {
+  jq -n --arg sha "$MERGE_SHA" '{after:$sha}' > "$GITHUB_EVENT_PATH"
+  export GH_COMMIT_PULLS_JSON='[]'
+  run bash -c "cd '$WORK' && bash '$SCRIPT'"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"No merged pull request for $MERGE_SHA"* ]]
+  [ "$(wc -l < "$GH_COMMIT_CALLS")" -eq 3 ]
+  [ "$(git --git-dir="$REMOTE" rev-parse 'refs/tags/example-action/v4^{commit}')" = "$OLD_SHA" ]
+}
+
+@test "push retries when GitHub links the PR late" {
+  write_push_event '[]'
+  export GH_COMMIT_PULLS_LATE=1
+  run bash -c "cd '$WORK' && bash '$SCRIPT'"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Advanced example-action/v4 from $OLD_SHA to $MERGE_SHA."* ]]
+  [ "$(wc -l < "$GH_COMMIT_CALLS")" -eq 2 ]
 }
