@@ -58,7 +58,7 @@ def test_review_block_becomes_failure_with_class_words():
 
 
 @pytest.mark.parametrize("verdict,conclusion,ask", [
-    ("pass", "success", False), ("needs_human", "action_required", True), ("not_run", "neutral", False),
+    ("pass", "success", False), ("needs_human", "action_required", True), ("not_run", "action_required", False),
 ])
 def test_review_verdict_mapping(verdict, conclusion, ask):
     event = review_event(body=marker(verdict=verdict, classes=""))

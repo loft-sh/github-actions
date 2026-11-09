@@ -30,7 +30,7 @@ MARKER = re.compile(
     r"\s+head=(?P<head>[0-9a-f]{40})\s*-->"
 )
 CONCLUSION = {"block": "failure", "pass": "success", "needs_human": "action_required",
-              "not_run": "neutral"}
+              "not_run": "action_required"}
 CLASS_WORDS = {"a": "need a test", "b": "weak test", "c": "no test", "d": "product gap"}
 MEMBER_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
 ADDED_SPEC = re.compile(r'^\+[^+].*\b[FPX]?(?:It|Specify)\(\s*"((?:[^"\\]|\\.)+)"')
@@ -81,7 +81,7 @@ def decide_review(event, panel_login, check_name):
         "block": f"QA review: blocked ({class_summary(classes)})",
         "pass": "QA review: passed",
         "needs_human": "QA review: a QA engineer decides",
-        "not_run": "QA review: panel did not run the QA lanes",
+        "not_run": "QA review: panel did not run the QA lanes; re-run it or a QA engineer decides",
     }[verdict]
     summary = (f"Verdict `{verdict}` from the review panel.\n\nClasses: {class_summary(classes)}."
                f"\n\nReview: {review.get('html_url', '')}\n\n"
