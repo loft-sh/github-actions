@@ -565,6 +565,52 @@ func TestIssueIDs_InvalidPatterns(t *testing.T) {
 	}
 }
 
+// TestIssueIDs_RejectsZeroAndLeadingZeroNumbers covers the v0.37.7-rc.3 release
+// failure: a StatefulSet ordinal "pod-0" in a PR body passed the team-key filter
+// because POD is a real Linear team key, and the lookup failed with
+// "Entity not found". Linear numbers start at 1 and never carry a leading zero.
+func TestIssueIDs_RejectsZeroAndLeadingZeroNumbers(t *testing.T) {
+	teamKeys := ValidTeamKeys{"pod": {}, "devops": {}}
+
+	testCases := []struct {
+		name     string
+		body     string
+		expected []string
+	}{
+		{name: "pod-0 rejected", body: "only let pod-0 lead a statefulset", expected: []string{}},
+		{name: "pod-01 rejected", body: "ordinals after pod-01", expected: []string{}},
+		{name: "POD-0 rejected", body: "Fixes POD-0", expected: []string{}},
+		{name: "pod-1 kept", body: "Fixes pod-1", expected: []string{"pod-1"}},
+		{name: "DEVOPS-123 kept", body: "Fixes DEVOPS-123", expected: []string{"devops-123"}},
+		{name: "devops-123 kept", body: "Fixes devops-123", expected: []string{"devops-123"}},
+		{name: "DEVOPS-10 kept", body: "Fixes DEVOPS-10", expected: []string{"devops-10"}},
+		{
+			name:     "real issue kept next to an ordinal",
+			body:     "Fixes DEVOPS-123. Ordinals above `pod-0` never run the syncer.",
+			expected: []string{"devops-123"},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			pr := LinearPullRequest{
+				PullRequest:   pullrequests.PullRequest{Number: 2714, Body: tc.body},
+				validTeamKeys: teamKeys,
+			}
+
+			ids := pr.IssueIDs()
+			if len(ids) != len(tc.expected) {
+				t.Fatalf("expected %v, got %v", tc.expected, ids)
+			}
+			for i, id := range ids {
+				if id != tc.expected[i] {
+					t.Errorf("at index %d: expected %q, got %q", i, tc.expected[i], id)
+				}
+			}
+		})
+	}
+}
+
 func TestExtractTeamKey_NoHyphen(t *testing.T) {
 	result := extractTeamKey("nodash")
 	if result != "nodash" {
