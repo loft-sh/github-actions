@@ -44,11 +44,11 @@ else
   if [[ "$subject" =~ \(#([0-9]+)\)$ || "$subject" =~ ^Merge\ pull\ request\ \#([0-9]+) ]]; then
     named_pr=${BASH_REMATCH[1]}
   fi
-  if [[ -n "$named_pr" ]]; then
-    candidate=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$named_pr") || fail "Could not read PR #$named_pr named by $push_sha"
-    if jq -e --arg sha "$push_sha" '.merge_commit_sha == $sha' >/dev/null <<< "$candidate"; then
-      pr_json=$candidate
-    fi
+  # A rebased commit can name an issue or another PR, so an unreadable or
+  # mismatched name is a miss, not a failure.
+  if [[ -n "$named_pr" ]] && candidate=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$named_pr" 2>/dev/null) \
+    && jq -e --arg sha "$push_sha" '.merge_commit_sha == $sha' >/dev/null <<< "$candidate"; then
+    pr_json=$candidate
   fi
 
   # Rebase merges name no PR. GitHub links a fresh merge commit to its PR

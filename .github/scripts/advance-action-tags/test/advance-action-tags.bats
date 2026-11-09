@@ -240,3 +240,13 @@ write_push_event() {
   [[ "$output" == *"Could not read PR #17"* ]]
   grep -qx 'pr-number=17' "$GITHUB_OUTPUT"
 }
+
+@test "push falls back to the commit link when the subject names an unreadable PR" {
+  write_push_event '[]'
+  jq '.head_commit.message = "fix: something (#99)"' "$GITHUB_EVENT_PATH" > "$TEST_ROOT/e.json"
+  mv "$TEST_ROOT/e.json" "$GITHUB_EVENT_PATH"
+  run bash -c "cd '$WORK' && bash '$SCRIPT'"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Advanced example-action/v4 from $OLD_SHA to $MERGE_SHA."* ]]
+  [ "$(wc -l < "$GH_COMMIT_CALLS")" -eq 1 ]
+}
