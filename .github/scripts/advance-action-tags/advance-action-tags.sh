@@ -102,6 +102,8 @@ while [[ ${#queue[@]} -gt 0 ]]; do
   queue=("${queue[@]:1}")
   [[ -z "${visited[$dir]:-}" ]] || continue
   visited[$dir]=1
+  # Actions that download versioned binaries need their release workflow too;
+  # moving their coordination tag alone would point callers at stale artifacts.
   [[ "$dir" != linear-release-sync ]] || fail "linear-release-sync is a binary action; its tag cannot be moved without rebuilding its release artifact"
 
   library=false
@@ -132,15 +134,9 @@ done
 declare -a tags_to_move=()
 declare -A old_shas=()
 declare -A old_ref_oids=()
+# The walk above checked every action here: each has an action.yml at the
+# merge commit and none is linear-release-sync.
 for action in "${!changed_actions[@]}"; do
-  # Actions that download versioned binaries need their release workflow too;
-  # moving their coordination tag alone would point callers at stale artifacts.
-  [[ "$action" != linear-release-sync ]] || fail "linear-release-sync is a binary action; its tag cannot be moved without rebuilding its release artifact"
-
-  if ! git cat-file -e "$merge_sha:.github/actions/$action/action.yml" 2>/dev/null; then
-    fail "Changed action $action is missing action.yml at merge commit $merge_sha; tag target is unclear"
-  fi
-
   best_version=0
   best_tag=""
   while IFS= read -r tag; do
