@@ -13,6 +13,16 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
 )
 
+// sharedNetworkTagKey and sharedNetworkTagValue mark the persistent shared
+// e2e network in the engineering testing account. Direct cleanup never
+// deletes, detaches or disassociates a network resource that carries this
+// tag, and the RunID sweep never matches it because shared resources carry
+// no RunID tag.
+const (
+	sharedNetworkTagKey   = "Project"
+	sharedNetworkTagValue = "shared-e2e-network"
+)
+
 // CleanupConfig is the parsed flag set for `cleanup`.
 type CleanupConfig struct {
 	Region string
@@ -138,30 +148,62 @@ func directCleanup(
 			logger.Warn("delete-security-group failed", "err", err)
 		}
 	}
-	if cfg.RouteAssocID != "" {
+
+	// The direct path deletes whatever IDs the caller passes, so check the
+	// network IDs against the shared-network tag first. Instances and the
+	// security group above are test-owned and never checked. If the lookup
+	// fails, leave every network resource alone (fail closed); the RunID
+	// sweep still removes per-test network resources.
+	networkIDs := nonEmptyStrings(cfg.VPCID, cfg.IGWID, cfg.SubnetID, cfg.RouteTableID)
+	shared, lookupErr := sharedNetworkIDs(ctx, c, networkIDs)
+	if lookupErr != nil {
+		logger.Error("shared-network tag lookup failed; skipping vpc, subnet, route table and internet gateway deletions", "err", lookupErr)
+	}
+	// leaveAlone reports whether a network resource must not be touched.
+	leaveAlone := func(kind, id string) bool {
+		if id == "" {
+			return false
+		}
+		if lookupErr != nil {
+			return true
+		}
+		if shared[id] {
+			logger.Warn("skipping shared e2e network resource, it is tagged "+sharedNetworkTagKey+"="+sharedNetworkTagValue, "type", kind, "id", id)
+			return true
+		}
+		return false
+	}
+	skipRouteTable := leaveAlone("route table", cfg.RouteTableID)
+	skipSubnet := leaveAlone("subnet", cfg.SubnetID)
+	skipIGW := leaveAlone("internet gateway", cfg.IGWID)
+	skipVPC := leaveAlone("vpc", cfg.VPCID)
+
+	if cfg.RouteAssocID != "" && !skipRouteTable && lookupErr == nil {
 		if _, err := c.DisassociateRouteTable(ctx, &ec2.DisassociateRouteTableInput{
 			AssociationId: aws.String(cfg.RouteAssocID),
 		}); err != nil {
 			logger.Warn("disassociate-route-table failed", "err", err)
 		}
 	}
-	if cfg.RouteTableID != "" {
+	if cfg.RouteTableID != "" && !skipRouteTable {
 		if _, err := c.DeleteRouteTable(ctx, &ec2.DeleteRouteTableInput{
 			RouteTableId: aws.String(cfg.RouteTableID),
 		}); err != nil {
 			logger.Warn("delete-route-table failed", "err", err)
 		}
 	}
-	if cfg.SubnetID != "" {
+	if cfg.SubnetID != "" && !skipSubnet {
 		if _, err := c.DeleteSubnet(ctx, &ec2.DeleteSubnetInput{
 			SubnetId: aws.String(cfg.SubnetID),
 		}); err != nil {
 			logger.Warn("delete-subnet failed", "err", err)
 		}
 	}
-	if cfg.IGWID != "" {
+	if cfg.IGWID != "" && !skipIGW {
 		if cfg.VPCID != "" {
-			if _, err := c.DetachInternetGateway(ctx, &ec2.DetachInternetGatewayInput{
+			if skipVPC {
+				logger.Warn("skipping detach of internet gateway from a vpc that must not be touched", "igw", cfg.IGWID, "vpc", cfg.VPCID)
+			} else if _, err := c.DetachInternetGateway(ctx, &ec2.DetachInternetGatewayInput{
 				InternetGatewayId: aws.String(cfg.IGWID),
 				VpcId:             aws.String(cfg.VPCID),
 			}); err != nil {
@@ -174,13 +216,55 @@ func directCleanup(
 			logger.Warn("delete-internet-gateway failed", "err", err)
 		}
 	}
-	if cfg.VPCID != "" {
+	if cfg.VPCID != "" && !skipVPC {
 		if _, err := c.DeleteVpc(ctx, &ec2.DeleteVpcInput{
 			VpcId: aws.String(cfg.VPCID),
 		}); err != nil {
 			logger.Warn("delete-vpc failed", "err", err)
 		}
 	}
+}
+
+// sharedNetworkIDs returns the subset of ids tagged
+// Project=shared-e2e-network, using a single DescribeTags call filtered by
+// resource-id. The tag key and value are also checked on every returned
+// row, so the decision does not rest on server-side filtering alone. Any
+// error is returned and the caller must treat the result as unknown.
+func sharedNetworkIDs(ctx context.Context, c EC2API, ids []string) (map[string]bool, error) {
+	shared := map[string]bool{}
+	if len(ids) == 0 {
+		return shared, nil
+	}
+	p := ec2.NewDescribeTagsPaginator(c, &ec2.DescribeTagsInput{
+		Filters: []types.Filter{
+			{Name: aws.String("resource-id"), Values: ids},
+			{Name: aws.String("key"), Values: []string{sharedNetworkTagKey}},
+			{Name: aws.String("value"), Values: []string{sharedNetworkTagValue}},
+		},
+	})
+	for p.HasMorePages() {
+		out, err := p.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("describe-tags: %w", err)
+		}
+		for _, t := range out.Tags {
+			if aws.ToString(t.Key) == sharedNetworkTagKey && aws.ToString(t.Value) == sharedNetworkTagValue {
+				shared[aws.ToString(t.ResourceId)] = true
+			}
+		}
+	}
+	return shared, nil
+}
+
+// nonEmptyStrings returns the non-empty values of in, in order.
+func nonEmptyStrings(in ...string) []string {
+	var out []string
+	for _, s := range in {
+		if s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // sweepByTag finds and deletes every resource that matches Name=tag:RunID

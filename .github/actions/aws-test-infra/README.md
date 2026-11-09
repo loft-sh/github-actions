@@ -104,6 +104,8 @@ If the provision step failed before producing IDs, leave them blank — the
 tag-based sweep will find any orphaned resources by `tag:RunID` and clean
 them up.
 
+Cleanup never deletes network resources tagged `Project=shared-e2e-network`, the persistent shared engineering testing network. The direct path acts on whatever IDs it is given, so it first reads the tags of the VPC, subnet, route table and internet gateway, skips every shared one with a warning, and never detaches a gateway from a shared VPC. The tag sweep only matches `tag:RunID`, which the shared network never carries, so it cannot reach those resources. If the tag lookup fails (it needs `ec2:DescribeTags`), cleanup skips the direct network deletions and leaves per-test resources to the sweep.
+
 ### Variable instance count or non-standard role names
 
 The defaults launch three instances tagged `primary`, `worker1`, `worker2`,
