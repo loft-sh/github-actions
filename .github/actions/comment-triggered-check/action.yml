@@ -55,17 +55,25 @@ inputs:
     required: false
     default: 'false'
   parse-repeat:
-    description: 'start mode. Set to true to accept `--repeat N` (1 to 10) before --focus: one run whose suite repeats N extra times. Disabled by default for existing consumers.'
+    description: 'start mode. Set to true to accept `--repeat N` (1 to max-repeat) before --focus: one run whose suite repeats N extra times. Disabled by default for existing consumers.'
     required: false
     default: 'false'
   parse-runs:
-    description: 'start mode. Set to true to accept `--runs N` (1 to 5) before --focus: N independent runs, each with its own check-run and concurrency key. Cannot be combined with --repeat. Disabled by default for existing consumers.'
+    description: 'start mode. Set to true to accept `--runs N` (1 to max-runs) before --focus: N independent runs, each with its own check-run and concurrency key. Cannot be combined with --repeat. Disabled by default for existing consumers.'
     required: false
     default: 'false'
   parse-timeout:
     description: 'start mode. Set to true to accept `--timeout N` (1 to 150 minutes) before --focus. Disabled by default for existing consumers.'
     required: false
     default: 'false'
+  max-repeat:
+    description: 'start mode. Maximum extra suite repeats accepted by --repeat, from 1 to 10.'
+    required: false
+    default: '10'
+  max-runs:
+    description: 'start mode. Maximum independent runs accepted by --runs, from 1 to 5.'
+    required: false
+    default: '5'
   allowed-targets:
     description: 'start mode. Whitespace-separated target values accepted when target-name is set. Each value needs a matching action invocation.'
     required: false
@@ -241,6 +249,8 @@ runs:
         INPUT_PARSE_REPEAT: ${{ inputs.parse-repeat }}
         INPUT_PARSE_RUNS: ${{ inputs.parse-runs }}
         INPUT_PARSE_TIMEOUT: ${{ inputs.parse-timeout }}
+        INPUT_MAX_REPEAT: ${{ inputs.max-repeat }}
+        INPUT_MAX_RUNS: ${{ inputs.max-runs }}
         INPUT_ALLOWED_TARGETS: ${{ inputs.allowed-targets }}
         INPUT_TARGET_NAME: ${{ inputs.target-name }}
         INPUT_RUN_ID: ${{ inputs.run-id }}

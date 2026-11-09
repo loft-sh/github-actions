@@ -4,6 +4,17 @@
 ACTION="${ACTION:-$BATS_TEST_DIRNAME/../action.yml}"
 START="$BATS_TEST_DIRNAME/../src/start.sh"
 
+@test "caller limit inputs default to existing limits and reach start" {
+  run grep -A4 '^  max-repeat:' "$ACTION"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"default: '10'"* ]]
+  run grep -A4 '^  max-runs:' "$ACTION"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"default: '5'"* ]]
+  grep -Fq 'INPUT_MAX_REPEAT: ${{ inputs.max-repeat }}' "$ACTION"
+  grep -Fq 'INPUT_MAX_RUNS: ${{ inputs.max-runs }}' "$ACTION"
+}
+
 @test "action metadata exposes one target-selection input and defaults its options" {
   run grep -A3 '^  allowed-targets:' "$ACTION"
   [ "$status" -eq 0 ]

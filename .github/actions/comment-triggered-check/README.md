@@ -237,15 +237,29 @@ the final `--focus`:
 /test-e2e snapshots --runs 3
 ```
 
-- `--repeat N` (1 to 10) is one run. The action only parses it: pass the
-  `repeat` output to your runner, for example as Ginkgo's `--repeat=N`. The
+- `--repeat N` (1 to `max-repeat`, default 10) is one run. The action only parses it: pass the
+  `repeat` output to your runner, for example as Ginkgo's `--repeat=N`. This
+  counts extra repeats, so `--repeat 3` runs the suite four times. The
   check is named `... (repeat N)` and gets its own concurrency key, so it does
   not cancel a plain run of the same filter.
-- `--runs N` (1 to 5) opens N check-runs, `... (run k/N)`, each with its own
+- `--runs N` (1 to `max-runs`, default 5) opens N check-runs, `... (run k/N)`, each with its own
   concurrency key. Dispatch one run per entry of the `runs` output. Posting the
   same command again replaces the runs one for one. `--runs 1` is a plain
   command. If any check cannot be opened, the ones already opened are closed and
   nothing runs.
+
+Callers can lower these caps with `max-repeat` and `max-runs`, for example:
+
+```yaml
+parse-repeat: "true"
+parse-runs: "true"
+max-repeat: "3"
+max-runs: "2"
+```
+
+Both caps must be whole numbers of at least 1. `max-repeat` cannot exceed 10,
+and `max-runs` cannot exceed 5. Invalid configuration fails before a check or
+comment is changed.
 
 They cannot be combined yet (`repeat-and-runs`): the cost would be runs times
 repeat. A missing or non-numeric value reports `malformed-repeat` or
@@ -346,10 +360,12 @@ without it keeps the reply at its last state.
 |    details-url     | string |  false   |                              |                                                                                                                 finish mode. Link target for the <br>completed check-run.                                                                                                                  |
 |  finish-workflow   | string |  false   |     `"e2e-ginkgo.yaml"`      |                                                                            start mode. Workflow file that runs <br>finish. The app opens the check <br>only if that file passes both <br>app inputs to finish.                                                                             |
 |    github-token    | string |  false   |   `"${{ github.token }}"`    |                                                                                                  Token for gh. The calling job <br>must grant checks: write and pull-requests: <br>read.                                                                                                   |
+|     max-repeat     | string |  false   |            `"10"`            |                                                                                                    start mode. Maximum extra suite repeats <br>accepted by --repeat, from 1 to <br>10.                                                                                                     |
+|      max-runs      | string |  false   |            `"5"`             |                                                                                                         start mode. Maximum independent runs accepted <br>by --runs, from 1 to 5.                                                                                                          |
 |        mode        | string |   true   |                              |                                                                                                                            One of "start", "finish" or "link".                                                                                                                             |
 |    parse-focus     | string |  false   |          `"false"`           |                                                                     start mode. Set to true to <br>split an optional trailing --focus expression <br>from the filter. Disabled by default <br>for existing consumers.                                                                      |
-|    parse-repeat    | string |  false   |          `"false"`           |                                                      start mode. Set to true to <br>accept `--repeat N` (1 to 10) before --focus: one <br>run whose suite repeats N extra <br>times. Disabled by default for existing <br>consumers.                                                       |
-|     parse-runs     | string |  false   |          `"false"`           |                       start mode. Set to true to <br>accept `--runs N` (1 to 5) before --focus: N <br>independent runs, each with its own <br>check-run and concurrency key. Cannot be <br>combined with --repeat. Disabled by default <br>for existing consumers.                         |
+|    parse-repeat    | string |  false   |          `"false"`           |                                                  start mode. Set to true to <br>accept `--repeat N` (1 to max-repeat) before --focus: one <br>run whose suite repeats N extra <br>times. Disabled by default for existing <br>consumers.                                                   |
+|     parse-runs     | string |  false   |          `"false"`           |                    start mode. Set to true to <br>accept `--runs N` (1 to max-runs) before --focus: N <br>independent runs, each with its own <br>check-run and concurrency key. Cannot be <br>combined with --repeat. Disabled by default <br>for existing consumers.                     |
 |   parse-timeout    | string |  false   |          `"false"`           |                                                                          start mode. Set to true to <br>accept `--timeout N` (1 to 150 minutes) before --focus. Disabled <br>by default for existing consumers.                                                                            |
 |     pr-number      | string |  false   |                              |                                                                                                     start mode. Pull request number. Pass <br>the github.event.issue.number context.                                                                                                       |
 |       reply        | string |  false   |          `"false"`           | start mode. Set to true to <br>react to the command comment and <br>answer it with one reply that <br>links each run and shows its <br>result. Needs comment-id, and pull-requests: write <br>for github-token in every job that <br>runs start, link or finish. Disabled <br>by default.  |

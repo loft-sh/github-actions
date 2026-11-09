@@ -25,6 +25,8 @@
 #   INPUT_PARSE_REPEAT        whether to accept --repeat N
 #   INPUT_PARSE_RUNS          whether to accept --runs N
 #   INPUT_PARSE_TIMEOUT       whether to accept --timeout N minutes
+#   INPUT_MAX_REPEAT          maximum extra repeats, 1 to 10
+#   INPUT_MAX_RUNS            maximum independent runs, 1 to 5
 #   INPUT_ALLOWED_TARGETS     whitespace-separated accepted target values
 #   INPUT_TARGET_NAME         target represented by this action invocation;
 #                             setting it enables --target parsing
@@ -58,6 +60,19 @@ parse_focus="${INPUT_PARSE_FOCUS:-false}"
 parse_repeat="${INPUT_PARSE_REPEAT:-false}"
 parse_runs="${INPUT_PARSE_RUNS:-false}"
 parse_timeout="${INPUT_PARSE_TIMEOUT:-false}"
+# Validate caller configuration before any check or comment can be changed.
+max_repeat="${INPUT_MAX_REPEAT-10}"
+max_runs="${INPUT_MAX_RUNS-5}"
+if [[ -n "$(count_error "$max_repeat" "$REPEAT_MAX")" ]]; then
+  echo "::error::max-repeat must be a whole number from 1 to ${REPEAT_MAX}"
+  exit 1
+fi
+if [[ -n "$(count_error "$max_runs" "$RUNS_MAX")" ]]; then
+  echo "::error::max-runs must be a whole number from 1 to ${RUNS_MAX}"
+  exit 1
+fi
+REPEAT_MAX="$((10#$max_repeat))"
+RUNS_MAX="$((10#$max_runs))"
 allowed_targets="$(normalize_filter "${INPUT_ALLOWED_TARGETS-}")"
 target_name="${INPUT_TARGET_NAME:-}"
 want_reply="${INPUT_REPLY:-false}"
