@@ -31,9 +31,10 @@
 #   GH_MOCK_COMMENT_CREATE_FAIL non-empty → posting a comment fails
 #   GH_MOCK_COMMENT_PATCH_FAIL  non-empty → editing a comment fails
 # A PATCH to a seeded check-run stores its external_id in that check's file.
-# GH_MOCK_AFTER_FIRST_READ names a script run once, right after the first
-# comment read is served. With GH_MOCK_CREATE_SEQ, a created check-run is seeded too. Seeded checks
+# With GH_MOCK_CREATE_SEQ, a created check-run is seeded too. Seeded checks
 # answer the commit listing, filtered by head_sha.
+# GH_MOCK_AFTER_FIRST_READ names a script run once, right after the first
+# comment read is served.
 # A posted or edited comment body is kept in $MOCK_DIR/comment-<id>, and GET
 # .../issues/comments/<id> serves it. $MOCK_DIR/checkrun-<id>.json, when present,
 # answers GET .../check-runs/<id> ahead of GH_MOCK_CHECKRUN_JSON.
