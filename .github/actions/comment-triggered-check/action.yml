@@ -62,6 +62,10 @@ inputs:
     description: 'start mode. Set to true to accept `--runs N` (1 to max-runs) before --focus: N independent runs, each with its own check-run and concurrency key. Cannot be combined with --repeat. Disabled by default for existing consumers.'
     required: false
     default: 'false'
+  parse-timeout:
+    description: 'start mode. Set to true to accept `--timeout N` (1 to 150 minutes) before --focus. Disabled by default for existing consumers.'
+    required: false
+    default: 'false'
   max-repeat:
     description: 'start mode. Maximum extra suite repeats accepted by --repeat, from 1 to 10.'
     required: false
@@ -164,11 +168,14 @@ outputs:
   runs:
     description: 'start mode. JSON array with one {check-run-id, concurrency-key, check-name} per run to dispatch; one entry without --runs, empty when nothing was opened. check-run-id, concurrency-key and check-name name the first entry.'
     value: ${{ steps.start.outputs.runs }}
+  timeout:
+    description: 'start mode. Minutes from --timeout, for the caller to pass to its test runner. Empty when not requested.'
+    value: ${{ steps.start.outputs.timeout }}
   should-run:
     description: 'The caller''s execution gate. "true" only when a check-run was actually opened. Forks are refused unless allow-forks is true and the commenter has write-level permission. Read reason when false.'
     value: ${{ steps.start.outputs.should-run }}
   reason:
-    description: 'Why the command will not run: fork, rerun-not-allowed, insufficient-permission, permission-unreadable, empty-filter, malformed-filter, malformed-focus, malformed-target, invalid-target, malformed-repeat, repeat-out-of-range, malformed-runs, runs-out-of-range, repeat-and-runs, target-not-selected, not-a-pull-request, pull-request-closed, pull-request-unreadable, or check-run-not-created. Empty when it will.'
+    description: 'Why the command will not run: fork, rerun-not-allowed, insufficient-permission, permission-unreadable, empty-filter, malformed-filter, malformed-focus, malformed-target, invalid-target, malformed-repeat, repeat-out-of-range, malformed-runs, runs-out-of-range, repeat-and-runs, malformed-timeout, timeout-out-of-range, target-not-selected, not-a-pull-request, pull-request-closed, pull-request-unreadable, or check-run-not-created. Empty when it will.'
     value: ${{ steps.start.outputs.reason }}
   reason-title:
     description: 'start mode. Presentation-ready title for reason. Empty when the command will run or this invocation was not selected.'
@@ -241,6 +248,7 @@ runs:
         INPUT_PARSE_FOCUS: ${{ inputs.parse-focus }}
         INPUT_PARSE_REPEAT: ${{ inputs.parse-repeat }}
         INPUT_PARSE_RUNS: ${{ inputs.parse-runs }}
+        INPUT_PARSE_TIMEOUT: ${{ inputs.parse-timeout }}
         INPUT_MAX_REPEAT: ${{ inputs.max-repeat }}
         INPUT_MAX_RUNS: ${{ inputs.max-runs }}
         INPUT_ALLOWED_TARGETS: ${{ inputs.allowed-targets }}

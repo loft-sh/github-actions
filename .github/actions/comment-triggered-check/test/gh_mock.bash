@@ -33,6 +33,8 @@
 # A PATCH to a seeded check-run stores its external_id in that check's file.
 # With GH_MOCK_CREATE_SEQ, a created check-run is seeded too. Seeded checks
 # answer the commit listing, filtered by head_sha.
+# GH_MOCK_AFTER_FIRST_READ names a script run once, right after the first
+# comment read is served.
 # A posted or edited comment body is kept in $MOCK_DIR/comment-<id>, and GET
 # .../issues/comments/<id> serves it. $MOCK_DIR/checkrun-<id>.json, when present,
 # answers GET .../check-runs/<id> ahead of GH_MOCK_CHECKRUN_JSON.
@@ -98,7 +100,14 @@ case "$all" in
   *"/issues/comments/"*)
     id="${all##*/issues/comments/}"; id="${id%% *}"
     [ -f "$MOCK_DIR/comment-${id}" ] || { echo "mock: no comment ${id}" >&2; exit 1; }
-    jq -n --rawfile b "$MOCK_DIR/comment-${id}" --argjson id "$id" '{id: $id, body: $b}'
+    jq -n --rawfile b "$MOCK_DIR/comment-${id}" --argjson id "$id" \
+      '{id: $id, body: $b, issue_url: "https://api.github.com/repos/loft-sh/demo/issues/7"}'
+    # Runs once, after the first read was served: another writer acting while
+    # this caller holds a stale copy.
+    if [ -n "${GH_MOCK_AFTER_FIRST_READ:-}" ] && [ ! -f "$MOCK_DIR/after-first-read" ]; then
+      touch "$MOCK_DIR/after-first-read"
+      bash "$GH_MOCK_AFTER_FIRST_READ" >/dev/null 2>&1
+    fi
     ;;
   *"/issues/"*"/comments"*)
     [ -n "${GH_MOCK_COMMENTS_FAIL:-}" ] && { echo "mock: comments listing failed" >&2; exit 1; }

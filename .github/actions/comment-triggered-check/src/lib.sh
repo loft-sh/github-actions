@@ -39,6 +39,7 @@ parse_command() {
 # run for hours or fan out across dozens of runners.
 REPEAT_MAX=10
 RUNS_MAX=5
+TIMEOUT_MAX=150
 
 # take_count_option <flag> <string>
 # Removes every standalone `<flag> <value>` pair from string. Sets OPTION_REST
@@ -81,7 +82,7 @@ count_error() {
   fi
 }
 
-# parse_request <arguments> <parse-focus> <parse-target> <allowed-targets> [parse-repeat] [parse-runs]
+# parse_request <arguments> <parse-focus> <parse-target> <allowed-targets> [parse-repeat] [parse-runs] [parse-timeout]
 # Splits an optional trailing `--focus <regex>` and an optional
 # `--target <value>` immediately before it from the required label filter. The
 # focus is the whole remainder: it is never evaluated as shell syntax, and one
@@ -94,7 +95,7 @@ count_error() {
 # shellcheck disable=SC2034 # REQUEST_* are the function's outputs for callers.
 parse_request() {
   local args filter_part focus target first last inner bare marker_at marker_end i before after allowed_targets
-  local repeat="" runs="" flag error
+  local repeat="" runs="" timeout="" flag error
   args="$(trim "${1-}")"
   filter_part="$args"
   focus=""
@@ -106,6 +107,7 @@ parse_request() {
   REQUEST_TARGET=""
   REQUEST_REPEAT=""
   REQUEST_RUNS=""
+  REQUEST_TIMEOUT=""
   REQUEST_ERROR=""
 
   if [[ "${2-}" == "true" ]]; then
@@ -154,8 +156,8 @@ parse_request() {
   fi
   REQUEST_FOCUS="$focus"
 
-  for flag in repeat runs; do
-    if [[ "$flag" == "repeat" && "${5-}" != "true" ]] || [[ "$flag" == "runs" && "${6-}" != "true" ]]; then
+  for flag in repeat runs timeout; do
+    if [[ "$flag" == "repeat" && "${5-}" != "true" ]] || [[ "$flag" == "runs" && "${6-}" != "true" ]] || [[ "$flag" == "timeout" && "${7-}" != "true" ]]; then
       continue
     fi
     take_count_option "--${flag}" "$filter_part"
@@ -165,8 +167,10 @@ parse_request() {
     if [[ -z "$error" ]]; then
       if [[ "$flag" == "repeat" ]]; then
         error="$(count_error "$OPTION_VALUE" "$REPEAT_MAX")"
-      else
+      elif [[ "$flag" == "runs" ]]; then
         error="$(count_error "$OPTION_VALUE" "$RUNS_MAX")"
+      else
+        error="$(count_error "$OPTION_VALUE" "$TIMEOUT_MAX")"
       fi
     fi
     case "$error" in
@@ -184,8 +188,10 @@ parse_request() {
     esac
     if [[ "$flag" == "repeat" ]]; then
       repeat="$((10#$OPTION_VALUE))"
-    else
+    elif [[ "$flag" == "runs" ]]; then
       runs="$((10#$OPTION_VALUE))"
+    else
+      timeout="$((10#$OPTION_VALUE))"
     fi
   done
   # Combining them would cost runs x repeat; refused until someone needs it.
@@ -237,6 +243,7 @@ parse_request() {
   REQUEST_TARGET="$target"
   REQUEST_REPEAT="$repeat"
   REQUEST_RUNS="$runs"
+  REQUEST_TIMEOUT="$timeout"
 }
 
 # request_identity <filter> <focus> <target>
@@ -465,6 +472,14 @@ refusal_details() {
       [[ "$flag" == "runs" ]] && max="$RUNS_MAX"
       REFUSAL_TITLE="\`--${flag}\` is out of range"
       REFUSAL_GUIDANCE="Use a number from 1 to ${max}."
+      ;;
+    malformed-timeout)
+      REFUSAL_TITLE="\`--timeout\` needs a number"
+      REFUSAL_GUIDANCE="Give it whole minutes from 1 to ${TIMEOUT_MAX} before \`--focus\`. For example: \`${command_word} snapshots --timeout 120\`."
+      ;;
+    timeout-out-of-range)
+      REFUSAL_TITLE="\`--timeout\` is out of range"
+      REFUSAL_GUIDANCE="Use a timeout from 1 to ${TIMEOUT_MAX} minutes."
       ;;
     repeat-and-runs)
       REFUSAL_TITLE="\`--repeat\` and \`--runs\` together"
