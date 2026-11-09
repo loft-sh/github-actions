@@ -288,6 +288,74 @@ created() { calls_matching "POST"; }
 
 # --- --repeat and --runs ----------------------------------------------------
 
+@test "default limits accept repeat 10 and runs 5 but refuse the next value" {
+  unset INPUT_MAX_REPEAT INPUT_MAX_RUNS
+  export INPUT_PARSE_REPEAT=true INPUT_PARSE_RUNS=true
+  for option in repeat runs; do
+    if [ "$option" = repeat ]; then limit=10; else limit=5; fi
+    export INPUT_COMMENT_BODY="/test-e2e snapshots --$option $limit"
+    : > "$GITHUB_OUTPUT"
+    run bash "$SCRIPT"
+    [ "$status" -eq 0 ]
+    [ "$(kv should-run)" = true ]
+    export INPUT_COMMENT_BODY="/test-e2e snapshots --$option $((limit + 1))"
+    : > "$GITHUB_OUTPUT"
+    run bash "$SCRIPT"
+    [ "$(kv should-run)" = false ]
+    [ "$(kv reason)" = "$option-out-of-range" ]
+  done
+}
+
+@test "configured limits accept 3" {
+  export INPUT_MAX_REPEAT=3 INPUT_MAX_RUNS=3 INPUT_PARSE_REPEAT=true INPUT_PARSE_RUNS=true
+  for option in repeat runs; do
+    export INPUT_COMMENT_BODY="/test-e2e snapshots --$option 3"
+    : > "$GITHUB_OUTPUT"
+    run bash "$SCRIPT"
+    [ "$status" -eq 0 ]
+    [ "$(kv should-run)" = true ]
+    if [ "$option" = repeat ]; then
+      [ "$(kv repeat)" = 3 ]
+    else
+      [ "$(kv runs | jq length)" -eq 3 ]
+    fi
+  done
+}
+
+@test "requests above configured limits do not reach GitHub" {
+  export INPUT_MAX_REPEAT=3 INPUT_MAX_RUNS=3 INPUT_PARSE_REPEAT=true INPUT_PARSE_RUNS=true
+  for option in repeat runs; do
+    export INPUT_COMMENT_BODY="/test-e2e snapshots --$option 4"
+    : > "$GITHUB_OUTPUT"
+    run bash "$SCRIPT"
+    [ "$(kv should-run)" = false ]
+    [ "$(kv reason)" = "$option-out-of-range" ]
+    [ "$(kv reason-guidance)" = 'Use a number from 1 to 3.' ]
+    [ "$(call_count)" -eq 0 ]
+  done
+}
+
+@test "invalid configured limits cannot create checks or dispatch work" {
+  export INPUT_PARSE_REPEAT=true INPUT_PARSE_RUNS=true
+  for input in INPUT_MAX_REPEAT INPUT_MAX_RUNS; do
+    if [ "$input" = INPUT_MAX_REPEAT ]; then too_high=11; else too_high=6; fi
+    for value in '' 0 -1 1.5 nope "$too_high"; do
+      export INPUT_MAX_REPEAT=10 INPUT_MAX_RUNS=5
+      export "$input=$value"
+      : > "$GITHUB_OUTPUT"
+      run bash "$SCRIPT"
+      [ "$status" -ne 0 ]
+      [ "$(kv should-run)" != true ]
+      if [ "$input" = INPUT_MAX_REPEAT ]; then
+        [[ "$output" == *max-repeat* && "$output" == *10* ]]
+      else
+        [[ "$output" == *max-runs* && "$output" == *5* ]]
+      fi
+      [ "$(call_count)" -eq 0 ]
+    done
+  done
+}
+
 @test "a plain command still emits its one run" {
   run bash "$SCRIPT"
   [ "$(kv runs)" = "$(jq -cn --arg key "$(kv concurrency-key)" '[{"check-run-id": 4242, "concurrency-key": $key, "check-name": "e2e: snapshots"}]')" ]
