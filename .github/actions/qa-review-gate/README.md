@@ -16,7 +16,7 @@ whose body ends with one marker line:
 | `block` | failure | a confirmed class a/b/c/d finding: a test is needed, too weak, missing, or the product has a gap |
 | `pass` | success | nothing blocks |
 | `needs_human` | action_required, QA team requested | the panel could not decide |
-| `not_run` | neutral | the QA lanes did not run on this PR |
+| `not_run` | action_required | the QA lanes did not run on this PR; neutral would count as passed once the check is required |
 
 A marker whose `head` is not the PR's current head is ignored, so an old review
 never grades a new push.
