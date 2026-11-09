@@ -30,18 +30,19 @@ git_authenticated() {
 }
 
 # A pull_request event carries the PR; a push to main is resolved to the PR
-# whose merge commit it is, so both read the same fields below.
+# whose merge commit it is, so both read the same fields below. The workflow
+# only sends push events; the pull_request branch serves the tests.
 if jq -e '.pull_request | type == "object"' "$GITHUB_EVENT_PATH" >/dev/null; then
   pr_json=$(jq -c '.pull_request' "$GITHUB_EVENT_PATH")
 else
   push_sha=$(jq -er '.after | select(type == "string" and length > 0)' "$GITHUB_EVENT_PATH") || fail "Push event has no commit SHA"
   pr_json=""
 
-  # Squash and merge commits name their PR; trust it only if GitHub records
-  # this push as that PR's merge commit.
+  # Squash merges name their PR; trust it only if GitHub records this push as
+  # that PR's merge commit. main requires linear history, so no merge commits.
   subject=$(jq -r '.head_commit.message // "" | split("\n")[0]' "$GITHUB_EVENT_PATH")
   named_pr=""
-  if [[ "$subject" =~ \(#([0-9]+)\)$ || "$subject" =~ ^Merge\ pull\ request\ \#([0-9]+) ]]; then
+  if [[ "$subject" =~ \(#([0-9]+)\)$ ]]; then
     named_pr=${BASH_REMATCH[1]}
   fi
   # A rebased commit can name an issue or another PR, so an unreadable or
@@ -55,12 +56,19 @@ else
   # late, and sometimes never, so this is the fallback, not the first source.
   if [[ -z "$pr_json" ]]; then
     pr_number=""
+    lookup_failed=""
     for attempt in 1 2 3; do
-      pulls_json=$(gh api "repos/$GITHUB_REPOSITORY/commits/$push_sha/pulls") || fail "Could not list pull requests for $push_sha"
-      pr_number=$(jq -r --arg sha "$push_sha" '[.[]? | select(.merge_commit_sha == $sha) | .number][0] // empty' <<< "$pulls_json") || fail "Could not parse pull requests for $push_sha"
+      # A GitHub error is retried like a late link; only the last one fails.
+      if pulls_json=$(gh api "repos/$GITHUB_REPOSITORY/commits/$push_sha/pulls"); then
+        lookup_failed=""
+        pr_number=$(jq -r --arg sha "$push_sha" '[.[]? | select(.merge_commit_sha == $sha) | .number][0] // empty' <<< "$pulls_json") || fail "Could not parse pull requests for $push_sha"
+      else
+        lookup_failed=1
+      fi
       [[ -z "$pr_number" && "$attempt" -lt 3 ]] || break
       sleep "${ADVANCE_TAGS_LOOKUP_DELAY:-10}"
     done
+    [[ -z "$lookup_failed" ]] || fail "Could not list pull requests for $push_sha"
     # main requires pull requests, so a push with no PR is unexpected.
     [[ -n "$pr_number" ]] || fail "No merged pull request found for $push_sha; tags were not changed. Advance them manually if this push changed an action."
     # Export now so a failed read below still gets its failure comment.

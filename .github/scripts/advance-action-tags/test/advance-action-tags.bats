@@ -43,6 +43,9 @@ case "$*" in
   *"repos/owner/repo/pulls/17/files"*) printf '%s\n' "$GH_FILES_JSON" ;;
   *"repos/owner/repo/commits/"*"/pulls"*)
     echo call >> "$GH_COMMIT_CALLS"
+    if [[ -n "${GH_COMMIT_PULLS_ERROR_ONCE:-}" && $(wc -l < "$GH_COMMIT_CALLS") -lt 2 ]]; then
+      exit 1
+    fi
     if [[ -n "${GH_COMMIT_PULLS_LATE:-}" && $(wc -l < "$GH_COMMIT_CALLS") -lt 2 ]]; then
       printf '[]\n'
     else
@@ -249,4 +252,27 @@ write_push_event() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"Advanced example-action/v4 from $OLD_SHA to $MERGE_SHA."* ]]
   [ "$(wc -l < "$GH_COMMIT_CALLS")" -eq 1 ]
+}
+
+@test "push retries the commit link after a GitHub error" {
+  write_push_event '[]'
+  export GH_COMMIT_PULLS_ERROR_ONCE=1
+  run bash -c "cd '$WORK' && bash '$SCRIPT'"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Advanced example-action/v4 from $OLD_SHA to $MERGE_SHA."* ]]
+  [ "$(wc -l < "$GH_COMMIT_CALLS")" -eq 2 ]
+}
+
+@test "push fails after the commit link errors on every try" {
+  write_push_event '[]'
+  cat > "$MOCK/gh" <<'MOCK_GH'
+#!/usr/bin/env bash
+echo call >> "$GH_COMMIT_CALLS"
+exit 1
+MOCK_GH
+  chmod +x "$MOCK/gh"
+  run bash -c "cd '$WORK' && bash '$SCRIPT'"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Could not list pull requests for $MERGE_SHA"* ]]
+  [ "$(git --git-dir="$REMOTE" rev-parse 'refs/tags/example-action/v4^{commit}')" = "$OLD_SHA" ]
 }
