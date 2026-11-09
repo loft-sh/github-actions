@@ -127,15 +127,14 @@ def resolve_previous_tag(version: str, override: str, own_commit: bool = True) -
                 f"previous tag '{override}' is not in the checkout; pass an "
                 "existing tag or leave previous-tag empty to derive it")
         return override
-    shared = release_tags_at(version)
     if is_stable(version):
         try:
-            return previous_stable(version, [] if own_commit else shared)
+            return previous_stable(version, [] if own_commit else release_tags_at(version))
         except NoPreviousTag:
             if own_commit:
                 raise
             return previous_stable(version, [])
-    nearest = nearest_below(version, shared)
+    nearest = nearest_below(version, release_tags_at(version))
     if nearest and own_commit:
         return nearest
     try:

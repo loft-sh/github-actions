@@ -294,3 +294,15 @@ def test_own_commit_false_falls_back_to_a_tag_there_when_nothing_else_is_left(
     """Comparing with the tag on the same commit beats failing the release."""
     history(tmp_path, monkeypatch, *tags)
     assert release_tags.resolve_previous_tag(version, "", own_commit=False) == expected
+
+
+def test_a_stable_release_reads_its_own_commit_only_when_it_steps_past_it(
+        tmp_path, monkeypatch):
+    """release-summary keeps tags on the release commit, so it never lists
+    them."""
+    history(tmp_path, monkeypatch, ["v1.0.0"], ["v1.1.0-rc.1", "v1.1.0"])
+
+    def unused(tag):
+        raise AssertionError(f"listed the tags on {tag}'s commit")
+    monkeypatch.setattr(release_tags, "release_tags_at", unused)
+    assert release_tags.resolve_previous_tag("v1.1.0", "") == "v1.0.0"
