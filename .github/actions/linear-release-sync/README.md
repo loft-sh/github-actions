@@ -5,6 +5,7 @@ A GitHub Action that syncs Linear issues to the "Released" state when a GitHub r
 ## Features
 
 - Fetches all team keys from Linear to filter false positive issue IDs (e.g. `pr-3354`, `snap-1`)
+- Drops IDs whose number is `0` or starts with a zero (e.g. the StatefulSet ordinal `pod-0`, where `POD` is a real team key), since Linear issue numbers start at 1
 - Extracts Linear issue IDs from PR descriptions (e.g., `ENG-1234`, `DEVOPS-471`)
 - Strict time-based filtering: only includes PRs merged before the release was published
 - Moves issues from "Ready for Release" to "Released" state (only issues in that state are moved)
