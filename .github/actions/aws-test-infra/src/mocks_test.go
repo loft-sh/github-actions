@@ -27,6 +27,11 @@ type fakeEC2 struct {
 	// tests to feed orphaned resources into the sweep path.
 	sweepResources sweepFixture
 
+	// resourceTags maps a resource ID to the tags DescribeTags reports for it.
+	// Only the resource-id filter is honored; tag key and value filters are
+	// ignored so the code under test must check the returned tags itself.
+	resourceTags map[string][]types.Tag
+
 	// omitPrivateIPFor drops the private address from that instance's
 	// DescribeInstances entry, standing in for a describe that comes back
 	// short. Provisioning must fail there rather than record an empty IP.
@@ -314,6 +319,29 @@ func (f *fakeEC2) DescribeInstances(_ context.Context, in *ec2.DescribeInstances
 		out.Reservations = append(out.Reservations, types.Reservation{
 			Instances: []types.Instance{inst},
 		})
+	}
+	return out, nil
+}
+
+func (f *fakeEC2) DescribeTags(_ context.Context, in *ec2.DescribeTagsInput, _ ...func(*ec2.Options)) (*ec2.DescribeTagsOutput, error) {
+	f.record("DescribeTags", in, nil)
+	if err := f.shouldFail("DescribeTags"); err != nil {
+		return nil, err
+	}
+	out := &ec2.DescribeTagsOutput{}
+	for _, flt := range in.Filters {
+		if aws.ToString(flt.Name) != "resource-id" {
+			continue
+		}
+		for _, id := range flt.Values {
+			for _, t := range f.resourceTags[id] {
+				out.Tags = append(out.Tags, types.TagDescription{
+					ResourceId: aws.String(id),
+					Key:        t.Key,
+					Value:      t.Value,
+				})
+			}
+		}
 	}
 	return out, nil
 }
