@@ -51,8 +51,11 @@ backticks shrinks to three, so the span's fence stays one GitHub closes.
 A subject is one line: control characters and line separators, such as a
 carriage return, which CommonMark reads as a line ending, become spaces, and
 so do bidi controls, which could show the commit link after a subject
-reversed. A subject longer than 300 characters is cut with `…`. GitHub caps
-a PR title at 256, so a squash subject with its ` (#N)` always fits.
+reversed. Refs are dropped before a subject longer than 300 characters is
+cut with `…`, so the cut cannot leave part of a ref behind. Only the first
+4096 characters of a subject are read, after runs of blanks collapse, and a
+subject cut there ends with `…`. A ref that cut splits can only show when
+refs fill almost all of those 4096 characters before it.
 
 A commit imported from the OSS repository carries an `Oss-Commit:` trailer.
 It is read as `oss-commit-sync`'s `trailer_scan` reads it, from the message
@@ -118,11 +121,11 @@ checkout of the monorepo with full history and tags.
 
 <!-- AUTO-DOC-OUTPUT:START - Do not remove or modify this section -->
 
-|    OUTPUT    |  TYPE  |              DESCRIPTION              |
-|--------------|--------|---------------------------------------|
-|    count     | string |   Number of changes the body lists.   |
-|  notes-file  | string |     Path of the OSS release body.     |
-| previous-tag | string | Tag the release was compared against. |
+|    OUTPUT    |  TYPE  |                        DESCRIPTION                         |
+|--------------|--------|------------------------------------------------------------|
+|    count     | string |             Number of changes the body lists.              |
+|  notes-file  | string | Path of the OSS release body, <br>a new file on each run.  |
+| previous-tag | string |           Tag the release was compared against.            |
 
 <!-- AUTO-DOC-OUTPUT:END -->
 

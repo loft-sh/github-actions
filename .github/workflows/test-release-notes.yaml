@@ -6,12 +6,14 @@ on:
     paths:
       - '.github/actions/release-notes/**'
       - '.github/actions/release-lib/**.py'
+      - '.github/actions/oss-commit-sync/lib.sh'
       - '.github/workflows/test-release-notes.yaml'
       - 'Makefile'
   pull_request:
     paths:
       - '.github/actions/release-notes/**'
       - '.github/actions/release-lib/**.py'
+      - '.github/actions/oss-commit-sync/lib.sh'
       - '.github/workflows/test-release-notes.yaml'
       - 'Makefile'
 

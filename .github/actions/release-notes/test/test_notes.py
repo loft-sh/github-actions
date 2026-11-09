@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import re
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -486,6 +487,38 @@ def test_main_writes_the_notes_file(repo, env):
     assert entries(text) == ["* fix: oss"]
 
 
+def test_each_run_writes_its_own_notes_file(repo, env, monkeypatch):
+    """Two runs in one job keep both bodies: the first notes-file output
+    still holds the first body after the second run."""
+    commit(repo, "fix: first")
+    git(repo, "tag", "v1.1.0")
+    load().main()
+    first = Path(outputs(env)["notes-file"])
+    first_text = first.read_text()
+    env.write_text("")
+    commit(repo, "fix: second")
+    git(repo, "tag", "v1.2.0")
+    monkeypatch.setenv("VERSION", "v1.2.0")
+    load().main()
+    second = Path(outputs(env)["notes-file"])
+    assert second != first
+    assert first.read_text() == first_text
+    assert entries(second.read_text()) == ["* fix: second"]
+
+
+def test_main_does_not_depend_on_the_locale_encoding(repo, env):
+    """The body always holds non-ASCII text, at least the … of a cut
+    subject, so no file or pipe may take the locale's encoding."""
+    commit(repo, "fix: " + "é" * 400)
+    git(repo, "tag", "v1.1.0")
+    run = subprocess.run(
+        [sys.executable, "-X", "warn_default_encoding", "-W", "error::EncodingWarning",
+         str(SRC)], capture_output=True, text=True, encoding="utf-8")
+    assert run.returncode == 0, run.stdout + run.stderr
+    out = outputs(env)
+    assert Path(out["notes-file"]).read_text(encoding="utf-8").count("é") > 200
+
+
 def test_missing_tag_fails(repo, env, capsys):
     code, out = run_main(capsys)
     assert code == 1
@@ -611,6 +644,62 @@ def test_a_huge_subject_is_capped_and_fast(repo):
     assert time.monotonic() - start < 2
     line = entries(text)[0]
     assert len(line) <= 302 and line.endswith("…")
+
+
+@pytest.mark.parametrize("ref", [
+    " (#4100)", " (#4100, #4101)", " #4100", " GH-4100", " o/mono#4100",
+    " (https://github.com/o/mono/pull/4100)",
+])
+def test_a_ref_at_the_length_cut_leaves_no_fragment(repo, ref):
+    """Refs are stripped before a subject is cut to length, so a cut can
+    never split one and leave part of a monorepo number behind. A bare #N
+    keeps its number, as it does anywhere in a subject, and the cut can
+    shorten that number like any other word."""
+    limit = load().MAX_SUBJECT
+    for shift in range(-len(ref) - 2, 3):
+        commit(repo, "fix: " + "a" * (limit - 5 - len(ref) + shift) + ref)
+    git(repo, "tag", "v1.1.0")
+    shown = entries(body())
+    kept = "4100" if ref.lstrip().startswith(("#", "GH-")) else ""
+    assert shown and all(kept.startswith(n) for e in shown for n in re.findall(r"\d+", e)), shown
+    assert all(len(e) <= limit + 2 for e in shown)
+
+
+@pytest.mark.parametrize("subject", [
+    "fix: x" + " " * 4085 + " (#4100)",
+    "fix: x" + "\t" * 4085 + " (#4100)",
+    "fix: y" + " " * 4070 + " https://github.com/o/mono/pull/4100",
+    "fix: thing " + "(#1) " * 900 + "IMPORTANT TAIL",
+    "fix:" + "a" * 4090 + "(#4100)",
+    "fix:" + "(#1)" * 1022 + "(https://github.com/o/mono/pull/4100)",
+] + ["fix: " + "(#1) " * 818 + "x" * shift + " #41000 tail" for shift in range(8)])
+def test_a_subject_past_the_scanned_length_shows_no_fragment(repo, subject):
+    """Blank runs collapse before the scanned length is cut, the cut falls
+    on a late blank, so no ref that blanks set apart is split, and a cut
+    subject always ends with …, however short stripping leaves it."""
+    commit(repo, subject)
+    git(repo, "tag", "v1.1.0")
+    (shown,) = entries(body())
+    cut = len(re.sub(r"[ \t]+", " ", subject)) > load().MAX_SCANNED
+    assert shown.endswith("…") == cut, shown
+    assert all(n == "41000" for n in re.findall(r"\d+", shown)), shown
+
+
+def test_an_early_blank_does_not_empty_a_long_subject(repo):
+    """The scanned cut falls back to a blank only past what can show."""
+    limit = load().MAX_SUBJECT
+    commit(repo, "fix: " + "a" * 5000)
+    git(repo, "tag", "v1.1.0")
+    (shown,) = entries(body())
+    assert len(shown) == limit + 2 and shown.endswith("a…")
+
+
+def test_a_long_subject_is_still_cut_after_stripping(repo):
+    limit = load().MAX_SUBJECT
+    commit(repo, "fix: " + "a" * (2 * limit) + " (#4100)")
+    git(repo, "tag", "v1.1.0")
+    (shown,) = entries(body())
+    assert len(shown) == limit + 2 and shown.endswith("…")
 
 
 @pytest.mark.parametrize("subject", [
