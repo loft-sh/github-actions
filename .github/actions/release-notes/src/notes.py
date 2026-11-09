@@ -62,10 +62,17 @@ LONG_BACKTICKS = re.compile(r"`{4,}")
 # unclosed override flows past the subject and shows the commit link after
 # it reversed.
 CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f  ؜‎‏‪-‮⁦-⁩]+")
-# GitHub caps a PR title at 256 characters, so a squash subject with its
-# " (#N)" fits, and every pattern here stays cheap on a replayed subject of
-# any length.
+# A listed subject is cut to MAX_SUBJECT characters after its refs are
+# stripped, so the cut cannot split a ref and leave part of it behind.
 MAX_SUBJECT = 300
+# Stripping is read on at most this much of a subject, after runs of blanks
+# collapse: a run such as "www." costs time that grows faster than its
+# length, and a replayed subject can be any length. A cut subject always
+# ends with …. The cut falls on the last blank past the first MAX_SUBJECT
+# characters when there is one, so it splits no ref that blanks set apart.
+# Whatever it does split can show only when refs before it take up almost
+# all of the scanned length.
+MAX_SCANNED = 4096
 # GitHub limits a release body to 125,000 characters. The rest is room for
 # what the caller appends, such as vcluster-pro's managed-by-monorepo marker.
 MAX_BODY_BYTES = 124_000
@@ -83,7 +90,7 @@ def fail(reason: str) -> None:
 def emit(key: str, value: str) -> None:
     path = os.environ.get("GITHUB_OUTPUT")
     if path:
-        with open(path, "a") as f:
+        with open(path, "a", encoding="utf-8") as f:
             f.write(f"{key}={value}\n")
 
 
@@ -136,9 +143,13 @@ def list_commits(prev: str, version: str, path: str) -> list[dict]:
     if len(fields) % 4:
         raise NotesError(f"git log printed {len(fields)} fields, not a whole "
                          "number of commits")
-    return [{"sha": fields[i], "subject": capped(fields[i + 1]) or "(no message)",
-             "oss_commits": oss_commits(fields[i + 2], fields[i + 3])}
-            for i in range(0, len(fields), 4)]
+    commits = []
+    for i in range(0, len(fields), 4):
+        subject, cut = one_line(fields[i + 1])
+        commits.append({"sha": fields[i], "subject": subject or "(no message)",
+                        "cut": cut,
+                        "oss_commits": oss_commits(fields[i + 2], fields[i + 3])})
+    return commits
 
 
 def subtree_path(version: str, prefix: str) -> str:
@@ -149,7 +160,8 @@ def subtree_path(version: str, prefix: str) -> str:
                          "path outside it; pass the subtree's path, such as "
                          "staging/github.com/loft-sh/vcluster")
     kind = subprocess.run(["git", "cat-file", "-t", f"{version}:{path}"],
-                          capture_output=True, text=True)
+                          capture_output=True, text=True, encoding="utf-8",
+                          errors="replace")
     if kind.returncode != 0 or kind.stdout.strip() != "tree":
         raise NotesError(f"subtree-prefix '{prefix}' is not a directory at {version}; "
                          "pass the subtree's path, such as "
@@ -199,10 +211,23 @@ def code_span(text: str) -> str:
     return f"{fence}{pad}{text}{pad}{fence}"
 
 
-def capped(subject: str) -> str:
-    """subject on one line, cut to MAX_SUBJECT characters."""
-    subject = CONTROL.sub(" ", subject).strip()
-    return subject if len(subject) <= MAX_SUBJECT else subject[:MAX_SUBJECT - 1] + "…"
+def one_line(subject: str) -> tuple[str, bool]:
+    """subject on one line with blank runs collapsed, cut to at most
+    MAX_SCANNED characters, and whether it was cut."""
+    text = SPACES.sub(" ", CONTROL.sub(" ", subject)).strip()
+    if len(text) <= MAX_SCANNED:
+        return text, False
+    text = text[:MAX_SCANNED + 1]
+    blank = text.rfind(" ")
+    return (text[:blank] if blank > MAX_SUBJECT else text[:MAX_SCANNED]).rstrip(), True
+
+
+def capped(text: str, cut: bool = False) -> str:
+    """text cut to MAX_SUBJECT characters, ending with … when it, or the
+    subject it came from, was cut."""
+    if len(text) <= MAX_SUBJECT and not cut:
+        return text
+    return text[:MAX_SUBJECT - 1] + "…"
 
 
 def oss_source(commit: dict) -> str:
@@ -218,7 +243,8 @@ def line(commit: dict, server: str, oss_repository: str, refs: tuple) -> str:
     every ref goes and the OSS commit is linked instead, whose page names
     its PR. Stripping takes out the refs a reader would see; the code span
     keeps whatever is left from linking."""
-    subject = code_span(without_refs(commit["subject"], refs) or "(no message)")
+    subject = code_span(capped(without_refs(commit["subject"], refs), commit["cut"])
+                        or "(no message)")
     if source := oss_source(commit):
         return f"* {subject} ([{source[:10]}]({server}/{oss_repository}/commit/{source}))"
     return f"* {subject}"
@@ -293,8 +319,12 @@ def main() -> None:
         prev, body, count = build(
             env["VERSION"], env["PREVIOUS_TAG"], env["SUBTREE_PREFIX"],
             env["REPOSITORY"], env["OSS_REPOSITORY"])
-        notes_file = Path(os.environ.get("RUNNER_TEMP") or tempfile.gettempdir()) / "release-notes.md"
-        notes_file.write_text(body)
+        # A file of its own, so a second run in the job keeps the first body.
+        fd, name = tempfile.mkstemp(prefix="release-notes-", suffix=".md",
+                                    dir=os.environ.get("RUNNER_TEMP") or None)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(body)
+        notes_file = Path(name)
         emit("previous-tag", prev)
         emit("notes-file", str(notes_file))
         emit("count", str(count))
