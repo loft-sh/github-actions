@@ -2,7 +2,8 @@
 set -euo pipefail
 
 # Advance existing action major tags to a merged PR commit. This script is
-# invoked by the post-merge workflow with a full checkout and GH_TOKEN.
+# invoked by the workflow on each push to main, with a full checkout and
+# GH_TOKEN. It also accepts a pull_request closed event payload.
 
 fail() {
   echo "::error::$*" >&2
@@ -14,6 +15,43 @@ command -v jq >/dev/null || fail "jq is required to read the pull request event"
 
 : "${GITHUB_EVENT_PATH:?GITHUB_EVENT_PATH is required}"
 : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
+
+resolve_attempts=${ADVANCE_TAGS_RESOLVE_ATTEMPTS:-3}
+resolve_delay=${ADVANCE_TAGS_RESOLVE_DELAY:-5}
+
+# A push to main carries no pull request. Find the merged PR whose merge commit
+# is the pushed head, read it from the API, and hand the rest of the script the
+# same pull_request event shape a PR close event provides.
+resolve_push_event() {
+  local head_sha pulls_json matches count=0 attempt pr_json event_file
+  head_sha=$(jq -er '.after | select(type == "string" and length > 0)' "$GITHUB_EVENT_PATH") || fail "Push event has no head commit"
+
+  # The commit-to-PR association can trail the push by a few seconds.
+  for (( attempt = 1; attempt <= resolve_attempts; attempt++ )); do
+    pulls_json=$(gh api "repos/$GITHUB_REPOSITORY/commits/$head_sha/pulls") || fail "Could not list pull requests for commit $head_sha"
+    matches=$(jq -ce --arg sha "$head_sha" \
+      'if type == "array" then [.[] | select(.merged_at != null and .merge_commit_sha == $sha and .base.ref == "main") | .number] else error("not an array") end' \
+      <<< "$pulls_json") || fail "GitHub returned malformed pull request data for commit $head_sha"
+    count=$(jq 'length' <<< "$matches")
+    (( count == 0 )) || break
+    (( attempt == resolve_attempts )) || sleep "$resolve_delay"
+  done
+
+  if (( count == 0 )); then
+    echo "::warning::Commit $head_sha on main is not the merge commit of a pull request, so no action tags were advanced. If it changed an action, move that action's major tag by hand."
+    exit 0
+  fi
+  (( count == 1 )) || fail "Commit $head_sha is the merge commit of several pull requests ($matches); tags were not changed"
+
+  pr_json=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$(jq -r '.[0]' <<< "$matches")") || fail "Could not read the pull request merged as $head_sha"
+  event_file=$(mktemp)
+  jq -e '{pull_request: .}' <<< "$pr_json" > "$event_file" || fail "GitHub returned malformed pull request data for commit $head_sha"
+  GITHUB_EVENT_PATH=$event_file
+}
+
+if [[ "${GITHUB_EVENT_NAME:-}" == push ]]; then
+  resolve_push_event
+fi
 
 git_authenticated() {
   local token=${GH_TOKEN:-${GITHUB_TOKEN:-}}
@@ -30,6 +68,10 @@ git_authenticated() {
 }
 
 pr_number=$(jq -er '.pull_request.number' "$GITHUB_EVENT_PATH") || fail "Event has no pull request number"
+# The workflow's failure report comments on this PR.
+if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+  echo "pr-number=$pr_number" >> "$GITHUB_OUTPUT"
+fi
 merged=$(jq -r '.pull_request.merged // false' "$GITHUB_EVENT_PATH")
 [[ "$merged" == true ]] || fail "Pull request #$pr_number is not merged"
 merge_sha=$(jq -er '.pull_request.merge_commit_sha | select(type == "string" and length > 0)' "$GITHUB_EVENT_PATH") || fail "Merged pull request has no merge commit SHA"

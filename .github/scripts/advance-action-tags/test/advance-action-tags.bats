@@ -35,13 +35,37 @@ setup() {
   export GITHUB_EVENT_PATH="$TEST_ROOT/event.json"
   export GITHUB_REPOSITORY=owner/repo
   export PATH="$MOCK:$PATH"
+  export ADVANCE_TAGS_RESOLVE_DELAY=0
+  export GH_CALLS="$TEST_ROOT/gh-calls"
   cat > "$MOCK/gh" <<'MOCK_GH'
 #!/usr/bin/env bash
-[[ "$*" == *"repos/owner/repo/pulls/17/files"* ]] || exit 2
-printf '%s\n' "$GH_FILES_JSON"
+printf '%s\n' "$*" >> "$GH_CALLS"
+case "$*" in
+  *"repos/owner/repo/pulls/17/files"*) printf '%s\n' "$GH_FILES_JSON" ;;
+  *"repos/owner/repo/commits/$MERGE_SHA/pulls"*) printf '%s\n' "$GH_COMMIT_PULLS_JSON" ;;
+  *"repos/owner/repo/pulls/17") printf '%s\n' "$GH_PR_JSON" ;;
+  *) exit 2 ;;
+esac
 MOCK_GH
   chmod +x "$MOCK/gh"
+  export MERGE_SHA
   write_event '[]'
+}
+
+# Simulates the push to main that a merge of PR 17 produces.
+use_push_event() {
+  export GITHUB_EVENT_NAME=push
+  jq -n --arg sha "$MERGE_SHA" '{ref:"refs/heads/main",after:$sha}' > "$GITHUB_EVENT_PATH"
+  GH_COMMIT_PULLS_JSON=$(jq -cn --arg sha "$MERGE_SHA" \
+    '[{number:17,merged_at:"2026-11-09T10:00:00Z",merge_commit_sha:$sha,base:{ref:"main"}}]')
+  export GH_COMMIT_PULLS_JSON
+  set_pr_labels '[]'
+}
+
+set_pr_labels() {
+  GH_PR_JSON=$(jq -cn --arg sha "$MERGE_SHA" --argjson labels "$1" \
+    '{number:17,merged:true,merge_commit_sha:$sha,changed_files:1,labels:$labels}')
+  export GH_PR_JSON
 }
 
 teardown() {
@@ -145,4 +169,66 @@ UPDATE_HOOK
   [[ "$output" == *"atomic push was rejected"* ]]
   [ "$(git --git-dir="$REMOTE" rev-parse 'refs/tags/example-action/v4^{commit}')" = "$OLD_SHA" ]
   [ "$(git --git-dir="$REMOTE" rev-parse refs/tags/second-action/v1)" = "$OLD_SHA" ]
+}
+
+@test "push event resolves the merged pull request and moves its action tag" {
+  use_push_event
+  export GITHUB_OUTPUT="$TEST_ROOT/output"
+  run bash -c "cd '$WORK' && bash '$SCRIPT'"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Advanced example-action/v4 from $OLD_SHA to $MERGE_SHA."* ]]
+  [ "$(git --git-dir="$REMOTE" rev-parse 'refs/tags/example-action/v4^{commit}')" = "$MERGE_SHA" ]
+  grep -qx 'pr-number=17' "$GITHUB_OUTPUT"
+}
+
+@test "push event reads the major-release label from the API and moves no tag" {
+  use_push_event
+  set_pr_labels '[{"name":"major-release"}]'
+  run bash -c "cd '$WORK' && bash '$SCRIPT'"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"declares major-release"* ]]
+  [ "$(git --git-dir="$REMOTE" rev-parse refs/tags/example-action/v4)" = "$OLD_V4_OID" ]
+}
+
+@test "push with no merged pull request warns, retries and moves no tag" {
+  use_push_event
+  export GH_COMMIT_PULLS_JSON='[]'
+  run bash -c "cd '$WORK' && bash '$SCRIPT'"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"::warning::Commit $MERGE_SHA on main is not the merge commit of a pull request"* ]]
+  [ "$(grep -c "commits/$MERGE_SHA/pulls" "$GH_CALLS")" -eq 3 ]
+  [ "$(git --git-dir="$REMOTE" rev-parse 'refs/tags/example-action/v4^{commit}')" = "$OLD_SHA" ]
+}
+
+@test "push ignores a pull request that only contains the commit" {
+  use_push_event
+  GH_COMMIT_PULLS_JSON=$(jq -cn --arg sha "$MERGE_SHA" \
+    '[{number:18,merged_at:null,merge_commit_sha:"0000000000000000000000000000000000000000",base:{ref:"main"}},
+      {number:19,merged_at:"2026-11-09T10:00:00Z",merge_commit_sha:$sha,base:{ref:"release-1"}}]')
+  export GH_COMMIT_PULLS_JSON
+  run bash -c "cd '$WORK' && bash '$SCRIPT'"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"is not the merge commit of a pull request"* ]]
+  [ "$(git --git-dir="$REMOTE" rev-parse 'refs/tags/example-action/v4^{commit}')" = "$OLD_SHA" ]
+}
+
+@test "push merged by several pull requests fails closed" {
+  use_push_event
+  GH_COMMIT_PULLS_JSON=$(jq -cn --arg sha "$MERGE_SHA" \
+    '[{number:17,merged_at:"2026-11-09T10:00:00Z",merge_commit_sha:$sha,base:{ref:"main"}},
+      {number:20,merged_at:"2026-11-09T10:00:00Z",merge_commit_sha:$sha,base:{ref:"main"}}]')
+  export GH_COMMIT_PULLS_JSON
+  run bash -c "cd '$WORK' && bash '$SCRIPT'"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"merge commit of several pull requests"* ]]
+  [ "$(git --git-dir="$REMOTE" rev-parse 'refs/tags/example-action/v4^{commit}')" = "$OLD_SHA" ]
+}
+
+@test "push with malformed commit pull request data fails closed" {
+  use_push_event
+  export GH_COMMIT_PULLS_JSON='{"message":"Not Found"}'
+  run bash -c "cd '$WORK' && bash '$SCRIPT'"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"malformed pull request data"* ]]
+  [ "$(git --git-dir="$REMOTE" rev-parse 'refs/tags/example-action/v4^{commit}')" = "$OLD_SHA" ]
 }
