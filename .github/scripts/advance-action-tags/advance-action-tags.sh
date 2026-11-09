@@ -35,23 +35,43 @@ if jq -e '.pull_request | type == "object"' "$GITHUB_EVENT_PATH" >/dev/null; the
   pr_json=$(jq -c '.pull_request' "$GITHUB_EVENT_PATH")
 else
   push_sha=$(jq -er '.after | select(type == "string" and length > 0)' "$GITHUB_EVENT_PATH") || fail "Push event has no commit SHA"
-  # GitHub can link a fresh merge commit to its PR a few seconds late.
-  pr_number=""
-  for attempt in 1 2 3; do
-    pulls_json=$(gh api "repos/$GITHUB_REPOSITORY/commits/$push_sha/pulls") || fail "Could not list pull requests for $push_sha"
-    pr_number=$(jq -r --arg sha "$push_sha" '[.[]? | select(.merge_commit_sha == $sha) | .number][0] // empty' <<< "$pulls_json") || fail "Could not parse pull requests for $push_sha"
-    [[ -z "$pr_number" && "$attempt" -lt 3 ]] || break
-    sleep "${ADVANCE_TAGS_LOOKUP_DELAY:-10}"
-  done
-  if [[ -z "$pr_number" ]]; then
-    echo "::notice::No merged pull request for $push_sha; no tags to advance."
-    exit 0
+  pr_json=""
+
+  # Squash and merge commits name their PR; trust it only if GitHub records
+  # this push as that PR's merge commit.
+  subject=$(jq -r '.head_commit.message // "" | split("\n")[0]' "$GITHUB_EVENT_PATH")
+  named_pr=""
+  if [[ "$subject" =~ \(#([0-9]+)\)$ || "$subject" =~ ^Merge\ pull\ request\ \#([0-9]+) ]]; then
+    named_pr=${BASH_REMATCH[1]}
   fi
-  pr_json=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr_number") || fail "Could not read PR #$pr_number"
+  if [[ -n "$named_pr" ]]; then
+    candidate=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$named_pr") || fail "Could not read PR #$named_pr named by $push_sha"
+    if jq -e --arg sha "$push_sha" '.merge_commit_sha == $sha' >/dev/null <<< "$candidate"; then
+      pr_json=$candidate
+    fi
+  fi
+
+  # Rebase merges name no PR. GitHub links a fresh merge commit to its PR
+  # late, and sometimes never, so this is the fallback, not the first source.
+  if [[ -z "$pr_json" ]]; then
+    pr_number=""
+    for attempt in 1 2 3; do
+      pulls_json=$(gh api "repos/$GITHUB_REPOSITORY/commits/$push_sha/pulls") || fail "Could not list pull requests for $push_sha"
+      pr_number=$(jq -r --arg sha "$push_sha" '[.[]? | select(.merge_commit_sha == $sha) | .number][0] // empty' <<< "$pulls_json") || fail "Could not parse pull requests for $push_sha"
+      [[ -z "$pr_number" && "$attempt" -lt 3 ]] || break
+      sleep "${ADVANCE_TAGS_LOOKUP_DELAY:-10}"
+    done
+    # main requires pull requests, so a push with no PR is unexpected.
+    [[ -n "$pr_number" ]] || fail "No merged pull request found for $push_sha; tags were not changed. Advance them manually if this push changed an action."
+    # Export now so a failed read below still gets its failure comment.
+    [[ -z "${GITHUB_OUTPUT:-}" ]] || echo "pr-number=$pr_number" >> "$GITHUB_OUTPUT"
+    pr_number_exported=1
+    pr_json=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr_number") || fail "Could not read PR #$pr_number"
+  fi
 fi
 
 pr_number=$(jq -er '.number' <<< "$pr_json") || fail "Event has no pull request number"
-[[ -z "${GITHUB_OUTPUT:-}" ]] || echo "pr-number=$pr_number" >> "$GITHUB_OUTPUT"
+[[ -n "${pr_number_exported:-}" || -z "${GITHUB_OUTPUT:-}" ]] || echo "pr-number=$pr_number" >> "$GITHUB_OUTPUT"
 merged=$(jq -r '.merged // false' <<< "$pr_json")
 [[ "$merged" == true ]] || fail "Pull request #$pr_number is not merged"
 merge_sha=$(jq -er '.merge_commit_sha | select(type == "string" and length > 0)' <<< "$pr_json") || fail "Merged pull request has no merge commit SHA"

@@ -48,7 +48,9 @@ case "$*" in
     else
       printf '%s\n' "${GH_COMMIT_PULLS_JSON:-[]}"
     fi ;;
-  *"repos/owner/repo/pulls/17"*) printf '%s\n' "$GH_PR_JSON" ;;
+  *"repos/owner/repo/pulls/17"*)
+    [[ -z "${GH_PR_FAIL:-}" ]] || exit 1
+    printf '%s\n' "$GH_PR_JSON" ;;
   *) exit 2 ;;
 esac
 MOCK_GH
@@ -185,12 +187,12 @@ write_push_event() {
   [ "$(git --git-dir="$REMOTE" rev-parse refs/tags/example-action/v4)" = "$OLD_V4_OID" ]
 }
 
-@test "push with no merged PR exits cleanly without moving tags" {
+@test "push with no merged PR fails without moving tags" {
   jq -n --arg sha "$MERGE_SHA" '{after:$sha}' > "$GITHUB_EVENT_PATH"
   export GH_COMMIT_PULLS_JSON='[]'
   run bash -c "cd '$WORK' && bash '$SCRIPT'"
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"No merged pull request for $MERGE_SHA"* ]]
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"No merged pull request found for $MERGE_SHA"* ]]
   [ "$(wc -l < "$GH_COMMIT_CALLS")" -eq 3 ]
   [ "$(git --git-dir="$REMOTE" rev-parse 'refs/tags/example-action/v4^{commit}')" = "$OLD_SHA" ]
 }
@@ -202,4 +204,39 @@ write_push_event() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"Advanced example-action/v4 from $OLD_SHA to $MERGE_SHA."* ]]
   [ "$(wc -l < "$GH_COMMIT_CALLS")" -eq 2 ]
+}
+
+@test "push uses the PR named in the commit subject when GitHub never links it" {
+  write_push_event '[]'
+  jq --arg msg $'feat: something (#17)\n\nbody' '.head_commit.message = $msg' "$GITHUB_EVENT_PATH" > "$TEST_ROOT/e.json"
+  mv "$TEST_ROOT/e.json" "$GITHUB_EVENT_PATH"
+  export GH_COMMIT_PULLS_JSON='[]'
+  export GITHUB_OUTPUT="$TEST_ROOT/output"
+  run bash -c "cd '$WORK' && bash '$SCRIPT'"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Advanced example-action/v4 from $OLD_SHA to $MERGE_SHA."* ]]
+  [ ! -e "$GH_COMMIT_CALLS" ]
+  [ "$(grep -c 'pr-number=17' "$GITHUB_OUTPUT")" -eq 1 ]
+}
+
+@test "push ignores a named PR whose merge commit is a different commit" {
+  write_push_event '[]'
+  jq '.head_commit.message = "revert: something (#17)"' "$GITHUB_EVENT_PATH" > "$TEST_ROOT/e.json"
+  mv "$TEST_ROOT/e.json" "$GITHUB_EVENT_PATH"
+  GH_PR_JSON=$(jq -c '.merge_commit_sha = "other"' <<< "$GH_PR_JSON")
+  export GH_COMMIT_PULLS_JSON='[]'
+  run bash -c "cd '$WORK' && bash '$SCRIPT'"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"No merged pull request found for $MERGE_SHA"* ]]
+  [ "$(git --git-dir="$REMOTE" rev-parse 'refs/tags/example-action/v4^{commit}')" = "$OLD_SHA" ]
+}
+
+@test "push exports the PR number before a failed PR read" {
+  write_push_event '[]'
+  export GH_PR_FAIL=1
+  export GITHUB_OUTPUT="$TEST_ROOT/output"
+  run bash -c "cd '$WORK' && bash '$SCRIPT'"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Could not read PR #17"* ]]
+  grep -qx 'pr-number=17' "$GITHUB_OUTPUT"
 }
