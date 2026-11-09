@@ -28,6 +28,8 @@ any failure-notification job's `needs`.
 
    Stability follows the tag name, as in `linear-release-sync`, and a
    `-patch.N` tag sorts right above the release it patches.
+   These rules live in `release-lib/release_tags.py`, shared with
+   [`release-notes`](../release-notes/README.md).
 2. [`ai-step`](../ai-step/README.md) summarizes the PR descriptions, changed
    paths and diffstat into features, bug fixes, tech debt and tests, ordered
    by customer impact. The input travels through `input-file`, because PR

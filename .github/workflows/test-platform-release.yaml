@@ -6,6 +6,7 @@ on:
       - '.github/workflows/test-platform-release.yaml'
       - '.github/actions/platform-release/**'
       - '.github/actions/release-lib/**'
+      - '!.github/actions/release-lib/**.py'
 
 permissions:
   contents: read

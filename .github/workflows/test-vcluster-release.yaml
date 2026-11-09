@@ -6,6 +6,7 @@ on:
       - '.github/workflows/test-vcluster-release.yaml'
       - '.github/actions/vcluster-release/**'
       - '.github/actions/release-lib/**'
+      - '!.github/actions/release-lib/**.py'
 
 permissions:
   contents: read
