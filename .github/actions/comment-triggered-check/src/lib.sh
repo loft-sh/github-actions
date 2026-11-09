@@ -555,10 +555,13 @@ reply_marker() {
 # non-zero when the body has no readable state.
 reply_state_decode() {
   local line encoded json
+  # Checked explicitly: without pipefail a failed grep looks like success.
   line="$(grep -F -- "$REPLY_STATE_PREFIX" <<< "${1-}" | head -n1)" || return 1
+  [[ -n "$line" ]] || return 1
   encoded="${line#*"$REPLY_STATE_PREFIX"}"
   encoded="${encoded%% -->*}"
   json="$(printf '%s' "$encoded" | base64 -d 2>/dev/null)" || return 1
+  [[ -n "$json" ]] || return 1
   jq -e 'type == "object" and (.command | type) == "string"' <<< "$json" >/dev/null 2>&1 || return 1
   jq -c . <<< "$json"
 }
@@ -636,18 +639,18 @@ render_reply() {
          ":white_check_mark: " + $cmd + " finished" + $on + "."
        end) as $headline
     | [$rows[]
-       | .label as $label
+       | .label as $name
        | ((.url // "") | if test($url_pattern) then . else "" end) as $url
        | ($base + "/runs/" + (.id | tostring)) as $check_url
        | if .status != "completed" then
-           if $url != "" then "- " + $label + ": running, [watch the run](" + $url + ")"
-           else "- " + $label + ": starting, [view the check](" + $check_url + ")" end
+           if $url != "" then "- " + $name + ": running, [watch the run](" + $url + ")"
+           else "- " + $name + ": starting, [view the check](" + $check_url + ")" end
          elif $url == "" and .conclusion == "failure" then
-           "- " + $label + ": did not start, [see why](" + $check_url + ")"
+           "- " + $name + ": did not start, [see why](" + $check_url + ")"
          elif $url == "" then
-           "- " + $label + ": " + (.conclusion | outcome) + ", [view the check](" + $check_url + ")"
+           "- " + $name + ": " + (.conclusion | outcome) + ", [view the check](" + $check_url + ")"
          else
-           "- " + $label + ": " + (.conclusion | outcome) + ", [view the run](" + $url + ")"
+           "- " + $name + ": " + (.conclusion | outcome) + ", [view the run](" + $url + ")"
          end] as $lines
     | ([$marker, $state_prefix + $encoded + " -->", $headline] + (if $n == 0 then [] else [""] + $lines end)) | join("\n")
   '
