@@ -183,6 +183,19 @@ refresh() {
   [[ "$(body)" == *"- Pro: passed, [view the run](https://e/1)"* ]]
 }
 
+@test "a redraw leaves the reply alone when the checks cannot be merged" {
+  seed_reply
+  seed_check 11 Pro completed success https://e/1
+  before="$(body)"
+  # shellcheck source=../src/reply.sh
+  source "$BATS_TEST_DIRNAME/../src/reply.sh"
+  reply_checks_on() { printf '{}\n'; }
+  run reply_refresh loft-sh/demo 555
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"could not merge the checks"* ]]
+  [ "$(body)" = "$before" ]
+}
+
 @test "a redraw that changes nothing writes nothing" {
   seed_check 11 Pro in_progress "" https://e/1
   render_reply "$(state)" "[$(row 11 Pro in_progress "" https://e/1)]" https://github.com loft-sh/demo > "$MOCK_DIR/comment-555"
