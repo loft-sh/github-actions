@@ -22,6 +22,23 @@ The upstream comes from the `fork-upstream` repository property, never from GitH
 
 A tag without a fork suffix, a missing upstream tag, a base that is not an ancestor, or a range over 250 commits fails.
 
+### Dated exceptions for unlinked commit authors
+
+Rule 2 compares the approver with the commit author's GitHub login. When GitHub links a commit's author email to no account, there is no login to compare, so the commit fails. For a shipped commit whose author email cannot be linked to an account, [`src/exceptions.json`](src/exceptions.json) can hold a dated exception:
+
+```json
+{
+  "repo": "loft-sh/tailscale",
+  "commit": "76b6f298f1f9a23d5833a515586aff5135cd1d96",
+  "pull": 19,
+  "record": "https://github.com/loft-sh/architecture/blob/main/engineering-enablement/designs/fork-review-check.md#dated-exceptions"
+}
+```
+
+An exception waives only the unlinked-author condition, and only for approvals on `pull`. Every other part of rule 2 still applies, and the committer must have a GitHub account other than the approver's. An exception never applies to a commit GitHub links to an account. The list is compiled into the binary, so it changes only by a reviewed pull request to this repository, never from a caller's inputs. The receipt records the exception's `record` on the approval it let count.
+
+This repository is public, so an entry carries no personal data: no email, name or account. The justification, which names the author and why the email cannot be linked, goes in the dated exceptions of the private design doc that `record` points to. A test fails if the list contains an email address.
+
 ## Usage
 
 ```bash
@@ -115,7 +132,7 @@ Any other fork reference fails, so a new build-input form cannot slip past the c
 
 ## Receipt
 
-The JSON receipt lists each input with its hash, each fork's `fork-upstream` value and source, the base, and every fork commit with its PR, approver, approval time and the approver's permission as read at check time. The permission endpoint returns current access only, so the receipt is the record and a later rerun can differ.
+The JSON receipt lists each input with its hash, each fork's `fork-upstream` value and source, the base, and every fork commit with its PR, approver, approval time and the approver's permission as read at check time. An approval that counted under a dated exception carries the exception's `exception` record. The permission endpoint returns current access only, so the receipt is the record and a later rerun can differ.
 
 ## Token
 

@@ -61,7 +61,8 @@ type approvalRecord struct {
 	Approver    string    `json:"approver"`
 	SubmittedAt time.Time `json:"submitted_at"`
 	Commit      string    `json:"commit"`
-	Permission  string    `json:"permission"` // read at check time; the endpoint reports current access only
+	Permission  string    `json:"permission"`          // read at check time; the endpoint reports current access only
+	Exception   string    `json:"exception,omitempty"` // record of the dated exception that let this approval count for an unlinked author
 }
 
 type commitResult struct {
@@ -102,9 +103,10 @@ type pullData struct {
 
 // checker evaluates the design's rules against live GitHub data.
 type checker struct {
-	api       forkAPI
-	asOf      time.Time // rule 3 cutoff; zero skips the rule
-	overrides map[string]upstreamOverride
+	api        forkAPI
+	asOf       time.Time // rule 3 cutoff; zero skips the rule
+	overrides  map[string]upstreamOverride
+	exceptions exceptionList // dated exceptions for shipped commits whose author links to no GitHub account
 
 	pulls map[string]*pullData
 	perms map[string]string
@@ -112,11 +114,12 @@ type checker struct {
 
 func newChecker(api forkAPI, asOf time.Time, overrides map[string]upstreamOverride) *checker {
 	return &checker{
-		api:       api,
-		asOf:      asOf,
-		overrides: overrides,
-		pulls:     map[string]*pullData{},
-		perms:     map[string]string{},
+		api:        api,
+		asOf:       asOf,
+		overrides:  overrides,
+		exceptions: defaultExceptions,
+		pulls:      map[string]*pullData{},
+		perms:      map[string]string{},
 	}
 }
 
@@ -249,7 +252,7 @@ func (c *checker) checkCommit(ctx context.Context, repo string, ci commitInfo) c
 			res.Failures = append(res.Failures, reason)
 			continue
 		}
-		approval, reasons := c.qualifyingApproval(ctx, repo, pr, effectiveAuthor(ci, pr))
+		approval, reasons := c.qualifyingApproval(ctx, repo, pr, ci)
 		if approval == nil {
 			res.Failures = append(res.Failures, reasons...)
 			continue
@@ -307,7 +310,7 @@ func (c *checker) checkReviewedTree(ctx context.Context, repo string, ci commitI
 		default:
 			continue
 		}
-		if approval, _ := c.qualifyingApproval(ctx, repo, pr, effectiveAuthor(ci, pr)); approval != nil {
+		if approval, _ := c.qualifyingApproval(ctx, repo, pr, ci); approval != nil {
 			return &reviewedTree{Pull: pullRecordOf(pr), Via: via, Pass: true}
 		}
 	}
@@ -315,8 +318,13 @@ func (c *checker) checkReviewedTree(ctx context.Context, repo string, ci commitI
 }
 
 // qualifyingApproval returns the earliest approval on pr that meets every
-// condition, or the reasons each approval fell short.
-func (c *checker) qualifyingApproval(ctx context.Context, repo string, pr pullInfo, commitAuthor string) (*approvalRecord, []string) {
+// condition for commit ci, or the reasons each approval fell short.
+func (c *checker) qualifyingApproval(ctx context.Context, repo string, pr pullInfo, ci commitInfo) (*approvalRecord, []string) {
+	commitAuthor := effectiveAuthor(ci, pr)
+	var exception *authorException
+	if commitAuthor == "" {
+		exception = c.exceptions.forApproval(repo, ci.SHA, pr.Number)
+	}
 	data, err := c.pullData(ctx, repo, pr.Number)
 	if err != nil {
 		return nil, []string{fmt.Sprintf("#%d: read reviews: %v", pr.Number, err)}
@@ -341,8 +349,10 @@ func (c *checker) qualifyingApproval(ctx context.Context, repo string, pr pullIn
 			reason = fmt.Sprintf("approval by %s is on %s, not the final head %s", r.User, short(r.CommitID), short(pr.HeadSHA))
 		case strings.EqualFold(r.User, pr.Author):
 			reason = fmt.Sprintf("approval by %s is by the pull request author", r.User)
-		case commitAuthor == "":
-			reason = fmt.Sprintf("approval by %s cannot be shown to be by a non-author: the commit author has no GitHub account", r.User)
+		case commitAuthor == "" && exception == nil:
+			reason = fmt.Sprintf("approval by %s cannot be shown to be by a non-author: the commit author email links to no GitHub account; the author links it, or a dated exception for this commit and pull request is added to %s by reviewed pull request", r.User, exceptionsFile)
+		case commitAuthor == "" && (ci.Committer == "" || strings.EqualFold(r.User, ci.Committer)):
+			reason = fmt.Sprintf("approval by %s does not count under the dated exception: the committer must have a GitHub account other than the approver's", r.User)
 		case strings.EqualFold(r.User, commitAuthor):
 			reason = fmt.Sprintf("approval by %s is by the commit author", r.User)
 		case !data.lastForcePush.IsZero() && !r.SubmittedAt.After(data.lastForcePush):
@@ -364,7 +374,11 @@ func (c *checker) qualifyingApproval(ctx context.Context, repo string, pr pullIn
 			reasons = append(reasons, fmt.Sprintf("#%d: approval by %s does not count: %s permission, write or higher needed", pr.Number, r.User, perm))
 			continue
 		}
-		return &approvalRecord{Approver: r.User, SubmittedAt: r.SubmittedAt, Commit: r.CommitID, Permission: perm}, nil
+		rec := &approvalRecord{Approver: r.User, SubmittedAt: r.SubmittedAt, Commit: r.CommitID, Permission: perm}
+		if exception != nil {
+			rec.Exception = exception.Record
+		}
+		return rec, nil
 	}
 	return nil, reasons
 }
