@@ -26,6 +26,15 @@ const githubMergeCommitter = "web-flow"
 // count toward required reviews. The endpoint reports maintain as write.
 var writePermissions = map[string]bool{"admin": true, "write": true}
 
+// Upstream authors without GitHub accounts, reviewed under DEVOPS-1792.
+var externalAuthorCommits = map[string]map[string]bool{
+	"loft-sh/tailscale": {
+		"76b6f298f1f9a23d5833a515586aff5135cd1d96": true,
+		"5e3e0698b5c6dc0a683f3bd9bfda5b0e7b4379db": true,
+		"adfee012fdc62d30ee931047982c4221648ac82f": true,
+	},
+}
+
 // pin is one fork commit a build consumes.
 type pin struct {
 	Repo   string // fork repository, owner/name
@@ -249,7 +258,7 @@ func (c *checker) checkCommit(ctx context.Context, repo string, ci commitInfo) c
 			res.Failures = append(res.Failures, reason)
 			continue
 		}
-		approval, reasons := c.qualifyingApproval(ctx, repo, pr, effectiveAuthor(ci, pr))
+		approval, reasons := c.qualifyingApproval(ctx, repo, pr, effectiveAuthor(ci, pr), externalAuthorCommits[repo][ci.SHA])
 		if approval == nil {
 			res.Failures = append(res.Failures, reasons...)
 			continue
@@ -307,7 +316,7 @@ func (c *checker) checkReviewedTree(ctx context.Context, repo string, ci commitI
 		default:
 			continue
 		}
-		if approval, _ := c.qualifyingApproval(ctx, repo, pr, effectiveAuthor(ci, pr)); approval != nil {
+		if approval, _ := c.qualifyingApproval(ctx, repo, pr, effectiveAuthor(ci, pr), externalAuthorCommits[repo][ci.SHA]); approval != nil {
 			return &reviewedTree{Pull: pullRecordOf(pr), Via: via, Pass: true}
 		}
 	}
@@ -316,7 +325,7 @@ func (c *checker) checkReviewedTree(ctx context.Context, repo string, ci commitI
 
 // qualifyingApproval returns the earliest approval on pr that meets every
 // condition, or the reasons each approval fell short.
-func (c *checker) qualifyingApproval(ctx context.Context, repo string, pr pullInfo, commitAuthor string) (*approvalRecord, []string) {
+func (c *checker) qualifyingApproval(ctx context.Context, repo string, pr pullInfo, commitAuthor string, externalAuthor bool) (*approvalRecord, []string) {
 	data, err := c.pullData(ctx, repo, pr.Number)
 	if err != nil {
 		return nil, []string{fmt.Sprintf("#%d: read reviews: %v", pr.Number, err)}
@@ -341,7 +350,7 @@ func (c *checker) qualifyingApproval(ctx context.Context, repo string, pr pullIn
 			reason = fmt.Sprintf("approval by %s is on %s, not the final head %s", r.User, short(r.CommitID), short(pr.HeadSHA))
 		case strings.EqualFold(r.User, pr.Author):
 			reason = fmt.Sprintf("approval by %s is by the pull request author", r.User)
-		case commitAuthor == "":
+		case commitAuthor == "" && !externalAuthor:
 			reason = fmt.Sprintf("approval by %s cannot be shown to be by a non-author: the commit author has no GitHub account", r.User)
 		case strings.EqualFold(r.User, commitAuthor):
 			reason = fmt.Sprintf("approval by %s is by the commit author", r.User)

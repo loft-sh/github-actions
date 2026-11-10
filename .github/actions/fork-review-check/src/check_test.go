@@ -514,3 +514,35 @@ func TestCommitPinHonoursUpstreamBranchOverride(t *testing.T) {
 		t.Fatalf("want the override branch as base ref: %+v", r)
 	}
 }
+
+func TestExternalAuthorCommitExceptions(t *testing.T) {
+	shas := []string{
+		"76b6f298f1f9a23d5833a515586aff5135cd1d96",
+		"5e3e0698b5c6dc0a683f3bd9bfda5b0e7b4379db",
+		"adfee012fdc62d30ee931047982c4221648ac82f",
+	}
+	for _, tc := range []struct {
+		name, repo, sha, author, reviewer string
+		pass                              bool
+	}{
+		{"first", "loft-sh/tailscale", shas[0], "", "bob", true},
+		{"second", "loft-sh/tailscale", shas[1], "", "bob", true},
+		{"third", "loft-sh/tailscale", shas[2], "", "bob", true},
+		{"other repository", fork, shas[0], "", "bob", false},
+		{"other commit", "loft-sh/tailscale", c1, "", "bob", false},
+		{"pull author", "loft-sh/tailscale", shas[0], "", "alice", false},
+		{"known commit author", "loft-sh/tailscale", shas[0], "bob", "bob", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFake()
+			pr := pullInfo{Number: 22, Author: "alice", BaseRepo: tc.repo, HeadSHA: tc.sha, MergedAt: t0.Add(2 * time.Hour)}
+			f.pulls[tc.repo+"@"+tc.sha] = []pullInfo{pr}
+			f.reviews[tc.repo+"#22"] = []reviewInfo{{User: tc.reviewer, State: "APPROVED", CommitID: tc.sha, SubmittedAt: t0.Add(time.Hour)}}
+			f.perms[tc.repo+"/"+tc.reviewer] = "write"
+			result := newChecker(f, time.Time{}, nil).checkCommit(context.Background(), tc.repo, commitInfo{SHA: tc.sha, Author: tc.author})
+			if result.Pass != tc.pass {
+				t.Fatalf("pass = %t, want %t: %v", result.Pass, tc.pass, result.Failures)
+			}
+		})
+	}
+}
