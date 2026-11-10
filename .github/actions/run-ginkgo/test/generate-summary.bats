@@ -333,3 +333,47 @@ get_summary_line() {
   [[ "$(get_summary)" != *"Flaked"* ]]
   [[ "$(get_summary)" == *"All tests passed!"* ]]
 }
+
+# --- Long failure lists ---
+
+# many_failures <n> — a report with n failed specs, named "spec 1" to "spec n".
+many_failures() {
+  jq -n --argjson n "$1" '[{
+    PreRunStats: {TotalSpecs: $n, SpecsThatWillRun: $n}, RunTime: 0,
+    SpecReports: [range(1; $n + 1) | {State: "failed", LeafNodeType: "It",
+      LeafNodeText: ("spec " + tostring), LeafNodeLocation: {FileName: "a_test.go", LineNumber: .}}]
+  }]' > "$MOCK_DIR/report.json"
+}
+
+@test "a long failure list names the first 8 and counts the rest" {
+  many_failures 13
+  REPORT_FILE="$MOCK_DIR/report.json" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+
+  local summary
+  summary="$(get_summary)"
+  [[ "$summary" == *"Failed: 13"* ]]
+  [ "$(grep -c '^❌ \[FAILED\]' <<< "$summary")" -eq 8 ]
+  [[ "$summary" == *"spec 8"$'\n'* ]]
+  [[ "$summary" != *"spec 9"* ]]
+  [[ "$summary" == *"…and 5 more failed tests. See the run for the full list."* ]]
+}
+
+@test "one failure past the limit is counted in the singular" {
+  many_failures 9
+  REPORT_FILE="$MOCK_DIR/report.json" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+
+  [[ "$(get_summary)" == *"…and 1 more failed test. See the run for the full list."* ]]
+}
+
+@test "a failure list of exactly 8 is shown in full" {
+  many_failures 8
+  REPORT_FILE="$MOCK_DIR/report.json" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+
+  local summary
+  summary="$(get_summary)"
+  [ "$(grep -c '^❌ \[FAILED\]' <<< "$summary")" -eq 8 ]
+  [[ "$summary" != *"more failed test"* ]]
+}

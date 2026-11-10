@@ -7,6 +7,12 @@ set -euo pipefail
 
 REPORT_FILE="${REPORT_FILE:-test-reports/report.json}"
 
+# Most failed tests the summary names. Every caller posts it to Slack through
+# ci-test-notify, which cuts a message at 3000 characters, and a failed test
+# takes up to ~265 of them; 8 keeps the "more" line visible. It also keeps the
+# summary far below Linux's 128 KiB limit on one env var.
+MAX_LISTED_FAILURES=8
+
 if [[ ! -f "$REPORT_FILE" ]]; then
   echo "::warning::JSON report not found at ${REPORT_FILE}"
   if [[ -d "$(dirname "$REPORT_FILE")" ]]; then
@@ -90,13 +96,18 @@ RUNTIME=$(echo "$STATS" | jq -r '.runtime')
   if [[ "$FAILED_COUNT" -gt 0 ]]; then
     echo ""
     echo "*Failed Tests:*"
-    jq -r '[.[] | (.SpecReports // [])[] | select(.State | IN("passed", "skipped", "pending") | not)] |
-      .[] |
+    jq -r --argjson max "$MAX_LISTED_FAILURES" '[.[] | (.SpecReports // [])[] | select(.State | IN("passed", "skipped", "pending") | not)] |
+      .[:$max][] |
       "❌ [" + (.State | ascii_upcase) + "] [" + .LeafNodeType + "]" +
       (if .ContainerHierarchyTexts then " " + (.ContainerHierarchyTexts | join(" ")) else "" end) +
       (if .LeafNodeText != "" then " " + .LeafNodeText else "" end) +
       "\n   📍 " + .LeafNodeLocation.FileName + ":" + (.LeafNodeLocation.LineNumber | tostring)' \
       "$REPORT_FILE"
+    if [[ "$FAILED_COUNT" -gt "$MAX_LISTED_FAILURES" ]]; then
+      more=$((FAILED_COUNT - MAX_LISTED_FAILURES))
+      noun="tests"; [[ "$more" -eq 1 ]] && noun="test"
+      echo "…and ${more} more failed ${noun}. See the run for the full list."
+    fi
   fi
 
   echo "EOF"
