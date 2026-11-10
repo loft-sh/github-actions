@@ -35,7 +35,7 @@ func renderText(rc receipt) string {
 			fmt.Fprintf(&b, "  FAIL %s\n", msg)
 		}
 		for _, c := range f.Commits {
-			fmt.Fprintf(&b, "  %s %s %s %q\n", verdict(c.Pass), short(c.SHA), orNone(c.Author), c.Subject)
+			fmt.Fprintf(&b, "  %s %s %s %q\n", verdict(c.Pass), short(c.SHA), authorLabel(c), c.Subject)
 			if c.Pass {
 				fmt.Fprintf(&b, "       #%d approved by %s (%s) at %s\n", c.Pull.Number, c.Approval.Approver, c.Approval.Permission, c.Approval.SubmittedAt.Format("2006-01-02T15:04:05Z"))
 			}
@@ -80,10 +80,22 @@ func renderMarkdown(rc receipt) string {
 			if !c.Pass {
 				result += ": " + strings.ReplaceAll(strings.Join(c.Failures, "; "), "|", "\\|")
 			}
-			fmt.Fprintf(&b, "| `%s` | %s | %s | %s | %s | %s |\n", short(c.SHA), orNone(c.Author), pr, approver, perm, result)
+			fmt.Fprintf(&b, "| `%s` | %s | %s | %s | %s | %s |\n", short(c.SHA), authorLabel(c), pr, approver, perm, result)
 		}
 	}
 	return b.String()
+}
+
+// authorLabel names a commit author, marking one resolved through the
+// identity map and showing the email of one GitHub links to no account.
+func authorLabel(c commitResult) string {
+	switch {
+	case c.AuthorSource == identityMapSource:
+		return c.Author + " (identity map: " + c.AuthorEmail + ")"
+	case c.Author == "" && c.AuthorEmail != "":
+		return "none (" + c.AuthorEmail + ")"
+	}
+	return orNone(c.Author)
 }
 
 func orNone(s string) string {

@@ -22,6 +22,23 @@ The upstream comes from the `fork-upstream` repository property, never from GitH
 
 A tag without a fork suffix, a missing upstream tag, a base that is not an ancestor, or a range over 250 commits fails.
 
+### Commit authors without a linked GitHub account
+
+Rule 2 compares the approver with the commit author's GitHub login. When GitHub links the commit's author email to no account (a former employee who removed their work email, for example), there is no login to compare, so the commit fails. [`src/identities.json`](src/identities.json) maps such an email to the GitHub account of the person who wrote the commit:
+
+```json
+{
+  "email": "thomas.kosiewski@loft.sh",
+  "login": "ThomasK33",
+  "name": "Thomas Kosiewski",
+  "evidence": "https://github.com/loft-sh/hosted-platform/pull/178"
+}
+```
+
+`evidence` is a GitHub URL that ties the email to the account, such as a merged pull request that account opened with commits from that email. The check uses an entry only when GitHub returns no login for the commit author, so the map cannot rename an author GitHub already knows. A mapped author is still compared with the approver: an approval by the mapped account fails as a self-review. The map is compiled into the binary, so it changes only by a reviewed pull request to this repository, never from a caller's inputs. The receipt records `author_source: identity-map` and `author_email` for each commit the map resolved, and `author_email` for each unlinked commit it could not resolve.
+
+To add an entry, find the account from the system rather than from the name: list the commits by that email (`gh api "search/commits?q=author-email:<email>+org:loft-sh"`), then the pull requests that contain them (`gh api repos/<repo>/commits/<sha>/pulls`), and use one that account authored as the evidence.
+
 ## Usage
 
 ```bash
@@ -115,7 +132,7 @@ Any other fork reference fails, so a new build-input form cannot slip past the c
 
 ## Receipt
 
-The JSON receipt lists each input with its hash, each fork's `fork-upstream` value and source, the base, and every fork commit with its PR, approver, approval time and the approver's permission as read at check time. The permission endpoint returns current access only, so the receipt is the record and a later rerun can differ.
+The JSON receipt lists each input with its hash, each fork's `fork-upstream` value and source, the base, and every fork commit with its author, PR, approver, approval time and the approver's permission as read at check time. For an author email GitHub links to no account, the commit also carries the email and, when the identity map resolved it, `author_source: identity-map`. The permission endpoint returns current access only, so the receipt is the record and a later rerun can differ.
 
 ## Token
 

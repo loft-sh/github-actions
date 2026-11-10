@@ -23,12 +23,14 @@ type repoInfo struct {
 }
 
 type commitInfo struct {
-	SHA       string
-	Author    string // GitHub login of the git author; empty when the email maps to no account
-	Committer string // GitHub login of the committer
-	Verified  bool   // GitHub's verification result for the commit signature
-	Subject   string
-	Merge     bool
+	SHA          string
+	Author       string // GitHub login of the git author; empty when the email maps to no account
+	AuthorEmail  string // git author email
+	AuthorSource string // identity-map when Author came from the reviewed identity map
+	Committer    string // GitHub login of the committer
+	Verified     bool   // GitHub's verification result for the commit signature
+	Subject      string
+	Merge        bool
 }
 
 type comparison struct {
@@ -163,12 +165,13 @@ func (a githubAPI) Compare(ctx context.Context, repo, base, head string) (compar
 		}
 		for _, rc := range cmp.Commits {
 			out.Commits = append(out.Commits, commitInfo{
-				SHA:       rc.GetSHA(),
-				Author:    rc.GetAuthor().GetLogin(),
-				Committer: rc.GetCommitter().GetLogin(),
-				Verified:  rc.GetCommit().GetVerification().GetVerified(),
-				Subject:   firstLine(rc.GetCommit().GetMessage()),
-				Merge:     len(rc.Parents) > 1,
+				SHA:         rc.GetSHA(),
+				Author:      rc.GetAuthor().GetLogin(),
+				AuthorEmail: rc.GetCommit().GetAuthor().GetEmail(),
+				Committer:   rc.GetCommitter().GetLogin(),
+				Verified:    rc.GetCommit().GetVerification().GetVerified(),
+				Subject:     firstLine(rc.GetCommit().GetMessage()),
+				Merge:       len(rc.Parents) > 1,
 			})
 		}
 		if resp.NextPage == 0 {

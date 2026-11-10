@@ -1,0 +1,16 @@
+{
+  "identities": [
+    {
+      "email": "pawel.bojanowski@loft.sh",
+      "login": "hidalgopl",
+      "name": "Paweł Bojanowski",
+      "evidence": "https://github.com/loft-sh/vcluster-pro/pull/1373"
+    },
+    {
+      "email": "thomas.kosiewski@loft.sh",
+      "login": "ThomasK33",
+      "name": "Thomas Kosiewski",
+      "evidence": "https://github.com/loft-sh/hosted-platform/pull/178"
+    }
+  ]
+}

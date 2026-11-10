@@ -65,14 +65,16 @@ type approvalRecord struct {
 }
 
 type commitResult struct {
-	SHA      string          `json:"sha"`
-	Author   string          `json:"author"`
-	Subject  string          `json:"subject"`
-	Merge    bool            `json:"merge"`
-	Pull     *pullRecord     `json:"pull,omitempty"`
-	Approval *approvalRecord `json:"approval,omitempty"`
-	Pass     bool            `json:"pass"`
-	Failures []string        `json:"failures,omitempty"`
+	SHA          string          `json:"sha"`
+	Author       string          `json:"author"`
+	AuthorEmail  string          `json:"author_email,omitempty"`  // set only when GitHub links the email to no account
+	AuthorSource string          `json:"author_source,omitempty"` // identity-map when the author came from the reviewed map
+	Subject      string          `json:"subject"`
+	Merge        bool            `json:"merge"`
+	Pull         *pullRecord     `json:"pull,omitempty"`
+	Approval     *approvalRecord `json:"approval,omitempty"`
+	Pass         bool            `json:"pass"`
+	Failures     []string        `json:"failures,omitempty"`
 }
 
 type reviewedTree struct {
@@ -102,9 +104,10 @@ type pullData struct {
 
 // checker evaluates the design's rules against live GitHub data.
 type checker struct {
-	api       forkAPI
-	asOf      time.Time // rule 3 cutoff; zero skips the rule
-	overrides map[string]upstreamOverride
+	api        forkAPI
+	asOf       time.Time // rule 3 cutoff; zero skips the rule
+	overrides  map[string]upstreamOverride
+	identities identityMap // commit author email to GitHub login, for emails GitHub links to no account
 
 	pulls map[string]*pullData
 	perms map[string]string
@@ -112,11 +115,12 @@ type checker struct {
 
 func newChecker(api forkAPI, asOf time.Time, overrides map[string]upstreamOverride) *checker {
 	return &checker{
-		api:       api,
-		asOf:      asOf,
-		overrides: overrides,
-		pulls:     map[string]*pullData{},
-		perms:     map[string]string{},
+		api:        api,
+		asOf:       asOf,
+		overrides:  overrides,
+		identities: defaultIdentities,
+		pulls:      map[string]*pullData{},
+		perms:      map[string]string{},
 	}
 }
 
@@ -150,6 +154,9 @@ func (c *checker) checkFork(ctx context.Context, p pin) forkResult {
 	}
 	res.Base = base
 
+	for i := range cmp.Commits {
+		cmp.Commits[i] = c.identities.resolveAuthor(cmp.Commits[i])
+	}
 	for _, ci := range cmp.Commits {
 		res.Commits = append(res.Commits, c.checkCommit(ctx, p.Repo, ci))
 	}
@@ -231,7 +238,10 @@ func (c *checker) resolveBase(ctx context.Context, p pin, upstream, upstreamRef 
 // checkCommit applies rule 2 to one fork commit: it belongs to a merged fork
 // pull request with a qualifying approval.
 func (c *checker) checkCommit(ctx context.Context, repo string, ci commitInfo) commitResult {
-	res := commitResult{SHA: ci.SHA, Author: ci.Author, Subject: ci.Subject, Merge: ci.Merge}
+	res := commitResult{SHA: ci.SHA, Author: ci.Author, AuthorSource: ci.AuthorSource, Subject: ci.Subject, Merge: ci.Merge}
+	if ci.Author == "" || ci.AuthorSource != "" {
+		res.AuthorEmail = ci.AuthorEmail
+	}
 
 	pulls, err := c.mergedPulls(ctx, repo, ci.SHA)
 	if err != nil {
@@ -342,7 +352,7 @@ func (c *checker) qualifyingApproval(ctx context.Context, repo string, pr pullIn
 		case strings.EqualFold(r.User, pr.Author):
 			reason = fmt.Sprintf("approval by %s is by the pull request author", r.User)
 		case commitAuthor == "":
-			reason = fmt.Sprintf("approval by %s cannot be shown to be by a non-author: the commit author has no GitHub account", r.User)
+			reason = fmt.Sprintf("approval by %s cannot be shown to be by a non-author: the commit author email links to no GitHub account and has no entry in %s; add one by reviewed pull request, with evidence of the author's account", r.User, identityMapFile)
 		case strings.EqualFold(r.User, commitAuthor):
 			reason = fmt.Sprintf("approval by %s is by the commit author", r.User)
 		case !data.lastForcePush.IsZero() && !r.SubmittedAt.After(data.lastForcePush):

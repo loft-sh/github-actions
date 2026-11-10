@@ -37,7 +37,7 @@ to kine, tailscale and fuse. Receipts are retained for 90 days.
 | --- | --- | --- | --- |
 | Credential access | Covered: missing App configuration, denied lookup, invalid response | `check-access.sh`, protected environment, scoped App token | Failing step names the missing configuration or fork; configure or repair the approved App |
 | Fork identity and input resolution | Covered: missing property, ambiguous base, unknown input, missing attestation | CLI `ref`, `go`, `image`, `binary`, `scan` modes | JSON failures and Actions summary name the unresolved input; repair the pin or fork configuration |
-| Independent approval | Covered: missing PR, non-final head, ineligible approver, stale approval | CLI approval and permission checks | Receipt lists commits, PRs and approvers; obtain a qualifying fork review |
+| Independent approval | Covered: missing PR, non-final head, ineligible approver, stale approval, commit author email linked to no GitHub account | CLI approval and permission checks; reviewed identity map `src/identities.json` | Receipt lists commits, PRs and approvers; obtain a qualifying fork review, or map an unlinked author email to its account by reviewed PR |
 | Product advisory week | Pending product integration | Reusable `fork-review-check.yaml`, `advisory: true` | Record the first functioning product run and a full week of runs before requiring the workflow; this fixed-pin probe alone does not start that week |
 | Product release receipt | Pending product integration | Action `receipt` output | Attach the JSON after the product release exists; inspect the attachment and its `pass` value on a real release |
 
