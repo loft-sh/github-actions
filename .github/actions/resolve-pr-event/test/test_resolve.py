@@ -143,7 +143,7 @@ def test_other_events_rejected():
 def test_incomplete_range_fails():
     api = FakeAPI()
     payload = push(); payload['after'] = 'd'*40
-    with pytest.raises(r.Reject): r.resolve(api, payload, 'push')
+    with pytest.raises(RuntimeError, match='incomplete push range'): r.resolve(api, payload, 'push')
 
 def test_outputs_escape_injection_and_node_preload(tmp_path, monkeypatch):
     monkeypatch.setenv('GITHUB_OUTPUT', str(tmp_path / 'out'))
@@ -276,7 +276,7 @@ def test_signal_restore_keeps_source_repository_check():
 def test_page_cap_fails_closed():
     class FullPages:
         def get(self, path): return [None] * 100
-    with pytest.raises(r.Reject): r.paged(FullPages(), '/commits/x/pulls')
+    with pytest.raises(RuntimeError, match='pagination limit exceeded'): r.paged(FullPages(), '/commits/x/pulls')
 
 def test_large_bodies_do_not_inflate_matrix_output(tmp_path, monkeypatch):
     monkeypatch.setenv('GITHUB_OUTPUT', str(tmp_path / 'out'))
@@ -304,3 +304,28 @@ def test_257_events_exceed_matrix_cap():
                 return [{'number': n, 'merge_commit_sha': B} for n in range((page-1)*100+1, min(page*100, 257)+1)]
             return super().get(path)
     with pytest.raises(RuntimeError): r.resolve(ManyPaged(), push(), 'push')
+
+
+def test_empty_commit_associations_retry_then_fail(monkeypatch):
+    class EmptyAPI(FakeAPI):
+        def get(self, path):
+            if path.startswith('/commits/'):
+                self.calls.append(path)
+                return []
+            return super().get(path)
+    monkeypatch.setattr(r.time, 'sleep', lambda _: None)
+    api = EmptyAPI()
+    with pytest.raises(RuntimeError, match='no pull request association'):
+        r.resolve(api, push(), 'push')
+    assert len([c for c in api.calls if c.startswith('/commits/')]) == 3
+
+
+def test_commit_association_retry_succeeds(monkeypatch):
+    class DelayedAPI(FakeAPI):
+        def get(self, path):
+            if path.startswith('/commits/') and not hasattr(self, 'retried'):
+                self.retried = True
+                return []
+            return super().get(path)
+    monkeypatch.setattr(r.time, 'sleep', lambda _: None)
+    assert [e['number'] for e in r.resolve(DelayedAPI(), push(), 'push')] == [1, 2]

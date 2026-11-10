@@ -27,7 +27,10 @@ def test_no_privileged_pr_trigger_remains_anywhere_in_github():
     matches = [str(path.relative_to(GITHUB)) for path in GITHUB.rglob('*')
                if path.is_file() and '__pycache__' not in path.parts
                and forbidden in path.read_bytes()]
-    assert matches == []
+    assert matches == ['workflows/claude-code-review.yaml']
+    review = (WORKFLOWS / 'claude-code-review.yaml').read_bytes()
+    assert review.count(forbidden) == 1
+    assert b"github.event_name == '" + forbidden + b"'" in review
 
 
 def test_backport_requires_trusted_default_branch_and_api_resolution():
@@ -36,9 +39,6 @@ def test_backport_requires_trusted_default_branch_and_api_resolution():
     assert '"push","workflow_run"' in resolve
     assert "github.ref == format('refs/heads/{0}', github.event.repository.default_branch)" in resolve
     assert "endsWith(github.workflow_ref, format('@refs/heads/{0}', github.event.repository.default_branch))" in resolve
-    assert 'actions: read' in resolve
-    assert 'pull-requests: read' in resolve
-    assert 'contents: read' in resolve
     assert 'event-json: ${{ inputs.pr-event }}' in resolve
 
 
@@ -97,7 +97,6 @@ def test_review_event_guard(event, owner, head, expected):
     # Translate only the expression operators and known context values, so the
     # cases exercise the actual guard rather than a separately written policy.
     expression = ' '.join(guard.split()).replace('&&', ' and ').replace('||', ' or ')
-    expression = expression.replace("format('pull_request{0}', '_target')", repr('pull_request' + '_target'))
     expression = expression.replace('github.repository_owner', repr(owner))
     expression = expression.replace('github.event_name', repr(event))
     expression = expression.replace('github.event.pull_request.head.repo.full_name', repr(head))

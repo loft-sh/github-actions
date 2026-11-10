@@ -2,7 +2,7 @@
 
 Resolve merged pull requests for a default-branch push or a completed read-only pull request signal workflow. The action fetches authoritative PR data from GitHub and only returns closed, merged PRs targeting the default branch. Fork PRs are included after merge.
 
-For a push, the action walks every commit in the before/after range and finds associated PRs whose merge SHA is in that range. A forced push, deleted branch, or new branch with a zero before SHA is skipped. Comparison and associated PR pagination are bounded to 1,000 entries each; incomplete results fail closed.
+For a push, the action walks every commit in the before/after range and finds associated PRs whose merge SHA is in that range. A forced push, deleted branch, or new branch with a zero before SHA is skipped. Comparison and associated PR pagination are bounded to 1,000 entries each; incomplete results fail the run. Empty commit associations are retried twice, then fail the run because a missing association can hide a backport. This also fails for direct pushes or commits with no associated PR; investigate those runs before retrying.
 
 For `workflow_run`, the action verifies the run ID, attempt, status, conclusion, source workflow identity, repository, event, head branch and SHA against the API. It uses PR associations from the run or, when empty, from the commit API. A re-fetched PR must match the signal head branch and either its head SHA or merge SHA; its merge commit must be an ancestor of the default branch. No signal artifact is read. Since a signal workflow's code can come from a PR, it must be read-only and carry no secrets. Its output is never treated as authoritative.
 

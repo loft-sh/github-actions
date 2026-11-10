@@ -5,6 +5,7 @@ import os
 import re
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -77,7 +78,7 @@ def paged(api, path, field=None):
         items.extend(batch)
         if len(batch) < 100:
             return items
-    raise Reject('pagination limit exceeded')
+    raise RuntimeError('pagination limit exceeded; pull request discovery is incomplete')
 
 def trusted_context(api, payload, event_name):
     repo = api.get('')
@@ -114,7 +115,7 @@ def resolve(api, payload, event_name, source_workflow='', requested_number=None)
         if requested_number is None:
             commits = [item.get('sha') for item in paged(api, '/compare/%s...%s' % (before, head), 'commits') if isinstance(item, dict)]
             if not commits or commits[-1] != head or any(not sha(item) for item in commits):
-                raise Reject('invalid or incomplete push range')
+                raise RuntimeError('invalid or incomplete push range')
     elif event_name == 'workflow_run':
         signal = payload.get('workflow_run') or {}
         run_id, attempt = signal.get('id'), signal.get('run_attempt')
@@ -143,7 +144,15 @@ def resolve(api, payload, event_name, source_workflow='', requested_number=None)
     # Only selection needs to discover PRs across the full pushed commit range.
     numbers = {requested_number} if event_name == 'push' and requested_number is not None else set()
     for commit in commits:
-        for candidate in paged(api, '/commits/%s/pulls' % commit):
+        for attempt in range(3):
+            associations = paged(api, '/commits/%s/pulls' % commit)
+            if associations:
+                break
+            if attempt < 2:
+                time.sleep(1)
+        if not associations:
+            raise RuntimeError('no pull request association for commit %s after retries' % commit)
+        for candidate in associations:
             number = candidate.get('number') if isinstance(candidate, dict) else None
             if positive(number) and candidate.get('merge_commit_sha') == commit:
                 numbers.add(number)

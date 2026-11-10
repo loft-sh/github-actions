@@ -15,10 +15,10 @@ concurrency:
 
 jobs:
   claude-review:
-    # Review only same-repository pull requests before reading a secret or head.
+    # Keep the legacy event until callers migrate; review same-repository PRs only.
     if: >-
       github.repository_owner == 'loft-sh' &&
-      (github.event_name == 'pull_request' || github.event_name == format('pull_request{0}', '_target')) &&
+      (github.event_name == 'pull_request' || github.event_name == 'pull_request_target') &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 15
