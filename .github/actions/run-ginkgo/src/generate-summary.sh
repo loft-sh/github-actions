@@ -7,6 +7,10 @@ set -euo pipefail
 
 REPORT_FILE="${REPORT_FILE:-test-reports/report.json}"
 
+# Most failed tests the summary names. Callers pass the summary through env vars,
+# which Linux caps at 128 KiB each; 30 entries are about 7.5 KB.
+MAX_LISTED_FAILURES=30
+
 if [[ ! -f "$REPORT_FILE" ]]; then
   echo "::warning::JSON report not found at ${REPORT_FILE}"
   if [[ -d "$(dirname "$REPORT_FILE")" ]]; then
@@ -90,16 +94,15 @@ RUNTIME=$(echo "$STATS" | jq -r '.runtime')
   if [[ "$FAILED_COUNT" -gt 0 ]]; then
     echo ""
     echo "*Failed Tests:*"
-    # Capped: callers pass this summary through env vars, which Linux limits to 128 KiB.
-    jq -r '[.[] | (.SpecReports // [])[] | select(.State | IN("passed", "skipped", "pending") | not)] |
-      .[:30][] |
+    jq -r --argjson max "$MAX_LISTED_FAILURES" '[.[] | (.SpecReports // [])[] | select(.State | IN("passed", "skipped", "pending") | not)] |
+      .[:$max][] |
       "❌ [" + (.State | ascii_upcase) + "] [" + .LeafNodeType + "]" +
       (if .ContainerHierarchyTexts then " " + (.ContainerHierarchyTexts | join(" ")) else "" end) +
       (if .LeafNodeText != "" then " " + .LeafNodeText else "" end) +
       "\n   📍 " + .LeafNodeLocation.FileName + ":" + (.LeafNodeLocation.LineNumber | tostring)' \
       "$REPORT_FILE"
-    if [[ "$FAILED_COUNT" -gt 30 ]]; then
-      echo "…and $((FAILED_COUNT - 30)) more failed tests. See the run for the full list."
+    if [[ "$FAILED_COUNT" -gt "$MAX_LISTED_FAILURES" ]]; then
+      echo "…and $((FAILED_COUNT - MAX_LISTED_FAILURES)) more failed tests. See the run for the full list."
     fi
   fi
 
