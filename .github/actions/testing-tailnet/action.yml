@@ -33,7 +33,8 @@ runs:
         oauth-client-id: ${{ inputs.client-id }}
         audience: ${{ inputs.audience }}
         tags: tag:e2e-github-runner
-        args: --accept-routes=true --accept-dns=false --ssh=false
+        # The pinned upstream action already enables route acceptance.
+        args: --accept-dns=false --ssh=false
     - name: Verify testing tailnet
       id: verify
       shell: bash
