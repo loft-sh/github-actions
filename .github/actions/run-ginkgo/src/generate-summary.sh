@@ -90,13 +90,17 @@ RUNTIME=$(echo "$STATS" | jq -r '.runtime')
   if [[ "$FAILED_COUNT" -gt 0 ]]; then
     echo ""
     echo "*Failed Tests:*"
+    # Capped: callers pass this summary through env vars, which Linux limits to 128 KiB.
     jq -r '[.[] | (.SpecReports // [])[] | select(.State | IN("passed", "skipped", "pending") | not)] |
-      .[] |
+      .[:30][] |
       "❌ [" + (.State | ascii_upcase) + "] [" + .LeafNodeType + "]" +
       (if .ContainerHierarchyTexts then " " + (.ContainerHierarchyTexts | join(" ")) else "" end) +
       (if .LeafNodeText != "" then " " + .LeafNodeText else "" end) +
       "\n   📍 " + .LeafNodeLocation.FileName + ":" + (.LeafNodeLocation.LineNumber | tostring)' \
       "$REPORT_FILE"
+    if [[ "$FAILED_COUNT" -gt 30 ]]; then
+      echo "…and $((FAILED_COUNT - 30)) more failed tests. See the run for the full list."
+    fi
   fi
 
   echo "EOF"
