@@ -79,7 +79,10 @@ reply_refresh() {
       fi
       # Piped, not passed as an argument: a busy commit's checks exceed the
       # kernel's argument size limit, and jq then cannot start at all.
-      all="$(printf '%s\n%s' "$all" "$checks" | jq -c -s 'add')"
+      if ! all="$(printf '%s\n%s' "$all" "$checks" | jq -c -s 'add')"; then
+        echo "::warning::could not merge the checks on ${sha}; leaving reply comment ${reply_id} as is"
+        return 0
+      fi
     done < <(printf '%s\n%s\n%s\n' "$(jq -r '.sha // ""' <<< "$state")" "$own_sha" "$head_sha" | awk 'NF && !seen[$0]++')
     checks="$(reply_rows "$reply_id" "$all")"
     # The rows decide the commit, so a stale writer cannot pin an old one.
