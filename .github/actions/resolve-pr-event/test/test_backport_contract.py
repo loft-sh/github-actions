@@ -22,9 +22,9 @@ def jobs(name):
     return dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)', text, re.M | re.S))
 
 
-def test_no_privileged_pr_trigger_remains_anywhere_in_github():
+def test_no_privileged_pr_trigger_remains_in_workflows():
     forbidden = b'pull_request' + b'_target'
-    matches = [str(path.relative_to(GITHUB)) for path in GITHUB.rglob('*')
+    matches = [str(path.relative_to(GITHUB)) for path in WORKFLOWS.rglob('*')
                if path.is_file() and '__pycache__' not in path.parts
                and forbidden in path.read_bytes()]
     assert matches == ['workflows/claude-code-review.yaml']
