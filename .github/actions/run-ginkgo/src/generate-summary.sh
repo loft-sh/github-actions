@@ -7,9 +7,11 @@ set -euo pipefail
 
 REPORT_FILE="${REPORT_FILE:-test-reports/report.json}"
 
-# Most failed tests the summary names. Callers pass the summary through env vars,
-# which Linux caps at 128 KiB each; 30 entries are about 7.5 KB.
-MAX_LISTED_FAILURES=30
+# Most failed tests the summary names. Every caller posts it to Slack through
+# ci-test-notify, which cuts a message at 3000 characters, and a failed test
+# takes up to ~265 of them; 8 keeps the "more" line visible. It also keeps the
+# summary far below Linux's 128 KiB limit on one env var.
+MAX_LISTED_FAILURES=8
 
 if [[ ! -f "$REPORT_FILE" ]]; then
   echo "::warning::JSON report not found at ${REPORT_FILE}"
@@ -102,7 +104,9 @@ RUNTIME=$(echo "$STATS" | jq -r '.runtime')
       "\n   📍 " + .LeafNodeLocation.FileName + ":" + (.LeafNodeLocation.LineNumber | tostring)' \
       "$REPORT_FILE"
     if [[ "$FAILED_COUNT" -gt "$MAX_LISTED_FAILURES" ]]; then
-      echo "…and $((FAILED_COUNT - MAX_LISTED_FAILURES)) more failed tests. See the run for the full list."
+      more=$((FAILED_COUNT - MAX_LISTED_FAILURES))
+      noun="tests"; [[ "$more" -eq 1 ]] && noun="test"
+      echo "…and ${more} more failed ${noun}. See the run for the full list."
     fi
   fi
 

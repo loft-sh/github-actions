@@ -345,27 +345,35 @@ many_failures() {
   }]' > "$MOCK_DIR/report.json"
 }
 
-@test "a long failure list names the first 30 and counts the rest" {
-  many_failures 35
+@test "a long failure list names the first 8 and counts the rest" {
+  many_failures 13
   REPORT_FILE="$MOCK_DIR/report.json" run bash "$SCRIPT"
   [ "$status" -eq 0 ]
 
   local summary
   summary="$(get_summary)"
-  [[ "$summary" == *"Failed: 35"* ]]
-  [ "$(grep -c '^❌ \[FAILED\]' <<< "$summary")" -eq 30 ]
-  [[ "$summary" == *"spec 30"$'\n'* ]]
-  [[ "$summary" != *"spec 31"* ]]
+  [[ "$summary" == *"Failed: 13"* ]]
+  [ "$(grep -c '^❌ \[FAILED\]' <<< "$summary")" -eq 8 ]
+  [[ "$summary" == *"spec 8"$'\n'* ]]
+  [[ "$summary" != *"spec 9"* ]]
   [[ "$summary" == *"…and 5 more failed tests. See the run for the full list."* ]]
 }
 
-@test "a failure list of exactly 30 is shown in full" {
-  many_failures 30
+@test "one failure past the limit is counted in the singular" {
+  many_failures 9
+  REPORT_FILE="$MOCK_DIR/report.json" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+
+  [[ "$(get_summary)" == *"…and 1 more failed test. See the run for the full list."* ]]
+}
+
+@test "a failure list of exactly 8 is shown in full" {
+  many_failures 8
   REPORT_FILE="$MOCK_DIR/report.json" run bash "$SCRIPT"
   [ "$status" -eq 0 ]
 
   local summary
   summary="$(get_summary)"
-  [ "$(grep -c '^❌ \[FAILED\]' <<< "$summary")" -eq 30 ]
-  [[ "$summary" != *"more failed tests"* ]]
+  [ "$(grep -c '^❌ \[FAILED\]' <<< "$summary")" -eq 8 ]
+  [[ "$summary" != *"more failed test"* ]]
 }
