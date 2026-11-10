@@ -167,22 +167,6 @@ refresh() {
   [[ "$(body)" == *"- Pro: passed, [view the run](https://e/1)"* ]]
 }
 
-@test "a redraw works when the commit's checks are larger than one argument may be" {
-  # Linux caps a single argument at 128 KiB; a busy pull request's commit
-  # carries more check-run JSON than that.
-  seed_reply
-  seed_check 11 Pro completed success https://e/1
-  big="$(printf 'x%.0s' {1..4096})"
-  for id in $(seq 100 159); do
-    jq -c -n --argjson id "$id" --arg t "$big" \
-      '{id: $id, name: "other", status: "completed", conclusion: "success", head_sha: "abc1234def56",
-        app: {slug: "other"}, output: {text: $t}}' > "$MOCK_DIR/checkrun-$id.json"
-  done
-  run refresh
-  [ "$status" -eq 0 ]
-  [[ "$(body)" == *"- Pro: passed, [view the run](https://e/1)"* ]]
-}
-
 @test "a redraw leaves the reply alone when the checks cannot be merged" {
   seed_reply
   seed_check 11 Pro completed success https://e/1
@@ -260,6 +244,18 @@ EOF
   run refresh
   [ "$status" -eq 0 ]
   [[ "$(body)" == *"- Pro: passed, [view the run](https://e/1)"* ]]
+}
+
+@test "a redraw works when the commit's checks are too big for one command-line argument" {
+  # 1.5 MB is over Linux's 128 KiB per-argument limit and macOS's 1 MiB total.
+  seed_reply
+  seed_check 11 Pro in_progress "" https://e/1
+  jq -c -n 'range(300) | {id: (1000 + .), name: "other", status: "completed", conclusion: "success",
+    head_sha: "abc1234def56", app: {slug: "github-actions"}, output: {summary: ("x" * 5000)}}' \
+    > "$MOCK_DIR/checkrun-others.json"
+  run refresh
+  [ "$status" -eq 0 ]
+  [[ "$(body)" == *"- Pro: running, [watch the run](https://e/1)"* ]]
 }
 
 @test "a redraw leaves the reply alone when the checks cannot be listed" {

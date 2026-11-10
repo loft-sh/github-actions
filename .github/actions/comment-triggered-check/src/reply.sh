@@ -77,8 +77,9 @@ reply_refresh() {
         echo "::warning::could not list the checks on ${sha}; leaving reply comment ${reply_id} as is"
         return 0
       fi
-      # Through stdin: a busy commit's checks outgrow the 128 KiB argument limit.
-      if ! all="$(printf '%s\n%s\n' "$all" "$checks" | jq -c -s 'add')"; then
+      # Piped, not passed as an argument: a busy commit's checks exceed the
+      # kernel's argument size limit, and jq then cannot start at all.
+      if ! all="$(printf '%s\n%s' "$all" "$checks" | jq -c -s 'add')"; then
         echo "::warning::could not merge the checks on ${sha}; leaving reply comment ${reply_id} as is"
         return 0
       fi
