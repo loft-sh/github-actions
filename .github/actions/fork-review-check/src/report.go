@@ -38,6 +38,9 @@ func renderText(rc receipt) string {
 			fmt.Fprintf(&b, "  %s %s %s %q\n", verdict(c.Pass), short(c.SHA), orNone(c.Author), c.Subject)
 			if c.Pass {
 				fmt.Fprintf(&b, "       #%d approved by %s (%s) at %s\n", c.Pull.Number, c.Approval.Approver, c.Approval.Permission, c.Approval.SubmittedAt.Format("2006-01-02T15:04:05Z"))
+				if c.Approval.Exception != "" {
+					fmt.Fprintf(&b, "       author links to no GitHub account; counted under dated exception %s\n", c.Approval.Exception)
+				}
 			}
 			for _, msg := range c.Failures {
 				fmt.Fprintf(&b, "       %s\n", msg)
@@ -75,6 +78,9 @@ func renderMarkdown(rc receipt) string {
 			}
 			if c.Approval != nil {
 				approver, perm = c.Approval.Approver, c.Approval.Permission
+				if c.Approval.Exception != "" {
+					approver += fmt.Sprintf(" ([dated exception](%s))", c.Approval.Exception)
+				}
 			}
 			result := verdict(c.Pass)
 			if !c.Pass {

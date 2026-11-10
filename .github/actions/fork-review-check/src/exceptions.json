@@ -1,0 +1,22 @@
+{
+  "exceptions": [
+    {
+      "repo": "loft-sh/tailscale",
+      "commit": "5e3e0698b5c6dc0a683f3bd9bfda5b0e7b4379db",
+      "pull": 19,
+      "record": "https://github.com/loft-sh/architecture/blob/main/engineering-enablement/designs/fork-review-check.md#dated-exceptions"
+    },
+    {
+      "repo": "loft-sh/tailscale",
+      "commit": "76b6f298f1f9a23d5833a515586aff5135cd1d96",
+      "pull": 19,
+      "record": "https://github.com/loft-sh/architecture/blob/main/engineering-enablement/designs/fork-review-check.md#dated-exceptions"
+    },
+    {
+      "repo": "loft-sh/tailscale",
+      "commit": "adfee012fdc62d30ee931047982c4221648ac82f",
+      "pull": 19,
+      "record": "https://github.com/loft-sh/architecture/blob/main/engineering-enablement/designs/fork-review-check.md#dated-exceptions"
+    }
+  ]
+}
