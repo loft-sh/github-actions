@@ -167,6 +167,22 @@ refresh() {
   [[ "$(body)" == *"- Pro: passed, [view the run](https://e/1)"* ]]
 }
 
+@test "a redraw works when the commit's checks are larger than one argument may be" {
+  # Linux caps a single argument at 128 KiB; a busy pull request's commit
+  # carries more check-run JSON than that.
+  seed_reply
+  seed_check 11 Pro completed success https://e/1
+  big="$(printf 'x%.0s' {1..4096})"
+  for id in $(seq 100 159); do
+    jq -c -n --argjson id "$id" --arg t "$big" \
+      '{id: $id, name: "other", status: "completed", conclusion: "success", head_sha: "abc1234def56",
+        app: {slug: "other"}, output: {text: $t}}' > "$MOCK_DIR/checkrun-$id.json"
+  done
+  run refresh
+  [ "$status" -eq 0 ]
+  [[ "$(body)" == *"- Pro: passed, [view the run](https://e/1)"* ]]
+}
+
 @test "a redraw that changes nothing writes nothing" {
   seed_check 11 Pro in_progress "" https://e/1
   render_reply "$(state)" "[$(row 11 Pro in_progress "" https://e/1)]" https://github.com loft-sh/demo > "$MOCK_DIR/comment-555"

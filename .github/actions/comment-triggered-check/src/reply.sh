@@ -77,7 +77,8 @@ reply_refresh() {
         echo "::warning::could not list the checks on ${sha}; leaving reply comment ${reply_id} as is"
         return 0
       fi
-      all="$(jq -c --argjson more "$checks" '. + $more' <<< "$all")"
+      # Through stdin: a busy commit's checks outgrow the 128 KiB argument limit.
+      all="$(printf '%s\n%s\n' "$all" "$checks" | jq -c -s 'add')"
     done < <(printf '%s\n%s\n%s\n' "$(jq -r '.sha // ""' <<< "$state")" "$own_sha" "$head_sha" | awk 'NF && !seen[$0]++')
     checks="$(reply_rows "$reply_id" "$all")"
     # The rows decide the commit, so a stale writer cannot pin an old one.
