@@ -29,10 +29,60 @@ git_authenticated() {
   fi
 }
 
-pr_number=$(jq -er '.pull_request.number' "$GITHUB_EVENT_PATH") || fail "Event has no pull request number"
-merged=$(jq -r '.pull_request.merged // false' "$GITHUB_EVENT_PATH")
+# A pull_request event carries the PR; a push to main is resolved to the PR
+# whose merge commit it is, so both read the same fields below. The workflow
+# only sends push events; the pull_request branch serves the tests.
+if jq -e '.pull_request | type == "object"' "$GITHUB_EVENT_PATH" >/dev/null; then
+  pr_json=$(jq -c '.pull_request' "$GITHUB_EVENT_PATH")
+else
+  push_sha=$(jq -er '.after | select(type == "string" and length > 0)' "$GITHUB_EVENT_PATH") || fail "Push event has no commit SHA"
+  pr_json=""
+
+  # Squash merges name their PR; trust it only if GitHub records this push as
+  # that PR's merge commit. main requires linear history, so no merge commits.
+  subject=$(jq -r '.head_commit.message // "" | split("\n")[0]' "$GITHUB_EVENT_PATH")
+  named_pr=""
+  if [[ "$subject" =~ \(#([0-9]+)\)$ ]]; then
+    named_pr=${BASH_REMATCH[1]}
+  fi
+  # A rebased commit can name an issue or another PR, so an unreadable or
+  # mismatched name is a miss, not a failure.
+  if [[ -n "$named_pr" ]] && candidate=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$named_pr" 2>/dev/null) \
+    && jq -e --arg sha "$push_sha" '.merge_commit_sha == $sha' >/dev/null <<< "$candidate"; then
+    pr_json=$candidate
+  fi
+
+  # Rebase merges name no PR. GitHub links a fresh merge commit to its PR
+  # late, and sometimes never, so this is the fallback, not the first source.
+  if [[ -z "$pr_json" ]]; then
+    pr_number=""
+    lookup_failed=""
+    for attempt in 1 2 3; do
+      # A GitHub error is retried like a late link; only the last one fails.
+      if pulls_json=$(gh api "repos/$GITHUB_REPOSITORY/commits/$push_sha/pulls"); then
+        lookup_failed=""
+        pr_number=$(jq -r --arg sha "$push_sha" '[.[]? | select(.merge_commit_sha == $sha) | .number][0] // empty' <<< "$pulls_json") || fail "Could not parse pull requests for $push_sha"
+      else
+        lookup_failed=1
+      fi
+      [[ -z "$pr_number" && "$attempt" -lt 3 ]] || break
+      sleep "${ADVANCE_TAGS_LOOKUP_DELAY:-10}"
+    done
+    [[ -z "$lookup_failed" ]] || fail "Could not list pull requests for $push_sha"
+    # main requires pull requests, so a push with no PR is unexpected.
+    [[ -n "$pr_number" ]] || fail "No merged pull request found for $push_sha; tags were not changed. Advance them manually if this push changed an action."
+    # Export now so a failed read below still gets its failure comment.
+    [[ -z "${GITHUB_OUTPUT:-}" ]] || echo "pr-number=$pr_number" >> "$GITHUB_OUTPUT"
+    pr_number_exported=1
+    pr_json=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr_number") || fail "Could not read PR #$pr_number"
+  fi
+fi
+
+pr_number=$(jq -er '.number' <<< "$pr_json") || fail "Event has no pull request number"
+[[ -n "${pr_number_exported:-}" || -z "${GITHUB_OUTPUT:-}" ]] || echo "pr-number=$pr_number" >> "$GITHUB_OUTPUT"
+merged=$(jq -r '.merged // false' <<< "$pr_json")
 [[ "$merged" == true ]] || fail "Pull request #$pr_number is not merged"
-merge_sha=$(jq -er '.pull_request.merge_commit_sha | select(type == "string" and length > 0)' "$GITHUB_EVENT_PATH") || fail "Merged pull request has no merge commit SHA"
+merge_sha=$(jq -er '.merge_commit_sha | select(type == "string" and length > 0)' <<< "$pr_json") || fail "Merged pull request has no merge commit SHA"
 
 files_json=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/pulls/$pr_number/files") || fail "Could not list files changed by PR #$pr_number"
 if ! jq -e 'type == "array" and all(.[]; type == "array" and all(.[]; type == "object" and (.filename | type == "string" and length > 0)))' >/dev/null <<< "$files_json"; then
@@ -40,7 +90,7 @@ if ! jq -e 'type == "array" and all(.[]; type == "array" and all(.[]; type == "o
 fi
 file_count=$(jq '[.[][]] | length' <<< "$files_json") || fail "Could not parse the changed file list for PR #$pr_number"
 (( file_count < 3000 )) || fail "PR #$pr_number changed at least 3000 files; GitHub may have truncated the list, so tags were not changed"
-event_file_count=$(jq -r '.pull_request.changed_files // empty' "$GITHUB_EVENT_PATH")
+event_file_count=$(jq -r '.changed_files // empty' <<< "$pr_json")
 if [[ -n "$event_file_count" && "$event_file_count" != "$file_count" ]]; then
   fail "GitHub returned $file_count changed files for PR #$pr_number, but the event reports $event_file_count; tags were not changed"
 fi
@@ -58,7 +108,7 @@ if [[ ${#changed_actions[@]} -eq 0 ]]; then
   exit 0
 fi
 
-major_release=$(jq -r '[.pull_request.labels[]?.name] | any(. == "major-release")' "$GITHUB_EVENT_PATH")
+major_release=$(jq -r '[.labels[]?.name] | any(. == "major-release")' <<< "$pr_json")
 if [[ "$major_release" == true ]]; then
   fail "PR #$pr_number declares major-release; create a new major tag and leave existing tags unchanged"
 fi
