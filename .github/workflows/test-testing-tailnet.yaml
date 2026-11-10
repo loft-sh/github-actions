@@ -1,0 +1,20 @@
+name: Test testing tailnet
+on:
+  pull_request:
+    paths:
+      - '.github/actions/testing-tailnet/**'
+      - '.github/workflows/test-testing-tailnet.yaml'
+permissions:
+  contents: read
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Run testing tailnet tests
+        run: uv run --with pytest==8.3.3 pytest .github/actions/testing-tailnet/test/ -q

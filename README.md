@@ -7,6 +7,11 @@ are written, tested, and structured.
 
 ## Available Actions
 
+### Testing tailnet
+
+Join the testing tailnet from trusted GitHub-hosted Linux jobs using OIDC.
+See [testing-tailnet README](./.github/actions/testing-tailnet/README.md) for trust and cleanup requirements.
+
 ### GHCR tag guard
 
 Checks every version tag before publication. Existing digests and ambiguous

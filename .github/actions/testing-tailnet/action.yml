@@ -1,0 +1,42 @@
+name: Connect testing tailnet
+description: Join the testing tailnet from a trusted GitHub-hosted Linux job using OIDC
+inputs:
+  client-id:
+    description: Tailscale federated identity client ID
+    required: true
+  audience:
+    description: Tailscale generated audience for the federated identity
+    required: true
+  expected-tailnet:
+    description: Expected MagicDNS suffix of the testing tailnet
+    required: true
+outputs:
+  ipv4:
+    description: Tailscale IPv4 address of the runner
+    value: ${{ steps.verify.outputs.ipv4 }}
+  node-id:
+    description: Stable Tailscale node ID
+    value: ${{ steps.verify.outputs.node-id }}
+runs:
+  using: composite
+  steps:
+    - name: Validate trusted runner and inputs
+      shell: bash
+      run: python3 "$GITHUB_ACTION_PATH/src/preflight.py"
+      env:
+        INPUT_CLIENT_ID: ${{ inputs.client-id }}
+        INPUT_AUDIENCE: ${{ inputs.audience }}
+        INPUT_EXPECTED_TAILNET: ${{ inputs.expected-tailnet }}
+    - name: Join testing tailnet
+      uses: tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c # v4
+      with:
+        oauth-client-id: ${{ inputs.client-id }}
+        audience: ${{ inputs.audience }}
+        tags: tag:e2e-github-runner
+        args: --accept-routes=true --accept-dns=false --ssh=false
+    - name: Verify testing tailnet
+      id: verify
+      shell: bash
+      run: python3 "$GITHUB_ACTION_PATH/src/verify.py"
+      env:
+        INPUT_EXPECTED_TAILNET: ${{ inputs.expected-tailnet }}

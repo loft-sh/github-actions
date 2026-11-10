@@ -1,0 +1,38 @@
+name: Testing tailnet smoke
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Smoke run outcome
+        required: true
+        type: choice
+        options:
+          - success
+          - failure
+          - cancellation
+permissions: {}
+jobs:
+  smoke:
+    if: github.ref == 'refs/heads/main' && github.repository == 'loft-sh/github-actions'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Join testing tailnet
+        id: tailnet
+        uses: ./.github/actions/testing-tailnet
+        with:
+          client-id: ${{ vars.TS_TESTING_CLIENT_ID }}
+          audience: ${{ vars.TS_TESTING_AUDIENCE }}
+          expected-tailnet: ${{ vars.TS_TESTING_TAILNET }}
+      - name: Serve smoke marker
+        shell: bash
+        env:
+          TAILNET_IPV4: ${{ steps.tailnet.outputs.ipv4 }}
+          SMOKE_MODE: ${{ inputs.mode }}
+        run: python3 .github/actions/testing-tailnet/src/smoke.py
