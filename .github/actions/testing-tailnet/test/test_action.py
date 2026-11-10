@@ -1,5 +1,7 @@
 import importlib.util
 import json
+import re
+import shlex
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -17,6 +19,15 @@ def load(name):
 
 preflight = load("preflight")
 verify = load("verify")
+
+
+def test_join_args_do_not_repeat_upstream_route_flag():
+    action = (SRC.parent / "action.yml").read_text()
+    assert "tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c" in action
+    args = shlex.split(re.search(r"^\s+args: (.+)$", action, re.MULTILINE).group(1))
+    assert not any(arg.split("=", 1)[0].lstrip("-") == "accept-routes" for arg in args)
+    assert "--accept-dns=false" in args
+    assert "--ssh=false" in args
 
 
 @pytest.fixture
