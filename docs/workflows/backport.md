@@ -28,7 +28,7 @@ push range again.
 
 | Stage | Trigger and reads | Mutations | Output and skip remedy |
 |---|---|---|---|
-| Select | Default-branch push; all commits in its range and associated PRs from GitHub | None | One event per merged PR. A direct push skips; a later backport label signals another run. |
+| Select | Default-branch push; all commits in its range and associated PRs from GitHub | None | One event per merged PR. A commit with no PR, such as a direct push, is skipped with a warning that lists it; PRs merged in the same push still run. If a listed commit merged a PR, re-add its backport label to signal another run. |
 | Resolve | Trusted default-branch caller; PR identity, merge and current labels from GitHub | None | Canonical merged PR event. Wrong branch or unmerged PR skips; merge first and run from the default branch. |
 | Backport | Canonical event with current backport labels | Existing branch, PR and comment writes using the caller PAT | Existing cherry-pick logs and per-target failure comments. Remove an unwanted label or fix the reported conflict. |
 | Link | Both modern and legacy producers have finished | Existing advisory Linear and PR links | Existing advisory output; missing Linear token skips linking. |

@@ -13,6 +13,8 @@ import uuid
 
 MAX_BYTES = 4 * 1024 * 1024
 SHA = re.compile(r'^[0-9a-f]{40}$')
+# Seconds to wait before each retry of the commits that had no PR association.
+RETRY_DELAYS = (2, 4)
 
 class Reject(Exception):
     pass
@@ -101,7 +103,38 @@ def merged_pr(pr, number, repo, default):
             pr.get('state') == 'closed' and sha(pr.get('merge_commit_sha')) and
             same((base.get('repo') or {}).get('full_name'), repo) and base.get('ref') == default)
 
-def resolve(api, payload, event_name, source_workflow='', requested_number=None):
+def associated_numbers(api, commits):
+    """Return PRs merged by pushed commits, and the commits GitHub lists no PR for.
+
+    GitHub can list a merge commit's PR a few seconds after the push. Empty
+    lookups are retried as one batch, so the wait does not grow with the number
+    of direct commits in a push.
+    """
+    numbers, pending = set(), list(commits)
+    for delay in (0,) + RETRY_DELAYS:
+        if delay:
+            time.sleep(delay)
+        missing = []
+        for commit in pending:
+            associations = paged(api, '/commits/%s/pulls' % commit)
+            if not associations:
+                missing.append(commit)
+            for candidate in associations:
+                number = candidate.get('number') if isinstance(candidate, dict) else None
+                if positive(number) and candidate.get('merge_commit_sha') == commit:
+                    numbers.add(number)
+        pending = missing
+        if not pending:
+            break
+    return numbers, pending
+
+def unassociated_warning(commits):
+    shown = ', '.join(commits[:10]) + (', and %d more' % (len(commits) - 10) if len(commits) > 10 else '')
+    return ('No pull request is associated with %d pushed commit(s) after retries: %s. A direct push needs no backport. '
+            'If one of these commits merged a pull request, remove and re-add its backport-to- label to start the backport.'
+            % (len(commits), shown))
+
+def resolve(api, payload, event_name, source_workflow='', requested_number=None, unassociated=None):
     if not isinstance(payload, dict):
         raise Reject('invalid event')
     repo, default, ref = trusted_context(api, payload, event_name)
@@ -143,19 +176,13 @@ def resolve(api, payload, event_name, source_workflow='', requested_number=None)
     # Push restoration rechecks one selected PR and its default-branch ancestry.
     # Only selection needs to discover PRs across the full pushed commit range.
     numbers = {requested_number} if event_name == 'push' and requested_number is not None else set()
-    for commit in commits:
-        for attempt in range(3):
-            associations = paged(api, '/commits/%s/pulls' % commit)
-            if associations:
-                break
-            if attempt < 2:
-                time.sleep(1)
-        if not associations:
-            raise RuntimeError('no pull request association for commit %s after retries' % commit)
-        for candidate in associations:
-            number = candidate.get('number') if isinstance(candidate, dict) else None
-            if positive(number) and candidate.get('merge_commit_sha') == commit:
-                numbers.add(number)
+    if commits:
+        # A commit with no PR, such as a direct or bot push, must not drop the
+        # PRs merged in the same push. The caller reports it after the outputs.
+        found, missing = associated_numbers(api, commits)
+        numbers |= found
+        if unassociated is not None:
+            unassociated.extend(missing)
     if event_name == 'workflow_run':
         for candidate in candidates:
             number = candidate.get('number') if isinstance(candidate, dict) else None
@@ -246,9 +273,10 @@ def main():
             number = requested.get('number') if isinstance(requested, dict) else None
             if not positive(number):
                 raise Reject('invalid restored pull request number')
+        unassociated = []
         events = resolve(API(os.environ['INPUT_GITHUB_TOKEN'], repository), payload,
                          os.environ.get('GITHUB_EVENT_NAME', ''), os.environ.get('INPUT_SOURCE_WORKFLOW', ''),
-                         requested_number=number)
+                         requested_number=number, unassociated=unassociated)
         if restored:
             matches = [event for event in events if event['number'] == number]
             supplied_pr = requested.get('pull_request') if isinstance(requested, dict) else None
@@ -262,6 +290,8 @@ def main():
                 raise Reject('restored event does not match authoritative event')
             events = matches
         write_outputs(events)
+        if unassociated:
+            print('::warning::' + unassociated_warning(unassociated))
     except Reject as exc:
         print('::warning::' + str(exc))
         write_output_values({'eligible': 'false', 'events-json': '[]'})

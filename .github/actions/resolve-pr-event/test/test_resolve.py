@@ -306,18 +306,62 @@ def test_257_events_exceed_matrix_cap():
     with pytest.raises(RuntimeError): r.resolve(ManyPaged(), push(), 'push')
 
 
-def test_empty_commit_associations_retry_then_fail(monkeypatch):
+class DirectCommitAPI(FakeAPI):
+    """Commit B is a direct push with no PR; commit C merges PR 2."""
+    def get(self, path):
+        if path.startswith('/commits/%s/' % B):
+            self.calls.append(path)
+            return []
+        return super().get(path)
+
+def test_unassociated_commits_retry_as_one_batch_then_skip(monkeypatch):
     class EmptyAPI(FakeAPI):
         def get(self, path):
             if path.startswith('/commits/'):
                 self.calls.append(path)
                 return []
             return super().get(path)
+    sleeps = []
+    monkeypatch.setattr(r.time, 'sleep', sleeps.append)
+    api, unassociated = EmptyAPI(), []
+    assert r.resolve(api, push(), 'push', unassociated=unassociated) == []
+    assert unassociated == [B, C]
+    assert len([c for c in api.calls if c.startswith('/commits/')]) == 6
+    # One wait per retry round, not per commit.
+    assert sleeps == list(r.RETRY_DELAYS)
+
+def test_direct_commit_keeps_pr_merged_in_same_push(monkeypatch):
     monkeypatch.setattr(r.time, 'sleep', lambda _: None)
-    api = EmptyAPI()
-    with pytest.raises(RuntimeError, match='no pull request association'):
-        r.resolve(api, push(), 'push')
-    assert len([c for c in api.calls if c.startswith('/commits/')]) == 3
+    api, unassociated = DirectCommitAPI(), []
+    assert [e['number'] for e in r.resolve(api, push(), 'push', unassociated=unassociated)] == [2]
+    assert unassociated == [B]
+    # Only the unassociated commit is retried.
+    assert len([c for c in api.calls if c.startswith('/commits/%s/' % C)]) == 1
+
+def test_direct_commit_push_writes_outputs_then_warns(tmp_path, monkeypatch, capsys):
+    event_file = tmp_path / 'payload.json'; event_file.write_text(json.dumps(push()))
+    monkeypatch.setenv('GITHUB_EVENT_PATH', str(event_file))
+    monkeypatch.setenv('GITHUB_OUTPUT', str(tmp_path / 'out'))
+    monkeypatch.setenv('RUNNER_TEMP', str(tmp_path))
+    monkeypatch.setenv('GITHUB_REPOSITORY', 'org/repo')
+    monkeypatch.setenv('INPUT_GITHUB_TOKEN', 'unused')
+    monkeypatch.setenv('GITHUB_EVENT_NAME', 'push')
+    monkeypatch.delenv('INPUT_EVENT_JSON', raising=False)
+    monkeypatch.setattr(r.time, 'sleep', lambda _: None)
+    monkeypatch.setattr(r, 'API', lambda *args: DirectCommitAPI())
+    assert r.main() == 0
+    output = (tmp_path / 'out').read_text()
+    events = json.loads(output.split('events-json<<', 1)[1].split('\n')[1])
+    assert [e['number'] for e in events] == [2]
+    assert 'eligible<<' in output and '\ntrue\n' in output
+    out = capsys.readouterr().out
+    assert out.startswith('::warning::') and B in out and C not in out and 'backport-to-' in out
+
+def test_unassociated_warning_bounds_listed_commits():
+    commits = ['%040x' % n for n in range(1, 13)]
+    message = r.unassociated_warning(commits)
+    assert '12 pushed commit(s)' in message and commits[9] in message and commits[10] not in message
+    assert 'and 2 more' in message and '\n' not in message
 
 
 def test_commit_association_retry_succeeds(monkeypatch):
