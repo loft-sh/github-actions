@@ -4,13 +4,16 @@ on:
   pull_request:
     paths:
       - '.github/workflows/claude.yaml'
+      - '.github/workflows/claude.yml'
+      - '.github/workflows/test-claude.yaml'
 
 permissions: {}
 
 jobs:
   claude:
+    if: github.event.pull_request.head.repo.full_name == github.repository
     permissions:
-      contents: read
+      contents: write
       pull-requests: write
       actions: read
     uses: ./.github/workflows/claude.yaml
@@ -21,6 +24,7 @@ jobs:
     needs: [claude]
     if: always()
     runs-on: ubuntu-latest
+    permissions: {}
     steps:
       - name: Check claude result
         env:

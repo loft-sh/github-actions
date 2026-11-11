@@ -7,12 +7,42 @@ on:
         description: 'Anthropic API key for Claude Code agent'
         required: true
 
+permissions: {}
+
 jobs:
-  claude:
+  authorize:
     if: |
       (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
       (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
       (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude'))
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      allowed: ${{ steps.origin.outputs.allowed }}
+    steps:
+      - name: Verify trusted author and pull request origin
+        id: origin
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          IS_PR: ${{ github.event_name == 'pull_request_review' || github.event_name == 'pull_request_review_comment' || (github.event_name == 'issue_comment' && github.event.issue.pull_request != null) }}
+          PR_NUMBER: ${{ github.event.issue.pull_request && github.event.issue.number || github.event.pull_request.number }}
+          ASSOCIATION: ${{ github.event_name == 'pull_request_review' && github.event.review.author_association || github.event.comment.author_association }}
+        run: |
+          case "$ASSOCIATION" in
+            MEMBER|OWNER|COLLABORATOR) ;;
+            *) exit 0 ;;
+          esac
+          if [ "$IS_PR" = true ]; then
+            case "$PR_NUMBER" in ''|*[!0-9]*|0) exit 1 ;; esac
+            [ "$(gh api "repos/$REPOSITORY/pulls/$PR_NUMBER" --jq '.head.repo.full_name != null and .head.repo.full_name == .base.repo.full_name')" = true ] || exit 0
+          fi
+          echo 'allowed=true' >> "$GITHUB_OUTPUT"
+
+  claude:
+    needs: authorize
+    if: needs.authorize.outputs.allowed == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write

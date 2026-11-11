@@ -2,6 +2,7 @@
 
 ACTIONS_DIR := .github/actions
 .PHONY: test-check-action-pins
+.PHONY: test-resolve-pr-event
 WORKFLOWS_DIR := .github/workflows
 SCRIPTS_DIR := .github/scripts
 
@@ -100,6 +101,10 @@ test-retry-approved-pr-ci: ## run approved PR CI retry pytest tests
 	uv run --with pytest==8.3.3 pytest $(ACTIONS_DIR)/retry-approved-pr-ci/test/ -q
 
 test: test-check-action-pins
+test: test-resolve-pr-event
+
+test-resolve-pr-event: ## run pull request event handoff tests
+	uv run --with pytest==8.3.3 pytest $(ACTIONS_DIR)/resolve-pr-event/test/ -q
 
 test-ghcr-tag-guard: ## run GHCR publication guard tests
 	uv run --with pytest==8.3.3 pytest $(ACTIONS_DIR)/ghcr-tag-guard/test/ -q

@@ -4,14 +4,16 @@ on:
   pull_request:
     paths:
       - '.github/workflows/backport.yaml'
+      - '.github/workflows/test-backport.yaml'
 
-permissions:
-  contents: read
+permissions: {}
 
 jobs:
   backport:
     permissions:
       contents: read
+      pull-requests: read
+      actions: read
     uses: ./.github/workflows/backport.yaml
     secrets:
       # GITHUB_TOKEN is sufficient here because the test expects skipped.
@@ -22,6 +24,7 @@ jobs:
     needs: [backport]
     if: always()
     runs-on: ubuntu-latest
+    permissions: {}
     steps:
       - name: Check backport result
         env:

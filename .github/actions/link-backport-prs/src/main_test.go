@@ -360,8 +360,8 @@ func TestWorkflowRunsLinkerAfterAllProducers(t *testing.T) {
 		t.Fatal("link-backports job is missing")
 	}
 	linkJob := workflow[linkStart:]
-	if !strings.Contains(linkJob, "needs: [backport, legacy-backport]") {
-		t.Fatal("link-backports must wait for modern and legacy producers")
+	if !strings.Contains(linkJob, "needs: [resolve-event, backport, legacy-backport]") {
+		t.Fatal("link-backports must wait for validated event and modern and legacy producers")
 	}
 	if !strings.Contains(linkJob, "/link-backport-prs@") {
 		t.Fatal("link-backports job does not invoke link-backport-prs")

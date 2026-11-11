@@ -1,6 +1,6 @@
 # Claude
 
-Runs the Claude Code agent on pull request comment triggers.
+Runs the Claude Code agent for trusted member, owner, or collaborator mentions. Pull request mentions run only when the head and base repositories match. Mentions on fork pull requests are skipped before the agent receives its secret.
 
 ## Inputs
 

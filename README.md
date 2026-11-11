@@ -12,6 +12,18 @@ are written, tested, and structured.
 Join the testing tailnet from trusted GitHub-hosted Linux jobs using OIDC.
 See [testing-tailnet README](./.github/actions/testing-tailnet/README.md) for trust and cleanup requirements.
 
+### Resolve merged pull requests
+
+Finds merged PRs from every commit in a trusted default-branch push and reads
+current labels from GitHub before a backport runs. A read-only PR signal and a
+trusted default-branch consumer support labels added after merge. It reads no PR artifact and
+checks out no PR code.
+
+**Location:** `.github/actions/resolve-pr-event`
+
+See [resolve-pr-event](./.github/actions/resolve-pr-event/README.md) for the caller
+pattern, permissions, inputs, and outputs.
+
 ### GHCR tag guard
 
 Checks every version tag before publication. Existing digests and ambiguous
