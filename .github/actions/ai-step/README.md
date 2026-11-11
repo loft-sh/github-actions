@@ -294,3 +294,12 @@ make test-ai-step
 ```
 
 Runs the bats suite in `test/` against `src/resolve-config.sh`.
+
+### Refresh a GitHub MCP credential without a session
+
+Use `loft-sh/github-actions/.github/actions/ai-step/refresh@ai-step/v1` with
+`vault-id`, `github-app-id`, `github-app-installation-id`,
+`github-app-private-key`, and `github-app-repository`. The caller must supply
+Anthropic workload identity federation environment variables and an identity
+token. This renews the vault bearer once and starts no agent session. Failure
+fails the step without printing API error details.
