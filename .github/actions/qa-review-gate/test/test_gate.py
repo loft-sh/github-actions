@@ -25,6 +25,12 @@ def review_event(login="loft-bot", body=None, head=HEAD):
     }
 
 
+def backport_pr(login="loft-bot", ref="backport/release-5.0/pr-9204"):
+    return {"number": 9444, "user": {"login": login}, "head": {"sha": HEAD, "ref": ref},
+            "title": "[release-5.0] test(e2e): wait for the argocd app",
+            "html_url": "https://github.com/o/r/pull/9444"}
+
+
 def comment_event(body, login="sowmyav27", association="MEMBER", on_pr=True):
     return {
         "issue": {"number": 1, **({"pull_request": {"url": "x"}} if on_pr else {})},
@@ -116,6 +122,41 @@ def test_command_must_open_the_first_line():
 
 def test_comment_on_an_issue_is_ignored():
     assert "skip" in gate.decide_comment(comment_event("/qa-review human", on_pr=False), set(), "qa-review")
+
+
+def test_backport_by_the_bot_gets_both_checks_green():
+    decision = gate.decide_backport({"pull_request": backport_pr()}, "loft-bot", "qa-review")
+    names = [(c["name"], c["conclusion"], c["head_sha"]) for c in decision["checks"]]
+    assert names == [("qa-review", "success", HEAD), ("qa-review-ci", "success", HEAD)]
+    assert decision["request_qa_review"] is False and decision["pr_number"] == 9444
+
+
+@pytest.mark.parametrize("pr", [backport_pr(login="roehrijn"), backport_pr(ref="fix/thing")])
+def test_backport_needs_the_bot_author_and_the_backport_branch(pr):
+    assert "skip" in gate.decide_backport({"pull_request": pr}, "loft-bot", "qa-review")
+
+
+def test_panel_block_on_a_backport_is_ignored():
+    event = review_event(body=marker("block"))
+    event["pull_request"] = backport_pr()
+    decision = gate.decide_review(event, "loft-bot", "qa-review")
+    assert [c["conclusion"] for c in decision["checks"]] == ["success", "success"]
+
+
+def test_ci_skips_an_automated_backport(monkeypatch):
+    monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None: backport_pr())
+    run = {"pull_requests": [{"number": 9444}], "conclusion": "success"}
+    decision = gate.collect_ci({"workflow_run": run}, "loft-sh/loft-enterprise", "tok", "qa-review")
+    assert decision == {"skip": "automated backport, CI spec check skipped"}
+
+
+def test_apply_posts_every_check_in_the_decision(monkeypatch):
+    calls = []
+    monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None: calls.append((args, payload)) or {})
+    decision = gate.decide_backport({"pull_request": backport_pr()}, "loft-bot", "qa-review")
+    gate.apply(decision, "loft-sh/loft-enterprise", "tok", "loft-sh/eng-qa", "https://run")
+    assert [p["name"] for a, p in calls] == ["qa-review", "qa-review-ci"]
+    assert all(p["head_sha"] == HEAD and p["conclusion"] == "success" for a, p in calls)
 
 
 def test_apply_posts_check_run_and_requests_team(monkeypatch):

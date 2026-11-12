@@ -21,6 +21,12 @@ whose body ends with one marker line:
 A marker whose `head` is not the PR's current head is ignored, so an old review
 never grades a new push.
 
+An automated backport (a PR the panel login opened from a `backport/` branch) was
+reviewed on main. On its `pull_request` events (mode `backport`) both check-runs
+complete as success at once, a panel review on it is ignored, and the `ci` mode
+skips it, so the repo's auto-approve workflow can approve it without waiting on
+the panel.
+
 Comments on the PR:
 
 - `/qa-review override <reason>` from a login in `qa-logins` completes the
@@ -49,7 +55,7 @@ permissions:
 steps:
   - uses: loft-sh/github-actions/.github/actions/qa-review-gate@qa-review-gate/v1
     with:
-      mode: ${{ github.event_name == 'pull_request_review' && 'review' || github.event_name == 'workflow_run' && 'ci' || 'comment' }}
+      mode: ${{ github.event_name == 'pull_request_review' && 'review' || github.event_name == 'workflow_run' && 'ci' || github.event_name == 'pull_request' && 'backport' || 'comment' }}
       qa-logins: 'adriankabala,sowmyav27,anvesh-loft'
 ```
 

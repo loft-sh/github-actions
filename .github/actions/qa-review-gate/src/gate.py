@@ -12,6 +12,10 @@ Two event shapes, both read from GITHUB_EVENT_PATH:
 - workflow_run (completed) of the e2e workflow: every `It(` the PR adds is looked up in the
   Ginkgo JSON report the run uploaded. A new spec that did not run, or did not pass, turns the
   `<check>-ci` check-run red. The panel's verdict check-run is never touched.
+- pull_request (opened, synchronize, ...) of an automated backport: a PR the panel bot opened
+  from a `backport/` branch was reviewed on main already. Both check-runs complete as success
+  at once and the other modes ignore the PR, so the repo's auto-approve workflow can approve
+  it without waiting on the panel.
 
 Every decision is a plain dict so the tests never touch the network; `apply` is the only
 function that calls `gh`.
@@ -35,6 +39,7 @@ CLASS_WORDS = {"a": "need a test", "b": "weak test", "c": "no test", "d": "produ
 MEMBER_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
 ADDED_SPEC = re.compile(r'^\+[^+].*\b[FPX]?(?:It|Specify)\(\s*"((?:[^"\\]|\\.)+)"')
 REPORT_ARTIFACT = "ginkgo-report"
+BACKPORT_BRANCH = "backport/"
 
 
 class GateError(Exception):
@@ -63,17 +68,45 @@ def class_summary(classes):
     return ", ".join(parts) if parts else "no blocking classes"
 
 
+def is_backport(pr, bot_login):
+    """An automated backport: opened by the bot from a backport/ branch."""
+    return ((pr.get("user") or {}).get("login") == bot_login
+            and ((pr.get("head") or {}).get("ref") or "").startswith(BACKPORT_BRANCH))
+
+
+def backport_checks(pr, check_name):
+    head = (pr.get("head") or {}).get("sha", "")
+    summary = ("Automated backport: the original PR was reviewed on main, so the QA review is "
+               f"skipped here.\n\nPR: {pr.get('html_url', '')}")
+    return [{"name": check_name, "head_sha": head, "conclusion": "success",
+             "title": "QA review: automated backport, skipped", "summary": summary},
+            {"name": f"{check_name}-ci", "head_sha": head, "conclusion": "success",
+             "title": "QA review: automated backport, CI spec check skipped", "summary": summary}]
+
+
+def decide_backport(event, bot_login, check_name):
+    """Map a pull_request event to the two green check-runs, or to a skip."""
+    pr = event.get("pull_request") or {}
+    if not is_backport(pr, bot_login):
+        return {"skip": f"PR by {(pr.get('user') or {}).get('login') or 'unknown'} is not an automated backport"}
+    return {"checks": backport_checks(pr, check_name), "request_qa_review": False,
+            "pr_number": pr.get("number")}
+
+
 def decide_review(event, panel_login, check_name):
     """Map a submitted review to a check-run request, or to a skip with a reason."""
     review = event.get("review") or {}
     author = (review.get("user") or {}).get("login", "")
     if author != panel_login:
         return {"skip": f"review by {author or 'unknown'}, not the panel ({panel_login})"}
+    pr = event.get("pull_request") or {}
+    if is_backport(pr, panel_login):
+        return {"checks": backport_checks(pr, check_name), "request_qa_review": False,
+                "pr_number": pr.get("number")}
     parsed = parse_marker(review.get("body"))
     if parsed is None:
         return {"skip": "panel review carries no qa-review marker"}
     verdict, classes, head = parsed
-    pr = event.get("pull_request") or {}
     current = (pr.get("head") or {}).get("sha", "")
     if head != current:
         return {"skip": f"marker is for {head[:7]}, PR head is {current[:7] or 'unknown'}"}
@@ -197,13 +230,15 @@ def gh(args, token, **kwargs):
     return result.stdout
 
 
-def collect_ci(event, repo, token, check_name):
+def collect_ci(event, repo, token, check_name, panel_login="loft-bot"):
     """Fetch the diff and the Ginkgo report for a finished e2e run, then decide."""
     run = event.get("workflow_run") or {}
     prs = run.get("pull_requests") or []
     if not prs:
         return {"skip": "e2e run is not for a pull request"}
     pr_number = prs[0]["number"]
+    if is_backport(gh_api([f"repos/{repo}/pulls/{pr_number}"], token), panel_login):
+        return {"skip": "automated backport, CI spec check skipped"}
     diff = gh(["pr", "diff", str(pr_number), "-R", repo], token)
     added = added_specs(diff)
     if not added:
@@ -235,17 +270,18 @@ def gh_api(args, token, payload=None):
 
 
 def apply(decision, repo, token, qa_team, run_url):
-    """Create the check-run and, when asked, request the QA team's review."""
-    check = decision["check"]
-    head = check["head_sha"]
+    """Create the check-run(s) and, when asked, request the QA team's review."""
+    checks = decision.get("checks") or [decision["check"]]
+    head = checks[0]["head_sha"]
     if head is None:
         pr = gh_api([f"repos/{repo}/pulls/{decision['pr_number']}"], token)
         head = pr["head"]["sha"]
-    gh_api([f"repos/{repo}/check-runs", "-X", "POST"], token, {
-        "name": check["name"], "head_sha": head, "status": "completed",
-        "conclusion": check["conclusion"], "details_url": run_url,
-        "output": {"title": check["title"], "summary": check["summary"]},
-    })
+    for check in checks:
+        gh_api([f"repos/{repo}/check-runs", "-X", "POST"], token, {
+            "name": check["name"], "head_sha": head, "status": "completed",
+            "conclusion": check["conclusion"], "details_url": run_url,
+            "output": {"title": check["title"], "summary": check["summary"]},
+        })
     if decision["request_qa_review"] and qa_team:
         org, _, slug = qa_team.partition("/")
         gh_api([f"repos/{repo}/pulls/{decision['pr_number']}/requested_reviewers", "-X", "POST"],
@@ -256,24 +292,28 @@ def apply(decision, repo, token, qa_team, run_url):
 def main():
     mode = os.environ.get("INPUT_MODE", "")
     check_name = os.environ.get("INPUT_CHECK_NAME", "qa-review")
+    panel_login = os.environ.get("INPUT_PANEL_LOGIN", "loft-bot")
     with open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8") as fh:
         event = json.load(fh)
     if mode == "review":
-        decision = decide_review(event, os.environ.get("INPUT_PANEL_LOGIN", "loft-bot"), check_name)
+        decision = decide_review(event, panel_login, check_name)
     elif mode == "comment":
         logins = {s.strip() for s in os.environ.get("INPUT_QA_LOGINS", "").split(",") if s.strip()}
         decision = decide_comment(event, logins, check_name)
     elif mode == "ci":
         decision = collect_ci(event, os.environ["GITHUB_REPOSITORY"],
-                              os.environ["INPUT_GITHUB_TOKEN"], check_name)
+                              os.environ["INPUT_GITHUB_TOKEN"], check_name, panel_login)
+    elif mode == "backport":
+        decision = decide_backport(event, panel_login, check_name)
     else:
-        raise GateError(f"INPUT_MODE must be review, comment or ci, got {mode!r}")
+        raise GateError(f"INPUT_MODE must be review, comment, ci or backport, got {mode!r}")
     if "skip" in decision:
         print(f"::notice::qa-review-gate: {decision['skip']}")
         return 0
     head = apply(decision, os.environ["GITHUB_REPOSITORY"], os.environ["INPUT_GITHUB_TOKEN"],
                  os.environ.get("INPUT_QA_TEAM", ""), os.environ.get("INPUT_RUN_URL", ""))
-    print(f"qa-review-gate: {check_name} -> {decision['check']['conclusion']} on {head[:7]}")
+    for check in decision.get("checks") or [decision["check"]]:
+        print(f"qa-review-gate: {check['name']} -> {check['conclusion']} on {head[:7]}")
     return 0
 
 

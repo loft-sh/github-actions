@@ -2,8 +2,9 @@ name: QA review gate
 
 # Wraps the qa-review-gate composite action for the production repos: picks the
 # mode from the event, sparse-checks-out the action, and publishes the qa-review
-# check-run (and qa-review-ci after an e2e run). The caller filters the events (the panel's login, the /qa-review
-# command) in its job `if:` so most reviews and comments spin no runner.
+# check-run (and qa-review-ci after an e2e run; both green at once on an automated
+# backport). The caller filters the events (the panel's login, the /qa-review
+# command, the backport branch) in its job `if:` so most events spin no runner.
 
 on:
   workflow_call:
@@ -42,7 +43,7 @@ jobs:
           sparse-checkout: .github/actions/qa-review-gate
       - uses: ./.github/actions/qa-review-gate
         with:
-          mode: ${{ github.event_name == 'pull_request_review' && 'review' || github.event_name == 'workflow_run' && 'ci' || 'comment' }}
+          mode: ${{ github.event_name == 'pull_request_review' && 'review' || github.event_name == 'workflow_run' && 'ci' || github.event_name == 'pull_request' && 'backport' || 'comment' }}
           qa-logins: ${{ inputs.qa-logins }}
           panel-login: ${{ inputs.panel-login }}
           qa-team: ${{ inputs.qa-team }}
