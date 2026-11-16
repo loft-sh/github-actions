@@ -1251,7 +1251,9 @@ jobs:
 - `scanner-error`: `true` if the scan couldn't complete — distinct both from finding CVEs and from a setup error, which fails the job
 - `report-path`, `sarif-path` (written by the scanner), `summary` (Slack-ready text)
 
-See [cve-scan README](./.github/actions/cve-scan/README.md) for suppressing findings via `.snyk`, the scanner-adapter exit-code contract, how to resolve the image tag per repo, and the SARIF upload example.
+Set `source-path: go.mod` instead of `image-ref` to scan a library that ships no image.
+
+See [cve-scan README](./.github/actions/cve-scan/README.md) for source mode, suppressing findings via `.snyk`, the scanner-adapter exit-code contract, how to resolve the image tag per repo, and the SARIF upload example.
 
 ### Scheduled CVE Scan
 
