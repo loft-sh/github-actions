@@ -11,6 +11,9 @@ outputs:
   report-file:
     description: 'Path to a Markdown report listing the markers. Written only when found is "true".'
     value: ${{ steps.scan.outputs.report-file }}
+  report:
+    description: 'The same Markdown report as text, for a comment body. Set only when found is "true".'
+    value: ${{ steps.scan.outputs.report }}
 runs:
   using: composite
   steps:

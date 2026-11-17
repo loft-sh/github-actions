@@ -29,16 +29,25 @@ jobs:
         id: conflicts
         uses: loft-sh/github-actions/.github/actions/conflict-check@conflict-check/v1 # zizmor: ignore[unpinned-uses] -- internal loft-sh/github-actions ref; reusable workflows check out the CALLER repo, so a local ./.github/actions path is not present here. This workflow and the action move together with the conflict-check/v1 tag.
 
-      - name: Comment on PR
+      # The PAT's own login: sticky-pr-comment only updates a comment with
+      # this author and the conflict-check marker, so it never touches another
+      # bot's comment the way editing the last comment did.
+      - name: Resolve the comment author
+        id: author
         if: steps.conflicts.outputs.found == 'true' && github.event.pull_request.number
         env:
           GH_TOKEN: ${{ secrets.gh-access-token }} # zizmor: ignore[secrets-outside-env] -- PAT passed via workflow_call, not a repo secret
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          REPORT_FILE: ${{ steps.conflicts.outputs.report-file }}
-        run: |
-          # Update existing comment or create new one
-          gh pr comment "$PR_NUMBER" --body-file "$REPORT_FILE" --edit-last --create-if-none 2>/dev/null || \
-            gh pr comment "$PR_NUMBER" --body-file "$REPORT_FILE"
+        run: echo "login=$(gh api user --jq .login)" >> "$GITHUB_OUTPUT"
+
+      - name: Comment on PR
+        if: steps.conflicts.outputs.found == 'true' && github.event.pull_request.number
+        uses: loft-sh/github-actions/.github/actions/sticky-pr-comment@sticky-pr-comment/v1 # zizmor: ignore[unpinned-uses] -- internal loft-sh/github-actions ref; reusable workflows check out the CALLER repo, so a local ./.github/actions path is not present here. sticky-pr-comment carries its own independent @sticky-pr-comment/v1 tag.
+        with:
+          marker: '<!-- conflict-check -->'
+          body: ${{ steps.conflicts.outputs.report }}
+          pr-number: ${{ github.event.pull_request.number }}
+          github-token: ${{ secrets.gh-access-token }} # zizmor: ignore[secrets-outside-env] -- PAT passed via workflow_call, not a repo secret
+          expected-author: ${{ steps.author.outputs.login }}
 
       - name: Fail if conflicts found
         if: steps.conflicts.outputs.found == 'true'
