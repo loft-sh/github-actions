@@ -1,0 +1,48 @@
+name: Release notes
+description: |
+  Write the GitHub release body for an OSS subtree that a monorepo publishes
+  as its own repository. Lists the first-parent commits since the previous
+  tag that touch the subtree, with no refs into the monorepo. Fails the step
+  when the notes cannot be written, so run it before anything is published.
+inputs:
+  version:
+    description: 'Release tag. Must exist in the checkout.'
+    required: true
+  previous-tag:
+    description: 'Tag to compare against. Leave empty to derive it: a stable tag (no prerelease part, or -patch / -patch.N) compares with the highest earlier stable tag on any branch, a pre-release with the nearest earlier v* tag that is not a -next tag. A tag on the release commit itself is the base only when no other tag is left.'
+    required: false
+    default: ''
+  subtree-prefix:
+    description: 'Path of the OSS subtree in the monorepo, as oss-commit-sync takes it, e.g. staging/github.com/loft-sh/vcluster. Must be a directory below the repository root at the release tag.'
+    required: true
+  repository:
+    description: 'Monorepo owner/name. Refs to it are dropped from the body. The checkout must be this repository with full history and tags.'
+    required: true
+  oss-repository:
+    description: 'OSS repository owner/name, for links to the OSS commits that commits imported from it replay.'
+    required: true
+
+outputs:
+  notes-file:
+    description: 'Path of the OSS release body, a new file on each run.'
+    value: ${{ steps.notes.outputs.notes-file }}
+  previous-tag:
+    description: 'Tag the release was compared against.'
+    value: ${{ steps.notes.outputs.previous-tag }}
+  count:
+    description: 'Number of changes the body lists.'
+    value: ${{ steps.notes.outputs.count }}
+
+runs:
+  using: composite
+  steps:
+    - name: Write release notes
+      id: notes
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+        PREVIOUS_TAG: ${{ inputs.previous-tag }}
+        SUBTREE_PREFIX: ${{ inputs.subtree-prefix }}
+        REPOSITORY: ${{ inputs.repository }}
+        OSS_REPOSITORY: ${{ inputs.oss-repository }}
+      run: python3 "${{ github.action_path }}/src/notes.py"
