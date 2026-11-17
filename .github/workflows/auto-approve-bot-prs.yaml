@@ -50,7 +50,7 @@ jobs:
   auto-approve:
     runs-on: ubuntu-latest
     # Skip fork PRs — secrets are not available.
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name != 'workflow_run' && github.event.pull_request.head.repo.full_name == github.repository
     # checks/statuses are what the CI poll reads via GITHUB_TOKEN. These lines
     # alone are NOT enough: "the GITHUB_TOKEN permissions passed from the caller
     # workflow can be only downgraded (not elevated) by the called workflow", and
@@ -89,3 +89,31 @@ jobs:
           # Empty when the caller does not set it, which falls back to
           # github.token inside the composite.
           ci-read-token: ${{ secrets.ci-read-token }} # zizmor: ignore[secrets-outside-env] -- optional token passed via workflow_call
+
+  approve-completed-backport:
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      startsWith(github.event.workflow_run.head_branch, 'backport/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      checks: read
+      statuses: read
+    continue-on-error: true
+    steps:
+      # Always trusted shared code, never code or artifacts from the completed PR.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: loft-sh/github-actions
+          ref: main
+          persist-credentials: false
+          sparse-checkout: .github/actions/auto-approve-bot-prs
+      - uses: ./.github/actions/auto-approve-bot-prs/completion
+        with:
+          github-token: ${{ secrets.gh-access-token }} # zizmor: ignore[secrets-outside-env] -- existing caller credential
+          ci-read-token: ${{ secrets.ci-read-token || github.token }} # zizmor: ignore[secrets-outside-env] -- read identity is separate from approval
+          trusted-authors: ${{ inputs.trusted-authors }}
+          skip-labels: ${{ inputs.skip-labels }}

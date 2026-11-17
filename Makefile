@@ -168,6 +168,7 @@ test-advance-action-tags: ## run action tag advancement bats tests
 
 test-auto-approve-bot-prs: ## run auto-approve-bot-prs bats tests
 	bats $(ACTIONS_DIR)/auto-approve-bot-prs/test/*.bats
+	python3 -m unittest discover -s $(ACTIONS_DIR)/auto-approve-bot-prs/test -p 'test_*.py'
 
 test-ai-pr-review: ## run ai-pr-review bats tests
 	bats $(ACTIONS_DIR)/ai-pr-review/test/*.bats

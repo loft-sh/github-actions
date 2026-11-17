@@ -6,6 +6,7 @@ on:
       - '.github/workflows/auto-approve-bot-prs.yaml'
       - '.github/actions/auto-approve-bot-prs/**'
       - '.github/workflows/test-auto-approve-bot-prs.yaml'
+      - 'Makefile'
 
 permissions:
   contents: read
@@ -26,6 +27,8 @@ jobs:
           file-install: false
       - name: Run auto-approve-bot-prs tests
         run: bats .github/actions/auto-approve-bot-prs/test/*.bats
+      - name: Run completion policy tests
+        run: python3 -m unittest discover -s .github/actions/auto-approve-bot-prs/test -p 'test_*.py'
 
   # Smoke test the composite action on the PR branch (the reusable workflow
   # pins ref: main, which wouldn't yet contain the composite during this
