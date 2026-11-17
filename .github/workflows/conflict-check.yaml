@@ -4,7 +4,7 @@ on:
   workflow_call:
     secrets:
       gh-access-token:
-        description: 'GitHub PAT for commenting on PRs'
+        description: 'GitHub PAT for commenting on PRs. Must be a user token: the comment author is read from /user, which an App installation token or GITHUB_TOKEN cannot call.'
         required: true
 
 concurrency:
@@ -37,7 +37,10 @@ jobs:
         if: steps.conflicts.outputs.found == 'true' && github.event.pull_request.number
         env:
           GH_TOKEN: ${{ secrets.gh-access-token }} # zizmor: ignore[secrets-outside-env] -- PAT passed via workflow_call, not a repo secret
-        run: echo "login=$(gh api user --jq .login)" >> "$GITHUB_OUTPUT"
+        # Assigned first, so a failed lookup stops this step with gh's own error.
+        run: |
+          login=$(gh api user --jq .login)
+          echo "login=$login" >> "$GITHUB_OUTPUT"
 
       - name: Comment on PR
         if: steps.conflicts.outputs.found == 'true' && github.event.pull_request.number

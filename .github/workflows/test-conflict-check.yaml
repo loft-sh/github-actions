@@ -56,11 +56,13 @@ jobs:
           CLEAN_FOUND: ${{ steps.clean.outputs.found }}
           MARKERS_FOUND: ${{ steps.markers.outputs.found }}
           REPORT_FILE: ${{ steps.markers.outputs.report-file }}
+          REPORT: ${{ steps.markers.outputs.report }}
         run: |
           echo "clean found=$CLEAN_FOUND markers found=$MARKERS_FOUND"
           [[ "$CLEAN_FOUND" == "false" ]]
           [[ "$MARKERS_FOUND" == "true" ]]
           grep -q '^Dockerfile.smoke:1:<<<<<<< HEAD$' "$REPORT_FILE"
+          grep -qx 'Dockerfile.smoke:1:<<<<<<< HEAD' <<<"$REPORT"
 
   conflict-check:
     permissions:
