@@ -23,6 +23,10 @@ const checklistTitleSuffix = "Post Release Activities"
 // announceRemedy is what a person does when the task could not be started.
 const announceRemedy = "move the announce task to In Progress by hand to post the announcement"
 
+// missingTaskRemedy is what a person does when no announce task matched.
+const missingTaskRemedy = "check that the release's \"" + checklistTitleSuffix + "\" checklist exists with an \"" +
+	announceTaskTitlePrefix + "\" task, then move that task to In Progress by hand to post the announcement"
+
 // releasePipelineByRepo maps a repository to the Linear release pipeline its
 // tags ship. Repositories not listed here have no customer announcement.
 var releasePipelineByRepo = map[string]string{
@@ -85,7 +89,7 @@ func (l *LinearClient) StartAnnounceTask(ctx context.Context, repo, releaseTag s
 		l.startTask(ctx, logger.With("task", task.Identifier), task, dryRun)
 	}
 	if !found {
-		logger.Warn("No announce task found under the release checklist", "remedy", announceRemedy)
+		logger.Warn("No announce task found under the release checklist", "remedy", missingTaskRemedy)
 	}
 }
 

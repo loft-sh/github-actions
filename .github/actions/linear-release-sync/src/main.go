@@ -19,6 +19,12 @@ import (
 	"golang.org/x/oauth2"
 )
 
+// The API endpoints, variables so tests can point them at fakes.
+var (
+	githubGraphQLURL = "https://api.github.com/graphql"
+	linearGraphQLURL = "https://api.linear.app/graphql"
+)
+
 var (
 	ErrMissingGitHubToken = errors.New("github token must be set")
 	ErrMissingLinearToken = errors.New("linear token must be set")
@@ -111,7 +117,23 @@ func run(
 		},
 	))
 
-	gqlClient := githubv4.NewClient(httpClient)
+	gqlClient := githubv4.NewEnterpriseClient(githubGraphQLURL, httpClient)
+
+	currentRelease, err := releases.FetchReleaseByTag(ctx, gqlClient, *owner, *repo, *releaseTag)
+	if err != nil {
+		return fmt.Errorf("fetch release by tag: %w", err)
+	}
+
+	if currentRelease.TagName != *releaseTag {
+		return fmt.Errorf("release not found: %s", *releaseTag)
+	}
+
+	linearClient := NewLinearClient(ctx, *linearToken, logger)
+
+	// Start the customer announcement for a stable patch release once the
+	// release is confirmed. Deferred so it runs on every exit below, even when
+	// the issue sync fails; it never fails the sync itself.
+	defer linearClient.StartAnnounceTask(ctx, *repo, currentRelease.TagName, *dryRun)
 
 	var stableTag string
 
@@ -141,22 +163,12 @@ func run(
 
 	logger.Info("Last stable release", "stableTag", stableTag)
 
-	currentRelease, err := releases.FetchReleaseByTag(ctx, gqlClient, *owner, *repo, *releaseTag)
-	if err != nil {
-		return fmt.Errorf("fetch release by tag: %w", err)
-	}
-
-	if currentRelease.TagName != *releaseTag {
-		return fmt.Errorf("release not found: %s", *releaseTag)
-	}
-
 	prs, err := pullrequests.FetchAllPRsBetween(ctx, gqlClient, *owner, *repo, stableTag, *releaseTag)
 	if err != nil {
 		return fmt.Errorf("fetch all PRs until: %w", err)
 	}
 
-	// Create Linear client and fetch valid team keys early to filter false positive issue IDs
-	linearClient := NewLinearClient(ctx, *linearToken, logger)
+	// Fetch valid team keys early to filter false positive issue IDs
 	teams, err := linearClient.ListTeams(ctx)
 	if err != nil {
 		return fmt.Errorf("fetch linear teams: %w", err)
@@ -228,11 +240,6 @@ func run(
 	})
 
 	logger.Info("Linear sync completed", "processed", len(releasedIssues), "released", syncer.released, "skipped", syncer.skipped, "failed", failedCount)
-
-	// Start the customer announcement for a stable patch release. It runs even
-	// when an issue above failed, and it never fails the sync itself.
-	linearClient.StartAnnounceTask(ctx, *repo, currentRelease.TagName, *dryRun)
-
 	return syncErr
 }
 

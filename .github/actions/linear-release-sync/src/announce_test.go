@@ -18,6 +18,7 @@ import (
 type fakeTask struct {
 	id          string
 	parentTitle string
+	noParent    bool
 	stateType   string
 }
 
@@ -28,8 +29,11 @@ type fakeAnnounceLinear struct {
 	tasks      []fakeTask
 	pageSize   int
 	failSearch bool
-	searches   []map[string]any
-	updates    []map[string]any
+	failStates bool
+	// updateResult is "" for success, "error" or "unsuccessful".
+	updateResult string
+	searches     []map[string]any
+	updates      []map[string]any
 }
 
 func (f *fakeAnnounceLinear) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -48,8 +52,19 @@ func (f *fakeAnnounceLinear) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case strings.Contains(req.Query, "issueUpdate"):
 		f.updates = append(f.updates, req.Variables)
-		_, _ = fmt.Fprint(w, `{"data":{"issueUpdate":{"success":true}}}`)
+		switch f.updateResult {
+		case "error":
+			_, _ = fmt.Fprint(w, `{"errors":[{"message":"Entity not found: Issue"}],"data":null}`)
+		case "unsuccessful":
+			_, _ = fmt.Fprint(w, `{"data":{"issueUpdate":{"success":false}}}`)
+		default:
+			_, _ = fmt.Fprint(w, `{"data":{"issueUpdate":{"success":true}}}`)
+		}
 	case strings.Contains(req.Query, "workflowStates"):
+		if f.failStates {
+			_, _ = fmt.Fprint(w, `{"errors":[{"message":"rate limited"}],"data":null}`)
+			return
+		}
 		_, _ = fmt.Fprint(w, `{"data":{"workflowStates":{"nodes":[`+
 			`{"id":"in-review","position":3},`+
 			`{"id":"in-progress","position":2}]}}}`)
@@ -69,12 +84,16 @@ func (f *fakeAnnounceLinear) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		nodes := []map[string]any{}
 		for _, task := range f.tasks[start:end] {
+			var parent any = map[string]string{"title": task.parentTitle}
+			if task.noParent {
+				parent = nil
+			}
 			nodes = append(nodes, map[string]any{
 				"id":         "uuid-" + task.id,
 				"identifier": task.id,
 				"state":      map[string]string{"type": task.stateType},
 				"team":       map[string]string{"id": "team-eng"},
-				"parent":     map[string]string{"title": task.parentTitle},
+				"parent":     parent,
 			})
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"issues": map[string]any{
@@ -264,5 +283,108 @@ func TestStartAnnounceTaskReadsEveryPage(t *testing.T) {
 	}
 	if len(fake.updates) != 1 || fake.updates[0]["issueID"] != "uuid-ENG-2" {
 		t.Errorf("updates = %v, want only uuid-ENG-2", fake.updates)
+	}
+}
+
+func TestStartAnnounceTaskWarnsWhenTheMoveFails(t *testing.T) {
+	testCases := []struct {
+		name string
+		fake *fakeAnnounceLinear
+		want string
+	}{
+		{"started state lookup fails", &fakeAnnounceLinear{failStates: true}, "Cannot find a started state"},
+		{"update fails", &fakeAnnounceLinear{updateResult: "error"}, "Cannot start the announce task"},
+		{"update unsuccessful", &fakeAnnounceLinear{updateResult: "unsuccessful"}, "Cannot start the announce task"},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.fake.tasks = []fakeTask{{id: "ENG-1", parentTitle: platformChecklist, stateType: "backlog"}}
+			client, logs := newAnnounceClient(t, tc.fake)
+
+			client.StartAnnounceTask(context.Background(), "loft-enterprise", "v4.12.7", false)
+
+			out := logs.String()
+			if !strings.Contains(out, "level=WARN") || !strings.Contains(out, tc.want) || !strings.Contains(out, "remedy=") {
+				t.Errorf("want a warning containing %q and a remedy, got:\n%s", tc.want, out)
+			}
+			if strings.Contains(out, "Started the announce task") {
+				t.Errorf("logged a start that did not happen:\n%s", out)
+			}
+		})
+	}
+}
+
+func TestStartAnnounceTaskIgnoresATaskWithoutAParent(t *testing.T) {
+	fake := &fakeAnnounceLinear{tasks: []fakeTask{{id: "ENG-1", noParent: true, stateType: "backlog"}}}
+	client, logs := newAnnounceClient(t, fake)
+
+	client.StartAnnounceTask(context.Background(), "loft-enterprise", "v4.12.7", false)
+
+	if len(fake.updates) != 0 {
+		t.Errorf("updates = %d, want 0", len(fake.updates))
+	}
+	if !strings.Contains(logs.String(), "No announce task found") {
+		t.Errorf("want the no-task warning, got:\n%s", logs.String())
+	}
+}
+
+// fakeGitHub answers the release-by-tag query with releaseTag and fails every
+// other query, so the sync stops right after it has confirmed the release.
+type fakeGitHub struct {
+	releaseTag string
+}
+
+func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Query string `json:"query"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	w.Header().Set("Content-Type", "application/json")
+	if strings.Contains(req.Query, "release(tagName:") {
+		_, _ = fmt.Fprintf(w, `{"data":{"repository":{"release":{"publishedAt":"2026-11-17T20:00:00Z","description":"","name":%q,"tagName":%q,"databaseId":1}}}}`, f.releaseTag, f.releaseTag)
+		return
+	}
+	_, _ = fmt.Fprint(w, `{"errors":[{"message":"API rate limit exceeded"}],"data":null}`)
+}
+
+func runAgainstFakes(t *testing.T, gh *fakeGitHub, linear *fakeAnnounceLinear) error {
+	t.Helper()
+	ghServer := httptest.NewServer(gh)
+	t.Cleanup(ghServer.Close)
+	linearServer := httptest.NewServer(linear)
+	t.Cleanup(linearServer.Close)
+
+	prevGitHub, prevLinear := githubGraphQLURL, linearGraphQLURL
+	githubGraphQLURL, linearGraphQLURL = ghServer.URL, linearServer.URL
+	t.Cleanup(func() { githubGraphQLURL, linearGraphQLURL = prevGitHub, prevLinear })
+
+	return run(context.Background(), &bytes.Buffer{}, []string{"linear-release-sync",
+		"-token", "gh-token", "-linear-token", "linear-token",
+		"-repo", "loft-enterprise", "-release-tag", "v4.12.7"})
+}
+
+func TestRunStartsTheAnnounceTaskWhenTheSyncFailsEarly(t *testing.T) {
+	linear := &fakeAnnounceLinear{tasks: []fakeTask{{id: "ENG-1", parentTitle: platformChecklist, stateType: "backlog"}}}
+
+	err := runAgainstFakes(t, &fakeGitHub{releaseTag: "v4.12.7"}, linear)
+
+	if err == nil {
+		t.Fatal("run succeeded, want the previous-release lookup to fail")
+	}
+	if len(linear.updates) != 1 || linear.updates[0]["issueID"] != "uuid-ENG-1" {
+		t.Errorf("updates = %v, want the announce task started", linear.updates)
+	}
+}
+
+func TestRunDoesNotStartTheAnnounceTaskForAnUnknownRelease(t *testing.T) {
+	linear := &fakeAnnounceLinear{tasks: []fakeTask{{id: "ENG-1", parentTitle: platformChecklist, stateType: "backlog"}}}
+
+	err := runAgainstFakes(t, &fakeGitHub{releaseTag: "v4.12.6"}, linear)
+
+	if err == nil {
+		t.Fatal("run succeeded, want release not found")
+	}
+	if len(linear.searches) != 0 || len(linear.updates) != 0 {
+		t.Errorf("searches=%d updates=%d, want no Linear calls", len(linear.searches), len(linear.updates))
 	}
 }

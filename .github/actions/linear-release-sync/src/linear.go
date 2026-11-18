@@ -122,7 +122,7 @@ func NewLinearClient(ctx context.Context, token string, logger *slog.Logger) Lin
 	httpClient := &http.Client{
 		Transport: &transport{token: token},
 	}
-	client := graphql.NewClient("https://api.linear.app/graphql", httpClient)
+	client := graphql.NewClient(linearGraphQLURL, httpClient)
 
 	return LinearClient{client: client, logger: logger}
 }
