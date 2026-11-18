@@ -24,10 +24,11 @@ No inputs.
 
 <!-- AUTO-DOC-OUTPUT:START - Do not remove or modify this section -->
 
-|   OUTPUT    |  TYPE  |                                        DESCRIPTION                                         |
-|-------------|--------|--------------------------------------------------------------------------------------------|
-|    found    | string |              "true" when conflict markers were found, <br>"false" otherwise.               |
-| report-file | string | Path to a Markdown report listing <br>the markers. Written only when found <br>is "true".  |
+|   OUTPUT    |  TYPE  |                                          DESCRIPTION                                          |
+|-------------|--------|-----------------------------------------------------------------------------------------------|
+|    found    | string |               "true" when conflict markers were found, <br>"false" otherwise.                 |
+|   report    | string | The same Markdown report as text, <br>for a comment body. Set only <br>when found is "true".  |
+| report-file | string |  Path to a Markdown report listing <br>the markers. Written only when found <br>is "true".    |
 
 <!-- AUTO-DOC-OUTPUT:END -->
 

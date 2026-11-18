@@ -34,3 +34,12 @@ echo "$conflicts"
   echo "$conflicts"
   echo '```'
 } > "$report_file"
+
+# The report quotes lines from the PR's files, so the delimiter is random:
+# a file line cannot close the output early and inject other outputs.
+delim="EOF_$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
+{
+  echo "report<<$delim"
+  cat "$report_file"
+  echo "$delim"
+} >> "$output_file"

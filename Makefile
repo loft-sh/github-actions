@@ -1,4 +1,4 @@
-.PHONY: test-testing-tailnet test test-ghcr-tag-guard test-release-on-merge test-retry-approved-pr-ci test-secret-broker-request test-secret-broker-response test-semver-validation test-setup-semstat test-linear-pr-commenter test-link-backport-prs test-fork-review-check test-select-backport-source-prs test-release-notification test-linear-release-sync test-linear-cve-summary test-delete-previous-head-image test-aws-test-infra test-cleanup-head-charts test-advance-action-tags test-ci-test-notify test-auto-approve-bot-prs test-ai-pr-review test-ai-step test-release-summary test-release-notes test-publish-helm-chart test-govulncheck test-go-licenses test-run-ginkgo test-sticky-pr-comment test-repository-dispatch test-parse-label-filter test-release-branch-freeze test-prerelease-setup test-vcluster-release test-platform-release test-release-lib test-subtree-mirror test-oss-commit-sync test-oss-mirror-staleness test-backport-legacy-allowlist test-backport-legacy-split test-backport-fix-imports test-promote-release test-wait-for-release test-cve-scan test-commitlint test-resolve-github-release test-comment-triggered-check test-conflict-check build-linear-release-sync lint check-bats-jobs install-auto-doc generate-docs check-docs help
+.PHONY: test-testing-tailnet test test-ghcr-tag-guard test-release-on-merge test-retry-approved-pr-ci test-secret-broker-request test-secret-broker-response test-semver-validation test-setup-semstat test-linear-pr-commenter test-link-backport-prs test-fork-review-check test-select-backport-source-prs test-release-notification test-linear-release-sync test-linear-cve-summary test-delete-previous-head-image test-aws-test-infra test-cleanup-head-charts test-advance-action-tags test-ci-test-notify test-auto-approve-bot-prs test-ai-pr-review test-ai-step test-release-summary test-release-notes test-publish-helm-chart test-govulncheck test-go-licenses test-run-ginkgo test-sticky-pr-comment test-repository-dispatch test-parse-label-filter test-release-branch-freeze test-prerelease-setup test-vcluster-release test-platform-release test-release-lib test-subtree-mirror test-oss-commit-sync test-oss-mirror-staleness test-backport-legacy-allowlist test-backport-legacy-split test-backport-fix-imports test-promote-release test-wait-for-release test-cve-scan test-commitlint test-resolve-github-release test-comment-triggered-check test-conflict-check build-linear-release-sync lint check-bats-jobs check-edit-last install-auto-doc generate-docs check-docs help
 
 ACTIONS_DIR := .github/actions
 .PHONY: test-check-action-pins
@@ -266,9 +266,18 @@ test-resolve-github-release: ## run resolve-github-release bats tests
 build-linear-release-sync: ## build linear-release-sync binary (linux/amd64)
 	cd $(ACTIONS_DIR)/linear-release-sync/src && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o ../linear-release-sync-linux-amd64 .
 
-lint: check-bats-jobs ## run actionlint and zizmor on workflows
+lint: check-bats-jobs check-edit-last ## run actionlint and zizmor on workflows
 	actionlint .github/workflows/*.yaml
 	zizmor .github/
+
+# `gh pr comment --edit-last` edits whatever comment the token's user posted
+# last, so on a PR where two automations share a bot account one overwrites the
+# other (conflict-check wiped backport-fix-imports' comment, DEVOPS-1739).
+check-edit-last: ## fail if a workflow or action edits the last PR comment blindly
+	@if grep -rn -e '--edit-last' $(WORKFLOWS_DIR) $(ACTIONS_DIR) --include='*.yaml' --include='*.yml' --include='*.sh' --include='*.py'; then \
+	  echo "ERROR: --edit-last can overwrite another automation's comment; use the sticky-pr-comment action with a marker."; \
+	  exit 1; \
+	fi
 
 # bats-action only installs bats; it has no `tests` input. Unknown inputs are a
 # warning, so a job that hands it a path and stops there goes green having run

@@ -33,6 +33,16 @@ found() { grep -x "found=$1" "$GITHUB_OUTPUT"; }
   grep -q '^Dockerfile.release:1:<<<<<<< HEAD$' "$REPORT_FILE"
 }
 
+@test "hands the report to the next step as a multi-line output" {
+  add_file pkg/app/main.go "$conflict"
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  delim=$(sed -n 's/^report<<//p' "$GITHUB_OUTPUT")
+  [[ "$delim" =~ ^EOF_[0-9a-f]{16}$ ]]
+  sed -n "/^report<<$delim\$/,/^$delim\$/p" "$GITHUB_OUTPUT" | sed '1d;$d' > "$BATS_TEST_TMPDIR/body"
+  diff "$REPORT_FILE" "$BATS_TEST_TMPDIR/body"
+}
+
 @test "finds markers in a go file" {
   add_file pkg/app/main.go "$conflict"
   run "$SCRIPT"
