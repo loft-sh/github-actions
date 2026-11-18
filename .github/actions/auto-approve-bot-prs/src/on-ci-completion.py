@@ -4,6 +4,7 @@ import json
 import os
 import re
 import subprocess
+import time
 from pathlib import Path
 from urllib.parse import quote
 
@@ -140,6 +141,21 @@ def gate(api, repo, pr):
             green(requirements, runs, statuses)
 
 
+def wait_for_mergeability(reader, path, pr, repo, sha, authors, skip_labels):
+    original_base = pr["base"]
+    for attempt in range(10):
+        if not eligible(pr, repo, sha, authors, skip_labels) or (
+                pr["base"]["ref"] != original_base["ref"]
+                or pr["base"]["sha"] != original_base["sha"]):
+            raise Skip("PR eligibility, head or base changed during evaluation")
+        if pr["mergeable"] is not None:
+            return pr
+        if attempt < 9:
+            time.sleep(3)
+            pr = reader.api(path)
+    return pr
+
+
 def evaluate(reader, approver, repo, event, authors, skip_labels):
     run = event["workflow_run"]
     if (event["action"] != "completed" or run["status"] != "completed"
@@ -160,8 +176,10 @@ def evaluate(reader, approver, repo, event, authors, skip_labels):
         path = f"repos/{repo}/pulls/{number}"
         pr = reader.api(path)
         if not eligible(pr, repo, sha, authors, skip_labels):
+            print(f"PR #{number}: skip: not eligible")
             continue
         try:
+            pr = wait_for_mergeability(reader, path, pr, repo, sha, authors, skip_labels)
             gate(reader, repo, pr)
             login = approver.api("user")["login"]
             if login == pr["user"]["login"]:
@@ -175,6 +193,7 @@ def evaluate(reader, approver, repo, event, authors, skip_labels):
                     print(f"PR #{number}: already approved at {sha}")
                     continue
             current = reader.api(path)
+            current = wait_for_mergeability(reader, path, current, repo, sha, authors, skip_labels)
             if (not eligible(current, repo, sha, authors, skip_labels)
                     or current["base"]["ref"] != pr["base"]["ref"]
                     or current["base"]["sha"] != pr["base"]["sha"]):
@@ -205,7 +224,11 @@ def main():
                  {s.strip().lower() for s in os.environ.get("SKIP_LABELS", "").split(",") if s.strip()})
     except Exception as exc:
         # Never print an API body, token, or attacker-controlled workflow command.
-        print(f"::warning::Completion approval skipped ({type(exc).__name__}); "
+        status = None
+        if isinstance(exc, subprocess.CalledProcessError):
+            status = re.search(r"\bHTTP ([45][0-9]{2})\b", exc.stderr or "")
+        detail = f", HTTP {status.group(1)}" if status else ""
+        print(f"::warning::Completion approval skipped ({type(exc).__name__}{detail}); "
               "inspect required checks and token permissions, then rerun this workflow.")
 
 

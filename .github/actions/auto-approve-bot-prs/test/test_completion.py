@@ -4,6 +4,7 @@ import copy
 import importlib.util
 import json
 import os
+import subprocess
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -83,6 +84,9 @@ class CompletionTests(unittest.TestCase):
         printer = patch("builtins.print")
         printer.start()
         self.addCleanup(printer.stop)
+        sleeper = patch.object(completion.time, "sleep")
+        sleeper.start()
+        self.addCleanup(sleeper.stop)
         self.api = FakeGitHub()
         self.event = {"action": "completed", "workflow_run": {
             "event": "pull_request", "status": "completed", "head_sha": SHA,
@@ -144,6 +148,31 @@ class CompletionTests(unittest.TestCase):
                 change(self.api.pr)
                 self.evaluate()
                 self.assertEqual(self.api.writes, [])
+
+    def test_unknown_mergeability_retries_and_approves_when_ready(self):
+        self.api.pr["mergeable"] = None
+        self.api.mutate = lambda pr: pr.update(mergeable=True)
+        self.evaluate()
+        self.assertEqual(len(self.api.writes), 1)
+        self.assertEqual(self.api.pr_reads, 3)
+
+    def test_unknown_mergeability_exhausts_retry_budget(self):
+        self.api.pr["mergeable"] = None
+        self.evaluate()
+        self.assertEqual(self.api.pr_reads, 10)
+        self.assertEqual(self.api.writes, [])
+
+    def test_ineligible_candidate_is_logged(self):
+        self.api.pr["labels"] = [{"name": "manual"}]
+        with patch("builtins.print") as printer:
+            self.evaluate()
+        printer.assert_called_with("PR #123: skip: not eligible")
+
+    def test_change_during_mergeability_retry_blocks_approval(self):
+        self.api.pr["mergeable"] = None
+        self.api.mutate = lambda pr: pr["head"].update(sha="c" * 40)
+        self.evaluate()
+        self.assertEqual(self.api.writes, [])
 
     def test_racing_head_base_author_or_labels_block(self):
         for change in (lambda p: p["head"].update(sha="c" * 40),
@@ -264,6 +293,19 @@ class TransportTests(unittest.TestCase):
         with patch("builtins.print") as printer:
             completion.main()
         self.assertIn("::warning::Completion approval skipped", printer.call_args.args[0])
+
+    @patch.dict(os.environ, {"GITHUB_EVENT_NAME": "workflow_run", "GITHUB_REPOSITORY": "o/r",
+                            "GITHUB_EVENT_PATH": "/event", "CI_READ_TOKEN": "x",
+                            "APPROVER_TOKEN": "x", "TRUSTED_AUTHORS": "bot"}, clear=True)
+    def test_api_error_logs_only_http_status(self):
+        error = subprocess.CalledProcessError(1, "gh", stderr="secret (HTTP 403)\nmore secret")
+        with patch.object(completion.Path, "read_text", return_value="{}"), \
+             patch.object(completion, "evaluate", side_effect=error), \
+             patch("builtins.print") as printer:
+            completion.main()
+        message = printer.call_args.args[0]
+        self.assertIn("HTTP 403", message)
+        self.assertNotIn("secret", message)
 
 
 if __name__ == "__main__":
