@@ -388,3 +388,36 @@ func TestRunDoesNotStartTheAnnounceTaskForAnUnknownRelease(t *testing.T) {
 		t.Errorf("searches=%d updates=%d, want no Linear calls", len(linear.searches), len(linear.updates))
 	}
 }
+
+func TestStartAnnounceTaskStartsNothingWhenSeveralTasksMatch(t *testing.T) {
+	testCases := []struct {
+		name  string
+		tasks []fakeTask
+	}{
+		{"two unstarted", []fakeTask{
+			{id: "ENG-1", parentTitle: platformChecklist, stateType: "backlog"},
+			{id: "ENG-2", parentTitle: "v4.12.7 Post Release Activities", stateType: "backlog"},
+		}},
+		{"one already announced, one unstarted", []fakeTask{
+			{id: "ENG-1", parentTitle: platformChecklist, stateType: "completed"},
+			{id: "ENG-2", parentTitle: platformChecklist, stateType: "backlog"},
+		}},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeAnnounceLinear{tasks: tc.tasks}
+			client, logs := newAnnounceClient(t, fake)
+
+			client.StartAnnounceTask(context.Background(), "loft-enterprise", "v4.12.7", false)
+
+			if len(fake.updates) != 0 {
+				t.Errorf("updates = %d, want 0", len(fake.updates))
+			}
+			out := logs.String()
+			if !strings.Contains(out, "level=WARN") || !strings.Contains(out, "More than one announce task") ||
+				!strings.Contains(out, "ENG-1") || !strings.Contains(out, "ENG-2") || !strings.Contains(out, "remedy=") {
+				t.Errorf("want a warning naming both tasks and the remedy, got:\n%s", out)
+			}
+		})
+	}
+}

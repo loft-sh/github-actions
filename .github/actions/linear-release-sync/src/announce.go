@@ -27,6 +27,10 @@ const announceRemedy = "move the announce task to In Progress by hand to post th
 const missingTaskRemedy = "check that the release's \"" + checklistTitleSuffix + "\" checklist exists with an \"" +
 	announceTaskTitlePrefix + "\" task, then move that task to In Progress by hand to post the announcement"
 
+// duplicateTaskRemedy is what a person does when several announce tasks matched.
+const duplicateTaskRemedy = "cancel the duplicate checklist; if the announcement has not been posted yet, " +
+	"move the remaining announce task to In Progress by hand"
+
 // releasePipelineByRepo maps a repository to the Linear release pipeline its
 // tags ship. Repositories not listed here have no customer announcement.
 var releasePipelineByRepo = map[string]string{
@@ -80,16 +84,27 @@ func (l *LinearClient) StartAnnounceTask(ctx context.Context, repo, releaseTag s
 		return
 	}
 
-	found := false
+	var matches []announceTask
 	for _, task := range tasks {
-		if !isReleaseChecklist(task.ParentTitle, pipeline, version) {
-			continue
+		if isReleaseChecklist(task.ParentTitle, pipeline, version) {
+			matches = append(matches, task)
 		}
-		found = true
-		l.startTask(ctx, logger.With("task", task.Identifier), task, dryRun)
 	}
-	if !found {
+
+	switch len(matches) {
+	case 0:
 		logger.Warn("No announce task found under the release checklist", "remedy", missingTaskRemedy)
+	case 1:
+		l.startTask(ctx, logger.With("task", matches[0].Identifier), matches[0], dryRun)
+	default:
+		// Starting more than one could post the announcement twice, so a
+		// person picks the right task.
+		identifiers := make([]string, len(matches))
+		for i, task := range matches {
+			identifiers[i] = task.Identifier
+		}
+		logger.Warn("More than one announce task found for this release, starting none",
+			"tasks", strings.Join(identifiers, ","), "remedy", duplicateTaskRemedy)
 	}
 }
 
