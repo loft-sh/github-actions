@@ -44,11 +44,15 @@ def backport_event(pr=None, sender="loft-bot", action="opened"):
     return {"action": action, "pull_request": pr or backport_pr(), "sender": {"login": sender}}
 
 
-def pr_api(pushed_at="2026-11-18T09:00:00Z"):
-    """A fake gh_api for the PR lookups apply makes: head, then the head's check suites."""
+def panel_review(head=HEAD, submitted_at="2026-11-18T09:00:00Z", login="loft-bot"):
+    return {"user": {"login": login}, "body": marker(head=head), "submitted_at": submitted_at}
+
+
+def pr_api(reviews=None):
+    """A fake gh_api for the PR lookups apply makes: the head, then the PR's reviews."""
     def fake(args, token, payload=None):
-        if args[0].endswith("/check-suites"):
-            return {"check_suites": [{"created_at": pushed_at}] if pushed_at else []}
+        if args[0].endswith("/reviews"):
+            return [[panel_review()] if reviews is None else reviews]
         if "/pulls/" in args[0] and len(args) == 1:
             return {"head": {"sha": HEAD}}
         return {}
@@ -180,21 +184,53 @@ def test_run_pr_number_prefers_the_event_then_the_head_commit():
 
 
 def test_pr_diff_builds_the_added_lines_from_the_files_api(monkeypatch):
-    pages = [[{"filename": "e2e/a.go", "patch": '@@\n+\tIt("new", func() {'},
+    pages = [[{"filename": "e2e/a.go", "patch": '@@ -40,0 +41 @@\n+\tIt("new", func() {'},
               {"filename": "e2e/big.go"}]]
     monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None: pages)
-    assert gate.added_specs(gate.pr_diff("o/r", 1, "tok")) == ["new"]
+    assert gate.added_specs(gate.pr_diff("o/r", 1, "tok")) == [
+        {"path": "e2e/a.go", "line": 41, "text": "new"}]
+
+
+def ci_api(head=HEAD, files=None):
+    def fake(args, token, payload=None):
+        if args[0].endswith("/files"):
+            if files is None:
+                raise gate.GateError("gh api files failed: too many files")
+            return files
+        return {"head": {"sha": head}}
+    return fake
+
+
+def ci_run(number=9):
+    return {"id": 7, "pull_requests": [{"number": number}], "head_sha": HEAD, "conclusion": "success"}
 
 
 def test_ci_diff_failure_asks_a_person_instead_of_failing_the_job(monkeypatch):
-    def fake(args, token, payload=None):
-        raise gate.GateError("gh api files failed: too many files")
-    monkeypatch.setattr(gate, "gh_api", fake)
-    run = {"pull_requests": [{"number": 9}], "head_sha": HEAD, "conclusion": "success"}
-    decision = gate.collect_ci({"workflow_run": run}, "o/r", "tok", "qa-review")
+    monkeypatch.setattr(gate, "gh_api", ci_api())
+    decision = gate.collect_ci({"workflow_run": ci_run()}, "o/r", "tok", "qa-review")
     assert decision["check"]["name"] == "qa-review-ci"
     assert decision["check"]["conclusion"] == "action_required"
     assert decision["check"]["head_sha"] == HEAD and decision["pr_number"] == 9
+    assert "/test-e2e" in decision["check"]["summary"]
+
+
+def test_ci_run_for_an_older_head_is_superseded(monkeypatch):
+    monkeypatch.setattr(gate, "gh_api", ci_api(head=OTHER))
+    decision = gate.collect_ci({"workflow_run": ci_run()}, "o/r", "tok", "qa-review")
+    assert decision == {"skip": f"e2e run is for {HEAD[:7]}, PR head is {OTHER[:7]}; superseded"}
+
+
+def test_ci_missing_report_asks_a_person(monkeypatch):
+    files = [[{"filename": "e2e/a.go", "patch": '@@ -1,0 +1 @@\n+\tIt("new", func() {'}]]
+    monkeypatch.setattr(gate, "gh_api", ci_api(files=files))
+
+    def no_artifact(args, token, **kwargs):
+        raise gate.GateError("gh run download failed: no artifact matches")
+    monkeypatch.setattr(gate, "gh", no_artifact)
+    decision = gate.collect_ci({"workflow_run": ci_run()}, "o/r", "tok", "qa-review")
+    assert decision["check"]["conclusion"] == "action_required"
+    assert "no ginkgo-report for 1 new spec(s)" in decision["check"]["title"]
+    assert "no artifact matches" in decision["check"]["summary"]
 
 
 def test_apply_posts_every_check_in_the_decision(monkeypatch):
@@ -225,10 +261,17 @@ def test_apply_posts_check_run_and_requests_team(monkeypatch):
     assert team_call == {"team_reviewers": ["eng-qa"]}
 
 
-@pytest.mark.parametrize("pushed_at", ["2026-11-18T10:05:00Z", ""])
-def test_apply_skips_a_comment_the_author_pushed_after(monkeypatch, capsys, pushed_at):
+@pytest.mark.parametrize("reviews", [
+    [],                                                       # the panel never graded this PR
+    [panel_review(head=OTHER)],                               # graded an older head only
+    [panel_review(submitted_at="2026-11-18T10:05:00Z")],      # graded this head after the comment
+    [panel_review(login="dev-x")],                            # a person pasted a marker
+    [{"user": {"login": "loft-bot"}, "body": "<!-- qa-review verdict=weird classes= head=" + HEAD + " -->",
+      "submitted_at": "2026-11-18T09:00:00Z"}],               # malformed marker is skipped
+])
+def test_override_binds_to_a_panel_verdict_on_the_current_head(monkeypatch, capsys, reviews):
     posted = []
-    lookups = pr_api(pushed_at=pushed_at)
+    lookups = pr_api(reviews=reviews)
 
     def fake_gh_api(args, token, payload=None):
         if args[0].endswith("/check-runs"):
@@ -238,7 +281,37 @@ def test_apply_skips_a_comment_the_author_pushed_after(monkeypatch, capsys, push
     monkeypatch.setattr(gate, "gh_api", fake_gh_api)
     decision = gate.decide_comment(comment_event("/qa-review override covered"), {"sowmyav27"}, "qa-review")
     assert gate.apply(decision, "o/r", "tok", "loft-sh/eng-qa", "https://run") is None
-    assert posted == [] and "changed after the comment" in capsys.readouterr().out
+    assert posted == [] and "no panel verdict on the PR's current head" in capsys.readouterr().out
+
+
+def test_override_lands_on_the_head_the_panel_graded_before_the_comment(monkeypatch):
+    posted = []
+    lookups = pr_api(reviews=[panel_review(head=OTHER), panel_review()])
+
+    def fake_gh_api(args, token, payload=None):
+        if args[0].endswith("/check-runs"):
+            posted.append(payload)
+        return lookups(args, token, payload)
+
+    monkeypatch.setattr(gate, "gh_api", fake_gh_api)
+    decision = gate.decide_comment(comment_event("/qa-review override covered"), {"sowmyav27"}, "qa-review")
+    assert gate.apply(decision, "o/r", "tok", "loft-sh/eng-qa", "https://run") == HEAD
+    assert [c["head_sha"] for c in posted] == [HEAD, HEAD]
+
+
+def test_human_request_needs_no_panel_verdict(monkeypatch):
+    posted = []
+    lookups = pr_api(reviews=[])
+
+    def fake_gh_api(args, token, payload=None):
+        if args[0].endswith("/check-runs"):
+            posted.append(payload)
+        return lookups(args, token, payload)
+
+    monkeypatch.setattr(gate, "gh_api", fake_gh_api)
+    decision = gate.decide_comment(comment_event("/qa-review human", login="dev-x"), set(), "qa-review")
+    assert gate.apply(decision, "o/r", "tok", "", "https://run") == HEAD
+    assert len(posted) == 1
 
 
 def test_apply_warns_when_the_team_request_fails(monkeypatch, capsys):
@@ -280,45 +353,66 @@ def test_main_rejects_unknown_mode(tmp_path, monkeypatch):
 
 DIFF = """diff --git a/e2e/suites/snapshot/snapshot.go b/e2e/suites/snapshot/snapshot.go
 +++ b/e2e/suites/snapshot/snapshot.go
-@@ -1,3 +1,9 @@
+@@ -10,3 +10,9 @@
 +	It("restores the snapshot", func() {
 +	FIt("creates a snapshot", func() {
  	It("already there", func() {
 -	It("removed", func() {
 +	Specify("keeps the \\"quoted\\" name", func() {
+@@ -40,2 +46,3 @@
+ 	DescribeTable("quota", func(n int) {},
++		Entry("rejects over quota", 2),
+ 	)
 diff --git a/pkg/thing_test.go b/pkg/thing_test.go
 +++ b/pkg/thing_test.go
+@@ -1,0 +1,1 @@
 +	It("unit spec, not e2e", func() {
 """
+SNAPSHOT = "e2e/suites/snapshot/snapshot.go"
 
 
-def test_added_specs_reads_added_it_lines_in_e2e_go_only():
-    assert gate.added_specs(DIFF) == ["restores the snapshot", "creates a snapshot",
-                                      'keeps the "quoted" name']
+def test_added_specs_reads_added_specs_with_their_line_in_e2e_go_only():
+    assert gate.added_specs(DIFF) == [
+        {"path": SNAPSHOT, "line": 10, "text": "restores the snapshot"},
+        {"path": SNAPSHOT, "line": 11, "text": "creates a snapshot"},
+        {"path": SNAPSHOT, "line": 13, "text": 'keeps the "quoted" name'},
+        {"path": SNAPSHOT, "line": 47, "text": "rejects over quota"},
+    ]
 
 
 def test_unescape_go_reads_the_literal_like_go():
     assert gate.unescape_go(r'a \"b\" \\ c\n') == 'a "b" \\ c\n'
 
 
-def test_report_specs_maps_leaf_text_to_state():
-    report = [{"SpecReports": [
-        {"LeafNodeType": "It", "LeafNodeText": "restores the snapshot", "State": "passed"},
-        {"LeafNodeType": "It", "LeafNodeText": "creates a snapshot", "State": "skipped"},
-        {"LeafNodeType": "BeforeSuite", "LeafNodeText": "", "State": "passed"},
-    ]}]
-    assert gate.report_specs(report) == {"restores the snapshot": "passed",
-                                         "creates a snapshot": "skipped"}
+RUNNER = "/home/runner/work/r/r/"
+
+
+def leaf(line, state, text="x", file=RUNNER + SNAPSHOT, kind="It"):
+    return {"LeafNodeType": kind, "LeafNodeText": text, "State": state,
+            "LeafNodeLocation": {"FileName": file, "LineNumber": line}}
+
+
+def test_report_specs_maps_leaf_location_to_state():
+    report = [{"SpecReports": [leaf(10, "passed"), leaf(11, "skipped"),
+                               leaf(0, "passed", kind="BeforeSuite", file="")]}]
+    assert gate.report_specs(report) == {(RUNNER + SNAPSHOT, 10): "passed",
+                                         (RUNNER + SNAPSHOT, 11): "skipped"}
 
 
 def test_report_specs_keeps_the_worst_state_across_reports():
+    states = gate.report_specs([{"SpecReports": [leaf(10, "failed"), leaf(11, "skipped")]}])
+    gate.report_specs([{"SpecReports": [leaf(10, "passed"), leaf(11, "passed")]}], states)
+    assert states == {(RUNNER + SNAPSHOT, 10): "failed", (RUNNER + SNAPSHOT, 11): "skipped"}
+
+
+def test_spec_state_matches_file_suffix_and_line_not_text():
     states = gate.report_specs([{"SpecReports": [
-        {"LeafNodeType": "It", "LeafNodeText": "same text", "State": "failed"},
-        {"LeafNodeType": "It", "LeafNodeText": "other", "State": "skipped"}]}])
-    gate.report_specs([{"SpecReports": [
-        {"LeafNodeType": "It", "LeafNodeText": "same text", "State": "passed"},
-        {"LeafNodeType": "It", "LeafNodeText": "other", "State": "passed"}]}], states)
-    assert states == {"same text": "failed", "other": "skipped"}
+        leaf(10, "passed", text="same text"),
+        leaf(99, "skipped", text="same text", file=RUNNER + "e2e/other/other.go")]}])
+    new = {"path": SNAPSHOT, "line": 10, "text": "same text"}
+    assert gate.spec_state(states, new) == "passed"
+    assert gate.spec_state(states, {**new, "line": 11}) is None
+    assert gate.spec_state(states, {**new, "path": "other/snapshot.go"}) is None
 
 
 def run(conclusion="success"):
@@ -326,25 +420,31 @@ def run(conclusion="success"):
             "html_url": "https://github.com/o/r/actions/runs/7"}
 
 
+def spec(line, text):
+    return {"path": SNAPSHOT, "line": line, "text": text}
+
+
 def test_ci_all_new_specs_passed_is_success():
-    decision = gate.decide_ci(run(), 1, ["a", "b"], {"a": "passed", "b": "passed"}, "qa-review")
+    states = gate.report_specs([{"SpecReports": [leaf(10, "passed"), leaf(11, "passed")]}])
+    decision = gate.decide_ci(run(), 1, [spec(10, "a"), spec(11, "b")], states, "qa-review")
     assert decision["check"]["name"] == "qa-review-ci"
     assert decision["check"]["conclusion"] == "success"
     assert decision["check"]["head_sha"] == HEAD
 
 
 def test_ci_missing_or_skipped_spec_is_failure_and_names_it():
-    decision = gate.decide_ci(run("failure"), 1, ["a", "b", "c"],
-                              {"a": "passed", "b": "skipped"}, "qa-review")
+    states = gate.report_specs([{"SpecReports": [leaf(10, "passed"), leaf(11, "skipped")]}])
+    decision = gate.decide_ci(run("failure"), 1, [spec(10, "a"), spec(11, "b"), spec(12, "c")],
+                              states, "qa-review")
     assert decision["check"]["conclusion"] == "failure"
-    assert "did not run: c" in decision["check"]["summary"]
-    assert "b (skipped)" in decision["check"]["summary"]
+    assert f"did not run: {SNAPSHOT}:12 c" in decision["check"]["summary"]
+    assert f"{SNAPSHOT}:11 b (skipped)" in decision["check"]["summary"]
     assert "2 new spec(s)" in decision["check"]["title"]
 
 
 @pytest.mark.parametrize("conclusion", ["cancelled", "timed_out", None])
 def test_ci_skips_when_the_run_did_not_finish(conclusion):
-    assert "skip" in gate.decide_ci(run(conclusion), 1, ["a"], {}, "qa-review")
+    assert "skip" in gate.decide_ci(run(conclusion), 1, [spec(1, "a")], {}, "qa-review")
 
 
 def test_ci_skips_when_the_pr_adds_no_spec():

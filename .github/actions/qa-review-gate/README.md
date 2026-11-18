@@ -33,21 +33,26 @@ Comments on the PR:
 
 - `/qa-review override <reason>` from a login in `qa-logins` completes both
   check-runs (`qa-review` and `qa-review-ci`) as success and records who overrode
-  them and why. A comment applies to the head it was written on: when the current
-  head's first check suite is newer than the comment (GitHub sets that time, not the
-  committer), the gate does nothing and says so in the job log.
+  them and why. An override answers a panel verdict, so it lands only when the
+  PR's current head carries a panel marker submitted before the comment. A head
+  pushed after the comment, or one the panel has not graded yet, gets nothing: the
+  job log says so and the QA engineer comments again on what they see.
 - `/qa-review human` from a repository member requests the QA team and leaves
   the check-run as action_required until a person decides.
 
 After the e2e workflow finishes (`workflow_run`, mode `ci`), the action finds the
 open PR for the run (from the event, or from the run's head commit when the run was
-a `/test-e2e` dispatch), reads the PR's files, takes every `It(` the PR adds under an
-`e2e` directory, downloads the run's `ginkgo-report` artifact, and publishes a second
-check-run `qa-review-ci`: failure when a new spec is not in the report or did not
-pass, success otherwise. The same spec text in two reports or two containers keeps
-the worst state. A PR that adds no spec, or a run that was cancelled, publishes
-nothing. A PR whose files the API will not list gets `action_required` and a QA
-engineer overrides.
+a `/test-e2e` dispatch). A run whose head is no longer the PR head is superseded and
+ignored. Otherwise it reads the PR's files, takes every `It(`, `Specify(` and table
+`Entry(` the PR adds under an `e2e` directory with its line in the new file, downloads
+the run's `ginkgo-report` artifact, and publishes a second check-run `qa-review-ci`:
+failure when a new spec is not in the report or did not pass, success otherwise. A
+spec is matched by file and line (the report's `LeafNodeLocation`), never by text, so
+an existing spec with the same text cannot stand in for a new one and a skipped
+namesake elsewhere cannot fail it. The same location in two reports keeps the worst
+state. A PR that adds no spec, or a run that was cancelled, publishes nothing. A PR
+whose files the API will not list, or a run that uploaded no report, gets
+`action_required`: re-run `/test-e2e` or a QA engineer overrides.
 
 Requesting the QA team's review (on `needs_human` and `/qa-review human`) is best
 effort: when the token cannot name the team, the job logs a warning and stays green.

@@ -24,3 +24,33 @@ jobs:
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
       - name: Run tests
         run: make test-qa-review-gate
+
+  # Calls the reusable workflow the way a product repo does. The job checks out the
+  # action at job.workflow_sha: a ref that resolved to nothing would fall back to main,
+  # where the action may not exist yet, and the call would fail.
+  caller:
+    name: Smoke-test the reusable workflow from a caller
+    permissions:
+      checks: write
+      pull-requests: write
+      contents: read
+      actions: read
+    uses: ./.github/workflows/qa-review-gate.yaml
+    with:
+      qa-logins: ''
+
+  verify-caller:
+    needs: [caller]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Check the caller result
+        env:
+          RESULT: ${{ needs.caller.result }}
+        run: |
+          echo "caller result=$RESULT"
+          if [ "$RESULT" != "success" ]; then
+            echo "::error::Expected caller result=success, got '$RESULT'"
+            exit 1
+          fi

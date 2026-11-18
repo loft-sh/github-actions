@@ -7,11 +7,15 @@ Two event shapes, both read from GITHUB_EVENT_PATH:
   check-run conclusion on that head. A review from anyone else, or a marker for another head,
   is ignored.
 - issue_comment (created): `/qa-review override <reason>` from a QA login completes the
-  check-run as success and records who overrode it. `/qa-review human` from a repository
-  member asks the QA team for a review and leaves the check-run waiting for a person.
-- workflow_run (completed) of the e2e workflow: every `It(` the PR adds is looked up in the
-  Ginkgo JSON report the run uploaded. A new spec that did not run, or did not pass, turns the
-  `<check>-ci` check-run red. The panel's verdict check-run is never touched.
+  check-run as success and records who overrode it. The override binds to the panel verdict
+  it answers: the PR's current head must carry a panel marker submitted before the comment,
+  otherwise the gate does nothing and asks for a fresh comment. `/qa-review human` from a
+  repository member asks the QA team for a review and leaves the check-run waiting for a person.
+- workflow_run (completed) of the e2e workflow: every `It(`, `Specify(` or `Entry(` the PR
+  adds is looked up by file and line in the Ginkgo JSON report the run uploaded. A new spec
+  that did not run, or did not pass, turns the `<check>-ci` check-run red. A run whose head is
+  no longer the PR head is superseded and ignored; a run without a report asks a person. The
+  panel's verdict check-run is never touched.
 - pull_request (opened) of an automated backport: a PR the panel bot opened from a
   `backport/` branch was reviewed on main already. On the head the bot opened it with, both
   check-runs complete as success at once, so the repo's auto-approve workflow can approve it
@@ -39,7 +43,8 @@ CONCLUSION = {"block": "failure", "pass": "success", "needs_human": "action_requ
               "not_run": "action_required"}
 CLASS_WORDS = {"a": "need a test", "b": "weak test", "c": "no test", "d": "product gap"}
 MEMBER_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
-ADDED_SPEC = re.compile(r'^\+[^+].*\b[FPX]?(?:It|Specify)\(\s*"((?:[^"\\]|\\.)+)"')
+ADDED_SPEC = re.compile(r'^\+[^+].*\b[FPX]?(?:It|Specify|Entry)\(\s*"((?:[^"\\]|\\.)+)"')
+HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)")
 GO_ESCAPES = {"n": "\n", "t": "\t", "r": "\r"}
 # Ginkgo states, worst last; two reports for one spec text keep the worst.
 STATE_RANK = {"passed": 0, "": 1, "pending": 2, "skipped": 3, "timedout": 4, "interrupted": 4,
@@ -168,6 +173,7 @@ def decide_comment(event, qa_logins, check_name, command="/qa-review"):
             "request_qa_review": False,
             "pr_number": issue.get("number"),
             "comment_at": comment.get("created_at", ""),
+            "binds_to_marker": True,
         }
     if verb == "human":
         if comment.get("author_association") not in MEMBER_ASSOCIATIONS:
@@ -185,34 +191,54 @@ def decide_comment(event, qa_logins, check_name, command="/qa-review"):
 
 
 def added_specs(diff):
-    """Spec texts the diff adds in e2e Go files: `It("...")` on an added line."""
-    specs, in_e2e_go = [], False
-    for line in diff.splitlines():
-        if line.startswith("+++ "):
-            path = line[4:].removeprefix("b/")
+    """Specs the diff adds in e2e Go files, as {path, line, text}: an `It("...")`,
+    `Specify("...")` or table `Entry("...")` on an added line, with its line in the new file."""
+    specs, in_e2e_go, path, line = [], False, "", 0
+    for raw in diff.splitlines():
+        if raw.startswith("+++ "):
+            path = raw[4:].removeprefix("b/")
             in_e2e_go = path.endswith(".go") and ("/e2e" in f"/{path}")
-        elif in_e2e_go:
-            match = ADDED_SPEC.match(line)
+            continue
+        hunk = HUNK.match(raw)
+        if hunk:
+            line = int(hunk.group(1))
+            continue
+        if raw.startswith("-") or raw.startswith("\\"):
+            continue
+        if in_e2e_go and raw.startswith("+"):
+            match = ADDED_SPEC.match(raw)
             if match:
-                specs.append(unescape_go(match.group(1)))
+                specs.append({"path": path, "line": line, "text": unescape_go(match.group(1))})
+        line += 1
     return specs
 
 
-def merge_state(states, text, state):
-    """Keep the worst state seen for a spec text (same It text in two containers or reports)."""
+def merge_state(states, key, state):
+    """Keep the worst state seen for a spec location (the same spec in two reports)."""
     rank = STATE_RANK.get(state, STATE_RANK["failed"])
-    if text not in states or rank > STATE_RANK.get(states[text], STATE_RANK["failed"]):
-        states[text] = state
+    if key not in states or rank > STATE_RANK.get(states[key], STATE_RANK["failed"]):
+        states[key] = state
 
 
 def report_specs(report, states=None):
-    """{spec text: state} for every leaf spec in a Ginkgo JSON report (a list of suites)."""
+    """{(file, line): state} for every leaf spec in a Ginkgo JSON report (a list of suites).
+    The file is the runner's absolute path; spec_state matches it by suffix."""
     states = {} if states is None else states
     for suite in report:
         for spec in suite.get("SpecReports") or []:
             if spec.get("LeafNodeType") in ("It", "Specify", None):
-                merge_state(states, spec.get("LeafNodeText", ""), spec.get("State", ""))
+                loc = spec.get("LeafNodeLocation") or {}
+                merge_state(states, (loc.get("FileName", ""), loc.get("LineNumber", 0)),
+                            spec.get("State", ""))
     return states
+
+
+def spec_state(states, spec):
+    """The reported state of the spec declared at spec["path"]:spec["line"], or None."""
+    for (file, line), state in states.items():
+        if line == spec["line"] and (file == spec["path"] or file.endswith("/" + spec["path"])):
+            return state
+    return None
 
 
 def decide_ci(run, pr_number, added, states, check_name):
@@ -221,8 +247,9 @@ def decide_ci(run, pr_number, added, states, check_name):
         return {"skip": f"e2e run ended {run.get('conclusion') or 'unknown'}, nothing to compare"}
     if not added:
         return {"skip": "the PR adds no e2e spec"}
-    missing = [t for t in added if t not in states]
-    not_passed = [f"{t} ({states[t]})" for t in added if t in states and states[t] != "passed"]
+    graded = [(f"{s['path']}:{s['line']} {s['text']}", spec_state(states, s)) for s in added]
+    missing = [label for label, state in graded if state is None]
+    not_passed = [f"{label} ({state})" for label, state in graded if state not in (None, "passed")]
     head = run.get("head_sha", "")
     if missing or not_passed:
         lines = [f"- did not run: {t}" for t in missing] + [f"- {t}" for t in not_passed]
@@ -276,27 +303,41 @@ def pr_diff(repo, pr_number, token):
                       for page in files for f in page)
 
 
+def ask_person(check_name, head, pr_number, title, detail):
+    """A `<check>-ci` check-run nobody can grade automatically: a person decides."""
+    return {"check": {"name": f"{check_name}-ci", "head_sha": head, "conclusion": "action_required",
+                      "title": title,
+                      "summary": f"{detail}\n\nRe-run `/test-e2e`, or override with "
+                                 "`/qa-review override <reason>`."},
+            "request_qa_review": False, "pr_number": pr_number}
+
+
 def collect_ci(event, repo, token, check_name):
     """Fetch the diff and the Ginkgo report for a finished e2e run, then decide."""
     run = event.get("workflow_run") or {}
+    head = run.get("head_sha", "")
     pr_number = run_pr_number(run, repo, token)
     if pr_number is None:
         return {"skip": "e2e run is not for an open pull request"}
     try:
+        current = gh_api([f"repos/{repo}/pulls/{pr_number}"], token)["head"]["sha"]
+        if current != head:
+            # The report graded an older head; the diff below would be the new head's.
+            return {"skip": f"e2e run is for {head[:7]}, PR head is {current[:7]}; superseded"}
         added = added_specs(pr_diff(repo, pr_number, token))
     except GateError as error:
-        return {"check": {"name": f"{check_name}-ci", "head_sha": run.get("head_sha", ""),
-                          "conclusion": "action_required",
-                          "title": "QA review: PR diff unavailable, a QA engineer checks the new specs",
-                          "summary": f"{error}\n\nOverride with `/qa-review override <reason>`."},
-                "request_qa_review": False, "pr_number": pr_number}
+        return ask_person(check_name, head, pr_number,
+                          "QA review: PR diff unavailable, a QA engineer checks the new specs",
+                          str(error))
     if not added:
         return {"skip": "the PR adds no e2e spec"}
     with tempfile.TemporaryDirectory() as tmp:
         try:
             gh(["run", "download", str(run["id"]), "-R", repo, "-n", REPORT_ARTIFACT, "-D", tmp], token)
-        except GateError:
-            return {"skip": f"e2e run uploaded no {REPORT_ARTIFACT} artifact"}
+        except GateError as error:
+            return ask_person(check_name, head, pr_number,
+                              f"QA review: no {REPORT_ARTIFACT} for {len(added)} new spec(s), "
+                              "a QA engineer checks them", str(error))
         states = {}
         for path in sorted(glob.glob(os.path.join(tmp, "**", "*.json"), recursive=True)):
             with open(path, encoding="utf-8") as fh:
@@ -318,29 +359,39 @@ def gh_api(args, token, payload=None):
     return json.loads(result.stdout) if result.stdout.strip() else {}
 
 
-def comment_head(decision, repo, token):
-    """The PR head a /qa-review comment applies to, or None when that head arrived after the
-    comment: a decision made on one head must not land on a commit nobody looked at. A head's
-    first check suite is created by GitHub when it is pushed, so its time is not the client's
-    to set; a head with no suite yet is newer than any comment."""
+def comment_head(decision, repo, token, panel_login):
+    """The PR head a /qa-review comment applies to. An override answers a panel verdict, so
+    it lands only when the current head carries a panel marker submitted before the comment;
+    a head pushed after the comment, or one the panel has not graded, returns None and the
+    QA engineer comments again on what they see."""
     pr_number = decision["pr_number"]
     head = gh_api([f"repos/{repo}/pulls/{pr_number}"], token)["head"]["sha"]
-    suites = gh_api([f"repos/{repo}/commits/{head}/check-suites"], token).get("check_suites") or []
-    pushed = min((suite.get("created_at", "") for suite in suites), default="")
-    if decision.get("comment_at") and (not pushed or pushed > decision["comment_at"]):
-        return None
-    return head
+    if not decision.get("binds_to_marker"):
+        return head
+    pages = gh_api([f"repos/{repo}/pulls/{pr_number}/reviews", "--paginate", "--slurp"], token)
+    for review in (r for page in pages for r in page):
+        if (review.get("user") or {}).get("login") != panel_login:
+            continue
+        try:
+            parsed = parse_marker(review.get("body"))
+        except GateError:
+            continue
+        if (parsed and parsed[2] == head
+                and (review.get("submitted_at") or "") <= decision.get("comment_at", "")):
+            return head
+    return None
 
 
-def apply(decision, repo, token, qa_team, run_url):
+def apply(decision, repo, token, qa_team, run_url, panel_login="loft-bot"):
     """Create the check-run(s) and, when asked, request the QA team's review. Returns the
-    head the checks landed on, or None when the comment is stale."""
+    head the checks landed on, or None when the comment binds to no verdict."""
     checks = decision.get("checks") or [decision["check"]]
     head = checks[0]["head_sha"]
     if head is None:
-        head = comment_head(decision, repo, token)
+        head = comment_head(decision, repo, token, panel_login)
         if head is None:
-            print("::notice::qa-review-gate: the PR changed after the comment; comment again on the new head")
+            print("::notice::qa-review-gate: no panel verdict on the PR's current head before "
+                  "the comment; wait for the panel, then comment again")
             return None
     for check in checks:
         gh_api([f"repos/{repo}/check-runs", "-X", "POST"], token, {
@@ -381,7 +432,8 @@ def main():
         print(f"::notice::qa-review-gate: {decision['skip']}")
         return 0
     head = apply(decision, os.environ["GITHUB_REPOSITORY"], os.environ["INPUT_GITHUB_TOKEN"],
-                 os.environ.get("INPUT_QA_TEAM", ""), os.environ.get("INPUT_RUN_URL", ""))
+                 os.environ.get("INPUT_QA_TEAM", ""), os.environ.get("INPUT_RUN_URL", ""),
+                 panel_login)
     for check in decision.get("checks") or [decision["check"]] if head else []:
         print(f"qa-review-gate: {check['name']} -> {check['conclusion']} on {head[:7]}")
     return 0

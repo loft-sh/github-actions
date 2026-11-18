@@ -35,12 +35,12 @@ jobs:
       contents: read
       actions: read
     steps:
-      # job_workflow_sha is the commit the caller's `uses:` tag resolved to, so the
+      # job.workflow_sha is the commit the caller's `uses:` tag resolved to, so the
       # action comes from the same revision as this workflow, not from main.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: loft-sh/github-actions
-          ref: ${{ github.job_workflow_sha }}
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
           persist-credentials: false
           sparse-checkout: .github/actions/qa-review-gate
       - uses: ./.github/actions/qa-review-gate
