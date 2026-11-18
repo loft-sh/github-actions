@@ -62,6 +62,8 @@ PACKAGE_CLAUSE = re.compile(r"^package\s+([A-Za-z_][A-Za-z0-9_]*)", re.M)
 # Comments and string, raw string and rune literals: a name inside them is not a use.
 GO_NOISE = re.compile(r"""//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\\n])*"|`[^`]*`|'(?:\\.|[^'\\\n])*'""", re.S)
 
+# Read by auto-approve to keep AI-written backports for a person.
+AI_LABEL = "backport-ai-resolved"
 NOTES_FILE = "backport-fix-imports-notes.json"
 BOT_NAME = "github-actions[bot]"
 BOT_EMAIL = "41898282+github-actions[bot]@users.noreply.github.com"
@@ -92,7 +94,7 @@ def git(*args: str, check: bool = True) -> str:
 
 
 def tool_env() -> dict[str, str]:
-    """The job environment without the push token: gofmt never needs it."""
+    """The job environment without the push token: gofmt and go vet never need it."""
     return {k: v for k, v in os.environ.items() if k not in ("GH_TOKEN", "GITHUB_TOKEN")}
 
 
@@ -390,7 +392,8 @@ def run() -> dict[str, str]:
         print(f"::warning::{p}: conflict markers remain; resolve them by hand")
     left = {p: "conflict markers remain" for p in marked}
     left.update({p: "added under the source path, but that path exists on the target" for p in blocked})
-    left_note = f"; {len(left)} file(s) left for review" if left else ""
+    # Written before the AI pass runs: it may still resolve some of these.
+    left_note = f"; {len(left)} file(s) left after the script" if left else ""
 
     if not rewritten and not moved:
         note("script", {"rewritten": 0, "hunks": 0, "left": left, "commit": ""})
