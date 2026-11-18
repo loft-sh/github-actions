@@ -1,0 +1,26 @@
+name: Approve backports on CI completion
+description: Evaluate current required checks once after a CI workflow completes; never poll or merge.
+inputs:
+  github-token:
+    description: Existing approval credential, with an identity distinct from the PR author.
+    required: true
+  ci-read-token:
+    description: Read token for PR metadata, branch rules, checks and statuses.
+    required: true
+  trusted-authors:
+    description: Comma-separated trusted bot logins; only backport branches qualify.
+    default: loft-bot
+  skip-labels:
+    description: Comma-separated labels that leave the PR for a person.
+    default: ''
+runs:
+  using: composite
+  steps:
+    - name: Evaluate completed CI
+      shell: bash
+      env:
+        CI_READ_TOKEN: ${{ inputs.ci-read-token }}
+        APPROVER_TOKEN: ${{ inputs.github-token }}
+        TRUSTED_AUTHORS: ${{ inputs.trusted-authors }}
+        SKIP_LABELS: ${{ inputs.skip-labels }}
+      run: python3 "$GITHUB_ACTION_PATH/../src/on-ci-completion.py"
