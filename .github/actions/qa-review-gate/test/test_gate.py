@@ -35,8 +35,24 @@ def comment_event(body, login="sowmyav27", association="MEMBER", on_pr=True):
     return {
         "issue": {"number": 1, **({"pull_request": {"url": "x"}} if on_pr else {})},
         "comment": {"body": body, "user": {"login": login}, "author_association": association,
+                    "created_at": "2026-11-18T10:00:00Z",
                     "html_url": "https://github.com/o/r/pull/1#issuecomment-5"},
     }
+
+
+def backport_event(pr=None, sender="loft-bot"):
+    return {"pull_request": pr or backport_pr(), "sender": {"login": sender}}
+
+
+def pr_api(pushed_at="2026-11-18T09:00:00Z"):
+    """A fake gh_api for the PR lookups apply makes: head, then the commit list."""
+    def fake(args, token, payload=None):
+        if args[0].endswith("/commits"):
+            return [[{"commit": {"committer": {"date": pushed_at}}}]]
+        if "/pulls/" in args[0] and len(args) == 1:
+            return {"head": {"sha": HEAD}}
+        return {}
+    return fake
 
 
 def test_parse_marker_reads_verdict_classes_and_head():
@@ -89,10 +105,10 @@ def test_stale_marker_for_an_older_head_is_ignored():
 def test_override_by_qa_login_succeeds_with_reason():
     event = comment_event("/qa-review override the spec is covered by the nightly suite")
     decision = gate.decide_comment(event, {"sowmyav27"}, "qa-review")
-    assert decision["check"]["conclusion"] == "success"
-    assert decision["check"]["head_sha"] is None
-    assert "overrode the panel verdict: the spec is covered" in decision["check"]["summary"]
-    assert decision["pr_number"] == 1
+    assert [(c["name"], c["conclusion"], c["head_sha"]) for c in decision["checks"]] == [
+        ("qa-review", "success", None), ("qa-review-ci", "success", None)]
+    assert "overrode the panel verdict: the spec is covered" in decision["checks"][0]["summary"]
+    assert decision["pr_number"] == 1 and decision["comment_at"] == "2026-11-18T10:00:00Z"
 
 
 def test_override_by_non_qa_login_is_ignored():
@@ -125,7 +141,7 @@ def test_comment_on_an_issue_is_ignored():
 
 
 def test_backport_by_the_bot_gets_both_checks_green():
-    decision = gate.decide_backport({"pull_request": backport_pr()}, "loft-bot", "qa-review")
+    decision = gate.decide_backport(backport_event(), "loft-bot", "qa-review")
     names = [(c["name"], c["conclusion"], c["head_sha"]) for c in decision["checks"]]
     assert names == [("qa-review", "success", HEAD), ("qa-review-ci", "success", HEAD)]
     assert decision["request_qa_review"] is False and decision["pr_number"] == 9444
@@ -133,27 +149,55 @@ def test_backport_by_the_bot_gets_both_checks_green():
 
 @pytest.mark.parametrize("pr", [backport_pr(login="roehrijn"), backport_pr(ref="fix/thing")])
 def test_backport_needs_the_bot_author_and_the_backport_branch(pr):
-    assert "skip" in gate.decide_backport({"pull_request": pr}, "loft-bot", "qa-review")
+    assert "skip" in gate.decide_backport(backport_event(pr), "loft-bot", "qa-review")
 
 
-def test_panel_block_on_a_backport_is_ignored():
+def test_backport_push_by_a_person_gets_no_free_pass():
+    decision = gate.decide_backport(backport_event(sender="roehrijn"), "loft-bot", "qa-review")
+    assert decision == {"skip": "roehrijn pushed to the backport; the panel reviews this head"}
+
+
+def test_panel_verdict_on_a_backport_counts():
     event = review_event(body=marker("block"))
     event["pull_request"] = backport_pr()
-    decision = gate.decide_review(event, "loft-bot", "qa-review")
-    assert [c["conclusion"] for c in decision["checks"]] == ["success", "success"]
+    assert gate.decide_review(event, "loft-bot", "qa-review")["check"]["conclusion"] == "failure"
 
 
-def test_ci_skips_an_automated_backport(monkeypatch):
-    monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None: backport_pr())
-    run = {"pull_requests": [{"number": 9444}], "conclusion": "success"}
-    decision = gate.collect_ci({"workflow_run": run}, "loft-sh/loft-enterprise", "tok", "qa-review")
-    assert decision == {"skip": "automated backport, CI spec check skipped"}
+def test_run_pr_number_prefers_the_event_then_the_head_commit():
+    assert gate.run_pr_number({"pull_requests": [{"number": 5}]}, "o/r", "tok") == 5
+    calls = []
+    pulls = [{"number": 7, "state": "closed"}, {"number": 8, "state": "open"}]
+    gate.gh_api, saved = (lambda args, token, payload=None: calls.append(args) or pulls), gate.gh_api
+    try:
+        assert gate.run_pr_number({"pull_requests": [], "head_sha": HEAD}, "o/r", "tok") == 8
+        assert gate.run_pr_number({"pull_requests": []}, "o/r", "tok") is None
+    finally:
+        gate.gh_api = saved
+    assert calls == [[f"repos/o/r/commits/{HEAD}/pulls"]]
+
+
+def test_pr_diff_builds_the_added_lines_from_the_files_api(monkeypatch):
+    pages = [[{"filename": "e2e/a.go", "patch": '@@\n+\tIt("new", func() {'},
+              {"filename": "e2e/big.go"}]]
+    monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None: pages)
+    assert gate.added_specs(gate.pr_diff("o/r", 1, "tok")) == ["new"]
+
+
+def test_ci_diff_failure_asks_a_person_instead_of_failing_the_job(monkeypatch):
+    def fake(args, token, payload=None):
+        raise gate.GateError("gh api files failed: too many files")
+    monkeypatch.setattr(gate, "gh_api", fake)
+    run = {"pull_requests": [{"number": 9}], "head_sha": HEAD, "conclusion": "success"}
+    decision = gate.collect_ci({"workflow_run": run}, "o/r", "tok", "qa-review")
+    assert decision["check"]["name"] == "qa-review-ci"
+    assert decision["check"]["conclusion"] == "action_required"
+    assert decision["check"]["head_sha"] == HEAD and decision["pr_number"] == 9
 
 
 def test_apply_posts_every_check_in_the_decision(monkeypatch):
     calls = []
     monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None: calls.append((args, payload)) or {})
-    decision = gate.decide_backport({"pull_request": backport_pr()}, "loft-bot", "qa-review")
+    decision = gate.decide_backport(backport_event(), "loft-bot", "qa-review")
     gate.apply(decision, "loft-sh/loft-enterprise", "tok", "loft-sh/eng-qa", "https://run")
     assert [p["name"] for a, p in calls] == ["qa-review", "qa-review-ci"]
     assert all(p["head_sha"] == HEAD and p["conclusion"] == "success" for a, p in calls)
@@ -161,12 +205,11 @@ def test_apply_posts_every_check_in_the_decision(monkeypatch):
 
 def test_apply_posts_check_run_and_requests_team(monkeypatch):
     calls = []
+    lookups = pr_api()
 
     def fake_gh_api(args, token, payload=None):
         calls.append((args, payload))
-        if args[0].endswith("/pulls/1"):
-            return {"head": {"sha": HEAD}}
-        return {}
+        return lookups(args, token, payload)
 
     monkeypatch.setattr(gate, "gh_api", fake_gh_api)
     decision = gate.decide_comment(comment_event("/qa-review human", login="dev-x"), set(), "qa-review")
@@ -177,6 +220,38 @@ def test_apply_posts_check_run_and_requests_team(monkeypatch):
     assert check_call["details_url"] == "https://run"
     team_call = next(p for a, p in calls if a[0].endswith("/requested_reviewers"))
     assert team_call == {"team_reviewers": ["eng-qa"]}
+
+
+def test_apply_skips_a_comment_the_author_pushed_after(monkeypatch, capsys):
+    posted = []
+    lookups = pr_api(pushed_at="2026-11-18T10:05:00Z")
+
+    def fake_gh_api(args, token, payload=None):
+        if args[0].endswith("/check-runs"):
+            posted.append(payload)
+        return lookups(args, token, payload)
+
+    monkeypatch.setattr(gate, "gh_api", fake_gh_api)
+    decision = gate.decide_comment(comment_event("/qa-review override covered"), {"sowmyav27"}, "qa-review")
+    assert gate.apply(decision, "o/r", "tok", "loft-sh/eng-qa", "https://run") is None
+    assert posted == [] and "changed after the comment" in capsys.readouterr().out
+
+
+def test_apply_warns_when_the_team_request_fails(monkeypatch, capsys):
+    posted = []
+    lookups = pr_api()
+
+    def fake_gh_api(args, token, payload=None):
+        if args[0].endswith("/requested_reviewers"):
+            raise gate.GateError("gh api failed: Could not resolve to a node")
+        if args[0].endswith("/check-runs"):
+            posted.append(payload)
+        return lookups(args, token, payload)
+
+    monkeypatch.setattr(gate, "gh_api", fake_gh_api)
+    decision = gate.decide_comment(comment_event("/qa-review human", login="dev-x"), set(), "qa-review")
+    assert gate.apply(decision, "o/r", "tok", "loft-sh/eng-qa", "https://run") == HEAD
+    assert len(posted) == 1 and "::warning::qa-review-gate: could not request loft-sh/eng-qa" in capsys.readouterr().out
 
 
 def test_main_review_skip_prints_notice(tmp_path, monkeypatch, capsys):
@@ -215,7 +290,11 @@ diff --git a/pkg/thing_test.go b/pkg/thing_test.go
 
 def test_added_specs_reads_added_it_lines_in_e2e_go_only():
     assert gate.added_specs(DIFF) == ["restores the snapshot", "creates a snapshot",
-                                      'keeps the \\"quoted\\" name']
+                                      'keeps the "quoted" name']
+
+
+def test_unescape_go_reads_the_literal_like_go():
+    assert gate.unescape_go(r'a \"b\" \\ c\n') == 'a "b" \\ c\n'
 
 
 def test_report_specs_maps_leaf_text_to_state():
@@ -226,6 +305,16 @@ def test_report_specs_maps_leaf_text_to_state():
     ]}]
     assert gate.report_specs(report) == {"restores the snapshot": "passed",
                                          "creates a snapshot": "skipped"}
+
+
+def test_report_specs_keeps_the_worst_state_across_reports():
+    states = gate.report_specs([{"SpecReports": [
+        {"LeafNodeType": "It", "LeafNodeText": "same text", "State": "failed"},
+        {"LeafNodeType": "It", "LeafNodeText": "other", "State": "skipped"}]}])
+    gate.report_specs([{"SpecReports": [
+        {"LeafNodeType": "It", "LeafNodeText": "same text", "State": "passed"},
+        {"LeafNodeType": "It", "LeafNodeText": "other", "State": "passed"}]}], states)
+    assert states == {"same text": "failed", "other": "skipped"}
 
 
 def run(conclusion="success"):

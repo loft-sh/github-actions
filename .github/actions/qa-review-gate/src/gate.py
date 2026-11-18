@@ -13,9 +13,10 @@ Two event shapes, both read from GITHUB_EVENT_PATH:
   Ginkgo JSON report the run uploaded. A new spec that did not run, or did not pass, turns the
   `<check>-ci` check-run red. The panel's verdict check-run is never touched.
 - pull_request (opened, synchronize, ...) of an automated backport: a PR the panel bot opened
-  from a `backport/` branch was reviewed on main already. Both check-runs complete as success
-  at once and the other modes ignore the PR, so the repo's auto-approve workflow can approve
-  it without waiting on the panel.
+  from a `backport/` branch was reviewed on main already. While every push comes from the bot,
+  both check-runs complete as success at once, so the repo's auto-approve workflow can approve
+  it without waiting on the panel. A push by anyone else gets no free pass: that head has no
+  check-run until the panel reviews it and the e2e run reports.
 
 Every decision is a plain dict so the tests never touch the network; `apply` is the only
 function that calls `gh`.
@@ -38,6 +39,10 @@ CONCLUSION = {"block": "failure", "pass": "success", "needs_human": "action_requ
 CLASS_WORDS = {"a": "need a test", "b": "weak test", "c": "no test", "d": "product gap"}
 MEMBER_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
 ADDED_SPEC = re.compile(r'^\+[^+].*\b[FPX]?(?:It|Specify)\(\s*"((?:[^"\\]|\\.)+)"')
+GO_ESCAPES = {"n": "\n", "t": "\t", "r": "\r"}
+# Ginkgo states, worst last; two reports for one spec text keep the worst.
+STATE_RANK = {"passed": 0, "": 1, "pending": 2, "skipped": 3, "timedout": 4, "interrupted": 4,
+              "aborted": 4, "panicked": 5, "failed": 5}
 REPORT_ARTIFACT = "ginkgo-report"
 BACKPORT_BRANCH = "backport/"
 
@@ -74,6 +79,11 @@ def is_backport(pr, bot_login):
             and ((pr.get("head") or {}).get("ref") or "").startswith(BACKPORT_BRANCH))
 
 
+def unescape_go(text):
+    r"""The spec text as Go reads the string literal: \" -> ", \\ -> \, \n -> newline."""
+    return re.sub(r"\\(.)", lambda m: GO_ESCAPES.get(m.group(1), m.group(1)), text)
+
+
 def backport_checks(pr, check_name):
     head = (pr.get("head") or {}).get("sha", "")
     summary = ("Automated backport: the original PR was reviewed on main, so the QA review is "
@@ -89,6 +99,9 @@ def decide_backport(event, bot_login, check_name):
     pr = event.get("pull_request") or {}
     if not is_backport(pr, bot_login):
         return {"skip": f"PR by {(pr.get('user') or {}).get('login') or 'unknown'} is not an automated backport"}
+    pusher = (event.get("sender") or {}).get("login", "")
+    if pusher != bot_login:
+        return {"skip": f"{pusher or 'unknown'} pushed to the backport; the panel reviews this head"}
     return {"checks": backport_checks(pr, check_name), "request_qa_review": False,
             "pr_number": pr.get("number")}
 
@@ -100,9 +113,6 @@ def decide_review(event, panel_login, check_name):
     if author != panel_login:
         return {"skip": f"review by {author or 'unknown'}, not the panel ({panel_login})"}
     pr = event.get("pull_request") or {}
-    if is_backport(pr, panel_login):
-        return {"checks": backport_checks(pr, check_name), "request_qa_review": False,
-                "pr_number": pr.get("number")}
     parsed = parse_marker(review.get("body"))
     if parsed is None:
         return {"skip": "panel review carries no qa-review marker"}
@@ -146,13 +156,17 @@ def decide_comment(event, qa_logins, check_name, command="/qa-review"):
         reason = " ".join(words[2:]).strip()
         if not reason:
             return {"skip": "override needs a reason: /qa-review override <reason>"}
+        summary = (f"@{author} overrode the panel verdict: {reason}\n\n"
+                   f"Comment: {comment.get('html_url', '')}")
         return {
-            "check": {"name": check_name, "head_sha": None, "conclusion": "success",
-                      "title": f"QA review: overridden by @{author}",
-                      "summary": f"@{author} overrode the panel verdict: {reason}\n\n"
-                                 f"Comment: {comment.get('html_url', '')}"},
+            "checks": [{"name": check_name, "head_sha": None, "conclusion": "success",
+                        "title": f"QA review: overridden by @{author}", "summary": summary},
+                       {"name": f"{check_name}-ci", "head_sha": None, "conclusion": "success",
+                        "title": f"QA review: CI spec check overridden by @{author}",
+                        "summary": summary}],
             "request_qa_review": False,
             "pr_number": issue.get("number"),
+            "comment_at": comment.get("created_at", ""),
         }
     if verb == "human":
         if comment.get("author_association") not in MEMBER_ASSOCIATIONS:
@@ -164,6 +178,7 @@ def decide_comment(event, qa_logins, check_name, command="/qa-review"):
                                  f"{comment.get('html_url', '')}"},
             "request_qa_review": True,
             "pr_number": issue.get("number"),
+            "comment_at": comment.get("created_at", ""),
         }
     return {"skip": f"unknown {command} verb {verb!r}; use override <reason> or human"}
 
@@ -178,17 +193,24 @@ def added_specs(diff):
         elif in_e2e_go:
             match = ADDED_SPEC.match(line)
             if match:
-                specs.append(match.group(1))
+                specs.append(unescape_go(match.group(1)))
     return specs
 
 
-def report_specs(report):
+def merge_state(states, text, state):
+    """Keep the worst state seen for a spec text (same It text in two containers or reports)."""
+    rank = STATE_RANK.get(state, STATE_RANK["failed"])
+    if text not in states or rank > STATE_RANK.get(states[text], STATE_RANK["failed"]):
+        states[text] = state
+
+
+def report_specs(report, states=None):
     """{spec text: state} for every leaf spec in a Ginkgo JSON report (a list of suites)."""
-    states = {}
+    states = {} if states is None else states
     for suite in report:
         for spec in suite.get("SpecReports") or []:
             if spec.get("LeafNodeType") in ("It", "Specify", None):
-                states[spec.get("LeafNodeText", "")] = spec.get("State", "")
+                merge_state(states, spec.get("LeafNodeText", ""), spec.get("State", ""))
     return states
 
 
@@ -230,17 +252,43 @@ def gh(args, token, **kwargs):
     return result.stdout
 
 
-def collect_ci(event, repo, token, check_name, panel_login="loft-bot"):
+def run_pr_number(run, repo, token):
+    """The open PR an e2e run belongs to. A /test-e2e run is a workflow_dispatch on the PR's
+    head branch, so `pull_requests` is empty and the head commit names the PR instead."""
+    prs = run.get("pull_requests") or []
+    if prs:
+        return prs[0]["number"]
+    head = run.get("head_sha") or ""
+    if not head:
+        return None
+    for pr in gh_api([f"repos/{repo}/commits/{head}/pulls"], token) or []:
+        if pr.get("state") == "open":
+            return pr["number"]
+    return None
+
+
+def pr_diff(repo, pr_number, token):
+    """A diff of the PR built from the files API (patch per file, up to 3000 files), in the
+    `+++ b/<path>` shape added_specs reads. `gh pr diff` refuses PRs over the diff limit."""
+    files = gh_api([f"repos/{repo}/pulls/{pr_number}/files", "--paginate", "--slurp"], token)
+    return "\n".join(f"+++ b/{f['filename']}\n{f.get('patch') or ''}"
+                      for page in files for f in page)
+
+
+def collect_ci(event, repo, token, check_name):
     """Fetch the diff and the Ginkgo report for a finished e2e run, then decide."""
     run = event.get("workflow_run") or {}
-    prs = run.get("pull_requests") or []
-    if not prs:
-        return {"skip": "e2e run is not for a pull request"}
-    pr_number = prs[0]["number"]
-    if is_backport(gh_api([f"repos/{repo}/pulls/{pr_number}"], token), panel_login):
-        return {"skip": "automated backport, CI spec check skipped"}
-    diff = gh(["pr", "diff", str(pr_number), "-R", repo], token)
-    added = added_specs(diff)
+    pr_number = run_pr_number(run, repo, token)
+    if pr_number is None:
+        return {"skip": "e2e run is not for an open pull request"}
+    try:
+        added = added_specs(pr_diff(repo, pr_number, token))
+    except GateError as error:
+        return {"check": {"name": f"{check_name}-ci", "head_sha": run.get("head_sha", ""),
+                          "conclusion": "action_required",
+                          "title": "QA review: PR diff unavailable, a QA engineer checks the new specs",
+                          "summary": f"{error}\n\nOverride with `/qa-review override <reason>`."},
+                "request_qa_review": False, "pr_number": pr_number}
     if not added:
         return {"skip": "the PR adds no e2e spec"}
     with tempfile.TemporaryDirectory() as tmp:
@@ -249,9 +297,9 @@ def collect_ci(event, repo, token, check_name, panel_login="loft-bot"):
         except GateError:
             return {"skip": f"e2e run uploaded no {REPORT_ARTIFACT} artifact"}
         states = {}
-        for path in glob.glob(os.path.join(tmp, "**", "*.json"), recursive=True):
+        for path in sorted(glob.glob(os.path.join(tmp, "**", "*.json"), recursive=True)):
             with open(path, encoding="utf-8") as fh:
-                states.update(report_specs(json.load(fh)))
+                report_specs(json.load(fh), states)
     return decide_ci(run, pr_number, added, states, check_name)
 
 
@@ -269,13 +317,29 @@ def gh_api(args, token, payload=None):
     return json.loads(result.stdout) if result.stdout.strip() else {}
 
 
+def comment_head(decision, repo, token):
+    """The PR head a /qa-review comment applies to, or None when the author pushed after the
+    comment: a decision made on one head must not land on a commit nobody looked at."""
+    pr_number = decision["pr_number"]
+    head = gh_api([f"repos/{repo}/pulls/{pr_number}"], token)["head"]["sha"]
+    commits = gh_api([f"repos/{repo}/pulls/{pr_number}/commits", "--paginate", "--slurp"], token)
+    pushed = max((c.get("commit", {}).get("committer", {}).get("date", "")
+                  for page in commits for c in page), default="")
+    if decision.get("comment_at") and pushed > decision["comment_at"]:
+        return None
+    return head
+
+
 def apply(decision, repo, token, qa_team, run_url):
-    """Create the check-run(s) and, when asked, request the QA team's review."""
+    """Create the check-run(s) and, when asked, request the QA team's review. Returns the
+    head the checks landed on, or None when the comment is stale."""
     checks = decision.get("checks") or [decision["check"]]
     head = checks[0]["head_sha"]
     if head is None:
-        pr = gh_api([f"repos/{repo}/pulls/{decision['pr_number']}"], token)
-        head = pr["head"]["sha"]
+        head = comment_head(decision, repo, token)
+        if head is None:
+            print("::notice::qa-review-gate: the PR changed after the comment; comment again on the new head")
+            return None
     for check in checks:
         gh_api([f"repos/{repo}/check-runs", "-X", "POST"], token, {
             "name": check["name"], "head_sha": head, "status": "completed",
@@ -284,8 +348,12 @@ def apply(decision, repo, token, qa_team, run_url):
         })
     if decision["request_qa_review"] and qa_team:
         org, _, slug = qa_team.partition("/")
-        gh_api([f"repos/{repo}/pulls/{decision['pr_number']}/requested_reviewers", "-X", "POST"],
-               token, {"team_reviewers": [slug or org]})
+        try:
+            gh_api([f"repos/{repo}/pulls/{decision['pr_number']}/requested_reviewers", "-X", "POST"],
+                   token, {"team_reviewers": [slug or org]})
+        except GateError as error:
+            # The check-run is already up; a token that cannot name the team must not fail the job.
+            print(f"::warning::qa-review-gate: could not request {qa_team}: {error}")
     return head
 
 
@@ -302,7 +370,7 @@ def main():
         decision = decide_comment(event, logins, check_name)
     elif mode == "ci":
         decision = collect_ci(event, os.environ["GITHUB_REPOSITORY"],
-                              os.environ["INPUT_GITHUB_TOKEN"], check_name, panel_login)
+                              os.environ["INPUT_GITHUB_TOKEN"], check_name)
     elif mode == "backport":
         decision = decide_backport(event, panel_login, check_name)
     else:
@@ -312,7 +380,7 @@ def main():
         return 0
     head = apply(decision, os.environ["GITHUB_REPOSITORY"], os.environ["INPUT_GITHUB_TOKEN"],
                  os.environ.get("INPUT_QA_TEAM", ""), os.environ.get("INPUT_RUN_URL", ""))
-    for check in decision.get("checks") or [decision["check"]]:
+    for check in decision.get("checks") or [decision["check"]] if head else []:
         print(f"qa-review-gate: {check['name']} -> {check['conclusion']} on {head[:7]}")
     return 0
 

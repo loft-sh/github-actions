@@ -3,9 +3,11 @@
 Reusable workflow that turns the review panel's QA verdict into the `qa-review`
 check-run, handles the `/qa-review override <reason>` and `/qa-review human`
 comments, and after the e2e workflow finishes publishes `qa-review-ci` (red when a
-spec the PR adds did not run or pass). Wraps the composite action of the same name, adding a sparse checkout
-of this repo and the mode selection from the event name. The caller filters the
-events in its job `if:` so most reviews and comments spin no runner.
+spec the PR adds did not run or pass). A `/test-e2e` run is a `workflow_dispatch` on the
+PR's head branch, so the gate finds the PR through the run's head commit. Wraps the
+composite action of the same name, adding a sparse checkout of this repo at the
+revision the caller's tag resolved to and the mode selection from the event name. The
+caller filters the events in its job `if:` so most reviews and comments spin no runner.
 
 Caller (vcluster-pro, loft-enterprise):
 
@@ -13,11 +15,13 @@ Caller (vcluster-pro, loft-enterprise):
 name: QA review gate
 
 on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
   pull_request_review:
     types: [submitted]
-  issue_comment:
+  issue_comment:  # zizmor: ignore[dangerous-triggers]
     types: [created]
-  workflow_run:
+  workflow_run:  # zizmor: ignore[dangerous-triggers]
     workflows: ['vCluster Pro E2E CI (e2e)']
     types: [completed]
 
@@ -26,9 +30,10 @@ permissions: {}
 jobs:
   gate:
     if: >-
+      (github.event_name == 'pull_request' && github.event.pull_request.user.login == 'loft-bot' && startsWith(github.event.pull_request.head.ref, 'backport/')) ||
       (github.event_name == 'pull_request_review' && github.event.review.user.login == 'loft-bot') ||
       (github.event_name == 'issue_comment' && github.event.issue.pull_request && startsWith(github.event.comment.body, '/qa-review')) ||
-      (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request')
+      (github.event_name == 'workflow_run' && contains(fromJSON('["pull_request", "workflow_dispatch"]'), github.event.workflow_run.event))
     permissions:
       checks: write
       pull-requests: write

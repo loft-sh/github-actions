@@ -1,0 +1,6 @@
+# github.job_workflow_sha (the commit a reusable workflow was called at) is a
+# documented context property that actionlint 1.7.12 does not know yet.
+paths:
+  .github/workflows/qa-review-gate.yaml:
+    ignore:
+      - 'property "job_workflow_sha" is not defined'

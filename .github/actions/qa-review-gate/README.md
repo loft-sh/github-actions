@@ -23,22 +23,32 @@ never grades a new push.
 
 An automated backport (a PR the panel login opened from a `backport/` branch) was
 reviewed on main. On its `pull_request` events (mode `backport`) both check-runs
-complete as success at once, a panel review on it is ignored, and the `ci` mode
-skips it, so the repo's auto-approve workflow can approve it without waiting on
-the panel.
+complete as success at once, so the repo's auto-approve workflow can approve it
+without waiting on the panel. That holds only while the panel login is the one
+committing: a commit by a person leaves the new head without check-runs, and the
+panel's verdict and the e2e report then grade it like any other PR.
 
 Comments on the PR:
 
-- `/qa-review override <reason>` from a login in `qa-logins` completes the
-  check-run as success and records who overrode it and why.
+- `/qa-review override <reason>` from a login in `qa-logins` completes both
+  check-runs (`qa-review` and `qa-review-ci`) as success and records who overrode
+  them and why. A comment applies to the head it was written on: when the author
+  added commits after the comment, the gate does nothing and says so in the job log.
 - `/qa-review human` from a repository member requests the QA team and leaves
   the check-run as action_required until a person decides.
 
-After the e2e workflow finishes (`workflow_run`, mode `ci`), the action downloads
-the run's `ginkgo-report` artifact, takes every `It(` the PR adds under an `e2e`
-directory, and publishes a second check-run `qa-review-ci`: failure when a new
-spec is not in the report or did not pass, success otherwise. A PR that adds no
-spec, or a run that was cancelled, publishes nothing.
+After the e2e workflow finishes (`workflow_run`, mode `ci`), the action finds the
+open PR for the run (from the event, or from the run's head commit when the run was
+a `/test-e2e` dispatch), reads the PR's files, takes every `It(` the PR adds under an
+`e2e` directory, downloads the run's `ginkgo-report` artifact, and publishes a second
+check-run `qa-review-ci`: failure when a new spec is not in the report or did not
+pass, success otherwise. The same spec text in two reports or two containers keeps
+the worst state. A PR that adds no spec, or a run that was cancelled, publishes
+nothing. A PR whose files the API will not list gets `action_required` and a QA
+engineer overrides.
+
+Requesting the QA team's review (on `needs_human` and `/qa-review human`) is best
+effort: when the token cannot name the team, the job logs a warning and stays green.
 
 The action creates check-runs with the job's `GITHUB_TOKEN`; the caller grants
 `checks: write` and `pull-requests: write` (`actions: read` too for `ci`). It
