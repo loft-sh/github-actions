@@ -193,6 +193,34 @@ def test_override_by_a_login_outside_the_list_is_ignored():
     assert "skip" in gate.decide_comment(event, {"sowmyav27"}, "qa-review")
 
 
+def test_override_by_a_team_member_counts():
+    event = comment_event("/qa-review override trust me", login="lead-x")
+    decision = gate.decide_comment(event, set(), "qa-review", member=lambda login: login == "lead-x")
+    assert decision["checks"][0]["title"] == "QA review: overridden by @lead-x"
+
+
+def test_team_member_reads_active_membership_and_skips_404(monkeypatch):
+    calls = []
+
+    def fake(args, token, payload=None):
+        calls.append(args[0])
+        if "eng-tech-leads" in args[0]:
+            raise gate.GateError("gh api failed: HTTP 404")
+        return {"state": "active"}
+    monkeypatch.setattr(gate, "gh_api", fake)
+    teams = ["loft-sh/eng-tech-leads", "loft-sh/eng-qa"]
+    assert gate.team_member("sowmyav27", teams, "org-tok") is True
+    assert calls == ["orgs/loft-sh/teams/eng-tech-leads/memberships/sowmyav27",
+                     "orgs/loft-sh/teams/eng-qa/memberships/sowmyav27"]
+
+
+def test_team_member_pending_or_no_token_is_not_a_member(monkeypatch, capsys):
+    monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None: {"state": "pending"})
+    assert gate.team_member("x", ["loft-sh/eng-qa"], "org-tok") is False
+    assert gate.team_member("x", ["loft-sh/eng-qa"], "") is False
+    assert "no org-token" in capsys.readouterr().out
+
+
 def test_override_reason_is_optional():
     decision = gate.decide_comment(comment_event("/qa-review override"), {"sowmyav27"}, "qa-review")
     assert "overrode the panel verdict: no reason given" in decision["checks"][0]["summary"]

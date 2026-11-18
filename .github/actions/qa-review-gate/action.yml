@@ -7,7 +7,7 @@ description: |
   reads the marker and never talks to the panel itself.
   `review` mode handles a submitted pull request review (verdict check-run, `needs_human`
   hands the PR back to its author, `qa-test-run` opens green or waiting); `comment` mode
-  handles `/qa-review override [<reason>]` (override logins only) and `/qa-review human`
+  handles `/qa-review override [<reason>]` (override teams and logins only) and `/qa-review human`
   (members); `ci` mode runs when the e2e workflow finishes and checks every spec the PR
   adds against the run's Ginkgo report, completing `qa-test-run`. `bot` mode runs on
   `pull_request` events and completes both check-runs as success when a trusted bot
@@ -26,7 +26,15 @@ inputs:
     required: false
     default: 'loft-bot'
   override-logins:
-    description: 'Comma-separated logins allowed to run /qa-review override (tech leads).'
+    description: 'Comma-separated logins allowed to run /qa-review override, on top of override-teams.'
+    required: false
+    default: ''
+  override-teams:
+    description: 'Comma-separated org/slug teams whose members may run /qa-review override. Membership is read with org-token.'
+    required: false
+    default: 'loft-sh/eng-tech-leads,loft-sh/eng-qa'
+  org-token:
+    description: 'Token with read:org, used only to read override-teams membership. GITHUB_TOKEN cannot; empty disables the teams.'
     required: false
     default: ''
   bot-prs:
@@ -60,6 +68,8 @@ runs:
         INPUT_MODE: ${{ inputs.mode }}
         INPUT_PANEL_LOGIN: ${{ inputs.panel-login }}
         INPUT_OVERRIDE_LOGINS: ${{ inputs.override-logins }}
+        INPUT_OVERRIDE_TEAMS: ${{ inputs.override-teams }}
+        INPUT_ORG_TOKEN: ${{ inputs.org-token }}
         INPUT_BOT_PRS: ${{ inputs.bot-prs }}
         INPUT_QA_TEAM: ${{ inputs.qa-team }}
         INPUT_CHECK_NAME: ${{ inputs.check-name }}

@@ -38,8 +38,11 @@ author.)
 
 Comments on the PR:
 
-- `/qa-review override [<reason>]` from a login in `override-logins` (tech leads)
-  completes both check-runs as success and records who overrode them and why. An
+- `/qa-review override [<reason>]` from a member of an `override-teams` team (by
+  default `loft-sh/eng-tech-leads` and `loft-sh/eng-qa`) or a login in `override-logins`
+  completes both check-runs as success and records who overrode them and why. Team
+  membership is read with `org-token`, a token with `read:org`; `GITHUB_TOKEN` cannot
+  read it, and without the token only `override-logins` apply (the job says so). An
   override answers a panel verdict, so it lands only when the PR's current head
   carries a panel marker submitted before the comment. A head pushed after the
   comment, or one the panel has not graded yet, gets nothing: the job log says so
@@ -84,7 +87,7 @@ steps:
   - uses: loft-sh/github-actions/.github/actions/qa-review-gate@qa-review-gate/v1
     with:
       mode: ${{ github.event_name == 'pull_request_review' && 'review' || github.event_name == 'workflow_run' && 'ci' || github.event_name == 'pull_request' && 'bot' || 'comment' }}
-      override-logins: '<tech lead logins>'
+      org-token: ${{ secrets.GH_ACCESS_TOKEN }}
 ```
 
 The reusable workflow `.github/workflows/qa-review-gate.yaml` wraps this with the
@@ -100,7 +103,9 @@ checkout and the event filter.
 |   check-name    | string |  false   |                      `"qa-review"`                       |                                                                        Name of the verdict check-run.                                                                        |
 |  github-token   | string |  false   |                 `"${{ github.token }}"`                  |                       Token for gh. The calling job <br>must grant checks: write and pull-requests: <br>write; ci mode also needs actions: <br>read.                         |
 |      mode       | string |   true   |                                                          | "review" (pull_request_review event), "comment" (issue_comment event), "ci" (workflow_run event of the e2e workflow) <br>or "bot" (pull_request event of a trusted bot PR).  |
-| override-logins | string |  false   |                                                          |                                                 Comma-separated logins allowed to run /qa-review <br>override (tech leads).                                                  |
+|    org-token    | string |  false   |                                                          |                          Token with read:org, used only to <br>read override-teams membership. GITHUB_TOKEN cannot; empty <br>disables the teams.                            |
+| override-logins | string |  false   |                                                          |                                          Comma-separated logins allowed to run /qa-review <br>override, on top of override-teams.                                            |
+| override-teams  | string |  false   |        `"loft-sh/eng-tech-leads,loft-sh/eng-qa"`         |                            Comma-separated org/slug teams whose members may <br>run /qa-review override. Membership is read <br>with org-token.                              |
 |   panel-login   | string |  false   |                       `"loft-bot"`                       |                                                 Login that posts the panel review. <br>Reviews by anyone else are ignored.                                                   |
 |     qa-team     | string |  false   |                    `"loft-sh/eng-qa"`                    |                                        org/slug of the team asked for <br>a review on /qa-review human. Empty <br>skips the request.                                         |
 | test-check-name | string |  false   |                     `"qa-test-run"`                      |                                              Name of the check-run that says <br>whether the new e2e specs ran <br>and passed.                                               |

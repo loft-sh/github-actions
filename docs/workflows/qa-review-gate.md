@@ -42,21 +42,22 @@ jobs:
       contents: read
       actions: read
     uses: loft-sh/github-actions/.github/workflows/qa-review-gate.yaml@qa-review-gate/v1 # zizmor: ignore[unpinned-uses] -- internal loft-sh workflow, pinned by its own rolling tag by policy
-    with:
-      override-logins: '<tech lead logins>'
+    secrets:
+      org-token: ${{ secrets.GH_ACCESS_TOKEN }}
 ```
 
 ## Inputs
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-|      INPUT      |  TYPE  | REQUIRED |                         DEFAULT                          |                                                       DESCRIPTION                                                       |
-|-----------------|--------|----------|----------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------|
-|     bot-prs     | string |  false   | `"loft-bot:backport/,vcluster-qa-bot[bot]:flake-fixer/"` | Comma-separated login:branch-prefix pairs whose PRs pass <br>both check-runs on the head the <br>bot opened them with.  |
-|   check-name    | string |  false   |                      `"qa-review"`                       |                                             Name of the verdict check-run.                                              |
-| override-logins | string |   true   |                                                          |                      Comma-separated logins allowed to run /qa-review <br>override (tech leads).                        |
-|   panel-login   | string |  false   |                       `"loft-bot"`                       |                                           Login that posts the panel review.                                            |
-|     qa-team     | string |  false   |                    `"loft-sh/eng-qa"`                    |                            org/slug of the team asked for <br>a review on /qa-review human.                             |
-| test-check-name | string |  false   |                     `"qa-test-run"`                      |                   Name of the check-run that says <br>whether the new e2e specs ran <br>and passed.                     |
+|      INPUT      |  TYPE  | REQUIRED |                         DEFAULT                          |                                                           DESCRIPTION                                                            |
+|-----------------|--------|----------|----------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------|
+|     bot-prs     | string |  false   | `"loft-bot:backport/,vcluster-qa-bot[bot]:flake-fixer/"` |     Comma-separated login:branch-prefix pairs whose PRs pass <br>both check-runs on the head the <br>bot opened them with.       |
+|   check-name    | string |  false   |                      `"qa-review"`                       |                                                  Name of the verdict check-run.                                                  |
+| override-logins | string |  false   |                                                          |                    Comma-separated logins allowed to run /qa-review <br>override, on top of override-teams.                      |
+| override-teams  | string |  false   |        `"loft-sh/eng-tech-leads,loft-sh/eng-qa"`         | Comma-separated org/slug teams whose members may <br>run /qa-review override. Membership is read <br>with the org-token secret.  |
+|   panel-login   | string |  false   |                       `"loft-bot"`                       |                                                Login that posts the panel review.                                                |
+|     qa-team     | string |  false   |                    `"loft-sh/eng-qa"`                    |                                org/slug of the team asked for <br>a review on /qa-review human.                                  |
+| test-check-name | string |  false   |                     `"qa-test-run"`                      |                        Name of the check-run that says <br>whether the new e2e specs ran <br>and passed.                         |
 
 <!-- AUTO-DOC-INPUT:END -->

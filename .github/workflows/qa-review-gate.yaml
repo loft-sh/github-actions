@@ -4,15 +4,20 @@ name: QA review gate
 # mode from the event, sparse-checks-out the action, and publishes the qa-review
 # and qa-test-run check-runs (both green at once on a trusted bot PR). The caller
 # filters the events (the panel's login, the /qa-review command, the bot logins)
-# in its job `if:` so most events spin no runner.
+# in its job `if:` so most events spin no runner, and passes a read:org token as
+# `org-token` so /qa-review override can check team membership.
 
 on:
   workflow_call:
     inputs:
       override-logins:
-        description: 'Comma-separated logins allowed to run /qa-review override (tech leads).'
+        description: 'Comma-separated logins allowed to run /qa-review override, on top of override-teams.'
         type: string
-        required: true
+        default: ''
+      override-teams:
+        description: 'Comma-separated org/slug teams whose members may run /qa-review override. Membership is read with the org-token secret.'
+        type: string
+        default: 'loft-sh/eng-tech-leads,loft-sh/eng-qa'
       panel-login:
         description: 'Login that posts the panel review.'
         type: string
@@ -33,6 +38,10 @@ on:
         description: 'Name of the check-run that says whether the new e2e specs ran and passed.'
         type: string
         default: 'qa-test-run'
+    secrets:
+      org-token:
+        description: 'Token with read:org, used only to read override-teams membership (GITHUB_TOKEN cannot). Empty disables the teams.'
+        required: false
 
 jobs:
   gate:
@@ -55,6 +64,8 @@ jobs:
         with:
           mode: ${{ github.event_name == 'pull_request_review' && 'review' || github.event_name == 'workflow_run' && 'ci' || github.event_name == 'pull_request' && 'bot' || 'comment' }}
           override-logins: ${{ inputs.override-logins }}
+          override-teams: ${{ inputs.override-teams }}
+          org-token: ${{ secrets.org-token }} # zizmor: ignore[secrets-outside-env] -- PAT passed through workflow_call; the action maps it to env itself
           panel-login: ${{ inputs.panel-login }}
           bot-prs: ${{ inputs.bot-prs }}
           qa-team: ${{ inputs.qa-team }}

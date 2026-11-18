@@ -10,8 +10,10 @@ Event shapes, all read from GITHUB_EVENT_PATH:
   head: success when the PR adds no e2e spec, otherwise action_required until an e2e run
   reports (so the check can be required without blocking spec-free PRs). A `qa-test-run`
   already on the head is left alone.
-- issue_comment (created): `/qa-review override [<reason>]` from an override login (tech leads)
-  completes both check-runs as success and records who overrode them. The override binds to the
+- issue_comment (created): `/qa-review override [<reason>]` from an override login or a member
+  of an override team (tech leads, QA; team membership is read with `org-token`, a token with
+  `read:org`, since GITHUB_TOKEN cannot) completes both check-runs as success and records who
+  overrode them. The override binds to the
   panel verdict it answers: the PR's current head must carry a panel marker submitted before
   the comment, otherwise the gate does nothing and asks for a fresh comment. When the panel
   never posted on that head (an outage), `/qa-review override <sha> [<reason>]` names the head
@@ -207,8 +209,10 @@ def collect_review(event, repo, token, panel_login, check_name, test_check="qa-t
     return decision
 
 
-def decide_comment(event, override_logins, check_name, test_check="qa-test-run", command="/qa-review"):
-    """Map a PR comment to an override, a human request, or a skip."""
+def decide_comment(event, override_logins, check_name, test_check="qa-test-run", command="/qa-review",
+                   member=lambda login: False):
+    """Map a PR comment to an override, a human request, or a skip. `member(login)` says
+    whether a login outside `override_logins` belongs to an override team."""
     issue = event.get("issue") or {}
     if not issue.get("pull_request"):
         return {"skip": "comment is not on a pull request"}
@@ -220,8 +224,8 @@ def decide_comment(event, override_logins, check_name, test_check="qa-test-run",
     author = (comment.get("user") or {}).get("login", "")
     verb = words[1]
     if verb == "override":
-        if author not in override_logins:
-            return {"skip": f"{author or 'unknown'} is not an override login; override ignored"}
+        if author not in override_logins and not member(author):
+            return {"skip": f"{author or 'unknown'} is not an override login or team member; override ignored"}
         rest = words[2:]
         sha_prefix = rest.pop(0) if rest and SHA_PREFIX.match(rest[0]) else None
         reason = " ".join(rest).strip() or "no reason given"
@@ -410,6 +414,25 @@ def collect_ci(event, repo, token, test_check="qa-test-run"):
     return decide_ci(run, pr_number, added, states, test_check)
 
 
+def team_member(login, teams, org_token):
+    """Whether `login` is an active member of any `org/slug` in `teams`. Needs a token with
+    read:org; without one the teams are ignored and the job says so."""
+    if not teams or not login:
+        return False
+    if not org_token:
+        print("::warning::qa-review-gate: override-teams set but no org-token; only override-logins apply")
+        return False
+    for team in teams:
+        org, _, slug = team.partition("/")
+        try:
+            state = gh_api([f"orgs/{org}/teams/{slug}/memberships/{login}"], org_token).get("state")
+        except GateError:
+            continue  # 404: not a member
+        if state == "active":
+            return True
+    return False
+
+
 def gh_api(args, token, payload=None):
     command = ["gh", "api", *args]
     env = {**os.environ, "GH_TOKEN": token}
@@ -499,7 +522,10 @@ def main():
         decision = collect_review(event, repo, token, panel_login, check_name, test_check)
     elif mode == "comment":
         logins = {s.strip() for s in os.environ.get("INPUT_OVERRIDE_LOGINS", "").split(",") if s.strip()}
-        decision = decide_comment(event, logins, check_name, test_check)
+        teams = [s.strip() for s in os.environ.get("INPUT_OVERRIDE_TEAMS", "").split(",") if s.strip()]
+        org_token = os.environ.get("INPUT_ORG_TOKEN", "")
+        decision = decide_comment(event, logins, check_name, test_check,
+                                  member=lambda login: team_member(login, teams, org_token))
     elif mode == "ci":
         decision = collect_ci(event, repo, token, test_check)
     elif mode == "bot":
