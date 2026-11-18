@@ -22,18 +22,20 @@ A marker whose `head` is not the PR's current head is ignored, so an old review
 never grades a new push.
 
 An automated backport (a PR the panel login opened from a `backport/` branch) was
-reviewed on main. On its `pull_request` events (mode `backport`) both check-runs
-complete as success at once, so the repo's auto-approve workflow can approve it
-without waiting on the panel. That holds only while the panel login is the one
-committing: a commit by a person leaves the new head without check-runs, and the
-panel's verdict and the e2e report then grade it like any other PR.
+reviewed on main. On its `opened` event (mode `backport`) both check-runs complete
+as success at once on the head the bot opened it with, so the repo's auto-approve
+workflow can approve it without waiting on the panel. Any later head, whoever
+pushed it, has no check-runs until the panel's verdict and the e2e report grade it
+like any other PR. (Commit authorship cannot tell the two apart: a bot backport
+keeps the original author.)
 
 Comments on the PR:
 
 - `/qa-review override <reason>` from a login in `qa-logins` completes both
   check-runs (`qa-review` and `qa-review-ci`) as success and records who overrode
-  them and why. A comment applies to the head it was written on: when the author
-  added commits after the comment, the gate does nothing and says so in the job log.
+  them and why. A comment applies to the head it was written on: when the current
+  head's first check suite is newer than the comment (GitHub sets that time, not the
+  committer), the gate does nothing and says so in the job log.
 - `/qa-review human` from a repository member requests the QA team and leaves
   the check-run as action_required until a person decides.
 

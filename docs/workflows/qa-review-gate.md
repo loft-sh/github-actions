@@ -16,7 +16,7 @@ name: QA review gate
 
 on:
   pull_request:
-    types: [opened, reopened, synchronize, ready_for_review]
+    types: [opened]
   pull_request_review:
     types: [submitted]
   issue_comment:  # zizmor: ignore[dangerous-triggers]

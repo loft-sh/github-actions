@@ -12,11 +12,12 @@ Two event shapes, both read from GITHUB_EVENT_PATH:
 - workflow_run (completed) of the e2e workflow: every `It(` the PR adds is looked up in the
   Ginkgo JSON report the run uploaded. A new spec that did not run, or did not pass, turns the
   `<check>-ci` check-run red. The panel's verdict check-run is never touched.
-- pull_request (opened, synchronize, ...) of an automated backport: a PR the panel bot opened
-  from a `backport/` branch was reviewed on main already. While every push comes from the bot,
-  both check-runs complete as success at once, so the repo's auto-approve workflow can approve
-  it without waiting on the panel. A push by anyone else gets no free pass: that head has no
-  check-run until the panel reviews it and the e2e run reports.
+- pull_request (opened) of an automated backport: a PR the panel bot opened from a
+  `backport/` branch was reviewed on main already. On the head the bot opened it with, both
+  check-runs complete as success at once, so the repo's auto-approve workflow can approve it
+  without waiting on the panel. Any later head, whoever pushed it, gets no free pass: it has
+  no check-run until the panel reviews it and the e2e run reports. (A bot backport keeps the
+  original author on its commits, so commit authorship cannot tell a bot push from a person's.)
 
 Every decision is a plain dict so the tests never touch the network; `apply` is the only
 function that calls `gh`.
@@ -100,8 +101,8 @@ def decide_backport(event, bot_login, check_name):
     if not is_backport(pr, bot_login):
         return {"skip": f"PR by {(pr.get('user') or {}).get('login') or 'unknown'} is not an automated backport"}
     pusher = (event.get("sender") or {}).get("login", "")
-    if pusher != bot_login:
-        return {"skip": f"{pusher or 'unknown'} pushed to the backport; the panel reviews this head"}
+    if event.get("action") != "opened" or pusher != bot_login:
+        return {"skip": "only the head the bot opened the backport with passes; the panel reviews this head"}
     return {"checks": backport_checks(pr, check_name), "request_qa_review": False,
             "pr_number": pr.get("number")}
 
@@ -318,14 +319,15 @@ def gh_api(args, token, payload=None):
 
 
 def comment_head(decision, repo, token):
-    """The PR head a /qa-review comment applies to, or None when the author pushed after the
-    comment: a decision made on one head must not land on a commit nobody looked at."""
+    """The PR head a /qa-review comment applies to, or None when that head arrived after the
+    comment: a decision made on one head must not land on a commit nobody looked at. A head's
+    first check suite is created by GitHub when it is pushed, so its time is not the client's
+    to set; a head with no suite yet is newer than any comment."""
     pr_number = decision["pr_number"]
     head = gh_api([f"repos/{repo}/pulls/{pr_number}"], token)["head"]["sha"]
-    commits = gh_api([f"repos/{repo}/pulls/{pr_number}/commits", "--paginate", "--slurp"], token)
-    pushed = max((c.get("commit", {}).get("committer", {}).get("date", "")
-                  for page in commits for c in page), default="")
-    if decision.get("comment_at") and pushed > decision["comment_at"]:
+    suites = gh_api([f"repos/{repo}/commits/{head}/check-suites"], token).get("check_suites") or []
+    pushed = min((suite.get("created_at", "") for suite in suites), default="")
+    if decision.get("comment_at") and (not pushed or pushed > decision["comment_at"]):
         return None
     return head
 

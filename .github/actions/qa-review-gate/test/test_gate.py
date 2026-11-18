@@ -40,15 +40,15 @@ def comment_event(body, login="sowmyav27", association="MEMBER", on_pr=True):
     }
 
 
-def backport_event(pr=None, sender="loft-bot"):
-    return {"pull_request": pr or backport_pr(), "sender": {"login": sender}}
+def backport_event(pr=None, sender="loft-bot", action="opened"):
+    return {"action": action, "pull_request": pr or backport_pr(), "sender": {"login": sender}}
 
 
 def pr_api(pushed_at="2026-11-18T09:00:00Z"):
-    """A fake gh_api for the PR lookups apply makes: head, then the commit list."""
+    """A fake gh_api for the PR lookups apply makes: head, then the head's check suites."""
     def fake(args, token, payload=None):
-        if args[0].endswith("/commits"):
-            return [[{"commit": {"committer": {"date": pushed_at}}}]]
+        if args[0].endswith("/check-suites"):
+            return {"check_suites": [{"created_at": pushed_at}] if pushed_at else []}
         if "/pulls/" in args[0] and len(args) == 1:
             return {"head": {"sha": HEAD}}
         return {}
@@ -152,9 +152,12 @@ def test_backport_needs_the_bot_author_and_the_backport_branch(pr):
     assert "skip" in gate.decide_backport(backport_event(pr), "loft-bot", "qa-review")
 
 
-def test_backport_push_by_a_person_gets_no_free_pass():
-    decision = gate.decide_backport(backport_event(sender="roehrijn"), "loft-bot", "qa-review")
-    assert decision == {"skip": "roehrijn pushed to the backport; the panel reviews this head"}
+@pytest.mark.parametrize("event", [backport_event(sender="roehrijn"),
+                                   backport_event(action="synchronize"),
+                                   backport_event(action="synchronize", sender="roehrijn")])
+def test_only_the_head_the_bot_opened_gets_a_free_pass(event):
+    decision = gate.decide_backport(event, "loft-bot", "qa-review")
+    assert decision == {"skip": "only the head the bot opened the backport with passes; the panel reviews this head"}
 
 
 def test_panel_verdict_on_a_backport_counts():
@@ -222,9 +225,10 @@ def test_apply_posts_check_run_and_requests_team(monkeypatch):
     assert team_call == {"team_reviewers": ["eng-qa"]}
 
 
-def test_apply_skips_a_comment_the_author_pushed_after(monkeypatch, capsys):
+@pytest.mark.parametrize("pushed_at", ["2026-11-18T10:05:00Z", ""])
+def test_apply_skips_a_comment_the_author_pushed_after(monkeypatch, capsys, pushed_at):
     posted = []
-    lookups = pr_api(pushed_at="2026-11-18T10:05:00Z")
+    lookups = pr_api(pushed_at=pushed_at)
 
     def fake_gh_api(args, token, payload=None):
         if args[0].endswith("/check-runs"):
