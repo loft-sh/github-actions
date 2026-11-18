@@ -3,6 +3,7 @@
 ACTIONS_DIR := .github/actions
 .PHONY: test-check-action-pins
 .PHONY: test-resolve-pr-event
+.PHONY: test-qa-review-gate
 WORKFLOWS_DIR := .github/workflows
 SCRIPTS_DIR := .github/scripts
 
@@ -108,6 +109,9 @@ test-resolve-pr-event: ## run pull request event handoff tests
 
 test-ghcr-tag-guard: ## run GHCR publication guard tests
 	uv run --with pytest==8.3.3 pytest $(ACTIONS_DIR)/ghcr-tag-guard/test/ -q
+
+test-qa-review-gate: ## run qa-review-gate pytest tests
+	uv run --with pytest==8.3.3 pytest $(ACTIONS_DIR)/qa-review-gate/test/ -q
 
 test-check-action-pins: ## run action-pin unit tests and offline zizmor integration tests
 	uv run --with pytest==8.3.3 --with zizmor==1.30.1 pytest $(ACTIONS_DIR)/check-action-pins/test/ -q
