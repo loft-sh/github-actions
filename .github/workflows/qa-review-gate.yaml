@@ -2,29 +2,37 @@ name: QA review gate
 
 # Wraps the qa-review-gate composite action for the production repos: picks the
 # mode from the event, sparse-checks-out the action, and publishes the qa-review
-# check-run (and qa-review-ci after an e2e run; both green at once on an automated
-# backport). The caller filters the events (the panel's login, the /qa-review
-# command, the backport branch) in its job `if:` so most events spin no runner.
+# and qa-test-run check-runs (both green at once on a trusted bot PR). The caller
+# filters the events (the panel's login, the /qa-review command, the bot logins)
+# in its job `if:` so most events spin no runner.
 
 on:
   workflow_call:
     inputs:
-      qa-logins:
-        description: 'Comma-separated logins allowed to run /qa-review override.'
+      override-logins:
+        description: 'Comma-separated logins allowed to run /qa-review override (tech leads).'
         type: string
         required: true
       panel-login:
         description: 'Login that posts the panel review.'
         type: string
         default: 'loft-bot'
+      bot-prs:
+        description: 'Comma-separated login:branch-prefix pairs whose PRs pass both check-runs on the head the bot opened them with.'
+        type: string
+        default: 'loft-bot:backport/,vcluster-qa-bot[bot]:flake-fixer/'
       qa-team:
-        description: 'org/slug of the team asked for a review when a person must decide.'
+        description: 'org/slug of the team asked for a review on /qa-review human.'
         type: string
         default: 'loft-sh/eng-qa'
       check-name:
-        description: 'Name of the check-run to create.'
+        description: 'Name of the verdict check-run.'
         type: string
         default: 'qa-review'
+      test-check-name:
+        description: 'Name of the check-run that says whether the new e2e specs ran and passed.'
+        type: string
+        default: 'qa-test-run'
 
 jobs:
   gate:
@@ -45,8 +53,10 @@ jobs:
           sparse-checkout: .github/actions/qa-review-gate
       - uses: ./.github/actions/qa-review-gate
         with:
-          mode: ${{ github.event_name == 'pull_request_review' && 'review' || github.event_name == 'workflow_run' && 'ci' || github.event_name == 'pull_request' && 'backport' || 'comment' }}
-          qa-logins: ${{ inputs.qa-logins }}
+          mode: ${{ github.event_name == 'pull_request_review' && 'review' || github.event_name == 'workflow_run' && 'ci' || github.event_name == 'pull_request' && 'bot' || 'comment' }}
+          override-logins: ${{ inputs.override-logins }}
           panel-login: ${{ inputs.panel-login }}
+          bot-prs: ${{ inputs.bot-prs }}
           qa-team: ${{ inputs.qa-team }}
           check-name: ${{ inputs.check-name }}
+          test-check-name: ${{ inputs.test-check-name }}

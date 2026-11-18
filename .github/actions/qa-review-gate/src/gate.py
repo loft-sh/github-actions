@@ -1,33 +1,38 @@
-"""Turn the review panel's verdict, or a QA override comment, into the qa-review check-run.
+"""Turn the review panel's verdict, or an override comment, into the qa-review check-run.
 
-Two event shapes, both read from GITHUB_EVENT_PATH:
+Event shapes, all read from GITHUB_EVENT_PATH:
 
 - pull_request_review (submitted): the panel bot's review body ends with a marker line
   `<!-- qa-review verdict=<v> classes=a:N,b:N,c:N,d:N head=<sha> -->`. The verdict becomes the
-  check-run conclusion on that head. A review from anyone else, or a marker for another head,
-  is ignored.
-- issue_comment (created): `/qa-review override <reason>` from a QA login completes the
-  check-run as success and records who overrode it. The override binds to the panel verdict
-  it answers: the PR's current head must carry a panel marker submitted before the comment,
-  otherwise the gate does nothing and asks for a fresh comment. When the panel never posted
-  on that head (an outage), `/qa-review override <sha> <reason>` names the head instead and
-  lands only while that sha is still the PR head. `/qa-review human` from a repository
-  member asks the QA team for a review and leaves the check-run waiting for a person.
+  `qa-review` check-run conclusion on that head. A review from anyone else, or a marker for
+  another head, is ignored. `needs_human` hands the PR back to its author (assignee), who
+  answers the panel or tags QA. The same event also opens the `qa-test-run` check-run on that
+  head: success when the PR adds no e2e spec, otherwise action_required until an e2e run
+  reports (so the check can be required without blocking spec-free PRs). A `qa-test-run`
+  already on the head is left alone.
+- issue_comment (created): `/qa-review override [<reason>]` from an override login (tech leads)
+  completes both check-runs as success and records who overrode them. The override binds to the
+  panel verdict it answers: the PR's current head must carry a panel marker submitted before
+  the comment, otherwise the gate does nothing and asks for a fresh comment. When the panel
+  never posted on that head (an outage), `/qa-review override <sha> [<reason>]` names the head
+  instead and lands only while that sha is still the PR head. `/qa-review human` from a
+  repository member asks the QA team for a review and leaves `qa-review` waiting for a person.
 - workflow_run (completed) of the e2e workflow: every `It(`, `Specify(` or `Entry(` the PR
   adds is looked up by file and line in the Ginkgo JSON report the run uploaded. A new spec
-  that did not run, or did not pass, turns the `<check>-ci` check-run red. The diff is the
-  compare of the PR base with the run's own head, so it describes the commits the run tested.
-  A run whose head is no longer the PR head is superseded and ignored; a finished run without
-  a report asks a person. The panel's verdict check-run is never touched.
-- pull_request (opened) of an automated backport: a PR the panel bot opened from a
-  `backport/` branch was reviewed on main already. On the head the bot opened it with, both
-  check-runs complete as success at once, so the repo's auto-approve workflow can approve it
-  without waiting on the panel. Any later head, whoever pushed it, gets no free pass: it has
-  no check-run until the panel reviews it and the e2e run reports. (A bot backport keeps the
-  original author on its commits, so commit authorship cannot tell a bot push from a person's.)
+  that did not run, or did not pass, turns `qa-test-run` red. The diff is the compare of the
+  PR base with the run's own head, so it describes the commits the run tested. A run whose head
+  is no longer the PR head is superseded and ignored; a finished run without a report asks a
+  person. `qa-review` is never touched.
+- pull_request (opened) by a trusted bot: an automated backport (`loft-bot`, `backport/`) was
+  reviewed on main; a flake-fixer PR (`vcluster-qa-bot[bot]`, `flake-fixer/`) ran the QA review
+  itself. On the head the bot opened the PR with, both check-runs complete as success at once,
+  so the repo's auto-approve workflow can approve it. Any later head, whoever pushed it, gets no
+  free pass: it has no check-run until the panel reviews it and the e2e run reports. (A bot
+  backport keeps the original author on its commits, so authorship cannot tell a bot push from
+  a person's.)
 
 Every decision is a plain dict so the tests never touch the network; `apply` is the only
-function that calls `gh`.
+function that creates check-runs.
 """
 
 import glob
@@ -49,13 +54,15 @@ MEMBER_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
 ADDED_SPEC = re.compile(r'^\+[^+].*\b[FPX]?(?:It|Specify|Entry)\(\s*"((?:[^"\\]|\\.)+)"')
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)")
 GO_ESCAPES = {"n": "\n", "t": "\t", "r": "\r"}
-# Ginkgo states, worst last; two reports for one spec text keep the worst.
+# Ginkgo states, worst last; two reports for one spec keep the worst.
 STATE_RANK = {"passed": 0, "": 1, "pending": 2, "skipped": 3, "timedout": 4, "interrupted": 4,
               "aborted": 4, "panicked": 5, "failed": 5}
 REPORT_ARTIFACT = "ginkgo-report"
 SHA_PREFIX = re.compile(r"^[0-9a-f]{7,40}$")
 COMPARE_FILE_CAP = 300  # the compare API lists at most this many files and says nothing when it cuts
-BACKPORT_BRANCH = "backport/"
+DEFAULT_BOTS = "loft-bot:backport/,vcluster-qa-bot[bot]:flake-fixer/"
+OVERRIDE_HINT = ("Override with `/qa-review override [<reason>]` (`/qa-review override <sha> "
+                 "[<reason>]` when the panel has not posted on this head).")
 
 
 class GateError(Exception):
@@ -84,10 +91,22 @@ def class_summary(classes):
     return ", ".join(parts) if parts else "no blocking classes"
 
 
-def is_backport(pr, bot_login):
-    """An automated backport: opened by the bot from a backport/ branch."""
-    return ((pr.get("user") or {}).get("login") == bot_login
-            and ((pr.get("head") or {}).get("ref") or "").startswith(BACKPORT_BRANCH))
+def parse_bots(text):
+    """{login: branch prefix} from `login:prefix,login:prefix`."""
+    bots = {}
+    for item in filter(None, (s.strip() for s in (text or "").split(","))):
+        login, sep, prefix = item.partition(":")
+        if not sep or not login or not prefix:
+            raise GateError(f"bot-prs entry must be login:branch-prefix, got {item!r}")
+        bots[login] = prefix
+    return bots
+
+
+def bot_pr(pr, bots):
+    """The trusted bot that opened this PR from its branch prefix, or None."""
+    login = (pr.get("user") or {}).get("login")
+    ref = (pr.get("head") or {}).get("ref") or ""
+    return login if login in bots and ref.startswith(bots[login]) else None
 
 
 def unescape_go(text):
@@ -95,25 +114,26 @@ def unescape_go(text):
     return re.sub(r"\\(.)", lambda m: GO_ESCAPES.get(m.group(1), m.group(1)), text)
 
 
-def backport_checks(pr, check_name):
+def bot_checks(pr, login, check_name, test_check):
     head = (pr.get("head") or {}).get("sha", "")
-    summary = ("Automated backport: the original PR was reviewed on main, so the QA review is "
+    summary = (f"PR opened by {login}: reviewed before it was opened, so the QA review is "
                f"skipped here.\n\nPR: {pr.get('html_url', '')}")
     return [{"name": check_name, "head_sha": head, "conclusion": "success",
-             "title": "QA review: automated backport, skipped", "summary": summary},
-            {"name": f"{check_name}-ci", "head_sha": head, "conclusion": "success",
-             "title": "QA review: automated backport, CI spec check skipped", "summary": summary}]
+             "title": f"QA review: {login} PR, skipped", "summary": summary},
+            {"name": test_check, "head_sha": head, "conclusion": "success",
+             "title": f"QA test run: {login} PR, skipped", "summary": summary}]
 
 
-def decide_backport(event, bot_login, check_name):
+def decide_bot(event, bots, check_name, test_check="qa-test-run"):
     """Map a pull_request event to the two green check-runs, or to a skip."""
     pr = event.get("pull_request") or {}
-    if not is_backport(pr, bot_login):
-        return {"skip": f"PR by {(pr.get('user') or {}).get('login') or 'unknown'} is not an automated backport"}
+    login = bot_pr(pr, bots)
+    if login is None:
+        return {"skip": f"PR by {(pr.get('user') or {}).get('login') or 'unknown'} is not a trusted bot PR"}
     pusher = (event.get("sender") or {}).get("login", "")
-    if event.get("action") != "opened" or pusher != bot_login:
-        return {"skip": "only the head the bot opened the backport with passes; the panel reviews this head"}
-    return {"checks": backport_checks(pr, check_name), "request_qa_review": False,
+    if event.get("action") != "opened" or pusher != login:
+        return {"skip": "only the head the bot opened the PR with passes; the panel reviews this head"}
+    return {"checks": bot_checks(pr, login, check_name, test_check), "request_qa_review": False,
             "pr_number": pr.get("number")}
 
 
@@ -134,22 +154,60 @@ def decide_review(event, panel_login, check_name):
     title = {
         "block": f"QA review: blocked ({class_summary(classes)})",
         "pass": "QA review: passed",
-        "needs_human": "QA review: a QA engineer decides",
-        "not_run": "QA review: panel did not run the QA lanes; re-run it or a QA engineer decides",
+        "needs_human": "QA review: the author answers the panel; tag QA with /qa-review human if needed",
+        "not_run": "QA review: panel did not run the QA lanes; re-run it or ask for an override",
     }[verdict]
     summary = (f"Verdict `{verdict}` from the review panel.\n\nClasses: {class_summary(classes)}."
-               f"\n\nReview: {review.get('html_url', '')}\n\n"
-               "A QA engineer can override with `/qa-review override <reason>` or ask for a "
-               "person with `/qa-review human`.")
+               f"\n\nReview: {review.get('html_url', '')}\n\n{OVERRIDE_HINT} "
+               "Ask for a person with `/qa-review human`.")
     return {
         "check": {"name": check_name, "head_sha": head, "conclusion": CONCLUSION[verdict],
                   "title": title, "summary": summary},
-        "request_qa_review": verdict == "needs_human",
+        "request_qa_review": False,
+        "assign_author": verdict == "needs_human",
         "pr_number": pr.get("number"),
+        "base_ref": (pr.get("base") or {}).get("ref", ""),
     }
 
 
-def decide_comment(event, qa_logins, check_name, command="/qa-review"):
+def test_run_pending(added, head, pr_number, test_check, run_hint="/test-e2e"):
+    """The `qa-test-run` check-run opened with the panel verdict: green when the PR adds no spec,
+    otherwise waiting for an e2e run; `collect_ci` overwrites it with the run's result."""
+    if not added:
+        return {"check": {"name": test_check, "head_sha": head, "conclusion": "success",
+                          "title": "QA test run: the PR adds no e2e spec",
+                          "summary": "Nothing to run for this PR."},
+                "request_qa_review": False, "pr_number": pr_number}
+    lines = "\n".join(f"- {s['path']}:{s['line']} {s['text']}" for s in added)
+    return {"check": {"name": test_check, "head_sha": head, "conclusion": "action_required",
+                      "title": f"QA test run: {len(added)} new spec(s) wait for `{run_hint}`",
+                      "summary": f"New specs this PR adds:\n\n{lines}\n\nRun `{run_hint}`; the "
+                                 f"check turns green when they ran and passed. {OVERRIDE_HINT}"},
+            "request_qa_review": False, "pr_number": pr_number}
+
+
+def collect_review(event, repo, token, panel_login, check_name, test_check="qa-test-run"):
+    """The verdict check-run plus, when no `qa-test-run` exists on the head yet, its opener."""
+    decision = decide_review(event, panel_login, check_name)
+    if "skip" in decision:
+        return decision
+    head = decision["check"]["head_sha"]
+    pr_number = decision["pr_number"]
+    existing = gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={test_check}"], token)
+    if existing.get("check_runs"):
+        return decision
+    try:
+        added = added_specs(pr_diff(repo, decision["base_ref"], head, token))
+        opener = test_run_pending(added, head, pr_number, test_check)
+    except GateError as error:
+        opener = ask_person(test_check, head, pr_number,
+                            "QA test run: PR diff unavailable, a person checks the new specs",
+                            str(error))
+    decision["checks"] = [decision.pop("check"), opener["check"]]
+    return decision
+
+
+def decide_comment(event, override_logins, check_name, test_check="qa-test-run", command="/qa-review"):
     """Map a PR comment to an override, a human request, or a skip."""
     issue = event.get("issue") or {}
     if not issue.get("pull_request"):
@@ -162,21 +220,18 @@ def decide_comment(event, qa_logins, check_name, command="/qa-review"):
     author = (comment.get("user") or {}).get("login", "")
     verb = words[1]
     if verb == "override":
-        if author not in qa_logins:
-            return {"skip": f"{author or 'unknown'} is not a QA login; override ignored"}
+        if author not in override_logins:
+            return {"skip": f"{author or 'unknown'} is not an override login; override ignored"}
         rest = words[2:]
         sha_prefix = rest.pop(0) if rest and SHA_PREFIX.match(rest[0]) else None
-        reason = " ".join(rest).strip()
-        if not reason:
-            return {"skip": "override needs a reason: /qa-review override [<sha>] <reason>"}
+        reason = " ".join(rest).strip() or "no reason given"
         summary = (f"@{author} overrode the panel verdict: {reason}\n\n"
                    f"Comment: {comment.get('html_url', '')}")
         return {
             "checks": [{"name": check_name, "head_sha": None, "conclusion": "success",
                         "title": f"QA review: overridden by @{author}", "summary": summary},
-                       {"name": f"{check_name}-ci", "head_sha": None, "conclusion": "success",
-                        "title": f"QA review: CI spec check overridden by @{author}",
-                        "summary": summary}],
+                       {"name": test_check, "head_sha": None, "conclusion": "success",
+                        "title": f"QA test run: overridden by @{author}", "summary": summary}],
             "request_qa_review": False,
             "pr_number": issue.get("number"),
             "comment_at": comment.get("created_at", ""),
@@ -195,7 +250,7 @@ def decide_comment(event, qa_logins, check_name, command="/qa-review"):
             "pr_number": issue.get("number"),
             "comment_at": comment.get("created_at", ""),
         }
-    return {"skip": f"unknown {command} verb {verb!r}; use override <reason> or human"}
+    return {"skip": f"unknown {command} verb {verb!r}; use override [<reason>] or human"}
 
 
 def added_specs(diff):
@@ -249,7 +304,7 @@ def spec_state(states, spec):
     return None
 
 
-def decide_ci(run, pr_number, added, states, check_name):
+def decide_ci(run, pr_number, added, states, test_check="qa-test-run"):
     """Compare the PR's new specs with what the e2e run reported."""
     if run.get("conclusion") not in ("success", "failure"):
         return {"skip": f"e2e run ended {run.get('conclusion') or 'unknown'}, nothing to compare"}
@@ -261,18 +316,18 @@ def decide_ci(run, pr_number, added, states, check_name):
     head = run.get("head_sha", "")
     if missing or not_passed:
         lines = [f"- did not run: {t}" for t in missing] + [f"- {t}" for t in not_passed]
-        title = f"QA review: {len(missing) + len(not_passed)} new spec(s) did not run or pass in CI"
+        title = f"QA test run: {len(missing) + len(not_passed)} new spec(s) did not run or pass"
         summary = ("New specs this PR adds, checked against the Ginkgo report of "
                    f"{run.get('html_url', '')}:\n\n" + "\n".join(lines) +
                    "\n\nA spec the PR label filter never selects, or a focused/skipped spec, "
                    "lands here. Fix the filter or the spec and push.")
         conclusion = "failure"
     else:
-        title = f"QA review: all {len(added)} new spec(s) ran and passed in CI"
+        title = f"QA test run: all {len(added)} new spec(s) ran and passed"
         summary = f"Ginkgo report: {run.get('html_url', '')}"
         conclusion = "success"
     return {
-        "check": {"name": f"{check_name}-ci", "head_sha": head, "conclusion": conclusion,
+        "check": {"name": test_check, "head_sha": head, "conclusion": conclusion,
                   "title": title, "summary": summary},
         "request_qa_review": False,
         "pr_number": pr_number,
@@ -312,17 +367,15 @@ def pr_diff(repo, base_ref, head_sha, token):
     return "\n".join(f"+++ b/{f['filename']}\n{f.get('patch') or ''}" for f in files)
 
 
-def ask_person(check_name, head, pr_number, title, detail):
-    """A `<check>-ci` check-run nobody can grade automatically: a person decides."""
-    return {"check": {"name": f"{check_name}-ci", "head_sha": head, "conclusion": "action_required",
+def ask_person(test_check, head, pr_number, title, detail):
+    """A `qa-test-run` check-run nobody can grade automatically: a person decides."""
+    return {"check": {"name": test_check, "head_sha": head, "conclusion": "action_required",
                       "title": title,
-                      "summary": f"{detail}\n\nRe-run `/test-e2e`, or override with "
-                                 "`/qa-review override <reason>` (`/qa-review override <sha> "
-                                 "<reason>` when the panel has not posted on this head)."},
+                      "summary": f"{detail}\n\nRe-run `/test-e2e`, or ask for an override. {OVERRIDE_HINT}"},
             "request_qa_review": False, "pr_number": pr_number}
 
 
-def collect_ci(event, repo, token, check_name):
+def collect_ci(event, repo, token, test_check="qa-test-run"):
     """Fetch the diff and the Ginkgo report for a finished e2e run, then decide."""
     run = event.get("workflow_run") or {}
     head = run.get("head_sha", "")
@@ -338,8 +391,8 @@ def collect_ci(event, repo, token, check_name):
             return {"skip": f"e2e run is for {head[:7]}, PR head is {current[:7]}; superseded"}
         added = added_specs(pr_diff(repo, pr["base"]["ref"], head, token))
     except GateError as error:
-        return ask_person(check_name, head, pr_number,
-                          "QA review: PR diff unavailable, a QA engineer checks the new specs",
+        return ask_person(test_check, head, pr_number,
+                          "QA test run: PR diff unavailable, a person checks the new specs",
                           str(error))
     if not added:
         return {"skip": "the PR adds no e2e spec"}
@@ -347,14 +400,14 @@ def collect_ci(event, repo, token, check_name):
         try:
             gh(["run", "download", str(run["id"]), "-R", repo, "-n", REPORT_ARTIFACT, "-D", tmp], token)
         except GateError as error:
-            return ask_person(check_name, head, pr_number,
-                              f"QA review: no {REPORT_ARTIFACT} for {len(added)} new spec(s), "
-                              "a QA engineer checks them", str(error))
+            return ask_person(test_check, head, pr_number,
+                              f"QA test run: no {REPORT_ARTIFACT} for {len(added)} new spec(s), "
+                              "a person checks them", str(error))
         states = {}
         for path in sorted(glob.glob(os.path.join(tmp, "**", "*.json"), recursive=True)):
             with open(path, encoding="utf-8") as fh:
                 report_specs(json.load(fh), states)
-    return decide_ci(run, pr_number, added, states, check_name)
+    return decide_ci(run, pr_number, added, states, test_check)
 
 
 def gh_api(args, token, payload=None):
@@ -375,7 +428,7 @@ def comment_head(decision, repo, token, panel_login):
     """The PR head a /qa-review comment applies to. An override answers a panel verdict, so
     it lands only when the current head carries a panel marker submitted before the comment;
     a head pushed after the comment, or one the panel has not graded, returns None and the
-    QA engineer comments again on what they see."""
+    override login comments again on what they see."""
     pr_number = decision["pr_number"]
     head = gh_api([f"repos/{repo}/pulls/{pr_number}"], token)["head"]["sha"]
     if not decision.get("binds_to_marker"):
@@ -397,8 +450,8 @@ def comment_head(decision, repo, token, panel_login):
 
 
 def apply(decision, repo, token, qa_team, run_url, panel_login="loft-bot"):
-    """Create the check-run(s) and, when asked, request the QA team's review. Returns the
-    head the checks landed on, or None when the comment binds to no verdict."""
+    """Create the check-run(s), hand the PR to its author or request the QA team when asked.
+    Returns the head the checks landed on, or None when the comment binds to no verdict."""
     checks = decision.get("checks") or [decision["check"]]
     head = checks[0]["head_sha"]
     if head is None:
@@ -406,7 +459,7 @@ def apply(decision, repo, token, qa_team, run_url, panel_login="loft-bot"):
         if head is None:
             print("::notice::qa-review-gate: no panel verdict on the PR's current head before "
                   "the comment; wait for the panel, then comment again (or name the head: "
-                  "/qa-review override <sha> <reason>)")
+                  "/qa-review override <sha> [<reason>])")
             return None
     for check in checks:
         gh_api([f"repos/{repo}/check-runs", "-X", "POST"], token, {
@@ -414,10 +467,19 @@ def apply(decision, repo, token, qa_team, run_url, panel_login="loft-bot"):
             "conclusion": check["conclusion"], "details_url": run_url,
             "output": {"title": check["title"], "summary": check["summary"]},
         })
+    pr_number = decision["pr_number"]
+    if decision.get("assign_author"):
+        author = gh_api([f"repos/{repo}/pulls/{pr_number}"], token).get("user", {}).get("login")
+        if author:
+            try:
+                gh_api([f"repos/{repo}/issues/{pr_number}/assignees", "-X", "POST"], token,
+                       {"assignees": [author]})
+            except GateError as error:
+                print(f"::warning::qa-review-gate: could not assign @{author}: {error}")
     if decision["request_qa_review"] and qa_team:
         org, _, slug = qa_team.partition("/")
         try:
-            gh_api([f"repos/{repo}/pulls/{decision['pr_number']}/requested_reviewers", "-X", "POST"],
+            gh_api([f"repos/{repo}/pulls/{pr_number}/requested_reviewers", "-X", "POST"],
                    token, {"team_reviewers": [slug or org]})
         except GateError as error:
             # The check-run is already up; a token that cannot name the team must not fail the job.
@@ -428,27 +490,28 @@ def apply(decision, repo, token, qa_team, run_url, panel_login="loft-bot"):
 def main():
     mode = os.environ.get("INPUT_MODE", "")
     check_name = os.environ.get("INPUT_CHECK_NAME", "qa-review")
+    test_check = os.environ.get("INPUT_TEST_CHECK_NAME", "qa-test-run")
     panel_login = os.environ.get("INPUT_PANEL_LOGIN", "loft-bot")
+    repo, token = os.environ["GITHUB_REPOSITORY"], os.environ["INPUT_GITHUB_TOKEN"]
     with open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8") as fh:
         event = json.load(fh)
     if mode == "review":
-        decision = decide_review(event, panel_login, check_name)
+        decision = collect_review(event, repo, token, panel_login, check_name, test_check)
     elif mode == "comment":
-        logins = {s.strip() for s in os.environ.get("INPUT_QA_LOGINS", "").split(",") if s.strip()}
-        decision = decide_comment(event, logins, check_name)
+        logins = {s.strip() for s in os.environ.get("INPUT_OVERRIDE_LOGINS", "").split(",") if s.strip()}
+        decision = decide_comment(event, logins, check_name, test_check)
     elif mode == "ci":
-        decision = collect_ci(event, os.environ["GITHUB_REPOSITORY"],
-                              os.environ["INPUT_GITHUB_TOKEN"], check_name)
-    elif mode == "backport":
-        decision = decide_backport(event, panel_login, check_name)
+        decision = collect_ci(event, repo, token, test_check)
+    elif mode == "bot":
+        decision = decide_bot(event, parse_bots(os.environ.get("INPUT_BOT_PRS", DEFAULT_BOTS)),
+                              check_name, test_check)
     else:
-        raise GateError(f"INPUT_MODE must be review, comment, ci or backport, got {mode!r}")
+        raise GateError(f"INPUT_MODE must be review, comment, ci or bot, got {mode!r}")
     if "skip" in decision:
         print(f"::notice::qa-review-gate: {decision['skip']}")
         return 0
-    head = apply(decision, os.environ["GITHUB_REPOSITORY"], os.environ["INPUT_GITHUB_TOKEN"],
-                 os.environ.get("INPUT_QA_TEAM", ""), os.environ.get("INPUT_RUN_URL", ""),
-                 panel_login)
+    head = apply(decision, repo, token, os.environ.get("INPUT_QA_TEAM", ""),
+                 os.environ.get("INPUT_RUN_URL", ""), panel_login)
     for check in decision.get("checks") or [decision["check"]] if head else []:
         print(f"qa-review-gate: {check['name']} -> {check['conclusion']} on {head[:7]}")
     return 0

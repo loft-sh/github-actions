@@ -11,6 +11,7 @@ spec.loader.exec_module(gate)
 
 HEAD = "a" * 40
 OTHER = "b" * 40
+BOTS = gate.parse_bots(gate.DEFAULT_BOTS)
 
 
 def marker(verdict="block", classes="a:0,b:1,c:2,d:0", head=HEAD):
@@ -83,14 +84,86 @@ def test_review_block_becomes_failure_with_class_words():
     assert decision["request_qa_review"] is False
 
 
-@pytest.mark.parametrize("verdict,conclusion,ask", [
+@pytest.mark.parametrize("verdict,conclusion,to_author", [
     ("pass", "success", False), ("needs_human", "action_required", True), ("not_run", "action_required", False),
 ])
-def test_review_verdict_mapping(verdict, conclusion, ask):
+def test_review_verdict_mapping(verdict, conclusion, to_author):
     event = review_event(body=marker(verdict=verdict, classes=""))
     decision = gate.decide_review(event, "loft-bot", "qa-review")
     assert decision["check"]["conclusion"] == conclusion
-    assert decision["request_qa_review"] is ask
+    assert decision["request_qa_review"] is False
+    assert decision["assign_author"] is to_author
+
+
+def review_api(check_runs=(), files=None, author="dev-x"):
+    """A fake gh_api for collect_review and apply: existing qa-test-run check-runs on the head,
+    the compare diff, the PR (for its author), and a log of the writes."""
+    writes = []
+
+    def fake(args, token, payload=None):
+        if payload is not None:
+            writes.append((args[0], payload))
+            return {}
+        if "/check-runs?check_name=" in args[0]:
+            return {"check_runs": list(check_runs)}
+        if "/compare/" in args[0]:
+            if files is None:
+                raise gate.GateError("gh api compare failed: 500")
+            return {"files": files}
+        if "/pulls/" in args[0]:
+            return {"head": {"sha": HEAD}, "user": {"login": author}}
+        return {}
+    fake.writes = writes
+    return fake
+
+
+NEW_SPEC = [{"filename": "e2e/a.go", "patch": '@@ -1,0 +1 @@\n+\tIt("new", func() {'}]
+
+
+def test_review_opens_the_test_run_check_green_when_the_pr_adds_no_spec(monkeypatch):
+    monkeypatch.setattr(gate, "gh_api", review_api(files=[]))
+    decision = gate.collect_review(review_event(), "o/r", "tok", "loft-bot", "qa-review")
+    assert [(c["name"], c["conclusion"]) for c in decision["checks"]] == [
+        ("qa-review", "failure"), ("qa-test-run", "success")]
+
+
+def test_review_opens_the_test_run_check_waiting_when_the_pr_adds_specs(monkeypatch):
+    monkeypatch.setattr(gate, "gh_api", review_api(files=NEW_SPEC))
+    decision = gate.collect_review(review_event(), "o/r", "tok", "loft-bot", "qa-review")
+    test_run = decision["checks"][1]
+    assert test_run["conclusion"] == "action_required"
+    assert "1 new spec(s) wait for `/test-e2e`" in test_run["title"]
+    assert "e2e/a.go:1 new" in test_run["summary"]
+
+
+def test_review_leaves_an_existing_test_run_check_alone(monkeypatch):
+    monkeypatch.setattr(gate, "gh_api", review_api(check_runs=[{"conclusion": "success"}], files=NEW_SPEC))
+    decision = gate.collect_review(review_event(), "o/r", "tok", "loft-bot", "qa-review")
+    assert "checks" not in decision and decision["check"]["name"] == "qa-review"
+
+
+def test_review_diff_failure_opens_the_test_run_check_for_a_person(monkeypatch):
+    monkeypatch.setattr(gate, "gh_api", review_api(files=None))
+    decision = gate.collect_review(review_event(), "o/r", "tok", "loft-bot", "qa-review")
+    assert decision["checks"][1]["conclusion"] == "action_required"
+    assert "PR diff unavailable" in decision["checks"][1]["title"]
+
+
+def test_review_skip_makes_no_api_call(monkeypatch):
+    def no_network(*args, **kwargs):
+        raise AssertionError("a skipped review must not reach the API")
+    monkeypatch.setattr(gate, "gh_api", no_network)
+    assert "skip" in gate.collect_review(review_event(login="anvesh-loft"), "o/r", "tok", "loft-bot", "qa-review")
+
+
+def test_needs_human_assigns_the_author_not_qa(monkeypatch):
+    api = review_api(files=[])
+    monkeypatch.setattr(gate, "gh_api", api)
+    event = review_event(body=marker(verdict="needs_human", classes="b:1"))
+    decision = gate.collect_review(event, "o/r", "tok", "loft-bot", "qa-review")
+    assert gate.apply(decision, "o/r", "tok", "loft-sh/eng-qa", "https://run") == HEAD
+    assert ("repos/o/r/issues/1/assignees", {"assignees": ["dev-x"]}) in api.writes
+    assert not any(a.endswith("/requested_reviewers") for a, p in api.writes)
 
 
 def test_review_from_a_human_is_ignored():
@@ -110,18 +183,19 @@ def test_override_by_qa_login_succeeds_with_reason():
     event = comment_event("/qa-review override the spec is covered by the nightly suite")
     decision = gate.decide_comment(event, {"sowmyav27"}, "qa-review")
     assert [(c["name"], c["conclusion"], c["head_sha"]) for c in decision["checks"]] == [
-        ("qa-review", "success", None), ("qa-review-ci", "success", None)]
+        ("qa-review", "success", None), ("qa-test-run", "success", None)]
     assert "overrode the panel verdict: the spec is covered" in decision["checks"][0]["summary"]
     assert decision["pr_number"] == 1 and decision["comment_at"] == "2026-11-18T10:00:00Z"
 
 
-def test_override_by_non_qa_login_is_ignored():
+def test_override_by_a_login_outside_the_list_is_ignored():
     event = comment_event("/qa-review override trust me", login="someone-else")
     assert "skip" in gate.decide_comment(event, {"sowmyav27"}, "qa-review")
 
 
-def test_override_without_reason_is_ignored():
-    assert "skip" in gate.decide_comment(comment_event("/qa-review override"), {"sowmyav27"}, "qa-review")
+def test_override_reason_is_optional():
+    decision = gate.decide_comment(comment_event("/qa-review override"), {"sowmyav27"}, "qa-review")
+    assert "overrode the panel verdict: no reason given" in decision["checks"][0]["summary"]
 
 
 def test_human_request_by_member_asks_the_team():
@@ -144,24 +218,46 @@ def test_comment_on_an_issue_is_ignored():
     assert "skip" in gate.decide_comment(comment_event("/qa-review human", on_pr=False), set(), "qa-review")
 
 
+def flake_fixer_event():
+    pr = backport_pr(login="vcluster-qa-bot[bot]", ref="flake-fixer/43778070525-feature-db-connector")
+    return backport_event(pr, sender="vcluster-qa-bot[bot]")
+
+
+def test_flake_fixer_pr_gets_both_checks_green():
+    decision = gate.decide_bot(flake_fixer_event(), BOTS, "qa-review")
+    assert [c["conclusion"] for c in decision["checks"]] == ["success", "success"]
+    assert "vcluster-qa-bot[bot] PR" in decision["checks"][0]["title"]
+
+
+def test_flake_fixer_branch_by_a_person_is_not_trusted():
+    pr = backport_pr(login="roehrijn", ref="flake-fixer/x")
+    assert "skip" in gate.decide_bot(backport_event(pr, sender="roehrijn"), BOTS, "qa-review")
+
+
+@pytest.mark.parametrize("bad", ["loft-bot", "loft-bot:", ":backport/"])
+def test_parse_bots_rejects_a_half_entry(bad):
+    with pytest.raises(gate.GateError):
+        gate.parse_bots(bad)
+
+
 def test_backport_by_the_bot_gets_both_checks_green():
-    decision = gate.decide_backport(backport_event(), "loft-bot", "qa-review")
+    decision = gate.decide_bot(backport_event(), BOTS, "qa-review")
     names = [(c["name"], c["conclusion"], c["head_sha"]) for c in decision["checks"]]
-    assert names == [("qa-review", "success", HEAD), ("qa-review-ci", "success", HEAD)]
+    assert names == [("qa-review", "success", HEAD), ("qa-test-run", "success", HEAD)]
     assert decision["request_qa_review"] is False and decision["pr_number"] == 9444
 
 
 @pytest.mark.parametrize("pr", [backport_pr(login="roehrijn"), backport_pr(ref="fix/thing")])
 def test_backport_needs_the_bot_author_and_the_backport_branch(pr):
-    assert "skip" in gate.decide_backport(backport_event(pr), "loft-bot", "qa-review")
+    assert "skip" in gate.decide_bot(backport_event(pr), BOTS, "qa-review")
 
 
 @pytest.mark.parametrize("event", [backport_event(sender="roehrijn"),
                                    backport_event(action="synchronize"),
                                    backport_event(action="synchronize", sender="roehrijn")])
 def test_only_the_head_the_bot_opened_gets_a_free_pass(event):
-    decision = gate.decide_backport(event, "loft-bot", "qa-review")
-    assert decision == {"skip": "only the head the bot opened the backport with passes; the panel reviews this head"}
+    decision = gate.decide_bot(event, BOTS, "qa-review")
+    assert decision == {"skip": "only the head the bot opened the PR with passes; the panel reviews this head"}
 
 
 def test_panel_verdict_on_a_backport_counts():
@@ -216,8 +312,8 @@ def ci_run(number=9):
 
 def test_ci_diff_failure_asks_a_person_instead_of_failing_the_job(monkeypatch):
     monkeypatch.setattr(gate, "gh_api", ci_api())
-    decision = gate.collect_ci({"workflow_run": ci_run()}, "o/r", "tok", "qa-review")
-    assert decision["check"]["name"] == "qa-review-ci"
+    decision = gate.collect_ci({"workflow_run": ci_run()}, "o/r", "tok")
+    assert decision["check"]["name"] == "qa-test-run"
     assert decision["check"]["conclusion"] == "action_required"
     assert decision["check"]["head_sha"] == HEAD and decision["pr_number"] == 9
     assert "/test-e2e" in decision["check"]["summary"]
@@ -225,7 +321,7 @@ def test_ci_diff_failure_asks_a_person_instead_of_failing_the_job(monkeypatch):
 
 def test_ci_run_for_an_older_head_is_superseded(monkeypatch):
     monkeypatch.setattr(gate, "gh_api", ci_api(head=OTHER))
-    decision = gate.collect_ci({"workflow_run": ci_run()}, "o/r", "tok", "qa-review")
+    decision = gate.collect_ci({"workflow_run": ci_run()}, "o/r", "tok")
     assert decision == {"skip": f"e2e run is for {HEAD[:7]}, PR head is {OTHER[:7]}; superseded"}
 
 
@@ -235,7 +331,7 @@ def test_ci_cancelled_run_without_a_report_is_skipped(monkeypatch):
     monkeypatch.setattr(gate, "gh_api", no_network)
     monkeypatch.setattr(gate, "gh", no_network)
     run = {**ci_run(), "conclusion": "cancelled"}
-    assert gate.collect_ci({"workflow_run": run}, "o/r", "tok", "qa-review") == {
+    assert gate.collect_ci({"workflow_run": run}, "o/r", "tok") == {
         "skip": "e2e run ended cancelled, nothing to compare"}
 
 
@@ -246,7 +342,7 @@ def test_ci_missing_report_asks_a_person(monkeypatch):
     def no_artifact(args, token, **kwargs):
         raise gate.GateError("gh run download failed: no artifact matches")
     monkeypatch.setattr(gate, "gh", no_artifact)
-    decision = gate.collect_ci({"workflow_run": ci_run()}, "o/r", "tok", "qa-review")
+    decision = gate.collect_ci({"workflow_run": ci_run()}, "o/r", "tok")
     assert decision["check"]["conclusion"] == "action_required"
     assert "no ginkgo-report for 1 new spec(s)" in decision["check"]["title"]
     assert "no artifact matches" in decision["check"]["summary"]
@@ -255,9 +351,9 @@ def test_ci_missing_report_asks_a_person(monkeypatch):
 def test_apply_posts_every_check_in_the_decision(monkeypatch):
     calls = []
     monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None: calls.append((args, payload)) or {})
-    decision = gate.decide_backport(backport_event(), "loft-bot", "qa-review")
+    decision = gate.decide_bot(backport_event(), BOTS, "qa-review")
     gate.apply(decision, "loft-sh/loft-enterprise", "tok", "loft-sh/eng-qa", "https://run")
-    assert [p["name"] for a, p in calls] == ["qa-review", "qa-review-ci"]
+    assert [p["name"] for a, p in calls] == ["qa-review", "qa-test-run"]
     assert all(p["head_sha"] == HEAD and p["conclusion"] == "success" for a, p in calls)
 
 
@@ -339,9 +435,9 @@ def test_override_may_name_the_head_when_the_panel_never_posted(monkeypatch, bod
     assert len(posted) == (2 if lands else 0)
 
 
-def test_override_sha_alone_is_not_a_reason():
+def test_override_sha_alone_binds_to_that_head():
     decision = gate.decide_comment(comment_event(f"/qa-review override {HEAD}"), {"sowmyav27"}, "qa-review")
-    assert decision == {"skip": "override needs a reason: /qa-review override [<sha>] <reason>"}
+    assert decision["sha_prefix"] == HEAD and "no reason given" in decision["checks"][0]["summary"]
 
 
 def test_human_request_needs_no_panel_verdict(monkeypatch):
@@ -392,6 +488,8 @@ def test_main_rejects_unknown_mode(tmp_path, monkeypatch):
     event_file.write_text("{}")
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_file))
     monkeypatch.setenv("INPUT_MODE", "push")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    monkeypatch.setenv("INPUT_GITHUB_TOKEN", "tok")
     with pytest.raises(gate.GateError):
         gate.main()
 
@@ -471,8 +569,8 @@ def spec(line, text):
 
 def test_ci_all_new_specs_passed_is_success():
     states = gate.report_specs([{"SpecReports": [leaf(10, "passed"), leaf(11, "passed")]}])
-    decision = gate.decide_ci(run(), 1, [spec(10, "a"), spec(11, "b")], states, "qa-review")
-    assert decision["check"]["name"] == "qa-review-ci"
+    decision = gate.decide_ci(run(), 1, [spec(10, "a"), spec(11, "b")], states)
+    assert decision["check"]["name"] == "qa-test-run"
     assert decision["check"]["conclusion"] == "success"
     assert decision["check"]["head_sha"] == HEAD
 
@@ -480,7 +578,7 @@ def test_ci_all_new_specs_passed_is_success():
 def test_ci_missing_or_skipped_spec_is_failure_and_names_it():
     states = gate.report_specs([{"SpecReports": [leaf(10, "passed"), leaf(11, "skipped")]}])
     decision = gate.decide_ci(run("failure"), 1, [spec(10, "a"), spec(11, "b"), spec(12, "c")],
-                              states, "qa-review")
+                              states)
     assert decision["check"]["conclusion"] == "failure"
     assert f"did not run: {SNAPSHOT}:12 c" in decision["check"]["summary"]
     assert f"{SNAPSHOT}:11 b (skipped)" in decision["check"]["summary"]
@@ -489,8 +587,8 @@ def test_ci_missing_or_skipped_spec_is_failure_and_names_it():
 
 @pytest.mark.parametrize("conclusion", ["cancelled", "timed_out", None])
 def test_ci_skips_when_the_run_did_not_finish(conclusion):
-    assert "skip" in gate.decide_ci(run(conclusion), 1, [spec(1, "a")], {}, "qa-review")
+    assert "skip" in gate.decide_ci(run(conclusion), 1, [spec(1, "a")], {})
 
 
 def test_ci_skips_when_the_pr_adds_no_spec():
-    assert "skip" in gate.decide_ci(run(), 1, [], {}, "qa-review")
+    assert "skip" in gate.decide_ci(run(), 1, [], {})
