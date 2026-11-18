@@ -126,13 +126,13 @@ def test_prepare_with_no_go_conflicts_sets_nothing(repo):
     assert not (repo.parent / "output").exists()
 
 
-
 def test_prepare_never_sends_vendored_code(repo):
     write(repo, "vendor/example.com/lib/lib.go", CONFLICT)
     push_backport(repo)
     git(repo, "fetch", "-q", "origin")
     ai.prepare()
     assert not (repo.parent / "output").exists()
+
 
 def test_prepare_over_the_cap_sets_nothing(backport, monkeypatch):
     monkeypatch.setattr(ai, "MAX_HUNKS", 0)
@@ -227,3 +227,120 @@ def test_garbage_result_changes_nothing_and_never_fails(backport, monkeypatch, r
     monkeypatch.setattr(sys, "argv", ["ai.py", "apply"])
     assert ai.main() == 0
     assert (backport / "pkg/peer/pick.go").read_text() == CONFLICT
+
+
+def conflict(package: str, good: str, bad: str, header: str = "", imports: str = "", name: str = "Pick") -> str:
+    return (f"{header}package {package}\n\n{imports}func {name}() int {{\n<<<<<<< HEAD\n\treturn {good}\n=======\n"
+            f"\treturn {bad}\n>>>>>>> abc123 (feat: x (#1))\n}}\n")
+
+
+@needs_go
+def test_conflict_in_a_nested_module_is_vetted_from_that_module(backport, monkeypatch, gh):
+    # A module wired in by a replace, with no go.work: go vet must run from the module itself.
+    path = f"{API_V4}/types/pick.go"
+    write(backport, path, conflict("types", "4", "five()"))
+    push_backport(backport)
+    apply(monkeypatch, prepared(backport), {f"{path}#0": GOOD})
+    notes = json.loads((backport.parent / ai.fix.NOTES_FILE).read_text())
+    assert path in notes["ai"]["committed"], notes["ai"]["declined"]
+
+
+@needs_go
+def test_package_is_rechecked_when_a_package_it_imports_is_reverted(backport, monkeypatch, gh):
+    # pkg/a passes go vet against z's resolved source (z's tests are not compiled for a).
+    # pkg/z then fails go vet on its broken test file and is reverted in the same pass,
+    # so pkg/a must be checked again and not committed against the reverted z.
+    write(backport, "pkg/a/a.go", conflict("a", "z.Pick()", "z.Pick() + 1",
+                                           imports='import "example.com/acme/app/v4/pkg/z"\n\n'))
+    write(backport, "pkg/z/z.go", conflict("z", "4", "five()"))
+    write(backport, "pkg/z/z_test.go", "package z\n\nvar _ = missingOnRelease\n")
+    push_backport(backport)
+    before = git(backport, "rev-parse", "origin/backport/release-4.12/pr-1")
+    apply(monkeypatch, prepared(backport), {"pkg/a/a.go#0": {**GOOD, "code": "\treturn z.Pick()"},
+                                            "pkg/z/z.go#0": GOOD, "pkg/peer/pick.go#0": BAD})
+    git(backport, "fetch", "-q", "origin")
+    assert git(backport, "rev-parse", "origin/backport/release-4.12/pr-1") == before
+    assert "<<<<<<<" in (backport / "pkg/a/a.go").read_text()
+
+
+@needs_go
+def test_file_the_runner_does_not_build_is_never_committed(backport, monkeypatch, gh):
+    # go vet skips files excluded by build constraints, so an answer there is never type-checked.
+    path = "pkg/peer/pick_never.go"
+    write(backport, path, conflict("peer", "4", "five()", "//go:build never\n\n", name="PickNever"))
+    push_backport(backport)
+    before = git(backport, "rev-parse", "origin/backport/release-4.12/pr-1")
+    apply(monkeypatch, prepared(backport), {f"{path}#0": BAD, "pkg/peer/pick.go#0": GOOD})
+    git(backport, "fetch", "-q", "origin")
+    assert git(backport, "rev-parse", "origin/backport/release-4.12/pr-1") == before
+    assert "<<<<<<<" in (backport / path).read_text()
+
+
+@needs_go
+def test_gofmt_failure_with_no_output_is_declined_not_raised(backport, monkeypatch, gh):
+    real = ai.subprocess.run
+
+    def run(cmd, **kwargs):
+        if cmd[0] == "gofmt":
+            return subprocess.CompletedProcess(cmd, 2, "", "")
+        return real(cmd, **kwargs)
+
+    monkeypatch.setattr(ai.subprocess, "run", run)
+    apply(monkeypatch, prepared(backport), {"pkg/peer/pick.go#0": GOOD})
+    notes = json.loads((backport.parent / ai.fix.NOTES_FILE).read_text())
+    assert notes["ai"]["committed"] == [] and "pkg/peer/pick.go" in notes["ai"]["declined"]
+    assert (backport / "pkg/peer/pick.go").read_text() == CONFLICT
+
+
+@needs_go
+def test_file_go_drops_by_name_is_never_committed(backport, monkeypatch, gh):
+    # go/build skips _x.go and .x.go without listing them anywhere, so go vet never sees them.
+    path = "pkg/peer/_template.go"
+    write(backport, path, conflict("peer", "4", "five()", name="Template"))
+    push_backport(backport)
+    before = git(backport, "rev-parse", "origin/backport/release-4.12/pr-1")
+    apply(monkeypatch, prepared(backport), {f"{path}#0": BAD, "pkg/peer/pick.go#0": GOOD})
+    git(backport, "fetch", "-q", "origin")
+    assert git(backport, "rev-parse", "origin/backport/release-4.12/pr-1") == before
+    assert "<<<<<<<" in (backport / path).read_text()
+
+
+def test_non_string_reason_is_declined_not_raised(backport, monkeypatch):
+    apply(monkeypatch, prepared(backport), {"pkg/peer/pick.go#0": {"resolvable": False, "reason": ["a", 1]}})
+    notes = json.loads((backport.parent / ai.fix.NOTES_FILE).read_text())
+    assert "pkg/peer/pick.go" in notes["ai"]["declined"]
+
+
+@needs_go
+def test_answers_left_unchecked_when_time_runs_out(backport, monkeypatch, gh):
+    monkeypatch.setattr(ai, "CHECK_BUDGET", 0)
+    apply(monkeypatch, prepared(backport), {"pkg/peer/pick.go#0": GOOD})
+    notes = json.loads((backport.parent / ai.fix.NOTES_FILE).read_text())
+    assert notes["ai"]["committed"] == [] and "time" in notes["ai"]["declined"]["pkg/peer/pick.go"]
+    assert (backport / "pkg/peer/pick.go").read_text() == CONFLICT
+
+
+def test_reason_stays_on_one_line(backport, monkeypatch, capsys):
+    reason = "needs x\n::error::injected\n- and a bullet"
+    apply(monkeypatch, prepared(backport), {"pkg/peer/pick.go#0": {"resolvable": False, "reason": reason}})
+    notes = json.loads((backport.parent / ai.fix.NOTES_FILE).read_text())
+    assert "\n" not in notes["ai"]["declined"]["pkg/peer/pick.go"]
+    assert not any(l.startswith("::error::") for l in capsys.readouterr().out.splitlines())
+
+
+@needs_go
+def test_failed_push_says_the_label_stays(backport, monkeypatch, gh, capsys):
+    real = ai.fix.git
+
+    def git_(*args, **kwargs):
+        if args[0] == "push":
+            raise RuntimeError("git push failed: ! [rejected] (fetch first)\nhint: pull first")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(ai.fix, "git", git_)
+    monkeypatch.setenv("INPUT_FILE", str(prepared(backport)))
+    monkeypatch.setenv("AI_RESULT", json.dumps({"resolutions": [{"id": "pkg/peer/pick.go#0", **GOOD}]}))
+    monkeypatch.setattr(sys, "argv", ["ai.py", "apply"])
+    assert ai.main() == 0
+    warning = [l for l in capsys.readouterr().out.splitlines() if l.startswith("::warning::backport AI pass failed")]
+    assert warning and "backport-ai-resolved label stays on" in warning[0] and "rejected" in warning[0]

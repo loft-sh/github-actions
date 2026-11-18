@@ -21,7 +21,7 @@ inputs:
     required: false
     default: 'main'
   github-token:
-    description: 'Token with contents write on the repository, used to fetch and push the backport branch. Supplied to git through the environment, never argv or .git/config.'
+    description: 'Token with contents write on the repository, used to fetch and push the backport branch. With anthropic-api-key set it also needs issues or pull-requests write, to label the PR before the AI commit is pushed. Supplied to git through the environment, never argv or .git/config.'
     required: true
   push:
     description: 'false commits the fix locally without pushing (dry run).'

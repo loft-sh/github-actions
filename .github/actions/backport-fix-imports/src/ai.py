@@ -27,6 +27,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -35,6 +36,9 @@ import fix  # noqa: E402
 MAX_HUNKS = 20
 MAX_INPUT_BYTES = 300_000
 VET_TIMEOUT = 900
+# All go checks of the answers share this budget, inside the job's 30-minute timeout.
+CHECK_BUDGET = 15 * 60
+DEADLINE = float("inf")  # set by apply()
 MARKS = (fix.MARK_OURS, fix.MARK_BASE, fix.MARK_THEIRS)
 
 
@@ -102,17 +106,72 @@ def resolve_file(text: str, answers: dict[str, dict], path: str) -> str | None:
     return "\n".join(lines)
 
 
-def vet(package: str) -> tuple[bool, str]:
+def in_module(directory: str) -> tuple[str, str]:
+    """The nearest module directory holding this package, and the package relative to it.
+    go vet run from the repo root refuses a package in a nested module unless a go.work
+    covers it; from the module's own directory it works either way."""
+    here = Path(directory)
+    for d in (here, *here.parents):
+        if (d / "go.mod").is_file():
+            rel = here.relative_to(d).as_posix()
+            return str(d), "." if rel == "." else f"./{rel}"
+    return ".", f"./{here.as_posix()}"
+
+
+def go(directory: str, *args: str) -> tuple[bool, str]:
+    """Run a go subcommand on one package from its module; (ok, first useful line of output)."""
+    module, package = in_module(directory)
+    left = DEADLINE - time.monotonic()
+    if left <= 0:
+        return False, "ran out of time to check the AI answers"
     try:
-        res = subprocess.run(["go", "vet", package], capture_output=True, text=True, timeout=VET_TIMEOUT,
-                             env=fix.tool_env())
+        res = subprocess.run(["go", "-C", module, *args, package], capture_output=True, text=True,
+                             timeout=min(VET_TIMEOUT, left), env=fix.tool_env())
     except (OSError, subprocess.TimeoutExpired) as e:
         return False, str(e)
+    if res.returncode == 0:
+        return True, res.stdout
     lines = [l for l in (res.stdout + res.stderr).splitlines() if l and not l.startswith("#")]
-    return res.returncode == 0, lines[0] if lines else ""
+    return False, lines[0] if lines else f"go {args[0]} failed"
+
+
+def vet(directory: str) -> tuple[bool, str]:
+    ok, out = go(directory, "vet")
+    return ok, "" if ok else out
+
+
+def built(directory: str, paths: list[str]) -> tuple[bool, str]:
+    """go vet skips files the runner's GOOS, GOARCH and build tags exclude, so it never
+    type-checks an answer in one. Such a file can't be accepted."""
+    ok, out = go(directory, "list", "-f", " ".join(
+        f'{{{{join .{field} " "}}}}' for field in ("GoFiles", "CgoFiles", "TestGoFiles", "XTestGoFiles")))
+    if not ok:
+        return False, out
+    # An allowlist: go/build drops _x.go and .x.go without listing them anywhere.
+    skipped = sorted(Path(p).name for p in paths if Path(p).name not in out.split())
+    if skipped:
+        return False, f"{', '.join(skipped)} is not built on the runner, so go vet can't check it"
+    return True, ""
+
+
+def gofmt(paths: list[str]) -> tuple[bool, str]:
+    try:
+        res = subprocess.run(["gofmt", "-w", *paths], capture_output=True, text=True, env=fix.tool_env())
+    except OSError as e:
+        return False, str(e)
+    lines = res.stderr.strip().splitlines()
+    return res.returncode == 0, "" if res.returncode == 0 else (lines[0] if lines else "gofmt failed")
+
+
+def one_line(reason: object) -> str:
+    """Model text on one line: a newline would split the PR comment bullet, and a line
+    starting with :: in the log would be read as a workflow command."""
+    return " ".join(str(reason).split())
 
 
 def apply() -> None:
+    global DEADLINE
+    DEADLINE = time.monotonic() + CHECK_BUDGET
     payload = json.loads(Path(os.environ["INPUT_FILE"]).read_text(encoding="utf-8"))
     result = json.loads(os.environ.get("AI_RESULT") or "{}")
     answers = {r["id"]: r for r in result.get("resolutions", []) if isinstance(r, dict) and "id" in r}
@@ -128,7 +187,7 @@ def apply() -> None:
             continue
         resolved = resolve_file(current, answers, path)
         if resolved is None:
-            reasons = "; ".join(answers.get(i, {}).get("reason", "no answer") for i in f["ids"])
+            reasons = "; ".join(one_line(answers.get(i, {}).get("reason", "no answer")) for i in f["ids"])
             print(f"::warning::{path}: not every conflict was resolved ({reasons}); left for review")
             declined[path] = f"the AI did not resolve it: {reasons}"
             continue
@@ -139,25 +198,36 @@ def apply() -> None:
     for path in written:
         by_package.setdefault(str(Path(path).parent), []).append(path)
 
-    keep = []
+    def reject(directory: str, why: str) -> None:
+        for p in by_package.pop(directory):
+            Path(p).write_text(written[p], encoding="utf-8")
+            declined[p] = f"the AI answer was rejected: {why}"
+        print(f"::warning::AI resolution for ./{directory} rejected ({why}); left for review")
+
     for directory, paths in sorted(by_package.items()):
-        ok, why = True, ""
         others = [p for p in Path(directory).glob("*.go") if str(p) not in paths]
         if any(fix.has_markers(p.read_text(encoding="utf-8", errors="replace")) for p in others):
-            ok, why = False, "another file in the package still has conflicts"
-        if ok:
-            res = subprocess.run(["gofmt", "-w", *paths], capture_output=True, text=True, env=fix.tool_env())
-            ok, why = res.returncode == 0, res.stderr.strip().splitlines()[0] if res.returncode else ""
-        if ok:
-            ok, why = vet(f"./{directory}")
-        if ok:
-            keep.extend(paths)
-            print(f"AI resolution for ./{directory} passes go vet")
-        else:
-            for p in paths:
-                Path(p).write_text(written[p], encoding="utf-8")
-                declined[p] = f"the AI answer was rejected: {why}"
-            print(f"::warning::AI resolution for ./{directory} rejected ({why}); left for review")
+            reject(directory, "another file in the package still has conflicts")
+            continue
+        ok, why = gofmt(paths)
+        if not ok:
+            reject(directory, why)
+
+    # A package can pass go vet against another package's answer that is rejected
+    # later in the same pass. Check again until a pass rejects nothing.
+    rejected = True
+    while rejected and by_package:
+        rejected = False
+        for directory, paths in sorted(by_package.items()):
+            ok, why = vet(directory)
+            if ok:
+                ok, why = built(directory, paths)
+            if not ok:
+                reject(directory, why)
+                rejected = True
+    keep = sorted(p for paths in by_package.values() for p in paths)
+    for directory in sorted(by_package):
+        print(f"AI resolution for ./{directory} passes go vet")
 
     fix.note("ai", {"committed": [], "commit": "", "declined": declined})
     if not keep:
@@ -173,7 +243,12 @@ def apply() -> None:
         if pr is None:
             raise RuntimeError(f"no open PR for {branch} to label, so the AI commit was not pushed")
         fix.github("POST", f"/repos/{os.environ['GITHUB_REPOSITORY']}/issues/{pr}/labels", {"labels": [fix.AI_LABEL]})
-        fix.git("push", "-q", os.environ.get("REMOTE") or "origin", f"HEAD:refs/heads/{branch}")
+        try:
+            fix.git("push", "-q", os.environ.get("REMOTE") or "origin", f"HEAD:refs/heads/{branch}")
+        except RuntimeError as e:
+            # Said first: main() keeps only the first line of the error.
+            raise RuntimeError(f"the {fix.AI_LABEL} label stays on PR #{pr}, but the AI commit was not "
+                               f"pushed: {e}") from e
     fix.note("ai", {"committed": keep, "commit": fix.git("rev-parse", "HEAD").strip(), "declined": declined})
     print(f"committed AI resolutions for {len(keep)} file(s)")
 
