@@ -228,6 +228,11 @@ func run(
 	})
 
 	logger.Info("Linear sync completed", "processed", len(releasedIssues), "released", syncer.released, "skipped", syncer.skipped, "failed", failedCount)
+
+	// Start the customer announcement for a stable patch release. It runs even
+	// when an issue above failed, and it never fails the sync itself.
+	linearClient.StartAnnounceTask(ctx, *repo, currentRelease.TagName, *dryRun)
+
 	return syncErr
 }
 
