@@ -66,14 +66,14 @@ checkout and the event filter.
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-|    INPUT     |  TYPE  | REQUIRED |         DEFAULT         |                                                  DESCRIPTION                                                  |
-|--------------|--------|----------|-------------------------|---------------------------------------------------------------------------------------------------------------|
-|  check-name  | string |  false   |      `"qa-review"`      |                                       Name of the check-run to create.                                        |
-| github-token | string |  false   | `"${{ github.token }}"` |           Token for gh. The calling job <br>must grant checks: write and pull-requests: <br>write.            |
-|     mode     | string |   true   |                         |               Either "review" (pull_request_review event) or "comment" (issue_comment event).                 |
-| panel-login  | string |  false   |      `"loft-bot"`       |                  Login that posts the panel review. <br>Reviews by anyone else are ignored.                   |
-|  qa-logins   | string |  false   |                         |                        Comma-separated logins allowed to run /qa-review <br>override.                         |
-|   qa-team    | string |  false   |   `"loft-sh/eng-qa"`    | org/slug of the team asked for <br>a review on needs_human or /qa-review <br>human. Empty skips the request.  |
+|    INPUT     |  TYPE  | REQUIRED |         DEFAULT         |                                                                                      DESCRIPTION                                                                                       |
+|--------------|--------|----------|-------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|  check-name  | string |  false   |      `"qa-review"`      |                                                                            Name of the check-run to create.                                                                            |
+| github-token | string |  false   | `"${{ github.token }}"` |                            Token for gh. The calling job <br>must grant checks: write and pull-requests: <br>write; ci mode also needs actions: <br>read.                              |
+|     mode     | string |   true   |                         | "review" (pull_request_review event), "comment" (issue_comment event), "ci" (workflow_run event of the e2e workflow) <br>or "backport" (pull_request event of an automated backport).  |
+| panel-login  | string |  false   |      `"loft-bot"`       |                                     Login that posts the panel review <br>and opens automated backports. Reviews by <br>anyone else are ignored.                                       |
+|  qa-logins   | string |  false   |                         |                                                            Comma-separated logins allowed to run /qa-review <br>override.                                                              |
+|   qa-team    | string |  false   |   `"loft-sh/eng-qa"`    |                                     org/slug of the team asked for <br>a review on needs_human or /qa-review <br>human. Empty skips the request.                                       |
 
 <!-- AUTO-DOC-INPUT:END -->
 
