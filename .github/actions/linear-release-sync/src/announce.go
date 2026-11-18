@@ -108,15 +108,15 @@ func (l *LinearClient) StartAnnounceTask(ctx context.Context, repo, releaseTag s
 	}
 }
 
-// startTask moves one announce task to its team's first started state.
+// startTask moves one announce task to its team's "In Progress" state.
 func (l *LinearClient) startTask(ctx context.Context, logger *slog.Logger, task announceTask, dryRun bool) {
 	if !unstartedStateTypes[task.StateType] {
 		logger.Info("Announce task is already started or closed, leaving it", "stateType", task.StateType)
 		return
 	}
-	stateID, err := l.firstStartedStateID(ctx, task.TeamID)
+	stateID, err := l.inProgressStateID(ctx, task.TeamID)
 	if err != nil {
-		logger.Warn("Cannot find a started state for the announce task", "error", err, "remedy", announceRemedy)
+		logger.Warn("Cannot find the In Progress state for the announce task", "error", err, "remedy", announceRemedy)
 		return
 	}
 	if dryRun {
@@ -182,29 +182,23 @@ func (l *LinearClient) findAnnounceTasks(ctx context.Context, checklist string) 
 	}
 }
 
-// firstStartedStateID returns the team's started state with the lowest
-// position, normally "In Progress".
-func (l *LinearClient) firstStartedStateID(ctx context.Context, teamID string) (string, error) {
+// inProgressStateID returns the team's "In Progress" state. It is looked up
+// by name because the started state with the lowest position can be one that
+// reads as on hold, such as "Parked" in the ENG team.
+func (l *LinearClient) inProgressStateID(ctx context.Context, teamID string) (string, error) {
 	var query struct {
 		WorkflowStates struct {
 			Nodes []struct {
-				Id       string
-				Position float64
+				Id string
 			}
-		} `graphql:"workflowStates(filter: { team: { id: { eq: $teamID } }, type: { eq: \"started\" } })"`
+		} `graphql:"workflowStates(filter: { team: { id: { eq: $teamID } }, type: { eq: \"started\" }, name: { eq: \"In Progress\" } })"`
 	}
 	variables := map[string]any{"teamID": graphql.ID(teamID)}
 	if err := l.client.Query(ctx, &query, variables); err != nil {
 		return "", fmt.Errorf("query failed: %w", err)
 	}
 	if len(query.WorkflowStates.Nodes) == 0 {
-		return "", fmt.Errorf("team %s has no started state", teamID)
+		return "", fmt.Errorf("team %s has no started state named In Progress", teamID)
 	}
-	first := query.WorkflowStates.Nodes[0]
-	for _, n := range query.WorkflowStates.Nodes[1:] {
-		if n.Position < first.Position {
-			first = n
-		}
-	}
-	return first.Id, nil
+	return query.WorkflowStates.Nodes[0].Id, nil
 }

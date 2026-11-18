@@ -65,9 +65,17 @@ func (f *fakeAnnounceLinear) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			_, _ = fmt.Fprint(w, `{"errors":[{"message":"rate limited"}],"data":null}`)
 			return
 		}
+		// The ENG team's started states. Parked and Investigating sort
+		// before In Progress, so only a name filter picks the right one.
+		if strings.Contains(req.Query, `name: { eq: "In Progress" }`) {
+			_, _ = fmt.Fprint(w, `{"data":{"workflowStates":{"nodes":[{"id":"in-progress"}]}}}`)
+			return
+		}
 		_, _ = fmt.Fprint(w, `{"data":{"workflowStates":{"nodes":[`+
-			`{"id":"in-review","position":3},`+
-			`{"id":"in-progress","position":2}]}}}`)
+			`{"id":"parked","position":-2847.54},`+
+			`{"id":"investigating","position":-1931.47},`+
+			`{"id":"in-progress","position":2},`+
+			`{"id":"in-review","position":3}]}}}`)
 	case strings.Contains(req.Query, "issues("):
 		f.searches = append(f.searches, req.Variables)
 		if f.failSearch {
@@ -131,7 +139,7 @@ func TestStartAnnounceTaskMovesTheUnstartedTask(t *testing.T) {
 				t.Errorf("updated issue = %v, want uuid-ENG-1", got)
 			}
 			if got := fake.updates[0]["stateID"]; got != "in-progress" {
-				t.Errorf("state = %v, want the lowest-position started state in-progress", got)
+				t.Errorf("state = %v, want In Progress, not the lowest-position started state (Parked)", got)
 			}
 			if got := fake.searches[0]["checklist"]; got != "4.12.7 Post Release Activities" {
 				t.Errorf("checklist search = %v", got)
@@ -292,7 +300,7 @@ func TestStartAnnounceTaskWarnsWhenTheMoveFails(t *testing.T) {
 		fake *fakeAnnounceLinear
 		want string
 	}{
-		{"started state lookup fails", &fakeAnnounceLinear{failStates: true}, "Cannot find a started state"},
+		{"started state lookup fails", &fakeAnnounceLinear{failStates: true}, "Cannot find the In Progress state"},
 		{"update fails", &fakeAnnounceLinear{updateResult: "error"}, "Cannot start the announce task"},
 		{"update unsuccessful", &fakeAnnounceLinear{updateResult: "unsuccessful"}, "Cannot start the announce task"},
 	}
