@@ -324,7 +324,10 @@ jobs:
           # account, not github-actions[bot]. sticky-pr-comment matches on author to
           # find its prior comment -- feed it the resolved login so re-runs update.
           GH_TOKEN: ${{ secrets.gh-access-token }}
-        run: echo "login=$(gh api user --jq '.login')" >> "$GITHUB_OUTPUT"
+        # Assigned first, so a failed lookup stops this step with gh's own error.
+        run: |
+          login=$(gh api user --jq .login)
+          echo "login=$login" >> "$GITHUB_OUTPUT"
 
       - name: Comment backport status on the source PR
         if: ${{ !cancelled() && steps.backport.outputs.comment-body != '' }}
