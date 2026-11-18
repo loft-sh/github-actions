@@ -9,13 +9,16 @@ Two event shapes, both read from GITHUB_EVENT_PATH:
 - issue_comment (created): `/qa-review override <reason>` from a QA login completes the
   check-run as success and records who overrode it. The override binds to the panel verdict
   it answers: the PR's current head must carry a panel marker submitted before the comment,
-  otherwise the gate does nothing and asks for a fresh comment. `/qa-review human` from a
-  repository member asks the QA team for a review and leaves the check-run waiting for a person.
+  otherwise the gate does nothing and asks for a fresh comment. When the panel never posted
+  on that head (an outage), `/qa-review override <sha> <reason>` names the head instead and
+  lands only while that sha is still the PR head. `/qa-review human` from a repository
+  member asks the QA team for a review and leaves the check-run waiting for a person.
 - workflow_run (completed) of the e2e workflow: every `It(`, `Specify(` or `Entry(` the PR
   adds is looked up by file and line in the Ginkgo JSON report the run uploaded. A new spec
-  that did not run, or did not pass, turns the `<check>-ci` check-run red. A run whose head is
-  no longer the PR head is superseded and ignored; a run without a report asks a person. The
-  panel's verdict check-run is never touched.
+  that did not run, or did not pass, turns the `<check>-ci` check-run red. The diff is the
+  compare of the PR base with the run's own head, so it describes the commits the run tested.
+  A run whose head is no longer the PR head is superseded and ignored; a finished run without
+  a report asks a person. The panel's verdict check-run is never touched.
 - pull_request (opened) of an automated backport: a PR the panel bot opened from a
   `backport/` branch was reviewed on main already. On the head the bot opened it with, both
   check-runs complete as success at once, so the repo's auto-approve workflow can approve it
@@ -50,6 +53,8 @@ GO_ESCAPES = {"n": "\n", "t": "\t", "r": "\r"}
 STATE_RANK = {"passed": 0, "": 1, "pending": 2, "skipped": 3, "timedout": 4, "interrupted": 4,
               "aborted": 4, "panicked": 5, "failed": 5}
 REPORT_ARTIFACT = "ginkgo-report"
+SHA_PREFIX = re.compile(r"^[0-9a-f]{7,40}$")
+COMPARE_FILE_CAP = 300  # the compare API lists at most this many files and says nothing when it cuts
 BACKPORT_BRANCH = "backport/"
 
 
@@ -159,9 +164,11 @@ def decide_comment(event, qa_logins, check_name, command="/qa-review"):
     if verb == "override":
         if author not in qa_logins:
             return {"skip": f"{author or 'unknown'} is not a QA login; override ignored"}
-        reason = " ".join(words[2:]).strip()
+        rest = words[2:]
+        sha_prefix = rest.pop(0) if rest and SHA_PREFIX.match(rest[0]) else None
+        reason = " ".join(rest).strip()
         if not reason:
-            return {"skip": "override needs a reason: /qa-review override <reason>"}
+            return {"skip": "override needs a reason: /qa-review override [<sha>] <reason>"}
         summary = (f"@{author} overrode the panel verdict: {reason}\n\n"
                    f"Comment: {comment.get('html_url', '')}")
         return {
@@ -174,6 +181,7 @@ def decide_comment(event, qa_logins, check_name, command="/qa-review"):
             "pr_number": issue.get("number"),
             "comment_at": comment.get("created_at", ""),
             "binds_to_marker": True,
+            "sha_prefix": sha_prefix,
         }
     if verb == "human":
         if comment.get("author_association") not in MEMBER_ASSOCIATIONS:
@@ -295,12 +303,13 @@ def run_pr_number(run, repo, token):
     return None
 
 
-def pr_diff(repo, pr_number, token):
-    """A diff of the PR built from the files API (patch per file, up to 3000 files), in the
-    `+++ b/<path>` shape added_specs reads. `gh pr diff` refuses PRs over the diff limit."""
-    files = gh_api([f"repos/{repo}/pulls/{pr_number}/files", "--paginate", "--slurp"], token)
-    return "\n".join(f"+++ b/{f['filename']}\n{f.get('patch') or ''}"
-                      for page in files for f in page)
+def pr_diff(repo, base_ref, head_sha, token):
+    """The diff of the commits an e2e run tested: the PR base compared with the run's head
+    (three dots, so from the merge base), in the `+++ b/<path>` shape added_specs reads."""
+    files = gh_api([f"repos/{repo}/compare/{base_ref}...{head_sha}"], token).get("files") or []
+    if len(files) >= COMPARE_FILE_CAP:
+        raise GateError(f"compare lists {COMPARE_FILE_CAP} files; the diff may be cut")
+    return "\n".join(f"+++ b/{f['filename']}\n{f.get('patch') or ''}" for f in files)
 
 
 def ask_person(check_name, head, pr_number, title, detail):
@@ -308,7 +317,8 @@ def ask_person(check_name, head, pr_number, title, detail):
     return {"check": {"name": f"{check_name}-ci", "head_sha": head, "conclusion": "action_required",
                       "title": title,
                       "summary": f"{detail}\n\nRe-run `/test-e2e`, or override with "
-                                 "`/qa-review override <reason>`."},
+                                 "`/qa-review override <reason>` (`/qa-review override <sha> "
+                                 "<reason>` when the panel has not posted on this head)."},
             "request_qa_review": False, "pr_number": pr_number}
 
 
@@ -316,15 +326,17 @@ def collect_ci(event, repo, token, check_name):
     """Fetch the diff and the Ginkgo report for a finished e2e run, then decide."""
     run = event.get("workflow_run") or {}
     head = run.get("head_sha", "")
+    if run.get("conclusion") not in ("success", "failure"):
+        return {"skip": f"e2e run ended {run.get('conclusion') or 'unknown'}, nothing to compare"}
     pr_number = run_pr_number(run, repo, token)
     if pr_number is None:
         return {"skip": "e2e run is not for an open pull request"}
     try:
-        current = gh_api([f"repos/{repo}/pulls/{pr_number}"], token)["head"]["sha"]
+        pr = gh_api([f"repos/{repo}/pulls/{pr_number}"], token)
+        current = pr["head"]["sha"]
         if current != head:
-            # The report graded an older head; the diff below would be the new head's.
             return {"skip": f"e2e run is for {head[:7]}, PR head is {current[:7]}; superseded"}
-        added = added_specs(pr_diff(repo, pr_number, token))
+        added = added_specs(pr_diff(repo, pr["base"]["ref"], head, token))
     except GateError as error:
         return ask_person(check_name, head, pr_number,
                           "QA review: PR diff unavailable, a QA engineer checks the new specs",
@@ -368,6 +380,8 @@ def comment_head(decision, repo, token, panel_login):
     head = gh_api([f"repos/{repo}/pulls/{pr_number}"], token)["head"]["sha"]
     if not decision.get("binds_to_marker"):
         return head
+    if decision.get("sha_prefix"):
+        return head if head.startswith(decision["sha_prefix"]) else None
     pages = gh_api([f"repos/{repo}/pulls/{pr_number}/reviews", "--paginate", "--slurp"], token)
     for review in (r for page in pages for r in page):
         if (review.get("user") or {}).get("login") != panel_login:
@@ -391,7 +405,8 @@ def apply(decision, repo, token, qa_team, run_url, panel_login="loft-bot"):
         head = comment_head(decision, repo, token, panel_login)
         if head is None:
             print("::notice::qa-review-gate: no panel verdict on the PR's current head before "
-                  "the comment; wait for the panel, then comment again")
+                  "the comment; wait for the panel, then comment again (or name the head: "
+                  "/qa-review override <sha> <reason>)")
             return None
     for check in checks:
         gh_api([f"repos/{repo}/check-runs", "-X", "POST"], token, {

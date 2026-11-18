@@ -183,21 +183,30 @@ def test_run_pr_number_prefers_the_event_then_the_head_commit():
     assert calls == [[f"repos/o/r/commits/{HEAD}/pulls"]]
 
 
-def test_pr_diff_builds_the_added_lines_from_the_files_api(monkeypatch):
-    pages = [[{"filename": "e2e/a.go", "patch": '@@ -40,0 +41 @@\n+\tIt("new", func() {'},
-              {"filename": "e2e/big.go"}]]
-    monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None: pages)
-    assert gate.added_specs(gate.pr_diff("o/r", 1, "tok")) == [
+def test_pr_diff_compares_the_base_with_the_run_head(monkeypatch):
+    calls = []
+    files = [{"filename": "e2e/a.go", "patch": '@@ -40,0 +41 @@\n+\tIt("new", func() {'},
+             {"filename": "e2e/big.go"}]
+    monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None: calls.append(args) or {"files": files})
+    assert gate.added_specs(gate.pr_diff("o/r", "main", HEAD, "tok")) == [
         {"path": "e2e/a.go", "line": 41, "text": "new"}]
+    assert calls == [[f"repos/o/r/compare/main...{HEAD}"]]
+
+
+def test_pr_diff_refuses_a_compare_the_api_may_have_cut(monkeypatch):
+    files = [{"filename": f"e2e/{i}.go"} for i in range(300)]
+    monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None: {"files": files})
+    with pytest.raises(gate.GateError):
+        gate.pr_diff("o/r", "main", HEAD, "tok")
 
 
 def ci_api(head=HEAD, files=None):
     def fake(args, token, payload=None):
-        if args[0].endswith("/files"):
+        if "/compare/" in args[0]:
             if files is None:
-                raise gate.GateError("gh api files failed: too many files")
-            return files
-        return {"head": {"sha": head}}
+                raise gate.GateError("gh api compare failed: 500")
+            return {"files": files}
+        return {"head": {"sha": head}, "base": {"ref": "main"}}
     return fake
 
 
@@ -220,8 +229,18 @@ def test_ci_run_for_an_older_head_is_superseded(monkeypatch):
     assert decision == {"skip": f"e2e run is for {HEAD[:7]}, PR head is {OTHER[:7]}; superseded"}
 
 
+def test_ci_cancelled_run_without_a_report_is_skipped(monkeypatch):
+    def no_network(*args, **kwargs):
+        raise AssertionError("a cancelled run must not reach the API")
+    monkeypatch.setattr(gate, "gh_api", no_network)
+    monkeypatch.setattr(gate, "gh", no_network)
+    run = {**ci_run(), "conclusion": "cancelled"}
+    assert gate.collect_ci({"workflow_run": run}, "o/r", "tok", "qa-review") == {
+        "skip": "e2e run ended cancelled, nothing to compare"}
+
+
 def test_ci_missing_report_asks_a_person(monkeypatch):
-    files = [[{"filename": "e2e/a.go", "patch": '@@ -1,0 +1 @@\n+\tIt("new", func() {'}]]
+    files = [{"filename": "e2e/a.go", "patch": '@@ -1,0 +1 @@\n+\tIt("new", func() {'}]
     monkeypatch.setattr(gate, "gh_api", ci_api(files=files))
 
     def no_artifact(args, token, **kwargs):
@@ -297,6 +316,32 @@ def test_override_lands_on_the_head_the_panel_graded_before_the_comment(monkeypa
     decision = gate.decide_comment(comment_event("/qa-review override covered"), {"sowmyav27"}, "qa-review")
     assert gate.apply(decision, "o/r", "tok", "loft-sh/eng-qa", "https://run") == HEAD
     assert [c["head_sha"] for c in posted] == [HEAD, HEAD]
+
+
+@pytest.mark.parametrize("body, lands", [
+    (f"/qa-review override {HEAD} panel is down, I read it", True),
+    (f"/qa-review override {HEAD[:7]} panel is down, I read it", True),
+    (f"/qa-review override {OTHER[:12]} panel is down", False),
+])
+def test_override_may_name_the_head_when_the_panel_never_posted(monkeypatch, body, lands):
+    posted = []
+    lookups = pr_api(reviews=[])
+
+    def fake_gh_api(args, token, payload=None):
+        if args[0].endswith("/check-runs"):
+            posted.append(payload)
+        return lookups(args, token, payload)
+
+    monkeypatch.setattr(gate, "gh_api", fake_gh_api)
+    decision = gate.decide_comment(comment_event(body), {"sowmyav27"}, "qa-review")
+    assert "panel is down" in decision["checks"][0]["summary"]
+    assert gate.apply(decision, "o/r", "tok", "", "https://run") == (HEAD if lands else None)
+    assert len(posted) == (2 if lands else 0)
+
+
+def test_override_sha_alone_is_not_a_reason():
+    decision = gate.decide_comment(comment_event(f"/qa-review override {HEAD}"), {"sowmyav27"}, "qa-review")
+    assert decision == {"skip": "override needs a reason: /qa-review override [<sha>] <reason>"}
 
 
 def test_human_request_needs_no_panel_verdict(monkeypatch):
