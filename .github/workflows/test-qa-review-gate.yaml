@@ -37,7 +37,7 @@ jobs:
       actions: read
     uses: ./.github/workflows/qa-review-gate.yaml
     with:
-      qa-logins: ''
+      override-logins: ''
 
   verify-caller:
     needs: [caller]
