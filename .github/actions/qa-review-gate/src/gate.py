@@ -53,7 +53,9 @@ CONCLUSION = {"block": "failure", "pass": "success", "needs_human": "action_requ
               "not_run": "action_required"}
 CLASS_WORDS = {"a": "need a test", "b": "weak test", "c": "no test", "d": "product gap"}
 MEMBER_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
-ADDED_SPEC = re.compile(r'^\+[^+].*\b[FPX]?(?:It|Specify|Entry)\(\s*"((?:[^"\\]|\\.)+)"')
+ADDED_SPEC = re.compile(r'^\+[^+].*\b[FPX]?(?:It|Specify|Entry)\s*\(\s*"((?:[^"\\]|\\.)*)"')
+ADDED_DECLARATION = re.compile(r'^\+[^+].*\b[FPX]?(?:It|Specify|Entry|Describe|Context|When|DescribeTable)\s*\(')
+LITERAL_DECLARATION = re.compile(r'^\+[^+].*\b[FPX]?(?:It|Specify|Entry|Describe|Context|When|DescribeTable)\s*\(\s*"(?:[^"\\]|\\.)*"')
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)")
 GO_ESCAPES = {"n": "\n", "t": "\t", "r": "\r"}
 # Ginkgo states, worst last; two reports for one spec keep the worst.
@@ -172,7 +174,7 @@ def decide_review(event, panel_login, check_name):
     }
 
 
-def test_run_pending(added, head, pr_number, test_check, run_hint="/test-e2e"):
+def test_run_pending(added, head, pr_number, test_check, run_hint="/test-e2e <label-filter>"):
     """The `qa-test-run` check-run opened with the panel verdict: green when the PR adds no spec,
     otherwise waiting for an e2e run; `collect_ci` overwrites it with the run's result."""
     if not added:
@@ -183,7 +185,7 @@ def test_run_pending(added, head, pr_number, test_check, run_hint="/test-e2e"):
     lines = "\n".join(f"- {s['path']}:{s['line']} {s['text']}" for s in added)
     return {"check": {"name": test_check, "head_sha": head, "conclusion": "action_required",
                       "title": f"QA test run: {len(added)} new spec(s) wait for `{run_hint}`",
-                      "summary": f"New specs this PR adds:\n\n{lines}\n\nRun `{run_hint}`; the "
+                      "summary": f"New specs this PR adds:\n\n{lines}\n\nRun `{run_hint}` with a filter covering the listed specs; the "
                                  f"check turns green when they ran and passed. {OVERRIDE_HINT}"},
             "request_qa_review": False, "pr_number": pr_number}
 
@@ -203,9 +205,10 @@ def collect_review(event, repo, token, panel_login, check_name, test_check="qa-t
         opener = test_run_pending(added, head, pr_number, test_check)
     except GateError as error:
         opener = ask_person(test_check, head, pr_number,
-                            "QA test run: PR diff unavailable, a person checks the new specs",
+                            "QA test run: cannot identify new specs, a person checks them",
                             str(error))
     decision["checks"] = [decision.pop("check"), opener["check"]]
+    decision["opener_name"] = test_check
     return decision
 
 
@@ -273,6 +276,9 @@ def added_specs(diff):
         if raw.startswith("-") or raw.startswith("\\"):
             continue
         if in_e2e_go and raw.startswith("+"):
+            if ADDED_DECLARATION.match(raw) and not LITERAL_DECLARATION.match(raw):
+                raise GateError(f"Cannot identify added spec or container at {path}:{line}; "
+                                "run `/test-e2e <label-filter>` covering the added specs and ask for an override.")
             match = ADDED_SPEC.match(raw)
             if match:
                 specs.append({"path": path, "line": line, "text": unescape_go(match.group(1))})
@@ -396,7 +402,7 @@ def collect_ci(event, repo, token, test_check="qa-test-run"):
         added = added_specs(pr_diff(repo, pr["base"]["ref"], head, token))
     except GateError as error:
         return ask_person(test_check, head, pr_number,
-                          "QA test run: PR diff unavailable, a person checks the new specs",
+                          "QA test run: cannot identify new specs, a person checks them",
                           str(error))
     if not added:
         return {"skip": "the PR adds no e2e spec"}
@@ -485,6 +491,10 @@ def apply(decision, repo, token, qa_team, run_url, panel_login="loft-bot"):
                   "/qa-review override <sha> [<reason>])")
             return None
     for check in checks:
+        if check["name"] == decision.get("opener_name"):
+            existing = gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={check['name']}"], token)
+            if existing.get("check_runs"):
+                continue
         gh_api([f"repos/{repo}/check-runs", "-X", "POST"], token, {
             "name": check["name"], "head_sha": head, "status": "completed",
             "conclusion": check["conclusion"], "details_url": run_url,

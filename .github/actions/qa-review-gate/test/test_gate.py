@@ -132,8 +132,29 @@ def test_review_opens_the_test_run_check_waiting_when_the_pr_adds_specs(monkeypa
     decision = gate.collect_review(review_event(), "o/r", "tok", "loft-bot", "qa-review")
     test_run = decision["checks"][1]
     assert test_run["conclusion"] == "action_required"
-    assert "1 new spec(s) wait for `/test-e2e`" in test_run["title"]
+    assert "1 new spec(s) wait for `/test-e2e <label-filter>`" in test_run["title"]
     assert "e2e/a.go:1 new" in test_run["summary"]
+    assert "filter covering the listed specs" in test_run["summary"]
+
+
+@pytest.mark.parametrize("declaration", ["It(tc.desc, func() {})", "Describe(tc.desc, func() {})"])
+def test_review_computed_name_never_passes_as_no_specs(monkeypatch, declaration):
+    files = [{"filename": "e2e/a.go", "patch": f"@@ -1,0 +1 @@\n+ {declaration}"}]
+    monkeypatch.setattr(gate, "gh_api", review_api(files=files))
+    check = gate.collect_review(review_event(), "o/r", "tok", "loft-bot", "qa-review")["checks"][1]
+    assert check["conclusion"] == "action_required"
+    assert "e2e/a.go:1" in check["summary"]
+    assert "/test-e2e <label-filter>" in check["summary"]
+
+
+def test_review_opener_rechecks_for_a_result_before_posting(monkeypatch):
+    api = review_api(files=NEW_SPEC)
+    monkeypatch.setattr(gate, "gh_api", api)
+    decision = gate.collect_review(review_event(), "o/r", "tok", "loft-bot", "qa-review")
+    completed = review_api(check_runs=[{"conclusion": "success"}], files=NEW_SPEC)
+    monkeypatch.setattr(gate, "gh_api", completed)
+    gate.apply(decision, "o/r", "tok", "", "https://run")
+    assert [payload["name"] for _, payload in completed.writes] == ["qa-review"]
 
 
 def test_review_leaves_an_existing_test_run_check_alone(monkeypatch):
@@ -146,7 +167,7 @@ def test_review_diff_failure_opens_the_test_run_check_for_a_person(monkeypatch):
     monkeypatch.setattr(gate, "gh_api", review_api(files=None))
     decision = gate.collect_review(review_event(), "o/r", "tok", "loft-bot", "qa-review")
     assert decision["checks"][1]["conclusion"] == "action_required"
-    assert "PR diff unavailable" in decision["checks"][1]["title"]
+    assert "cannot identify new specs" in decision["checks"][1]["title"]
 
 
 def test_review_skip_makes_no_api_call(monkeypatch):
