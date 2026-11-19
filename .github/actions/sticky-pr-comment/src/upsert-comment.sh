@@ -3,7 +3,8 @@
 #
 # Required env: GH_TOKEN, INPUT_MARKER, INPUT_BODY, INPUT_PR_NUMBER, INPUT_REPO,
 #               INPUT_EXPECTED_AUTHOR
-# Writes: comment-id=<id> and action-taken=created|updated to $GITHUB_OUTPUT.
+# Optional env: INPUT_UPDATE_ONLY=true never creates a comment.
+# Writes: comment-id=<id> and action-taken=created|updated|skipped to $GITHUB_OUTPUT.
 set -euo pipefail
 
 : "${GH_TOKEN:?GH_TOKEN required}"
@@ -50,6 +51,9 @@ if [[ -n "$COMMENT_ID" ]]; then
     -f body="$BODY" >/dev/null
   emit comment-id "$COMMENT_ID"
   emit action-taken "updated"
+elif [[ "${INPUT_UPDATE_ONLY:-false}" == "true" ]]; then
+  emit comment-id ""
+  emit action-taken "skipped"
 else
   CREATE_JSON=$(gh api -X POST \
     "repos/${INPUT_REPO}/issues/${INPUT_PR_NUMBER}/comments" \

@@ -17,6 +17,7 @@ the body. Uses the GitHub CLI (`gh`), pre-installed on hosted runners.
 |     marker      | string |   true   |                                             |                                                                                       HTML comment uniquely identifying this comment <br>stream (e.g. "<!-- e2e-status -->"). Must be of the <br>form "<!-- some-id -->".                                                                                         |
 |    pr-number    | string |  false   | `"${{ github.event.pull_request.number }}"` |                                                                                                                       Pull request number. Defaults to the <br>current pull_request event.                                                                                                                        |
 |      repo       | string |  false   |        `"${{ github.repository }}"`         |                                                                                                                      Repository in owner/name form. Defaults to <br>the current repository.                                                                                                                       |
+|   update-only   | string |  false   |                  `"false"`                  |                                                                              When "true", only update an existing <br>matching comment and never create one. <br>Use it to edit a comment <br>only on PRs that already have <br>it.                                                                               |
 
 <!-- AUTO-DOC-INPUT:END -->
 
@@ -24,10 +25,10 @@ the body. Uses the GitHub CLI (`gh`), pre-installed on hosted runners.
 
 <!-- AUTO-DOC-OUTPUT:START - Do not remove or modify this section -->
 
-|    OUTPUT    |  TYPE  |             DESCRIPTION             |
-|--------------|--------|-------------------------------------|
-| action-taken | string |   Either "created" or "updated".    |
-|  comment-id  | string | Numeric ID of the upserted comment. |
+|    OUTPUT    |  TYPE  |                                              DESCRIPTION                                               |
+|--------------|--------|--------------------------------------------------------------------------------------------------------|
+| action-taken | string | "created", "updated", or "skipped" when update-only <br>is "true" and no matching comment <br>exists.  |
+|  comment-id  | string |                                  Numeric ID of the upserted comment.                                   |
 
 <!-- AUTO-DOC-OUTPUT:END -->
 
