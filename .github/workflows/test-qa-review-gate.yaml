@@ -36,8 +36,6 @@ jobs:
       contents: read
       actions: read
     uses: ./.github/workflows/qa-review-gate.yaml
-    with:
-      qa-logins: ''
 
   verify-caller:
     needs: [caller]
