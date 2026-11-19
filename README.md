@@ -290,7 +290,8 @@ Scans every tracked text file in the checked-out repository for git conflict
 markers, whatever the file extension, skipping `vendor` and `node_modules`.
 Reports `found` and a Markdown report file. It does not fail on markers itself:
 the caller decides, and the `conflict-check.yaml` reusable workflow comments on
-the PR and then fails the job. A scan that cannot run fails the step, so an error
+the PR and then fails the job, and on a later clean scan edits that comment to
+say the conflicts were resolved. A scan that cannot run fails the step, so an error
 never passes as a clean result. Released under the `conflict-check/v1` tag, shared with the
 `conflict-check.yaml` reusable workflow.
 
@@ -300,7 +301,7 @@ never passes as a clean result. Released under the `conflict-check/v1` tag, shar
 
 Upserts a sticky comment on a pull request, identified by a stable HTML
 marker. If a comment with the marker already exists it is updated in place,
-otherwise a new comment is created. Domain-agnostic — the caller composes
+otherwise a new comment is created, unless `update-only` is "true". Domain-agnostic — the caller composes
 the body. Useful for surfacing the last real run of a CI signal that the
 caller skips on some events (e.g. e2e tests skipped when PR description is
 unchanged), so reviewers always see the most recent meaningful result.

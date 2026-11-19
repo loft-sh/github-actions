@@ -1,6 +1,6 @@
 # Conflict Check
 
-Labels PRs that have merge conflicts and posts a comment asking the author to rebase.
+Scans a PR for conflict markers. When it finds some, it posts a comment listing them and fails the check. When a later push removes them, it edits that comment to say the conflicts were resolved. PRs that never had conflicts get no comment.
 
 ## Inputs
 
