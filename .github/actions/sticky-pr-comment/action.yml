@@ -2,7 +2,7 @@ name: Sticky PR Comment
 description: |
   Upserts a sticky comment on a pull request, identified by a stable HTML
   marker. If a comment with the marker already exists it is updated in place,
-  otherwise a new comment is created. Domain-agnostic — the caller composes
+  otherwise a new comment is created, unless update-only is "true". Domain-agnostic — the caller composes
   the body. Uses the GitHub CLI (gh) which is pre-installed on hosted runners.
 inputs:
   marker:
@@ -32,7 +32,7 @@ inputs:
     default: 'false'
 outputs:
   comment-id:
-    description: 'Numeric ID of the upserted comment.'
+    description: 'Numeric ID of the upserted comment. Empty when action-taken is "skipped".'
     value: ${{ steps.upsert.outputs.comment-id }}
   action-taken:
     description: '"created", "updated", or "skipped" when update-only is "true" and no matching comment exists.'

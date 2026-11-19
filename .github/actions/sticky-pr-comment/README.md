@@ -2,7 +2,7 @@
 
 Upserts a sticky comment on a pull request, identified by a stable HTML
 marker. If a comment with the marker already exists it is updated in place,
-otherwise a new comment is created. Domain-agnostic — the caller composes
+otherwise a new comment is created, unless `update-only` is "true". Domain-agnostic — the caller composes
 the body. Uses the GitHub CLI (`gh`), pre-installed on hosted runners.
 
 ## Inputs
@@ -28,7 +28,7 @@ the body. Uses the GitHub CLI (`gh`), pre-installed on hosted runners.
 |    OUTPUT    |  TYPE  |                                              DESCRIPTION                                               |
 |--------------|--------|--------------------------------------------------------------------------------------------------------|
 | action-taken | string | "created", "updated", or "skipped" when update-only <br>is "true" and no matching comment <br>exists.  |
-|  comment-id  | string |                                  Numeric ID of the upserted comment.                                   |
+|  comment-id  | string |             Numeric ID of the upserted comment. <br>Empty when action-taken is "skipped".              |
 
 <!-- AUTO-DOC-OUTPUT:END -->
 
