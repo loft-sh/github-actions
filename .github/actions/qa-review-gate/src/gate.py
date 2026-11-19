@@ -62,6 +62,7 @@ GO_ESCAPES = {"n": "\n", "t": "\t", "r": "\r"}
 STATE_RANK = {"passed": 0, "": 1, "pending": 2, "skipped": 3, "timedout": 4, "interrupted": 4,
               "aborted": 4, "panicked": 5, "failed": 5}
 REPORT_ARTIFACT = "ginkgo-report"
+OPENER_EXTERNAL_ID = "qa-review-gate-provisional-opener"
 SHA_PREFIX = re.compile(r"^[0-9a-f]{7,40}$")
 COMPARE_FILE_CAP = 300  # the compare API lists at most this many files and says nothing when it cuts
 DEFAULT_BOTS = "loft-bot:backport/,vcluster-qa-bot[bot]:flake-fixer/"
@@ -374,6 +375,10 @@ def pr_diff(repo, base_ref, head_sha, token):
     files = gh_api([f"repos/{repo}/compare/{base_ref}...{head_sha}"], token).get("files") or []
     if len(files) >= COMPARE_FILE_CAP:
         raise GateError(f"compare lists {COMPARE_FILE_CAP} files; the diff may be cut")
+    for f in files:
+        path = f["filename"]
+        if path.endswith(".go") and "/e2e" in f"/{path}" and f.get("additions", 1) > 0 and not f.get("patch"):
+            raise GateError(f"No usable diff for {path}; cannot identify added specs")
     return "\n".join(f"+++ b/{f['filename']}\n{f.get('patch') or ''}" for f in files)
 
 
@@ -381,7 +386,7 @@ def ask_person(test_check, head, pr_number, title, detail):
     """A `qa-test-run` check-run nobody can grade automatically: a person decides."""
     return {"check": {"name": test_check, "head_sha": head, "conclusion": "action_required",
                       "title": title,
-                      "summary": f"{detail}\n\nRe-run `/test-e2e`, or ask for an override. {OVERRIDE_HINT}"},
+                      "summary": f"{detail}\n\nRe-run `/test-e2e <label-filter>`, or ask for an override. {OVERRIDE_HINT}"},
             "request_qa_review": False, "pr_number": pr_number}
 
 
@@ -499,6 +504,7 @@ def apply(decision, repo, token, qa_team, run_url, panel_login="loft-bot"):
             "name": check["name"], "head_sha": head, "status": "completed",
             "conclusion": check["conclusion"], "details_url": run_url,
             "output": {"title": check["title"], "summary": check["summary"]},
+            **({"external_id": OPENER_EXTERNAL_ID} if check["name"] == decision.get("opener_name") else {}),
         })
         if check["name"] == decision.get("opener_name"):
             # A result may have been published after our lookup but before this
@@ -507,7 +513,8 @@ def apply(decision, repo, token, qa_team, run_url, panel_login="loft-bot"):
             opener_id = created["id"]
             runs = gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={check['name']}&filter=all&per_page=100"], token)
             previous = [run for run in runs.get("check_runs", [])
-                        if run["id"] < opener_id and run.get("status") == "completed"]
+                        if run["id"] < opener_id and run.get("status") == "completed"
+                        and run.get("external_id") != OPENER_EXTERNAL_ID]
             if previous:
                 result = max(previous, key=lambda run: run["id"])
                 output = result.get("output") or {}

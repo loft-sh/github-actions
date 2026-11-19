@@ -357,7 +357,7 @@ def test_run_pr_number_prefers_the_event_then_the_head_commit():
 def test_pr_diff_compares_the_base_with_the_run_head(monkeypatch):
     calls = []
     files = [{"filename": "e2e/a.go", "patch": '@@ -40,0 +41 @@\n+\tIt("new", func() {'},
-             {"filename": "e2e/big.go"}]
+             {"filename": "e2e/big.go", "additions": 0}]
     monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None: calls.append(args) or {"files": files})
     assert gate.added_specs(gate.pr_diff("o/r", "main", HEAD, "tok")) == [
         {"path": "e2e/a.go", "line": 41, "text": "new"}]
@@ -421,6 +421,7 @@ def test_ci_missing_report_asks_a_person(monkeypatch):
     assert decision["check"]["conclusion"] == "action_required"
     assert "no ginkgo-report for 1 new spec(s)" in decision["check"]["title"]
     assert "no artifact matches" in decision["check"]["summary"]
+    assert "`/test-e2e <label-filter>`" in decision["check"]["summary"]
 
 
 def test_apply_posts_every_check_in_the_decision(monkeypatch):
@@ -667,3 +668,31 @@ def test_ci_skips_when_the_run_did_not_finish(conclusion):
 
 def test_ci_skips_when_the_pr_adds_no_spec():
     assert "skip" in gate.decide_ci(run(), 1, [], {})
+
+
+def test_missing_patch_for_added_e2e_file_cannot_pass(monkeypatch):
+    monkeypatch.setattr(gate, "gh_api", review_api(files=[{"filename": "e2e/big.go", "additions": 1}]))
+    check = gate.collect_review(review_event(), "o/r", "tok", "loft-bot", "qa-review")["checks"][1]
+    assert check["conclusion"] == "action_required"
+    assert "No usable diff for e2e/big.go" in check["summary"]
+    assert "/test-e2e <label-filter>" in check["summary"]
+
+
+def test_reconciliation_ignores_other_provisional_openers(monkeypatch):
+    monkeypatch.setattr(gate, "gh_api", review_api(files=NEW_SPEC))
+    decision = gate.collect_review(review_event(), "o/r", "tok", "loft-bot", "qa-review")
+    writes = []
+    def api(args, token, payload=None):
+        if "check-runs?" in args[0]:
+            return {"check_runs": [
+                {"id": 20, "status": "completed", "conclusion": "success", "output": {"title": "passed", "summary": "passed"}},
+                {"id": 21, "status": "completed", "conclusion": "action_required", "external_id": gate.OPENER_EXTERNAL_ID},
+            ] if "filter=all" in args[0] else []}
+        if payload is not None:
+            writes.append((args, payload))
+            return {"id": 22}
+        return {}
+    monkeypatch.setattr(gate, "gh_api", api)
+    gate.apply(decision, "o/r", "tok", "", "https://panel")
+    assert writes[-2][1]["external_id"] == gate.OPENER_EXTERNAL_ID
+    assert writes[-1][1]["conclusion"] == "success"
