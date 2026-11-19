@@ -103,7 +103,7 @@ def review_api(check_runs=(), files=None, author="dev-x"):
     def fake(args, token, payload=None):
         if payload is not None:
             writes.append((args[0], payload))
-            return {}
+            return {"id": 1}
         if "/check-runs?check_name=" in args[0]:
             return {"check_runs": list(check_runs)}
         if "/compare/" in args[0]:
@@ -155,6 +155,32 @@ def test_review_opener_rechecks_for_a_result_before_posting(monkeypatch):
     monkeypatch.setattr(gate, "gh_api", completed)
     gate.apply(decision, "o/r", "tok", "", "https://run")
     assert [payload["name"] for _, payload in completed.writes] == ["qa-review"]
+
+
+@pytest.mark.parametrize("conclusion", ["success", "failure", "action_required"])
+def test_review_opener_reconciles_result_posted_between_lookup_and_create(monkeypatch, conclusion):
+    monkeypatch.setattr(gate, "gh_api", review_api(files=NEW_SPEC))
+    decision = gate.collect_review(review_event(), "o/r", "tok", "loft-bot", "qa-review")
+    writes = []
+    result = {"id": 20, "status": "completed", "conclusion": conclusion,
+              "details_url": "https://e2e", "output": {"title": "E2E result", "summary": "details"}}
+
+    def api(args, token, payload=None):
+        if "check-runs?" in args[0]:
+            return {"check_runs": [result, {"id": 21, "status": "completed"}]
+                    if "filter=all" in args[0] else []}
+        if payload is not None:
+            writes.append((args, payload))
+            return {"id": 21}
+        return {}
+
+    monkeypatch.setattr(gate, "gh_api", api)
+    gate.apply(decision, "o/r", "tok", "", "https://panel")
+    args, payload = writes[-1]
+    assert args == ["repos/o/r/check-runs/21", "-X", "PATCH"]
+    assert payload == {"status": "completed", "conclusion": conclusion,
+                       "details_url": "https://e2e",
+                       "output": {"title": "E2E result", "summary": "details"}}
 
 
 def test_review_leaves_an_existing_test_run_check_alone(monkeypatch):

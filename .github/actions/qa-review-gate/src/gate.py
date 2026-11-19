@@ -495,11 +495,28 @@ def apply(decision, repo, token, qa_team, run_url, panel_login="loft-bot"):
             existing = gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={check['name']}"], token)
             if existing.get("check_runs"):
                 continue
-        gh_api([f"repos/{repo}/check-runs", "-X", "POST"], token, {
+        created = gh_api([f"repos/{repo}/check-runs", "-X", "POST"], token, {
             "name": check["name"], "head_sha": head, "status": "completed",
             "conclusion": check["conclusion"], "details_url": run_url,
             "output": {"title": check["title"], "summary": check["summary"]},
         })
+        if check["name"] == decision.get("opener_name"):
+            # A result may have been published after our lookup but before this
+            # opener. Copy it onto the newer opener without creating another run:
+            # any result published after the opener remains the newest check.
+            opener_id = created["id"]
+            runs = gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={check['name']}&filter=all&per_page=100"], token)
+            previous = [run for run in runs.get("check_runs", [])
+                        if run["id"] < opener_id and run.get("status") == "completed"]
+            if previous:
+                result = max(previous, key=lambda run: run["id"])
+                output = result.get("output") or {}
+                gh_api([f"repos/{repo}/check-runs/{opener_id}", "-X", "PATCH"], token, {
+                    "status": "completed", "conclusion": result["conclusion"],
+                    "details_url": result.get("details_url") or run_url,
+                    "output": {"title": output.get("title") or check["title"],
+                               "summary": output.get("summary") or check["summary"]},
+                })
     pr_number = decision["pr_number"]
     if decision.get("assign_author"):
         author = gh_api([f"repos/{repo}/pulls/{pr_number}"], token).get("user", {}).get("login")
