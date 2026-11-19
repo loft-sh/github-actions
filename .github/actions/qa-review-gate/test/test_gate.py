@@ -486,6 +486,14 @@ def test_ci_a_failed_tree_fails_the_gate_once_both_reported():
     assert f"{OSS}:5 oss (skipped)" in decision["check"]["summary"]
 
 
+def test_ci_failure_recorded_by_an_earlier_run_names_the_tree():
+    states = gate.report_specs([{"SpecReports": [leaf(10, "passed")]}])
+    decision = gate.decide_ci(run(), 1, two_tree_specs(), states, trees=PRO_TREES,
+                              reported=["ginkgo-report"], known={"oss-ginkgo-report": "failure"})
+    assert decision["check"]["conclusion"] == "failure"
+    assert decision["check"]["title"] == "QA test run: new spec(s) for oss-ginkgo-report did not run or pass in an earlier run"
+
+
 def test_collect_ci_reads_the_other_tree_from_the_newest_tagged_check_run(monkeypatch):
     files = [{"filename": OSS, "patch": '@@ -4,0 +5 @@\n+\tIt("oss", func() {'},
              {"filename": "e2e/pro_test.go", "patch": '@@ -9,0 +10 @@\n+\tIt("pro", func() {'}]

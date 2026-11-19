@@ -395,7 +395,9 @@ def decide_ci(run, pr_number, added, states, test_check="qa-test-run", trees=Non
         lines += [f"- {a}: {len(by_tree[a])} new spec(s), no run reported yet" for a in waiting]
     elif any(results[a] == "failure" for a in by_tree):
         conclusion = "failure"
-        title = f"QA test run: {bad} new spec(s) did not run or pass"
+        failed = ", ".join(a for a in by_tree if results[a] == "failure")
+        title = (f"QA test run: {bad} new spec(s) did not run or pass" if bad
+                 else f"QA test run: new spec(s) for {failed} did not run or pass in an earlier run")
         lines.append("\nA spec the PR label filter never selects, or a focused/skipped spec, "
                      "lands here. Fix the filter or the spec and push.")
     else:
