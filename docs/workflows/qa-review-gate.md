@@ -2,7 +2,7 @@
 
 Reusable workflow that turns the review panel's QA verdict into the `qa-review`
 check-run, opens `qa-test-run` next to it (green when the PR adds no e2e spec,
-waiting otherwise), handles the `/qa-review override [<reason>]` (tech leads) and
+waiting otherwise), handles the `/qa-review override [<reason>]` (tech leads, staff engineers, QA) and
 `/qa-review human` comments, passes trusted bot PRs (backports, flake fixer) on the
 head the bot opened, and after the e2e workflow finishes completes `qa-test-run`
 (red when a spec the PR adds did not run or pass). A `/test-e2e` run is a `workflow_dispatch` on the
@@ -24,7 +24,7 @@ on:
   issue_comment:  # zizmor: ignore[dangerous-triggers]
     types: [created]
   workflow_run:  # zizmor: ignore[dangerous-triggers]
-    workflows: ['vCluster Pro E2E CI (e2e)']
+    workflows: ['vCluster Pro E2E CI (e2e)', 'vCluster OSS E2E CI (Ginkgo)']  # loft-enterprise: its one e2e workflow
     types: [completed]
 
 permissions: {}
@@ -42,6 +42,8 @@ jobs:
       contents: read
       actions: read
     uses: loft-sh/github-actions/.github/workflows/qa-review-gate.yaml@qa-review-gate/v1 # zizmor: ignore[unpinned-uses] -- internal loft-sh workflow, pinned by its own rolling tag by policy
+    with:
+      report-trees: 'ginkgo-report=,oss-ginkgo-report=staging/github.com/loft-sh/vcluster/'  # vcluster-pro only
     secrets:
       org-token: ${{ secrets.GH_ACCESS_TOKEN }}
 ```

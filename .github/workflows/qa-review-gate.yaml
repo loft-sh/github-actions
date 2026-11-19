@@ -50,6 +50,10 @@ on:
 jobs:
   gate:
     runs-on: ubuntu-latest
+    # The Pro and OSS e2e runs of one head each read the recorded tree results, then write.
+    concurrency:
+      group: qa-review-gate-${{ github.event.workflow_run.head_sha || github.run_id }}
+      cancel-in-progress: false
     permissions:
       checks: write
       pull-requests: write

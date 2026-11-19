@@ -504,6 +504,45 @@ def test_collect_ci_reads_the_other_tree_from_the_newest_tagged_check_run(monkey
     assert decision["check"]["conclusion"] == "success"
 
 
+def test_retry_leaves_a_real_newest_result_alone(monkeypatch):
+    runs = [{"id": 21, "status": "completed", "conclusion": "action_required", "external_id": gate.OPENER_EXTERNAL_ID},
+            {"id": 22, "status": "completed", "conclusion": "success", "external_id": "qa-review-gate:trees:ginkgo-report=success"}]
+    api = review_api(check_runs=runs, files=NEW_SPEC)
+    monkeypatch.setattr(gate, "gh_api", api)
+    gate.apply(gate.collect_review(review_event(), "o/r", "tok", "loft-bot", "qa-review"), "o/r", "tok", "", "https://panel")
+    assert [a for a, p in api.writes] == ["repos/o/r/check-runs"]
+
+
+def no_report_api(files, known):
+    runs = [{"id": 1, "external_id": "qa-review-gate:trees:" + known}] if known else []
+    return ci_api(files=files, artifacts=(), check_runs=runs)
+
+
+def test_ci_run_without_a_report_keeps_the_other_tree_result(monkeypatch):
+    files = [{"filename": OSS, "patch": '@@ -4,0 +5 @@\n+\tIt("oss", func() {'}]
+    monkeypatch.setattr(gate, "gh_api", no_report_api(files, "oss-ginkgo-report=success"))
+    decision = gate.collect_ci({"workflow_run": ci_run()}, "o/r", "tok", trees=PRO_TREES)
+    assert decision["check"]["conclusion"] == "success"
+    assert decision["check"]["external_id"] == "qa-review-gate:trees:oss-ginkgo-report=success"
+    assert "oss-ginkgo-report: success in an earlier run" in decision["check"]["summary"]
+
+
+def test_ci_run_without_a_report_asks_a_person_only_for_the_tree_still_missing(monkeypatch):
+    files = [{"filename": OSS, "patch": '@@ -4,0 +5 @@\n+\tIt("oss", func() {'},
+             {"filename": "e2e/pro_test.go", "patch": '@@ -9,0 +10 @@\n+\tIt("pro", func() {'}]
+    monkeypatch.setattr(gate, "gh_api", no_report_api(files, "oss-ginkgo-report=success"))
+    decision = gate.collect_ci({"workflow_run": ci_run()}, "o/r", "tok", trees=PRO_TREES)
+    assert decision["check"]["conclusion"] == "action_required"
+    assert "no ginkgo-report for 1 new spec(s)" in decision["check"]["title"]
+    assert decision["check"]["external_id"] == "qa-review-gate:trees:oss-ginkgo-report=success"
+
+
+def test_ci_jobs_of_one_head_are_serialized():
+    text = pathlib.Path(__file__).parents[3].joinpath("workflows", "qa-review-gate.yaml").read_text()
+    assert "group: qa-review-gate-${{ github.event.workflow_run.head_sha || github.run_id }}" in text
+    assert "cancel-in-progress: false" in text
+
+
 def test_bot_backport_keeps_the_title_the_panel_matches():
     decision = gate.decide_bot(backport_event(), BOTS, "qa-review")
     assert decision["checks"][0]["title"] == "QA review: automated backport, skipped"
@@ -512,11 +551,14 @@ def test_bot_backport_keeps_the_title_the_panel_matches():
 
 
 def test_retry_reconciles_an_existing_provisional_opener(monkeypatch):
-    monkeypatch.setattr(gate, "gh_api", review_api(files=NEW_SPEC))
-    decision = gate.collect_review(review_event(), "o/r", "tok", "loft-bot", "qa-review")
-    writes = []
+    """The first attempt posted the opener, then its PATCH failed: the retry sees the opener
+    at the first lookup, posts only qa-review, and still copies the real result onto it."""
     runs = [{"id": 20, "status": "completed", "conclusion": "success", "output": {"title": "passed", "summary": "ok"}},
             {"id": 21, "status": "completed", "conclusion": "action_required", "external_id": gate.OPENER_EXTERNAL_ID}]
+    monkeypatch.setattr(gate, "gh_api", review_api(check_runs=runs, files=NEW_SPEC))
+    decision = gate.collect_review(review_event(), "o/r", "tok", "loft-bot", "qa-review")
+    assert "checks" not in decision and decision["reconcile"] == "qa-test-run"
+    writes = []
 
     def api(args, token, payload=None):
         if "check-runs?" in args[0]:

@@ -204,6 +204,8 @@ def collect_review(event, repo, token, panel_login, check_name, test_check="qa-t
     pr_number = decision["pr_number"]
     existing = gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={test_check}"], token)
     if existing.get("check_runs"):
+        # A retry: our own provisional opener may still hide a real result behind it.
+        decision["reconcile"] = test_check
         return decision
     try:
         added = added_specs(pr_diff(repo, decision["base_ref"], head, token))
@@ -348,6 +350,10 @@ def grade(run, added, states):
     return "success", [f"- {len(added)} spec(s) ran and passed in {run.get('html_url', '')}"], 0
 
 
+def trees_id(results):
+    return TREES_EXTERNAL_ID + ";".join(f"{a}={c}" for a, c in sorted(results.items()))
+
+
 def tree_results(repo, head, test_check, token):
     """Per-tree conclusions recorded on the newest `qa-test-run` check-run of this head."""
     runs = gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={test_check}&filter=all&per_page=100"],
@@ -379,6 +385,8 @@ def decide_ci(run, pr_number, added, states, test_check="qa-test-run", trees=Non
             results[artifact], tree_lines, tree_bad = grade(run, specs, states)
             bad += tree_bad
             lines += ([f"{artifact}:"] if len(trees) > 1 else []) + tree_lines
+        elif artifact in results:
+            lines.append(f"- {artifact}: {results[artifact]} in an earlier run")
     waiting = [a for a in by_tree if a not in results]
     head = run.get("head_sha", "")
     if waiting:
@@ -394,10 +402,9 @@ def decide_ci(run, pr_number, added, states, test_check="qa-test-run", trees=Non
         conclusion = "success"
         title = f"QA test run: all {len(added)} new spec(s) ran and passed"
     summary = "New specs this PR adds, checked against the Ginkgo report(s):\n\n" + "\n".join(lines)
-    external_id = TREES_EXTERNAL_ID + ";".join(f"{a}={c}" for a, c in sorted(results.items()))
     return {
         "check": {"name": test_check, "head_sha": head, "conclusion": conclusion,
-                  "title": title, "summary": summary, "external_id": external_id},
+                  "title": title, "summary": summary, "external_id": trees_id(results)},
         "request_qa_review": False,
         "pr_number": pr_number,
     }
@@ -473,10 +480,19 @@ def collect_ci(event, repo, token, test_check="qa-test-run", trees=None):
     uploaded = {a["name"] for a in (gh_api([f"repos/{repo}/actions/runs/{run['id']}/artifacts"], token)
                                     .get("artifacts") or [])}
     reported = [a for a in trees if a in uploaded]
+    known = tree_results(repo, head, test_check, token) if len(trees) > 1 else {}
     if not reported:
-        return ask_person(test_check, head, pr_number,
-                          f"QA test run: no {' or '.join(trees)} for {len(added)} new spec(s), "
-                          "a person checks them", f"run {run.get('html_url', '')} uploaded no report")
+        # A run that uploaded nothing (build failure) must not drop the other tree's result.
+        missing = sorted({spec_tree(s, trees) for s in added} - set(known))
+        if not missing:
+            return decide_ci(run, pr_number, added, {}, test_check, trees, [], known)
+        count = sum(spec_tree(s, trees) in missing for s in added)
+        decision = ask_person(test_check, head, pr_number,
+                              f"QA test run: no {' or '.join(missing)} for {count} new spec(s), "
+                              "a person checks them", f"run {run.get('html_url', '')} uploaded no report")
+        if known:
+            decision["check"]["external_id"] = trees_id(known)
+        return decision
     states = {}
     with tempfile.TemporaryDirectory() as tmp:
         for artifact in reported:
@@ -490,7 +506,6 @@ def collect_ci(event, repo, token, test_check="qa-test-run", trees=None):
         for path in sorted(glob.glob(os.path.join(tmp, "**", "*.json"), recursive=True)):
             with open(path, encoding="utf-8") as fh:
                 report_specs(json.load(fh), states)
-    known = tree_results(repo, head, test_check, token) if len(trees) > 1 else {}
     return decide_ci(run, pr_number, added, states, test_check, trees, reported, known)
 
 
@@ -552,10 +567,10 @@ def comment_head(decision, repo, token, panel_login):
     return None
 
 
-def reconcile_opener(repo, head, check, opener_id, token, run_url):
+def reconcile_opener(repo, head, name, opener_id, token, run_url):
     """Copy the newest real result onto a provisional opener it would otherwise hide.
     `opener_id` None means: the newest run on the head, if it is a provisional opener."""
-    runs = gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={check['name']}&filter=all&per_page=100"],
+    runs = gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={name}&filter=all&per_page=100"],
                   token).get("check_runs") or []
     if opener_id is None:
         newest = max(runs, key=lambda run: run.get("id", 0), default=None)
@@ -572,8 +587,7 @@ def reconcile_opener(repo, head, check, opener_id, token, run_url):
     gh_api([f"repos/{repo}/check-runs/{opener_id}", "-X", "PATCH"], token, {
         "status": "completed", "conclusion": result["conclusion"],
         "details_url": result.get("details_url") or run_url,
-        "output": {"title": output.get("title") or check["title"],
-                   "summary": output.get("summary") or check["summary"]},
+        "output": {"title": output.get("title", ""), "summary": output.get("summary", "")},
     })
 
 
@@ -595,7 +609,7 @@ def apply(decision, repo, token, qa_team, run_url, panel_login="loft-bot"):
             if existing.get("check_runs"):
                 # A retry after a failed reconciliation: the newest run may still be our
                 # provisional opener while a real result sits behind it.
-                reconcile_opener(repo, head, check, None, token, run_url)
+                reconcile_opener(repo, head, check["name"], None, token, run_url)
                 continue
         created = gh_api([f"repos/{repo}/check-runs", "-X", "POST"], token, {
             "name": check["name"], "head_sha": head, "status": "completed",
@@ -608,7 +622,9 @@ def apply(decision, repo, token, qa_team, run_url, panel_login="loft-bot"):
             # A result may have been published after our lookup but before this
             # opener. Copy it onto the newer opener without creating another run:
             # any result published after the opener remains the newest check.
-            reconcile_opener(repo, head, check, created["id"], token, run_url)
+            reconcile_opener(repo, head, check["name"], created["id"], token, run_url)
+    if decision.get("reconcile"):
+        reconcile_opener(repo, head, decision["reconcile"], None, token, run_url)
     pr_number = decision["pr_number"]
     if decision.get("assign_author"):
         author = gh_api([f"repos/{repo}/pulls/{pr_number}"], token).get("user", {}).get("login")

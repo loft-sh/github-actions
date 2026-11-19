@@ -70,9 +70,10 @@ A repo whose e2e workflows each test one source tree lists them in `report-trees
 `oss-ginkgo-report=staging/github.com/loft-sh/vcluster/` for OSS). Each run grades the
 specs of the tree it uploaded a report for and records every tree's result in the
 check-run; the check stays `action_required` ("waiting for <artifact>") until every
-tree that gained specs has reported, then turns success or failure. A compare
-the API may have cut (300 files), or a finished run that uploaded no report, gets
-`action_required`: re-run `/test-e2e` or a lead overrides.
+tree that gained specs has reported, then turns success or failure. A run that
+uploaded no report (a build failure) keeps the other trees' recorded results and asks
+a person only for a tree with new specs that still has none. A compare the API may
+have cut (300 files) gets `action_required`: re-run `/test-e2e` or a lead overrides.
 
 Assigning the author (on `needs_human`) and requesting the QA team's review (on
 `/qa-review human`) are best effort: when the token cannot do it, the job logs a
