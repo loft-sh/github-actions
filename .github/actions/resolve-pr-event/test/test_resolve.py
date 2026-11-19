@@ -98,6 +98,12 @@ def test_signal_fork_pr_and_fallback():
     assert [e['number'] for e in r.resolve(api, signal_payload(), 'workflow_run', SOURCE)] == [1]
     assert not any('artifacts' in call for call in api.calls)
 
+def test_signal_also_checks_commit_associations_when_head_branch_is_reused():
+    api = SignalAPI()
+    api.signal['pull_requests'] = [{'number': 2}]
+    api.pull[2]['merged'] = False
+    assert [e['number'] for e in r.resolve(api, signal_payload(), 'workflow_run', SOURCE)] == [1]
+
 @pytest.mark.parametrize('associations', [[], [{'number': 1}]])
 @pytest.mark.parametrize('original_fork', [False, True])
 def test_signal_cannot_replay_merged_pr_from_another_repository(associations, original_fork):
