@@ -20,6 +20,29 @@ type fakeTask struct {
 	parentTitle string
 	noParent    bool
 	stateType   string
+	// releases are the Linear releases the task is attached to. Nil means
+	// the vCluster Platform 4.12.7 release; unattached means none.
+	releases   []fakeRelease
+	unattached bool
+}
+
+type fakeRelease struct {
+	pipeline string
+	version  string
+	name     string
+	stage    string
+}
+
+var platform4127 = fakeRelease{pipeline: "vCluster Platform", version: "4.12.7", stage: "started"}
+
+func (t fakeTask) attachedReleases() []fakeRelease {
+	if t.unattached {
+		return nil
+	}
+	if t.releases == nil {
+		return []fakeRelease{platform4127}
+	}
+	return t.releases
 }
 
 // fakeAnnounceLinear serves the announce-task search, the started-state lookup
@@ -30,10 +53,13 @@ type fakeAnnounceLinear struct {
 	pageSize   int
 	failSearch bool
 	failStates bool
+	// failReleases fails the lookup of a task's releases.
+	failReleases bool
 	// updateResult is "" for success, "error" or "unsuccessful".
 	updateResult string
-	searches     []map[string]any
-	updates      []map[string]any
+	searches       []map[string]any
+	releaseLookups []map[string]any
+	updates        []map[string]any
 }
 
 func (f *fakeAnnounceLinear) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -76,6 +102,30 @@ func (f *fakeAnnounceLinear) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			`{"id":"investigating","position":-1931.47},`+
 			`{"id":"in-progress","position":2},`+
 			`{"id":"in-review","position":3}]}}}`)
+	case strings.Contains(req.Query, "issue(id:"):
+		f.releaseLookups = append(f.releaseLookups, req.Variables)
+		if f.failReleases {
+			_, _ = fmt.Fprint(w, `{"errors":[{"message":"rate limited"}],"data":null}`)
+			return
+		}
+		nodes := []map[string]any{}
+		for _, task := range f.tasks {
+			if "uuid-"+task.id != req.Variables["id"] {
+				continue
+			}
+			for _, r := range task.attachedReleases() {
+				nodes = append(nodes, map[string]any{
+					"name":     r.name,
+					"version":  r.version,
+					"stage":    map[string]string{"type": r.stage},
+					"pipeline": map[string]string{"name": r.pipeline},
+				})
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"issue": map[string]any{"releases": map[string]any{
+			"nodes":    nodes,
+			"pageInfo": map[string]any{"hasNextPage": false, "endCursor": ""},
+		}}}})
 	case strings.Contains(req.Query, "issues("):
 		f.searches = append(f.searches, req.Variables)
 		if f.failSearch {
@@ -169,19 +219,21 @@ func TestStartAnnounceTaskMatchesTheChecklistOfThisPipeline(t *testing.T) {
 		repo        string
 		tag         string
 		parentTitle string
+		releases    []fakeRelease
 		wantUpdate  bool
 	}{
-		{"platform checklist", "loft-enterprise", "v4.12.7", platformChecklist, true},
-		{"checklist without pipeline", "loft-enterprise", "v4.12.7", "v4.12.7 Post Release Activities", true},
-		{"checklist without v", "loft-enterprise", "v4.12.7", "vCluster Platform 4.12.7 Post Release Activities", true},
-		{"vcluster checklist", "vcluster-pro", "v0.30.1", "vCluster v0.30.1 Post Release Activities", true},
-		{"other pipeline", "vcluster-pro", "v4.12.7", platformChecklist, false},
-		{"other version", "loft-enterprise", "v4.12.7", "vCluster Platform v4.12.17 Post Release Activities", false},
-		{"not a checklist", "loft-enterprise", "v4.12.7", "vCluster Platform v4.12.7 Post Release Activities follow-ups", false},
+		{"platform checklist", "loft-enterprise", "v4.12.7", platformChecklist, nil, true},
+		{"checklist without pipeline", "loft-enterprise", "v4.12.7", "v4.12.7 Post Release Activities", nil, true},
+		{"checklist without v", "loft-enterprise", "v4.12.7", "vCluster Platform 4.12.7 Post Release Activities", nil, true},
+		{"vcluster checklist", "vcluster-pro", "v0.30.1", "vCluster v0.30.1 Post Release Activities",
+			[]fakeRelease{{pipeline: "vCluster", version: "0.30.1", stage: "started"}}, true},
+		{"other pipeline", "vcluster-pro", "v4.12.7", platformChecklist, nil, false},
+		{"other version", "loft-enterprise", "v4.12.7", "vCluster Platform v4.12.17 Post Release Activities", nil, false},
+		{"not a checklist", "loft-enterprise", "v4.12.7", "vCluster Platform v4.12.7 Post Release Activities follow-ups", nil, false},
 	}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			fake := &fakeAnnounceLinear{tasks: []fakeTask{{id: "ENG-1", parentTitle: tc.parentTitle, stateType: "backlog"}}}
+			fake := &fakeAnnounceLinear{tasks: []fakeTask{{id: "ENG-1", parentTitle: tc.parentTitle, stateType: "backlog", releases: tc.releases}}}
 			client, _ := newAnnounceClient(t, fake)
 
 			client.StartAnnounceTask(context.Background(), tc.repo, tc.tag, false)
@@ -221,7 +273,8 @@ func TestStartAnnounceTaskSkipsWithoutLookingUp(t *testing.T) {
 }
 
 func TestStartAnnounceTaskUsesTheVersionOfAPatchBuild(t *testing.T) {
-	fake := &fakeAnnounceLinear{tasks: []fakeTask{{id: "ENG-1", parentTitle: "vCluster v0.28.2 Post Release Activities", stateType: "backlog"}}}
+	fake := &fakeAnnounceLinear{tasks: []fakeTask{{id: "ENG-1", parentTitle: "vCluster v0.28.2 Post Release Activities", stateType: "backlog",
+		releases: []fakeRelease{{pipeline: "vCluster", version: "0.28.2", stage: "started"}}}}}
 	client, _ := newAnnounceClient(t, fake)
 
 	client.StartAnnounceTask(context.Background(), "vcluster-pro", "v0.28.2-patch.1", false)
@@ -340,6 +393,8 @@ func TestStartAnnounceTaskIgnoresATaskWithoutAParent(t *testing.T) {
 // other query, so the sync stops right after it has confirmed the release.
 type fakeGitHub struct {
 	releaseTag string
+	// draft answers with an unpublished release, as GitHub does for a draft.
+	draft bool
 }
 
 func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -349,7 +404,11 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	w.Header().Set("Content-Type", "application/json")
 	if strings.Contains(req.Query, "release(tagName:") {
-		_, _ = fmt.Fprintf(w, `{"data":{"repository":{"release":{"publishedAt":"2026-11-17T20:00:00Z","description":"","name":%q,"tagName":%q,"databaseId":1}}}}`, f.releaseTag, f.releaseTag)
+		publishedAt := `"2026-11-17T20:00:00Z"`
+		if f.draft {
+			publishedAt = "null"
+		}
+		_, _ = fmt.Fprintf(w, `{"data":{"repository":{"release":{"publishedAt":%s,"description":"","name":%q,"tagName":%q,"databaseId":1}}}}`, publishedAt, f.releaseTag, f.releaseTag)
 		return
 	}
 	_, _ = fmt.Fprint(w, `{"errors":[{"message":"API rate limit exceeded"}],"data":null}`)
@@ -427,5 +486,80 @@ func TestStartAnnounceTaskStartsNothingWhenSeveralTasksMatch(t *testing.T) {
 				t.Errorf("want a warning naming both tasks and the remedy, got:\n%s", out)
 			}
 		})
+	}
+}
+
+func TestRunDoesNotStartTheAnnounceTaskForADraftRelease(t *testing.T) {
+	linear := &fakeAnnounceLinear{tasks: []fakeTask{{id: "ENG-1", parentTitle: platformChecklist, stateType: "backlog"}}}
+
+	_ = runAgainstFakes(t, &fakeGitHub{releaseTag: "v4.12.7", draft: true}, linear)
+
+	if len(linear.searches) != 0 || len(linear.updates) != 0 {
+		t.Errorf("searches=%d updates=%d, want no announce task lookup for a draft", len(linear.searches), len(linear.updates))
+	}
+}
+
+// R8 announces the release the task is attached to, so the sync only starts
+// a task attached to this pipeline's release for this version, matched the
+// way R8 matches it.
+func TestStartAnnounceTaskRequiresTheMatchingRelease(t *testing.T) {
+	vcluster4127 := fakeRelease{pipeline: "vCluster", version: "4.12.7", stage: "started"}
+	testCases := []struct {
+		name        string
+		parentTitle string
+		releases    []fakeRelease
+		unattached  bool
+		wantUpdate  bool
+	}{
+		{"attached to this release", platformChecklist, nil, false, true},
+		{"attached by name only", platformChecklist,
+			[]fakeRelease{{pipeline: "vCluster Platform", name: "4.12.7", stage: "started"}}, false, true},
+		{"attached to this and an unrelated release", platformChecklist,
+			[]fakeRelease{{pipeline: "Docs", version: "4.12.7", stage: "started"}, platform4127}, false, true},
+		{"moved to the next release", platformChecklist,
+			[]fakeRelease{{pipeline: "vCluster Platform", version: "4.12.8", stage: "planned"}}, false, false},
+		{"not attached", platformChecklist, nil, true, false},
+		{"attached to a canceled release", platformChecklist,
+			[]fakeRelease{{pipeline: "vCluster Platform", version: "4.12.7", stage: "canceled"}}, false, false},
+		{"title without pipeline, other product's release", "v4.12.7 Post Release Activities",
+			[]fakeRelease{vcluster4127}, false, false},
+		{"title without pipeline, both products' releases", "v4.12.7 Post Release Activities",
+			[]fakeRelease{vcluster4127, platform4127}, false, false},
+		{"title naming the pipeline, both products' releases", platformChecklist,
+			[]fakeRelease{vcluster4127, platform4127}, false, true},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeAnnounceLinear{tasks: []fakeTask{{id: "ENG-1", parentTitle: tc.parentTitle, stateType: "backlog",
+				releases: tc.releases, unattached: tc.unattached}}}
+			client, logs := newAnnounceClient(t, fake)
+
+			client.StartAnnounceTask(context.Background(), "loft-enterprise", "v4.12.7", false)
+
+			if got := len(fake.updates) == 1; got != tc.wantUpdate {
+				t.Fatalf("updated = %v, want %v\n%s", got, tc.wantUpdate, logs.String())
+			}
+			out := logs.String()
+			if !tc.wantUpdate && (!strings.Contains(out, "level=WARN") ||
+				!strings.Contains(out, "not attached to this release") || !strings.Contains(out, "remedy=")) {
+				t.Errorf("want a not-attached warning with a remedy, got:\n%s", out)
+			}
+		})
+	}
+}
+
+func TestStartAnnounceTaskWarnsWhenTheReleaseLookupFails(t *testing.T) {
+	fake := &fakeAnnounceLinear{failReleases: true, tasks: []fakeTask{{id: "ENG-1", parentTitle: platformChecklist, stateType: "backlog"}}}
+	client, logs := newAnnounceClient(t, fake)
+
+	client.StartAnnounceTask(context.Background(), "loft-enterprise", "v4.12.7", false)
+
+	if len(fake.updates) != 0 {
+		t.Errorf("updates = %d, want 0", len(fake.updates))
+	}
+	out := logs.String()
+	if !strings.Contains(out, "level=WARN") || !strings.Contains(out, "Cannot read the releases of the announce task") ||
+		!strings.Contains(out, "remedy=") {
+		t.Errorf("want a release-lookup warning with a remedy, got:\n%s", out)
 	}
 }

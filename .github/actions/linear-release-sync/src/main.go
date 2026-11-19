@@ -131,9 +131,16 @@ func run(
 	linearClient := NewLinearClient(ctx, *linearToken, logger)
 
 	// Start the customer announcement for a stable patch release once the
-	// release is confirmed. Deferred so it runs on every exit below, even when
-	// the issue sync fails; it never fails the sync itself.
-	defer linearClient.StartAnnounceTask(ctx, *repo, currentRelease.TagName, *dryRun)
+	// release is confirmed published. Deferred so it runs on every exit below,
+	// even when the issue sync fails; it never fails the sync itself. A draft
+	// has no publish date and is not announced.
+	if currentRelease.PublishedAt.IsZero() {
+		logger.Warn("Release is not published, not starting the announce task",
+			"releaseTag", currentRelease.TagName,
+			"remedy", "publish the release and re-run the sync, or "+announceRemedy)
+	} else {
+		defer linearClient.StartAnnounceTask(ctx, *repo, currentRelease.TagName, *dryRun)
+	}
 
 	var stableTag string
 
