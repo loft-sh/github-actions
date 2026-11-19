@@ -17,7 +17,7 @@ on:
       override-teams:
         description: 'Comma-separated org/slug teams whose members may run /qa-review override. Membership is read with the org-token secret.'
         type: string
-        default: 'loft-sh/eng-tech-leads,loft-sh/eng-qa'
+        default: 'loft-sh/eng-tech-leads,loft-sh/eng-staff-engineers,loft-sh/eng-qa'
       panel-login:
         description: 'Login that posts the panel review.'
         type: string
@@ -38,6 +38,10 @@ on:
         description: 'Name of the check-run that says whether the new e2e specs ran and passed.'
         type: string
         default: 'qa-test-run'
+      report-trees:
+        description: 'Comma-separated artifact=path-prefix pairs: which Ginkgo report artifact covers which source tree. One tree by default; vcluster-pro adds oss-ginkgo-report=staging/github.com/loft-sh/vcluster/.'
+        type: string
+        default: 'ginkgo-report='
     secrets:
       org-token:
         description: 'Token with read:org, used only to read override-teams membership (GITHUB_TOKEN cannot). Empty disables the teams.'
@@ -71,3 +75,4 @@ jobs:
           qa-team: ${{ inputs.qa-team }}
           check-name: ${{ inputs.check-name }}
           test-check-name: ${{ inputs.test-check-name }}
+          report-trees: ${{ inputs.report-trees }}

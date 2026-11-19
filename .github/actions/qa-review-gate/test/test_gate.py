@@ -1,4 +1,5 @@
 import importlib.util
+import os
 import json
 import pathlib
 
@@ -371,12 +372,16 @@ def test_pr_diff_refuses_a_compare_the_api_may_have_cut(monkeypatch):
         gate.pr_diff("o/r", "main", HEAD, "tok")
 
 
-def ci_api(head=HEAD, files=None):
+def ci_api(head=HEAD, files=None, artifacts=("ginkgo-report",), check_runs=()):
     def fake(args, token, payload=None):
         if "/compare/" in args[0]:
             if files is None:
                 raise gate.GateError("gh api compare failed: 500")
             return {"files": files}
+        if args[0].endswith("/artifacts"):
+            return {"artifacts": [{"name": a} for a in artifacts]}
+        if "/check-runs?" in args[0]:
+            return {"check_runs": list(check_runs)}
         return {"head": {"sha": head}, "base": {"ref": "main"}}
     return fake
 
@@ -412,16 +417,119 @@ def test_ci_cancelled_run_without_a_report_is_skipped(monkeypatch):
 
 def test_ci_missing_report_asks_a_person(monkeypatch):
     files = [{"filename": "e2e/a.go", "patch": '@@ -1,0 +1 @@\n+\tIt("new", func() {'}]
-    monkeypatch.setattr(gate, "gh_api", ci_api(files=files))
-
-    def no_artifact(args, token, **kwargs):
-        raise gate.GateError("gh run download failed: no artifact matches")
-    monkeypatch.setattr(gate, "gh", no_artifact)
+    monkeypatch.setattr(gate, "gh_api", ci_api(files=files, artifacts=()))
+    monkeypatch.setattr(gate, "gh", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no download without an artifact")))
     decision = gate.collect_ci({"workflow_run": ci_run()}, "o/r", "tok")
     assert decision["check"]["conclusion"] == "action_required"
     assert "no ginkgo-report for 1 new spec(s)" in decision["check"]["title"]
-    assert "no artifact matches" in decision["check"]["summary"]
+    assert "uploaded no report" in decision["check"]["summary"]
     assert "`/test-e2e <label-filter>`" in decision["check"]["summary"]
+
+
+def test_ci_unreadable_report_asks_a_person(monkeypatch):
+    files = [{"filename": "e2e/a.go", "patch": '@@ -1,0 +1 @@\n+\tIt("new", func() {'}]
+    monkeypatch.setattr(gate, "gh_api", ci_api(files=files))
+
+    def broken(args, token, **kwargs):
+        raise gate.GateError("gh run download failed: zip is corrupt")
+    monkeypatch.setattr(gate, "gh", broken)
+    decision = gate.collect_ci({"workflow_run": ci_run()}, "o/r", "tok")
+    assert decision["check"]["conclusion"] == "action_required"
+    assert "ginkgo-report could not be read" in decision["check"]["title"]
+    assert "zip is corrupt" in decision["check"]["summary"]
+
+
+PRO_TREES = {"ginkgo-report": "", "oss-ginkgo-report": "staging/github.com/loft-sh/vcluster/"}
+OSS = "staging/github.com/loft-sh/vcluster/e2e/oss_test.go"
+
+
+def test_parse_trees_default_and_pro():
+    assert gate.parse_trees("") == {"ginkgo-report": ""}
+    assert gate.parse_trees("ginkgo-report=,oss-ginkgo-report=staging/github.com/loft-sh/vcluster/") == PRO_TREES
+    with pytest.raises(gate.GateError):
+        gate.parse_trees("ginkgo-report")
+
+
+def test_spec_tree_takes_the_longest_prefix():
+    assert gate.spec_tree({"path": OSS}, PRO_TREES) == "oss-ginkgo-report"
+    assert gate.spec_tree({"path": "e2e/pro_test.go"}, PRO_TREES) == "ginkgo-report"
+
+
+def two_tree_specs():
+    return [spec(10, "pro"), {"path": OSS, "line": 5, "text": "oss"}]
+
+
+def test_ci_one_tree_reported_waits_for_the_other():
+    states = gate.report_specs([{"SpecReports": [leaf(10, "passed")]}])
+    decision = gate.decide_ci(run(), 1, two_tree_specs(), states, trees=PRO_TREES,
+                              reported=["ginkgo-report"], known={})
+    assert decision["check"]["conclusion"] == "action_required"
+    assert "waiting for oss-ginkgo-report (1 new spec(s))" in decision["check"]["title"]
+    assert decision["check"]["external_id"] == "qa-review-gate:trees:ginkgo-report=success"
+
+
+def test_ci_second_tree_completes_the_gate_from_the_recorded_result():
+    states = gate.report_specs([{"SpecReports": [leaf(5, "passed", file=RUNNER + OSS)]}])
+    decision = gate.decide_ci(run(), 1, two_tree_specs(), states, trees=PRO_TREES,
+                              reported=["oss-ginkgo-report"], known={"ginkgo-report": "success"})
+    assert decision["check"]["conclusion"] == "success"
+    assert "all 2 new spec(s) ran and passed" in decision["check"]["title"]
+    assert decision["check"]["external_id"] == "qa-review-gate:trees:ginkgo-report=success;oss-ginkgo-report=success"
+
+
+def test_ci_a_failed_tree_fails_the_gate_once_both_reported():
+    states = gate.report_specs([{"SpecReports": [leaf(5, "skipped", file=RUNNER + OSS)]}])
+    decision = gate.decide_ci(run(), 1, two_tree_specs(), states, trees=PRO_TREES,
+                              reported=["oss-ginkgo-report"], known={"ginkgo-report": "success"})
+    assert decision["check"]["conclusion"] == "failure"
+    assert "1 new spec(s) did not run or pass" in decision["check"]["title"]
+    assert f"{OSS}:5 oss (skipped)" in decision["check"]["summary"]
+
+
+def test_collect_ci_reads_the_other_tree_from_the_newest_tagged_check_run(monkeypatch):
+    files = [{"filename": OSS, "patch": '@@ -4,0 +5 @@\n+\tIt("oss", func() {'},
+             {"filename": "e2e/pro_test.go", "patch": '@@ -9,0 +10 @@\n+\tIt("pro", func() {'}]
+    runs = [{"id": 1, "external_id": "qa-review-gate:trees:ginkgo-report=success"},
+            {"id": 2, "external_id": gate.OPENER_EXTERNAL_ID}]
+    monkeypatch.setattr(gate, "gh_api", ci_api(files=files, artifacts=("oss-ginkgo-report",), check_runs=runs))
+    report = [{"SpecReports": [leaf(5, "passed", file=RUNNER + OSS)]}]
+
+    def download(args, token, **kwargs):
+        dest = args[args.index("-D") + 1]
+        os.makedirs(dest, exist_ok=True)
+        pathlib.Path(dest, "report.json").write_text(json.dumps(report))
+        return ""
+    monkeypatch.setattr(gate, "gh", download)
+    decision = gate.collect_ci({"workflow_run": ci_run()}, "o/r", "tok", trees=PRO_TREES)
+    assert decision["check"]["conclusion"] == "success"
+
+
+def test_bot_backport_keeps_the_title_the_panel_matches():
+    decision = gate.decide_bot(backport_event(), BOTS, "qa-review")
+    assert decision["checks"][0]["title"] == "QA review: automated backport, skipped"
+    flake = gate.decide_bot(flake_fixer_event(), BOTS, "qa-review")
+    assert flake["checks"][0]["title"] == "QA review: vcluster-qa-bot[bot] PR, skipped"
+
+
+def test_retry_reconciles_an_existing_provisional_opener(monkeypatch):
+    monkeypatch.setattr(gate, "gh_api", review_api(files=NEW_SPEC))
+    decision = gate.collect_review(review_event(), "o/r", "tok", "loft-bot", "qa-review")
+    writes = []
+    runs = [{"id": 20, "status": "completed", "conclusion": "success", "output": {"title": "passed", "summary": "ok"}},
+            {"id": 21, "status": "completed", "conclusion": "action_required", "external_id": gate.OPENER_EXTERNAL_ID}]
+
+    def api(args, token, payload=None):
+        if "check-runs?" in args[0]:
+            return {"check_runs": runs}
+        if payload is not None:
+            writes.append((args, payload))
+        return {}
+    monkeypatch.setattr(gate, "gh_api", api)
+    gate.apply(decision, "o/r", "tok", "", "https://panel")
+    posted = [p["name"] for a, p in writes if a[0].endswith("/check-runs")]
+    assert posted == ["qa-review"]
+    assert writes[-1][0] == ["repos/o/r/check-runs/21", "-X", "PATCH"]
+    assert writes[-1][1]["conclusion"] == "success"
 
 
 def test_apply_posts_every_check_in_the_decision(monkeypatch):

@@ -62,6 +62,8 @@ GO_ESCAPES = {"n": "\n", "t": "\t", "r": "\r"}
 STATE_RANK = {"passed": 0, "": 1, "pending": 2, "skipped": 3, "timedout": 4, "interrupted": 4,
               "aborted": 4, "panicked": 5, "failed": 5}
 REPORT_ARTIFACT = "ginkgo-report"
+DEFAULT_TREES = f"{REPORT_ARTIFACT}="
+TREES_EXTERNAL_ID = "qa-review-gate:trees:"
 OPENER_EXTERNAL_ID = "qa-review-gate-provisional-opener"
 SHA_PREFIX = re.compile(r"^[0-9a-f]{7,40}$")
 COMPARE_FILE_CAP = 300  # the compare API lists at most this many files and says nothing when it cuts
@@ -119,14 +121,16 @@ def unescape_go(text):
     return re.sub(r"\\(.)", lambda m: GO_ESCAPES.get(m.group(1), m.group(1)), text)
 
 
-def bot_checks(pr, login, check_name, test_check):
+def bot_checks(pr, login, prefix, check_name, test_check):
     head = (pr.get("head") or {}).get("sha", "")
+    # The panel (ai-agents lead, Phase 1.6) matches the backport title verbatim.
+    what = "automated backport" if prefix == "backport/" else f"{login} PR"
     summary = (f"PR opened by {login}: reviewed before it was opened, so the QA review is "
                f"skipped here.\n\nPR: {pr.get('html_url', '')}")
     return [{"name": check_name, "head_sha": head, "conclusion": "success",
-             "title": f"QA review: {login} PR, skipped", "summary": summary},
+             "title": f"QA review: {what}, skipped", "summary": summary},
             {"name": test_check, "head_sha": head, "conclusion": "success",
-             "title": f"QA test run: {login} PR, skipped", "summary": summary}]
+             "title": f"QA test run: {what}, skipped", "summary": summary}]
 
 
 def decide_bot(event, bots, check_name, test_check="qa-test-run"):
@@ -138,7 +142,7 @@ def decide_bot(event, bots, check_name, test_check="qa-test-run"):
     pusher = (event.get("sender") or {}).get("login", "")
     if event.get("action") != "opened" or pusher != login:
         return {"skip": "only the head the bot opened the PR with passes; the panel reviews this head"}
-    return {"checks": bot_checks(pr, login, check_name, test_check), "request_qa_review": False,
+    return {"checks": bot_checks(pr, login, bots[login], check_name, test_check), "request_qa_review": False,
             "pr_number": pr.get("number")}
 
 
@@ -315,31 +319,85 @@ def spec_state(states, spec):
     return None
 
 
-def decide_ci(run, pr_number, added, states, test_check="qa-test-run"):
-    """Compare the PR's new specs with what the e2e run reported."""
+def parse_trees(text):
+    """{report artifact: path prefix} from `artifact=prefix,artifact=prefix`. A repo whose e2e
+    workflows each test one source tree (vcluster-pro: Pro, and OSS under staging/) uploads one
+    report per tree; the empty prefix is the tree every other path belongs to."""
+    trees = {}
+    for item in filter(None, (s.strip() for s in (text or "").split(","))):
+        artifact, sep, prefix = item.partition("=")
+        if not sep or not artifact:
+            raise GateError(f"report-trees entry must be artifact=path-prefix, got {item!r}")
+        trees[artifact] = prefix
+    return trees or {REPORT_ARTIFACT: ""}
+
+
+def spec_tree(spec, trees):
+    """The report artifact that covers a spec: the longest prefix its path starts with."""
+    return max((a for a, p in trees.items() if spec["path"].startswith(p)),
+               key=lambda a: len(trees[a]), default=REPORT_ARTIFACT)
+
+
+def grade(run, added, states):
+    """(conclusion, lines) for the specs of one tree against that tree's report."""
+    graded = [(f"{s['path']}:{s['line']} {s['text']}", spec_state(states, s)) for s in added]
+    missing = [f"- did not run: {label}" for label, state in graded if state is None]
+    not_passed = [f"- {label} ({state})" for label, state in graded if state not in (None, "passed")]
+    if missing or not_passed:
+        return "failure", missing + not_passed, len(missing) + len(not_passed)
+    return "success", [f"- {len(added)} spec(s) ran and passed in {run.get('html_url', '')}"], 0
+
+
+def tree_results(repo, head, test_check, token):
+    """Per-tree conclusions recorded on the newest `qa-test-run` check-run of this head."""
+    runs = gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={test_check}&filter=all&per_page=100"],
+                  token).get("check_runs") or []
+    tagged = [r for r in runs if (r.get("external_id") or "").startswith(TREES_EXTERNAL_ID)]
+    if not tagged:
+        return {}
+    newest = max(tagged, key=lambda r: r["id"])["external_id"][len(TREES_EXTERNAL_ID):]
+    return dict(item.split("=", 1) for item in newest.split(";") if "=" in item)
+
+
+def decide_ci(run, pr_number, added, states, test_check="qa-test-run", trees=None,
+              reported=None, known=None):
+    """Compare the PR's new specs with what the e2e run reported. With several trees, this run
+    grades the trees it reported on; `known` carries the other trees' results from earlier runs,
+    and the check completes only when every tree with new specs has a result."""
     if run.get("conclusion") not in ("success", "failure"):
         return {"skip": f"e2e run ended {run.get('conclusion') or 'unknown'}, nothing to compare"}
     if not added:
         return {"skip": "the PR adds no e2e spec"}
-    graded = [(f"{s['path']}:{s['line']} {s['text']}", spec_state(states, s)) for s in added]
-    missing = [label for label, state in graded if state is None]
-    not_passed = [f"{label} ({state})" for label, state in graded if state not in (None, "passed")]
+    trees = trees or {REPORT_ARTIFACT: ""}
+    reported = set(reported) if reported is not None else set(trees)
+    results, lines, bad = dict(known or {}), [], 0
+    by_tree = {}
+    for s in added:
+        by_tree.setdefault(spec_tree(s, trees), []).append(s)
+    for artifact, specs in by_tree.items():
+        if artifact in reported:
+            results[artifact], tree_lines, tree_bad = grade(run, specs, states)
+            bad += tree_bad
+            lines += ([f"{artifact}:"] if len(trees) > 1 else []) + tree_lines
+    waiting = [a for a in by_tree if a not in results]
     head = run.get("head_sha", "")
-    if missing or not_passed:
-        lines = [f"- did not run: {t}" for t in missing] + [f"- {t}" for t in not_passed]
-        title = f"QA test run: {len(missing) + len(not_passed)} new spec(s) did not run or pass"
-        summary = ("New specs this PR adds, checked against the Ginkgo report of "
-                   f"{run.get('html_url', '')}:\n\n" + "\n".join(lines) +
-                   "\n\nA spec the PR label filter never selects, or a focused/skipped spec, "
-                   "lands here. Fix the filter or the spec and push.")
+    if waiting:
+        conclusion = "action_required"
+        title = f"QA test run: waiting for {', '.join(waiting)} ({sum(len(by_tree[a]) for a in waiting)} new spec(s))"
+        lines += [f"- {a}: {len(by_tree[a])} new spec(s), no run reported yet" for a in waiting]
+    elif any(results[a] == "failure" for a in by_tree):
         conclusion = "failure"
+        title = f"QA test run: {bad} new spec(s) did not run or pass"
+        lines.append("\nA spec the PR label filter never selects, or a focused/skipped spec, "
+                     "lands here. Fix the filter or the spec and push.")
     else:
-        title = f"QA test run: all {len(added)} new spec(s) ran and passed"
-        summary = f"Ginkgo report: {run.get('html_url', '')}"
         conclusion = "success"
+        title = f"QA test run: all {len(added)} new spec(s) ran and passed"
+    summary = "New specs this PR adds, checked against the Ginkgo report(s):\n\n" + "\n".join(lines)
+    external_id = TREES_EXTERNAL_ID + ";".join(f"{a}={c}" for a, c in sorted(results.items()))
     return {
         "check": {"name": test_check, "head_sha": head, "conclusion": conclusion,
-                  "title": title, "summary": summary},
+                  "title": title, "summary": summary, "external_id": external_id},
         "request_qa_review": False,
         "pr_number": pr_number,
     }
@@ -390,8 +448,9 @@ def ask_person(test_check, head, pr_number, title, detail):
             "request_qa_review": False, "pr_number": pr_number}
 
 
-def collect_ci(event, repo, token, test_check="qa-test-run"):
-    """Fetch the diff and the Ginkgo report for a finished e2e run, then decide."""
+def collect_ci(event, repo, token, test_check="qa-test-run", trees=None):
+    """Fetch the diff and the Ginkgo report(s) for a finished e2e run, then decide."""
+    trees = trees or {REPORT_ARTIFACT: ""}
     run = event.get("workflow_run") or {}
     head = run.get("head_sha", "")
     if run.get("conclusion") not in ("success", "failure"):
@@ -411,18 +470,28 @@ def collect_ci(event, repo, token, test_check="qa-test-run"):
                           str(error))
     if not added:
         return {"skip": "the PR adds no e2e spec"}
+    uploaded = {a["name"] for a in (gh_api([f"repos/{repo}/actions/runs/{run['id']}/artifacts"], token)
+                                    .get("artifacts") or [])}
+    reported = [a for a in trees if a in uploaded]
+    if not reported:
+        return ask_person(test_check, head, pr_number,
+                          f"QA test run: no {' or '.join(trees)} for {len(added)} new spec(s), "
+                          "a person checks them", f"run {run.get('html_url', '')} uploaded no report")
+    states = {}
     with tempfile.TemporaryDirectory() as tmp:
-        try:
-            gh(["run", "download", str(run["id"]), "-R", repo, "-n", REPORT_ARTIFACT, "-D", tmp], token)
-        except GateError as error:
-            return ask_person(test_check, head, pr_number,
-                              f"QA test run: no {REPORT_ARTIFACT} for {len(added)} new spec(s), "
-                              "a person checks them", str(error))
-        states = {}
+        for artifact in reported:
+            try:
+                gh(["run", "download", str(run["id"]), "-R", repo, "-n", artifact, "-D",
+                    os.path.join(tmp, artifact)], token)
+            except GateError as error:
+                return ask_person(test_check, head, pr_number,
+                                  f"QA test run: {artifact} could not be read, a person checks the new specs",
+                                  str(error))
         for path in sorted(glob.glob(os.path.join(tmp, "**", "*.json"), recursive=True)):
             with open(path, encoding="utf-8") as fh:
                 report_specs(json.load(fh), states)
-    return decide_ci(run, pr_number, added, states, test_check)
+    known = tree_results(repo, head, test_check, token) if len(trees) > 1 else {}
+    return decide_ci(run, pr_number, added, states, test_check, trees, reported, known)
 
 
 def team_member(login, teams, org_token):
@@ -483,6 +552,31 @@ def comment_head(decision, repo, token, panel_login):
     return None
 
 
+def reconcile_opener(repo, head, check, opener_id, token, run_url):
+    """Copy the newest real result onto a provisional opener it would otherwise hide.
+    `opener_id` None means: the newest run on the head, if it is a provisional opener."""
+    runs = gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={check['name']}&filter=all&per_page=100"],
+                  token).get("check_runs") or []
+    if opener_id is None:
+        newest = max(runs, key=lambda run: run.get("id", 0), default=None)
+        if not newest or newest.get("external_id") != OPENER_EXTERNAL_ID:
+            return
+        opener_id = newest["id"]
+    previous = [run for run in runs
+                if run.get("id", 0) < opener_id and run.get("status") == "completed"
+                and run.get("external_id") != OPENER_EXTERNAL_ID]
+    if not previous:
+        return
+    result = max(previous, key=lambda run: run["id"])
+    output = result.get("output") or {}
+    gh_api([f"repos/{repo}/check-runs/{opener_id}", "-X", "PATCH"], token, {
+        "status": "completed", "conclusion": result["conclusion"],
+        "details_url": result.get("details_url") or run_url,
+        "output": {"title": output.get("title") or check["title"],
+                   "summary": output.get("summary") or check["summary"]},
+    })
+
+
 def apply(decision, repo, token, qa_team, run_url, panel_login="loft-bot"):
     """Create the check-run(s), hand the PR to its author or request the QA team when asked.
     Returns the head the checks landed on, or None when the comment binds to no verdict."""
@@ -499,31 +593,22 @@ def apply(decision, repo, token, qa_team, run_url, panel_login="loft-bot"):
         if check["name"] == decision.get("opener_name"):
             existing = gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={check['name']}"], token)
             if existing.get("check_runs"):
+                # A retry after a failed reconciliation: the newest run may still be our
+                # provisional opener while a real result sits behind it.
+                reconcile_opener(repo, head, check, None, token, run_url)
                 continue
         created = gh_api([f"repos/{repo}/check-runs", "-X", "POST"], token, {
             "name": check["name"], "head_sha": head, "status": "completed",
             "conclusion": check["conclusion"], "details_url": run_url,
             "output": {"title": check["title"], "summary": check["summary"]},
-            **({"external_id": OPENER_EXTERNAL_ID} if check["name"] == decision.get("opener_name") else {}),
+            **({"external_id": OPENER_EXTERNAL_ID} if check["name"] == decision.get("opener_name")
+               else {"external_id": check["external_id"]} if check.get("external_id") else {}),
         })
         if check["name"] == decision.get("opener_name"):
             # A result may have been published after our lookup but before this
             # opener. Copy it onto the newer opener without creating another run:
             # any result published after the opener remains the newest check.
-            opener_id = created["id"]
-            runs = gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={check['name']}&filter=all&per_page=100"], token)
-            previous = [run for run in runs.get("check_runs", [])
-                        if run["id"] < opener_id and run.get("status") == "completed"
-                        and run.get("external_id") != OPENER_EXTERNAL_ID]
-            if previous:
-                result = max(previous, key=lambda run: run["id"])
-                output = result.get("output") or {}
-                gh_api([f"repos/{repo}/check-runs/{opener_id}", "-X", "PATCH"], token, {
-                    "status": "completed", "conclusion": result["conclusion"],
-                    "details_url": result.get("details_url") or run_url,
-                    "output": {"title": output.get("title") or check["title"],
-                               "summary": output.get("summary") or check["summary"]},
-                })
+            reconcile_opener(repo, head, check, created["id"], token, run_url)
     pr_number = decision["pr_number"]
     if decision.get("assign_author"):
         author = gh_api([f"repos/{repo}/pulls/{pr_number}"], token).get("user", {}).get("login")
@@ -561,7 +646,8 @@ def main():
         decision = decide_comment(event, logins, check_name, test_check,
                                   member=lambda login: team_member(login, teams, org_token))
     elif mode == "ci":
-        decision = collect_ci(event, repo, token, test_check)
+        decision = collect_ci(event, repo, token, test_check,
+                              parse_trees(os.environ.get("INPUT_REPORT_TREES", DEFAULT_TREES)))
     elif mode == "bot":
         decision = decide_bot(event, parse_bots(os.environ.get("INPUT_BOT_PRS", DEFAULT_BOTS)),
                               check_name, test_check)

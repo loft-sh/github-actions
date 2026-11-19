@@ -32,7 +32,7 @@ inputs:
   override-teams:
     description: 'Comma-separated org/slug teams whose members may run /qa-review override. Membership is read with org-token.'
     required: false
-    default: 'loft-sh/eng-tech-leads,loft-sh/eng-qa'
+    default: 'loft-sh/eng-tech-leads,loft-sh/eng-staff-engineers,loft-sh/eng-qa'
   org-token:
     description: 'Token with read:org, used only to read override-teams membership. GITHUB_TOKEN cannot; empty disables the teams.'
     required: false
@@ -53,6 +53,10 @@ inputs:
     description: 'Name of the check-run that says whether the new e2e specs ran and passed.'
     required: false
     default: 'qa-test-run'
+  report-trees:
+    description: 'Comma-separated artifact=path-prefix pairs: which Ginkgo report artifact covers which source tree. One tree by default; vcluster-pro adds oss-ginkgo-report=staging/github.com/loft-sh/vcluster/.'
+    required: false
+    default: 'ginkgo-report='
   github-token:
     description: 'Token for gh. The calling job must grant checks: write and pull-requests: write; ci mode also needs actions: read.'
     required: false
@@ -74,6 +78,7 @@ runs:
         INPUT_QA_TEAM: ${{ inputs.qa-team }}
         INPUT_CHECK_NAME: ${{ inputs.check-name }}
         INPUT_TEST_CHECK_NAME: ${{ inputs.test-check-name }}
+        INPUT_REPORT_TREES: ${{ inputs.report-trees }}
         INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}
         INPUT_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       run: python3 -I "$ACTION_PATH/src/gate.py"

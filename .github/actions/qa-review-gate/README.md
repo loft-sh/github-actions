@@ -39,7 +39,7 @@ author.)
 Comments on the PR:
 
 - `/qa-review override [<reason>]` from a member of an `override-teams` team (by
-  default `loft-sh/eng-tech-leads` and `loft-sh/eng-qa`) or a login in `override-logins`
+  default `loft-sh/eng-tech-leads`, `loft-sh/eng-staff-engineers` and `loft-sh/eng-qa`) or a login in `override-logins`
   completes both check-runs as success and records who overrode them and why. Team
   membership is read with `org-token`, a token with `read:org`; `GITHUB_TOKEN` cannot
   read it, and without the token only `override-logins` apply (the job says so). An
@@ -63,7 +63,14 @@ spec is not in the report or did not pass, success otherwise. A spec is matched 
 file and line (the report's `LeafNodeLocation`), never by text, so an existing spec
 with the same text cannot stand in for a new one and a skipped namesake elsewhere
 cannot fail it. The same location in two reports keeps the worst state. A PR that
-adds no spec publishes nothing here (its `qa-test-run` is already green). A compare
+adds no spec publishes nothing here (its `qa-test-run` is already green).
+
+A repo whose e2e workflows each test one source tree lists them in `report-trees`
+(`artifact=path-prefix`; vcluster-pro: `ginkgo-report=` for Pro and
+`oss-ginkgo-report=staging/github.com/loft-sh/vcluster/` for OSS). Each run grades the
+specs of the tree it uploaded a report for and records every tree's result in the
+check-run; the check stays `action_required` ("waiting for <artifact>") until every
+tree that gained specs has reported, then turns success or failure. A compare
 the API may have cut (300 files), or a finished run that uploaded no report, gets
 `action_required`: re-run `/test-e2e` or a lead overrides.
 
@@ -97,18 +104,19 @@ checkout and the event filter.
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-|      INPUT      |  TYPE  | REQUIRED |                         DEFAULT                          |                                                                                 DESCRIPTION                                                                                  |
-|-----------------|--------|----------|----------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-|     bot-prs     | string |  false   | `"loft-bot:backport/,vcluster-qa-bot[bot]:flake-fixer/"` |                           Comma-separated login:branch-prefix pairs whose PRs pass <br>both check-runs on the head the <br>bot opened them with.                             |
-|   check-name    | string |  false   |                      `"qa-review"`                       |                                                                        Name of the verdict check-run.                                                                        |
-|  github-token   | string |  false   |                 `"${{ github.token }}"`                  |                       Token for gh. The calling job <br>must grant checks: write and pull-requests: <br>write; ci mode also needs actions: <br>read.                         |
-|      mode       | string |   true   |                                                          | "review" (pull_request_review event), "comment" (issue_comment event), "ci" (workflow_run event of the e2e workflow) <br>or "bot" (pull_request event of a trusted bot PR).  |
-|    org-token    | string |  false   |                                                          |                          Token with read:org, used only to <br>read override-teams membership. GITHUB_TOKEN cannot; empty <br>disables the teams.                            |
-| override-logins | string |  false   |                                                          |                                          Comma-separated logins allowed to run /qa-review <br>override, on top of override-teams.                                            |
-| override-teams  | string |  false   |        `"loft-sh/eng-tech-leads,loft-sh/eng-qa"`         |                            Comma-separated org/slug teams whose members may <br>run /qa-review override. Membership is read <br>with org-token.                              |
-|   panel-login   | string |  false   |                       `"loft-bot"`                       |                                                 Login that posts the panel review. <br>Reviews by anyone else are ignored.                                                   |
-|     qa-team     | string |  false   |                    `"loft-sh/eng-qa"`                    |                                        org/slug of the team asked for <br>a review on /qa-review human. Empty <br>skips the request.                                         |
-| test-check-name | string |  false   |                     `"qa-test-run"`                      |                                              Name of the check-run that says <br>whether the new e2e specs ran <br>and passed.                                               |
+|      INPUT      |  TYPE  | REQUIRED |                                DEFAULT                                |                                                                                                DESCRIPTION                                                                                                 |
+|-----------------|--------|----------|-----------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|     bot-prs     | string |  false   |       `"loft-bot:backport/,vcluster-qa-bot[bot]:flake-fixer/"`        |                                          Comma-separated login:branch-prefix pairs whose PRs pass <br>both check-runs on the head the <br>bot opened them with.                                            |
+|   check-name    | string |  false   |                             `"qa-review"`                             |                                                                                       Name of the verdict check-run.                                                                                       |
+|  github-token   | string |  false   |                        `"${{ github.token }}"`                        |                                      Token for gh. The calling job <br>must grant checks: write and pull-requests: <br>write; ci mode also needs actions: <br>read.                                        |
+|      mode       | string |   true   |                                                                       |                "review" (pull_request_review event), "comment" (issue_comment event), "ci" (workflow_run event of the e2e workflow) <br>or "bot" (pull_request event of a trusted bot PR).                 |
+|    org-token    | string |  false   |                                                                       |                                         Token with read:org, used only to <br>read override-teams membership. GITHUB_TOKEN cannot; empty <br>disables the teams.                                           |
+| override-logins | string |  false   |                                                                       |                                                         Comma-separated logins allowed to run /qa-review <br>override, on top of override-teams.                                                           |
+| override-teams  | string |  false   | `"loft-sh/eng-tech-leads,loft-sh/eng-staff-engineers,loft-sh/eng-qa"` |                                           Comma-separated org/slug teams whose members may <br>run /qa-review override. Membership is read <br>with org-token.                                             |
+|   panel-login   | string |  false   |                             `"loft-bot"`                              |                                                                Login that posts the panel review. <br>Reviews by anyone else are ignored.                                                                  |
+|     qa-team     | string |  false   |                          `"loft-sh/eng-qa"`                           |                                                       org/slug of the team asked for <br>a review on /qa-review human. Empty <br>skips the request.                                                        |
+|  report-trees   | string |  false   |                          `"ginkgo-report="`                           | Comma-separated artifact=path-prefix pairs: which Ginkgo report <br>artifact covers which source tree. One <br>tree by default; vcluster-pro adds oss-ginkgo-report=staging/github.com/loft-sh/vcluster/.  |
+| test-check-name | string |  false   |                            `"qa-test-run"`                            |                                                             Name of the check-run that says <br>whether the new e2e specs ran <br>and passed.                                                              |
 
 <!-- AUTO-DOC-INPUT:END -->
 
