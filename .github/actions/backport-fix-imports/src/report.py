@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""backport-fix-imports: turn what the fix did into the backport PR comment.
+"""backport-fix-imports: turn what the passes did into the backport PR comment.
 
-Reads the notes fix.py left in RUNNER_TEMP and writes body, pr-number and
-author to GITHUB_OUTPUT for sticky-pr-comment. Writes nothing when there is
-nothing to tell the assignee. Never fails the job.
+Reads the notes fix.py and ai.py left in RUNNER_TEMP and writes body,
+pr-number and author to GITHUB_OUTPUT for sticky-pr-comment. Writes nothing
+when there is nothing to tell the assignee. Never fails the job.
 
 Env:
   BACKPORT_BRANCH, GH_TOKEN   as for fix.py
@@ -26,12 +26,19 @@ def count(n: int, noun: str) -> str:
 
 
 def body(notes: dict) -> str:
-    script = notes.get("script", {})
+    script, ai = notes.get("script", {}), notes.get("ai", {})
     lines = []
     if script.get("commit"):
         lines.append(f"- Module paths: fixed in {script['commit'][:10]} ({count(script.get('rewritten', 0), 'file')} "
                      f"rewritten, {count(script.get('hunks', 0), 'import conflict')} resolved).")
-    left = script.get("left", {})
+    committed = ai.get("committed", [])
+    if committed:
+        files = ", ".join(f"`{p}`" for p in committed)
+        lines.append(f"- AI: resolved the conflicts in {files} in {ai['commit'][:10]}. A model wrote that commit "
+                     f"and only `go vet` checked it, so review it closely. The `{fix.AI_LABEL}` label keeps this "
+                     "PR from being auto-approved.")
+    left = {p: r for p, r in script.get("left", {}).items() if p not in committed}
+    left.update(ai.get("declined", {}))
     if left:
         lines.append("- Left for you:")
         lines.extend(f"  - `{p}`: {r}" for p, r in sorted(left.items()))

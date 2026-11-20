@@ -413,7 +413,7 @@ def test_move_blocked_by_existing_target_is_left_for_review(repo, monkeypatch):
     assert left == {f"{API_V5}/types/types.go": "added under the source path, but that path exists on the target"}
     out = outputs(repo)
     assert out["conclusion"] == "unchanged"
-    assert "1 file(s) left for review" in out["reason"]
+    assert "1 file(s) left after the script" in out["reason"]
     assert '"example.com/acme/api/v5/pkg/x"' in remote_file(repo, f"{API_V5}/types/types.go")
 
 
@@ -438,7 +438,7 @@ def test_import_conflict_resolved_code_conflict_counted(repo):
     fix.main()
     out = outputs(repo)
     assert out["conclusion"] == "fixed"
-    assert "resolved 1 import conflict(s); 1 file(s) left for review" in out["reason"]
+    assert "resolved 1 import conflict(s); 1 file(s) left after the script" in out["reason"]
     assert not fix.has_markers(remote_file(repo, "pkg/peer/peer.go"))
     assert fix.has_markers(remote_file(repo, "pkg/peer/code.go"))
 

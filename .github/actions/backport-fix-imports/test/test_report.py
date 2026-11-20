@@ -44,6 +44,22 @@ def test_only_leftovers():
     assert "Module paths" not in text and "`pkg/b/b.go`" in text
 
 
+def test_ai_commit_is_flagged_and_its_files_are_not_left():
+    text = report.body({"script": SCRIPT, "ai": {
+        "committed": ["pkg/a/a_test.go"], "commit": "bee5777f0837",
+        "declined": {"pkg/b/b.go": "the AI did not resolve it: needs pkg/tenancy"}}})
+    assert "AI: resolved the conflicts in `pkg/a/a_test.go` in bee5777f08" in text
+    assert "review it closely" in text and "backport-ai-resolved" in text
+    assert "`pkg/a/a_test.go`: conflict" not in text
+    assert "  - `pkg/b/b.go`: the AI did not resolve it: needs pkg/tenancy" in text
+
+
+def test_ai_commit_alone_still_comments():
+    text = report.body({"script": {"rewritten": 0, "hunks": 0, "commit": "", "left": {"pkg/a/a.go": "conflict markers remain"}},
+                        "ai": {"committed": ["pkg/a/a.go"], "commit": "bee5777f0837", "declined": {}}})
+    assert "AI: resolved the conflicts in `pkg/a/a.go`" in text and "Left for you" not in text
+
+
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
