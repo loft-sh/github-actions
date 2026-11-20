@@ -133,11 +133,12 @@ func run(
 	// Start the customer announcement for a stable patch release once the
 	// release is confirmed published. Deferred so it runs on every exit below,
 	// even when the issue sync fails; it never fails the sync itself. A draft
-	// has no publish date and is not announced.
+	// has no publish date and is not announced. The remedy does not offer to
+	// start the task by hand, since R8 would then announce the draft.
 	if currentRelease.PublishedAt.IsZero() {
 		logger.Warn("Release is not published, not starting the announce task",
 			"releaseTag", currentRelease.TagName,
-			"remedy", "publish the release and re-run the sync, or "+announceRemedy)
+			"remedy", "publish the release, then re-run the sync to start the announcement")
 	} else {
 		defer linearClient.StartAnnounceTask(ctx, *repo, currentRelease.TagName, *dryRun)
 	}

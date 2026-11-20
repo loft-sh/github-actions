@@ -414,7 +414,7 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_, _ = fmt.Fprint(w, `{"errors":[{"message":"API rate limit exceeded"}],"data":null}`)
 }
 
-func runAgainstFakes(t *testing.T, gh *fakeGitHub, linear *fakeAnnounceLinear) error {
+func runAgainstFakes(t *testing.T, gh *fakeGitHub, linear *fakeAnnounceLinear) (string, error) {
 	t.Helper()
 	ghServer := httptest.NewServer(gh)
 	t.Cleanup(ghServer.Close)
@@ -425,15 +425,17 @@ func runAgainstFakes(t *testing.T, gh *fakeGitHub, linear *fakeAnnounceLinear) e
 	githubGraphQLURL, linearGraphQLURL = ghServer.URL, linearServer.URL
 	t.Cleanup(func() { githubGraphQLURL, linearGraphQLURL = prevGitHub, prevLinear })
 
-	return run(context.Background(), &bytes.Buffer{}, []string{"linear-release-sync",
+	var logs bytes.Buffer
+	err := run(context.Background(), &logs, []string{"linear-release-sync",
 		"-token", "gh-token", "-linear-token", "linear-token",
 		"-repo", "loft-enterprise", "-release-tag", "v4.12.7"})
+	return logs.String(), err
 }
 
 func TestRunStartsTheAnnounceTaskWhenTheSyncFailsEarly(t *testing.T) {
 	linear := &fakeAnnounceLinear{tasks: []fakeTask{{id: "ENG-1", parentTitle: platformChecklist, stateType: "backlog"}}}
 
-	err := runAgainstFakes(t, &fakeGitHub{releaseTag: "v4.12.7"}, linear)
+	_, err := runAgainstFakes(t, &fakeGitHub{releaseTag: "v4.12.7"}, linear)
 
 	if err == nil {
 		t.Fatal("run succeeded, want the previous-release lookup to fail")
@@ -446,7 +448,7 @@ func TestRunStartsTheAnnounceTaskWhenTheSyncFailsEarly(t *testing.T) {
 func TestRunDoesNotStartTheAnnounceTaskForAnUnknownRelease(t *testing.T) {
 	linear := &fakeAnnounceLinear{tasks: []fakeTask{{id: "ENG-1", parentTitle: platformChecklist, stateType: "backlog"}}}
 
-	err := runAgainstFakes(t, &fakeGitHub{releaseTag: "v4.12.6"}, linear)
+	_, err := runAgainstFakes(t, &fakeGitHub{releaseTag: "v4.12.6"}, linear)
 
 	if err == nil {
 		t.Fatal("run succeeded, want release not found")
@@ -492,10 +494,15 @@ func TestStartAnnounceTaskStartsNothingWhenSeveralTasksMatch(t *testing.T) {
 func TestRunDoesNotStartTheAnnounceTaskForADraftRelease(t *testing.T) {
 	linear := &fakeAnnounceLinear{tasks: []fakeTask{{id: "ENG-1", parentTitle: platformChecklist, stateType: "backlog"}}}
 
-	_ = runAgainstFakes(t, &fakeGitHub{releaseTag: "v4.12.7", draft: true}, linear)
+	logs, _ := runAgainstFakes(t, &fakeGitHub{releaseTag: "v4.12.7", draft: true}, linear)
 
 	if len(linear.searches) != 0 || len(linear.updates) != 0 {
 		t.Errorf("searches=%d updates=%d, want no announce task lookup for a draft", len(linear.searches), len(linear.updates))
+	}
+	// Starting the task by hand would make R8 announce a draft, so the
+	// remedy only says to publish and re-run.
+	if !strings.Contains(logs, "Release is not published") || !strings.Contains(logs, "remedy=") || strings.Contains(logs, "by hand") {
+		t.Errorf("want a draft warning whose remedy is to publish and re-run, not to start the task by hand:\n%s", logs)
 	}
 }
 
