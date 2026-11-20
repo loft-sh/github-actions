@@ -551,7 +551,7 @@ def test_ci_jobs_of_one_head_are_serialized():
     assert "cancel-in-progress: false" in text
 
 
-def test_bot_backport_keeps_the_title_the_panel_matches():
+def test_bot_backport_title_names_the_backport():
     decision = gate.decide_bot(backport_event(), BOTS, "qa-review")
     assert decision["checks"][0]["title"] == "QA review: automated backport, skipped"
     flake = gate.decide_bot(flake_fixer_event(), BOTS, "qa-review")

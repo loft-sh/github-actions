@@ -123,7 +123,6 @@ def unescape_go(text):
 
 def bot_checks(pr, login, prefix, check_name, test_check):
     head = (pr.get("head") or {}).get("sha", "")
-    # The panel (ai-agents lead, Phase 1.6) matches the backport title verbatim.
     what = "automated backport" if prefix == "backport/" else f"{login} PR"
     summary = (f"PR opened by {login}: reviewed before it was opened, so the QA review is "
                f"skipped here.\n\nPR: {pr.get('html_url', '')}")
