@@ -22,5 +22,16 @@ jobs:
           assert-install: false
           detik-install: false
           file-install: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+          cache: false
+      # Same version as the action's default, so the real-binary test covers what callers run.
+      - name: Install the pinned gocognit
+        run: |
+          version=$(yq '.inputs.gocognit-version.default' .github/actions/cognitive-complexity/action.yml)
+          GOBIN="${RUNNER_TEMP}/bin" go install "github.com/uudashr/gocognit/cmd/gocognit@${version}"
       - name: Run cognitive-complexity tests
+        env:
+          GOCOGNIT_REAL_BIN: ${{ runner.temp }}/bin/gocognit
         run: bats .github/actions/cognitive-complexity/test/*.bats

@@ -2,7 +2,7 @@
 # Tests for cognitive-complexity/run.sh
 #
 # Stubs `gocognit` so we can assert on the files it receives and simulate
-# findings, a clean run and a tool error without the real binary.
+# findings, a clean run and a tool error. One test runs the real binary.
 
 SCRIPT="$BATS_TEST_DIRNAME/../run.sh"
 
@@ -19,18 +19,23 @@ setup() {
   export IGNORE='(^|/)(vendor|e2e)/|_test\.go$'
 
   export GOCOGNIT_CALLS="$TEST_DIR/gocognit_calls"
+  export GOCOGNIT_FILES="$TEST_DIR/gocognit_files"
   export GOCOGNIT_OUTPUT="$TEST_DIR/gocognit_output"
   export GOCOGNIT_EXIT="$TEST_DIR/gocognit_exit"
   : > "$GOCOGNIT_CALLS"
+  : > "$GOCOGNIT_FILES"
   : > "$GOCOGNIT_OUTPUT"
   echo "0" > "$GOCOGNIT_EXIT"
 
-  # Stub gocognit: record each argument on its own line, print
-  # GOCOGNIT_OUTPUT, exit with GOCOGNIT_EXIT.
+  # Stub gocognit: record its arguments and the Go files under the scanned
+  # tree (its last argument), print GOCOGNIT_OUTPUT with @TREE@ replaced by
+  # that tree, and exit with GOCOGNIT_EXIT.
   cat > "$MOCK_DIR/gocognit" <<'MOCK'
 #!/usr/bin/env bash
 printf '%s\n' "$@" >> "$GOCOGNIT_CALLS"
-cat "$GOCOGNIT_OUTPUT"
+tree="${*: -1}"
+(cd "$tree" && find . -name '*.go' | sed 's|^\./||') >> "$GOCOGNIT_FILES"
+sed "s|@TREE@|$tree|g" "$GOCOGNIT_OUTPUT"
 echo "gocognit: note: recursion may be under-counted" >&2
 exit "$(cat "$GOCOGNIT_EXIT")"
 MOCK
@@ -49,16 +54,17 @@ MOCK
 }
 
 teardown() {
+  chmod -R u+rwx "$TEST_DIR" 2>/dev/null || true
   rm -rf "$TEST_DIR"
 }
 
-# Helper: the sorted files gocognit received, without the -over flag.
+# Helper: the sorted files gocognit found in the tree it scanned.
 gocognit_files() {
-  grep -vxE -- '-over|[0-9]+' "$GOCOGNIT_CALLS" | sort
+  sort "$GOCOGNIT_FILES"
 }
 
-@test "findings: exits 0 and writes them highest first to the summary" {
-  printf '%s\n' "25 pkg a a.go:1:1" "140 pkg b b.go:1:1" "31 pkg c c.go:1:1" > "$GOCOGNIT_OUTPUT"
+@test "findings: exits 0 and writes them highest first with workspace paths" {
+  printf '%s\n' "25 pkg a @TREE@/pkg/a.go:1:1" "140 pkg b @TREE@/pkg/b.go:1:1" "31 main c @TREE@/cmd/main.go:1:1" > "$GOCOGNIT_OUTPUT"
   echo "1" > "$GOCOGNIT_EXIT"
 
   run "$SCRIPT"
@@ -67,9 +73,9 @@ gocognit_files() {
   expected=$(printf '%s\n' \
     "### 3 functions with cognitive complexity > 20" \
     '```' \
-    "140 pkg b b.go:1:1" \
-    "31 pkg c c.go:1:1" \
-    "25 pkg a a.go:1:1" \
+    "140 pkg b pkg/b.go:1:1" \
+    "31 main c cmd/main.go:1:1" \
+    "25 pkg a pkg/a.go:1:1" \
     '```')
   [ "$(cat "$GITHUB_STEP_SUMMARY")" = "$expected" ]
 }
@@ -90,11 +96,18 @@ gocognit_files() {
   [[ "$output" == *"::error::gocognit failed"* ]]
 }
 
+@test "scans one directory tree, with tests left to IGNORE" {
+  run "$SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [ "$(head -n3 "$GOCOGNIT_CALLS")" = "$(printf '%s\n' -over 20 -test)" ]
+  [ "$(wc -l < "$GOCOGNIT_CALLS" | tr -d ' ')" -eq 4 ]
+}
+
 @test "ignored and generated files never reach gocognit" {
   run "$SCRIPT"
 
   [ "$status" -eq 0 ]
-  [ "$(head -n2 "$GOCOGNIT_CALLS")" = "$(printf '%s\n' -over 20)" ]
   [ "$(gocognit_files)" = "$(printf '%s\n' cmd/main.go pkg/a.go)" ]
 }
 
@@ -117,8 +130,8 @@ gocognit_files() {
   [ "$(gocognit_files)" = "cmd/main.go" ]
 }
 
-@test "overlapping scan paths pass each file once" {
-  export SCAN_PATHS=". ./pkg pkg"
+@test "differently spelled scan paths pass each file once" {
+  export SCAN_PATHS=". ./pkg pkg ./pkg/. $SRC_DIR/pkg pkg/a.go"
 
   run "$SCRIPT"
 
@@ -132,7 +145,23 @@ gocognit_files() {
   run "$SCRIPT"
 
   [ "$status" -eq 1 ]
-  [[ "$output" == *"::error::cannot read every scan path in './pkg ./missing'"* ]]
+  [[ "$output" == *"::error::cannot read scan path './missing'"* ]]
+  [ ! -s "$GOCOGNIT_CALLS" ]
+}
+
+@test "fails when a Go file is unreadable, even next to a readable one" {
+  mkdir "$SRC_DIR/locked"
+  echo 'package locked' > "$SRC_DIR/locked/two.go"
+  chmod 000 "$SRC_DIR/locked/two.go"
+  if [ -r "$SRC_DIR/locked/two.go" ]; then
+    skip "running as a user that can read mode 000 files"
+  fi
+  export SCAN_PATHS="./pkg ./locked/two.go"
+
+  run "$SCRIPT"
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"::error::cannot read every Go file"* ]]
   [ ! -s "$GOCOGNIT_CALLS" ]
 }
 
@@ -153,4 +182,22 @@ gocognit_files() {
 
   [ "$status" -ne 0 ]
   [[ "$output" == *"THRESHOLD is required"* ]]
+}
+
+# GUARD: fails when the pinned gocognit stops seeing recursion across the
+# files of one package. CI sets GOCOGNIT_REAL_BIN to the pinned binary.
+@test "real gocognit: recursion across files of one package is scored" {
+  if [ -z "${GOCOGNIT_REAL_BIN:-}" ]; then
+    [ -z "${CI:-}" ] || { echo "CI must set GOCOGNIT_REAL_BIN"; return 1; }
+    skip "GOCOGNIT_REAL_BIN not set"
+  fi
+  mkdir "$SRC_DIR/rec"
+  printf '%s\n' 'package rec' 'func Ping(n int) int { return Pong(n) }' > "$SRC_DIR/rec/ping.go"
+  printf '%s\n' 'package rec' 'func Pong(n int) int { return Ping(n) }' > "$SRC_DIR/rec/pong.go"
+  export GOCOGNIT_BIN="$GOCOGNIT_REAL_BIN" THRESHOLD=0 SCAN_PATHS="./rec"
+
+  run "$SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [[ "$(head -n1 "$GITHUB_STEP_SUMMARY")" == "### 2 functions with cognitive complexity > 0" ]]
 }
