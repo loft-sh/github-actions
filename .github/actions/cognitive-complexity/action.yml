@@ -9,9 +9,9 @@ inputs:
     description: "List functions with a cognitive complexity above this value."
     required: true
   ignore:
-    description: "Regexp of file paths to skip. The default skips tests, e2e suites, vendored and generated code."
+    description: "Regexp of file paths to skip before parsing. The default skips tests, e2e suites and vendored code. Files with the standard `Code generated ... DO NOT EDIT.` marker are always skipped."
     required: false
-    default: '(^|/)(vendor|third_party|e2e|e2e-next)/|_test\.go$|generated|\.pb\.go$'
+    default: '(^|/)(vendor|third_party|e2e|e2e-next)/|_test\.go$'
   scan-paths:
     description: "Space-separated files or directories to scan."
     required: false
@@ -39,11 +39,14 @@ runs:
       shell: bash
       env:
         GOCOGNIT_VERSION: ${{ inputs.gocognit-version }}
+        # Own install dir, so a caller's GOBIN outside PATH cannot hide the binary.
+        GOBIN: ${{ runner.temp }}/cognitive-complexity-bin
       run: go install "github.com/uudashr/gocognit/cmd/gocognit@${GOCOGNIT_VERSION}"
 
     - name: Report cognitive complexity
       shell: bash
       env:
+        GOCOGNIT_BIN: ${{ runner.temp }}/cognitive-complexity-bin/gocognit
         THRESHOLD: ${{ inputs.threshold }}
         IGNORE: ${{ inputs.ignore }}
         SCAN_PATHS: ${{ inputs.scan-paths }}

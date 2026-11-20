@@ -8,13 +8,13 @@ The action is report only. It does not fail the job on findings, so a repo can s
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-|      INPUT       |  TYPE  | REQUIRED |                                            DEFAULT                                            |                                               DESCRIPTION                                                |
-|------------------|--------|----------|-----------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------|
-| go-version-file  | string |  false   |                                          `"go.mod"`                                           |                       Path to go.mod (or go.work) passed to <br>actions/setup-go.                        |
-| gocognit-version | string |  false   |                                          `"v1.3.0"`                                           |                     Version of github.com/uudashr/gocognit/cmd/gocognit to install.                      |
-|      ignore      | string |  false   | `(^"\|"/)(vendor"\|"third_party"\|"e2e"\|"e2e-next)/"\|"_test\.go$"\|"generated"\|"\.pb\.go$` | Regexp of file paths to skip. <br>The default skips tests, e2e suites, <br>vendored and generated code.  |
-|    scan-paths    | string |  false   |                                             `"."`                                             |                              Space-separated files or directories to scan.                               |
-|    threshold     | string |   true   |                                                                                               |                    List functions with a cognitive complexity <br>above this value.                      |
+|      INPUT       |  TYPE  | REQUIRED |                               DEFAULT                               |                                                                                                DESCRIPTION                                                                                                |
+|------------------|--------|----------|---------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| go-version-file  | string |  false   |                             `"go.mod"`                              |                                                                       Path to go.mod (or go.work) passed to <br>actions/setup-go.                                                                         |
+| gocognit-version | string |  false   |                             `"v1.3.0"`                              |                                                                      Version of github.com/uudashr/gocognit/cmd/gocognit to install.                                                                      |
+|      ignore      | string |  false   | `(^"\|"/)(vendor"\|"third_party"\|"e2e"\|"e2e-next)/"\|"_test\.go$` | Regexp of file paths to skip <br>before parsing. The default skips tests, <br>e2e suites and vendored code. Files <br>with the standard `Code generated ... DO NOT EDIT.` marker are <br>always skipped.  |
+|    scan-paths    | string |  false   |                                `"."`                                |                                                                               Space-separated files or directories to scan.                                                                               |
+|    threshold     | string |   true   |                                                                     |                                                                     List functions with a cognitive complexity <br>above this value.                                                                      |
 
 <!-- AUTO-DOC-INPUT:END -->
 
