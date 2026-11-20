@@ -95,7 +95,7 @@ gocognit_files() {
 
   [ "$status" -eq 0 ]
   [ "$(head -n2 "$GOCOGNIT_CALLS")" = "$(printf '%s\n' -over 20)" ]
-  [ "$(gocognit_files)" = "$(printf '%s\n' ./cmd/main.go ./pkg/a.go)" ]
+  [ "$(gocognit_files)" = "$(printf '%s\n' cmd/main.go pkg/a.go)" ]
 }
 
 @test "empty IGNORE still skips generated files" {
@@ -104,7 +104,7 @@ gocognit_files() {
   run "$SCRIPT"
 
   [ "$status" -eq 0 ]
-  expected=$(printf '%s\n' ./cmd/main.go ./e2e/spec.go ./pkg/a.go ./pkg/a_test.go ./vendor/dep/broken.go | sort)
+  expected=$(printf '%s\n' cmd/main.go e2e/spec.go pkg/a.go pkg/a_test.go vendor/dep/broken.go | sort)
   [ "$(gocognit_files)" = "$expected" ]
 }
 
@@ -114,7 +114,26 @@ gocognit_files() {
   run "$SCRIPT"
 
   [ "$status" -eq 0 ]
-  [ "$(gocognit_files)" = "./cmd/main.go" ]
+  [ "$(gocognit_files)" = "cmd/main.go" ]
+}
+
+@test "overlapping scan paths pass each file once" {
+  export SCAN_PATHS=". ./pkg pkg"
+
+  run "$SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [ "$(gocognit_files)" = "$(printf '%s\n' cmd/main.go pkg/a.go)" ]
+}
+
+@test "fails when a scan path is missing, even next to a valid one" {
+  export SCAN_PATHS="./pkg ./missing"
+
+  run "$SCRIPT"
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"::error::cannot read every scan path in './pkg ./missing'"* ]]
+  [ ! -s "$GOCOGNIT_CALLS" ]
 }
 
 @test "fails when no Go files are left after exclusions" {

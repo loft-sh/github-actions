@@ -24,13 +24,22 @@ GENERATED_MARKER='^// Code generated .* DO NOT EDIT\.$'
 
 read -ra PATHS_ARR <<< "${SCAN_PATHS}"
 
+# Outside a pipe, so a missing or unreadable scan path fails the step.
+if ! FOUND=$(find "${PATHS_ARR[@]}" -type f -name '*.go'); then
+  echo "::error::cannot read every scan path in '${SCAN_PATHS}'"
+  exit 1
+fi
+
 # Filter before gocognit parses anything: its own -ignore only drops results,
 # so a parse error in an ignored file would still fail the run.
+# Dropping "./" before sort -u passes each file once when scan paths overlap.
 FILES=()
 while IFS= read -r file; do
   FILES+=("${file}")
 done < <(
-  find "${PATHS_ARR[@]}" -type f -name '*.go' \
+  printf '%s\n' "${FOUND}" \
+    | sed -e 's|^\./||' -e '/^$/d' \
+    | sort -u \
     | { if [ -n "${IGNORE}" ]; then grep -Ev -- "${IGNORE}" || true; else cat; fi; } \
     | tr '\n' '\0' \
     | xargs -0 -r grep -LE -- "${GENERATED_MARKER}" || true
