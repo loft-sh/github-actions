@@ -38,6 +38,13 @@ and the e2e report grade it like any other PR.
 (Commit authorship cannot tell the two apart: a bot backport keeps the original
 author.)
 
+An override is final for its head: a later e2e result or panel verdict on the same commit
+does not replace it (the gate skips the write and says so in the log).
+
+A `/test-e2e` run on a fork PR dispatches the base branch's workflow, so the run's own
+`head_sha` is the base commit. The gate reads the PR and the tested commit from the run-name
+instead, which the e2e workflow sets to `E2E for PR #<n> (<label>) at <sha>`.
+
 Comments on the PR:
 
 - `/qa-review override [<reason>]` from a member of an `override-teams` team (by

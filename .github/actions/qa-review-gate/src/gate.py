@@ -66,6 +66,9 @@ DEFAULT_TREES = f"{REPORT_ARTIFACT}="
 TREES_EXTERNAL_ID = "qa-review-gate:trees:"
 OPENER_EXTERNAL_ID = "qa-review-gate-provisional-opener"
 BOT_EXTERNAL_ID = "qa-review-gate:bot"
+OVERRIDE_EXTERNAL_ID = "qa-review-gate:override"
+# A /test-e2e dispatch run names the PR and the commit it tested in its run-name.
+DISPATCH_TITLE = re.compile(r"#(\d+)\b.*\b([0-9a-f]{40})\b")
 SHA_PREFIX = re.compile(r"^[0-9a-f]{7,40}$")
 COMPARE_FILE_CAP = 300  # the compare API lists at most this many files and says nothing when it cuts
 DEFAULT_BOTS = "loft-bot:backport/,vcluster-qa-bot[bot]:flake-fixer/"
@@ -256,8 +259,10 @@ def decide_comment(event, override_logins, check_name, test_check="qa-test-run",
                    f"Comment: {comment.get('html_url', '')}")
         return {
             "checks": [{"name": check_name, "head_sha": None, "conclusion": "success",
+                        "external_id": OVERRIDE_EXTERNAL_ID,
                         "title": f"QA review: overridden by @{author}", "summary": summary},
                        {"name": test_check, "head_sha": None, "conclusion": "success",
+                        "external_id": OVERRIDE_EXTERNAL_ID,
                         "title": f"QA test run: overridden by @{author}", "summary": summary}],
             "request_qa_review": False,
             "pr_number": issue.get("number"),
@@ -449,6 +454,17 @@ def run_pr_number(run, repo, token):
     return None
 
 
+def run_target(run, repo, token):
+    """(tested commit, PR number) of an e2e run. A /test-e2e run on a fork PR dispatches the
+    base branch's workflow, so `head_sha` is the base commit; the run-name carries the PR
+    and the commit it checked out (`E2E for PR #<n> (<label>) at <sha>`)."""
+    if run.get("event") == "workflow_dispatch":
+        named = DISPATCH_TITLE.search(run.get("display_title") or "")
+        if named:
+            return named.group(2), int(named.group(1))
+    return run.get("head_sha", ""), run_pr_number(run, repo, token)
+
+
 def pr_diff(repo, base_ref, head_sha, token):
     """The diff of the commits an e2e run tested: the PR base compared with the run's head
     (three dots, so from the merge base), in the `+++ b/<path>` shape added_specs reads."""
@@ -474,10 +490,10 @@ def collect_ci(event, repo, token, test_check="qa-test-run", trees=None):
     """Fetch the diff and the Ginkgo report(s) for a finished e2e run, then decide."""
     trees = trees or {REPORT_ARTIFACT: ""}
     run = event.get("workflow_run") or {}
-    head = run.get("head_sha", "")
     if run.get("conclusion") not in ("success", "failure"):
         return {"skip": f"e2e run ended {run.get('conclusion') or 'unknown'}, nothing to compare"}
-    pr_number = run_pr_number(run, repo, token)
+    head, pr_number = run_target(run, repo, token)
+    run = {**run, "head_sha": head}
     if pr_number is None:
         return {"skip": "e2e run is not for an open pull request"}
     try:
@@ -606,6 +622,13 @@ def reconcile_opener(repo, head, name, opener_id, token, run_url):
     })
 
 
+def overridden(repo, head, name, token):
+    """True when an authorized /qa-review override already completed `name` on `head`."""
+    runs = gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={name}&filter=all&per_page=100"],
+                  token).get("check_runs") or []
+    return any(run.get("external_id") == OVERRIDE_EXTERNAL_ID for run in runs)
+
+
 def apply(decision, repo, token, qa_team, run_url, panel_login="loft-bot"):
     """Create the check-run(s), hand the PR to its author or request the QA team when asked.
     Returns the head the checks landed on, or None when the comment binds to no verdict."""
@@ -619,6 +642,10 @@ def apply(decision, repo, token, qa_team, run_url, panel_login="loft-bot"):
                   "/qa-review override <sha> [<reason>])")
             return None
     for check in checks:
+        if check.get("external_id") != OVERRIDE_EXTERNAL_ID and overridden(repo, head, check["name"], token):
+            # A late e2e result or panel verdict must not undo an authorized override.
+            print(f"::notice::qa-review-gate: {check['name']} on {head[:7]} stays overridden")
+            continue
         if check["name"] == decision.get("opener_name"):
             existing = gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={check['name']}"], token)
             if existing.get("check_runs"):

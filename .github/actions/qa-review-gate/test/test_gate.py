@@ -370,6 +370,47 @@ def test_panel_verdict_on_a_backport_counts():
     assert gate.decide_review(event, "loft-bot", "qa-review")["check"]["conclusion"] == "failure"
 
 
+def test_run_target_reads_the_tested_commit_from_a_dispatch_run_name():
+    sha = "c" * 40
+    run = {"event": "workflow_dispatch", "head_sha": "d" * 40,
+           "display_title": f"E2E for PR #77 (platform && pr) at {sha}"}
+    assert gate.run_target(run, "o/r", "tok") == (sha, 77)
+
+
+def test_run_target_falls_back_to_the_run_head_and_its_pull_request(monkeypatch):
+    monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None: [{"number": 8, "state": "open"}])
+    assert gate.run_target({"event": "workflow_dispatch", "head_sha": HEAD, "display_title": "E2E"},
+                           "o/r", "tok") == (HEAD, 8)
+    assert gate.run_target({"event": "pull_request", "pull_requests": [{"number": 5}], "head_sha": HEAD,
+                            "display_title": f"E2E for PR #77 at {'c' * 40}"}, "o/r", "tok") == (HEAD, 5)
+
+
+def test_a_late_result_does_not_undo_an_override(monkeypatch):
+    calls = []
+    override = {"check_runs": [{"id": 3, "external_id": "qa-review-gate:override", "conclusion": "success"}]}
+    monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None:
+                        calls.append((args, payload)) or (override if "check-runs?" in args[0] else {}))
+    late = {"check": {"name": "qa-test-run", "head_sha": HEAD, "conclusion": "failure",
+                      "title": "QA test run: 1 new spec(s) did not run or pass", "summary": "s"},
+            "pr_number": 9, "request_qa_review": False}
+    assert gate.apply(late, "o/r", "tok", "", "https://run") == HEAD
+    assert not [p for a, p in calls if p]
+
+
+def test_an_override_writes_its_mark_and_still_posts_over_an_older_override(monkeypatch):
+    calls = []
+    older = {"check_runs": [{"id": 3, "external_id": "qa-review-gate:override", "conclusion": "success"}]}
+    monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None:
+                        calls.append((args, payload)) or (older if "check-runs?" in args[0] else {}))
+    decision = gate.decide_comment(comment_event("/qa-review override flaky env"), {"sowmyav27"}, "qa-review")
+    for check in decision["checks"]:
+        check["head_sha"] = HEAD
+    gate.apply(decision, "o/r", "tok", "", "https://run")
+    posted = [p for a, p in calls if p]
+    assert [p["name"] for p in posted] == ["qa-review", "qa-test-run"]
+    assert all(p["external_id"] == "qa-review-gate:override" for p in posted)
+
+
 def test_run_pr_number_prefers_the_event_then_the_head_commit():
     assert gate.run_pr_number({"pull_requests": [{"number": 5}]}, "o/r", "tok") == 5
     calls = []
@@ -615,9 +656,10 @@ def test_apply_posts_every_check_in_the_decision(monkeypatch):
     monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None: calls.append((args, payload)) or {})
     decision = gate.decide_bot(backport_event(), BOTS, "qa-review")
     gate.apply(decision, "loft-sh/loft-enterprise", "tok", "loft-sh/eng-qa", "https://run")
-    assert [p["name"] for a, p in calls] == ["qa-review", "qa-test-run"]
-    assert all(p["head_sha"] == HEAD and p["conclusion"] == "success" for a, p in calls)
-    assert all(p["external_id"] == "qa-review-gate:bot" for a, p in calls)
+    posted = [p for a, p in calls if p]
+    assert [p["name"] for p in posted] == ["qa-review", "qa-test-run"]
+    assert all(p["head_sha"] == HEAD and p["conclusion"] == "success" for p in posted)
+    assert all(p["external_id"] == "qa-review-gate:bot" for p in posted)
 
 
 def test_apply_posts_check_run_and_requests_team(monkeypatch):
