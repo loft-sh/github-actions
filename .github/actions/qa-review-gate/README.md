@@ -31,10 +31,8 @@ default `loft-bot` from `backport/` and `vcluster-qa-bot[bot]` from `flake-fixer
 was reviewed before it was opened: a backport on main, a flake-fixer PR by the QA
 agent itself. On its `opened` event (mode `bot`) both check-runs complete as success
 at once on the head the bot opened it with, so the repo's auto-approve workflow can
-approve it without waiting on the panel, and a third check-run `<check-name>-exempt`
-(`qa-review-exempt`) marks that head so the panel can skip it by name. Any later head,
-whoever pushed it, has no check-runs until the panel's verdict and the e2e report grade
-it like any other PR.
+approve it without waiting on the panel. Any later head, whoever pushed it, has no
+check-runs until the panel's verdict and the e2e report grade it like any other PR.
 (Commit authorship cannot tell the two apart: a bot backport keeps the original
 author.)
 

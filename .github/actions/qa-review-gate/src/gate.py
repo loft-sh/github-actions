@@ -123,17 +123,14 @@ def unescape_go(text):
 
 def bot_checks(pr, login, prefix, check_name, test_check):
     head = (pr.get("head") or {}).get("sha", "")
+    # The panel (ai-agents lead, Phase 1.6) matches the backport title verbatim.
     what = "automated backport" if prefix == "backport/" else f"{login} PR"
     summary = (f"PR opened by {login}: reviewed before it was opened, so the QA review is "
                f"skipped here.\n\nPR: {pr.get('html_url', '')}")
-    # The panel (ai-agents lead, Phase 1.6) skips the head that carries the exempt check-run;
-    # it reads check-runs by name only, so the exemption is its own check, not a title.
     return [{"name": check_name, "head_sha": head, "conclusion": "success",
              "title": f"QA review: {what}, skipped", "summary": summary},
             {"name": test_check, "head_sha": head, "conclusion": "success",
-             "title": f"QA test run: {what}, skipped", "summary": summary},
-            {"name": f"{check_name}-exempt", "head_sha": head, "conclusion": "success",
-             "title": f"QA review: {what}, exempt on this head", "summary": summary}]
+             "title": f"QA test run: {what}, skipped", "summary": summary}]
 
 
 def decide_bot(event, bots, check_name, test_check="qa-test-run"):

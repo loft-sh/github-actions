@@ -301,7 +301,7 @@ def flake_fixer_event():
 
 def test_flake_fixer_pr_gets_both_checks_green():
     decision = gate.decide_bot(flake_fixer_event(), BOTS, "qa-review")
-    assert [c["conclusion"] for c in decision["checks"]] == ["success", "success", "success"]
+    assert [c["conclusion"] for c in decision["checks"]] == ["success", "success"]
     assert "vcluster-qa-bot[bot] PR" in decision["checks"][0]["title"]
 
 
@@ -319,8 +319,7 @@ def test_parse_bots_rejects_a_half_entry(bad):
 def test_backport_by_the_bot_gets_both_checks_green():
     decision = gate.decide_bot(backport_event(), BOTS, "qa-review")
     names = [(c["name"], c["conclusion"], c["head_sha"]) for c in decision["checks"]]
-    assert names == [("qa-review", "success", HEAD), ("qa-test-run", "success", HEAD),
-                     ("qa-review-exempt", "success", HEAD)]
+    assert names == [("qa-review", "success", HEAD), ("qa-test-run", "success", HEAD)]
     assert decision["request_qa_review"] is False and decision["pr_number"] == 9444
 
 
@@ -552,15 +551,11 @@ def test_ci_jobs_of_one_head_are_serialized():
     assert "cancel-in-progress: false" in text
 
 
-def test_bot_backport_marks_the_opened_head_with_the_exempt_check():
+def test_bot_backport_keeps_the_title_the_panel_matches():
     decision = gate.decide_bot(backport_event(), BOTS, "qa-review")
     assert decision["checks"][0]["title"] == "QA review: automated backport, skipped"
-    exempt = decision["checks"][2]
-    assert exempt["name"] == "qa-review-exempt" and exempt["head_sha"] == HEAD
-    assert exempt["title"] == "QA review: automated backport, exempt on this head"
     flake = gate.decide_bot(flake_fixer_event(), BOTS, "qa-review")
     assert flake["checks"][0]["title"] == "QA review: vcluster-qa-bot[bot] PR, skipped"
-    assert flake["checks"][2]["name"] == "qa-review-exempt"
 
 
 def test_retry_reconciles_an_existing_provisional_opener(monkeypatch):
@@ -592,7 +587,7 @@ def test_apply_posts_every_check_in_the_decision(monkeypatch):
     monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None: calls.append((args, payload)) or {})
     decision = gate.decide_bot(backport_event(), BOTS, "qa-review")
     gate.apply(decision, "loft-sh/loft-enterprise", "tok", "loft-sh/eng-qa", "https://run")
-    assert [p["name"] for a, p in calls] == ["qa-review", "qa-test-run", "qa-review-exempt"]
+    assert [p["name"] for a, p in calls] == ["qa-review", "qa-test-run"]
     assert all(p["head_sha"] == HEAD and p["conclusion"] == "success" for a, p in calls)
 
 
