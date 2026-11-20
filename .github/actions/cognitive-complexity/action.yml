@@ -1,0 +1,53 @@
+name: 'cognitive-complexity'
+description: 'Report Go functions whose cognitive complexity (gocognit) is above a threshold, in the log and the job summary. Report only: never fails on findings.'
+branding:
+  icon: "activity"
+  color: "orange"
+
+inputs:
+  threshold:
+    description: "List functions with a cognitive complexity above this value."
+    required: true
+  ignore:
+    description: "Regexp of file paths to skip before parsing. The default skips tests, e2e suites and vendored code. Files with the standard `Code generated ... DO NOT EDIT.` marker are always skipped."
+    required: false
+    default: '(^|/)(vendor|third_party|e2e|e2e-next)/|_test\.go$'
+  scan-paths:
+    description: "Space-separated files or directories to scan."
+    required: false
+    default: "."
+  go-version-file:
+    description: "Path to go.mod (or go.work) passed to actions/setup-go."
+    required: false
+    default: go.mod
+  gocognit-version:
+    description: "Version of github.com/uudashr/gocognit/cmd/gocognit to install."
+    required: false
+    # renovate: datasource=go depName=github.com/uudashr/gocognit
+    default: v1.3.0
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version-file: ${{ inputs.go-version-file }}
+        cache: false
+
+    - name: Install gocognit
+      shell: bash
+      env:
+        GOCOGNIT_VERSION: ${{ inputs.gocognit-version }}
+        # Own install dir, so a caller's GOBIN outside PATH cannot hide the binary.
+        GOBIN: ${{ runner.temp }}/cognitive-complexity-bin
+      run: go install "github.com/uudashr/gocognit/cmd/gocognit@${GOCOGNIT_VERSION}"
+
+    - name: Report cognitive complexity
+      shell: bash
+      env:
+        GOCOGNIT_BIN: ${{ runner.temp }}/cognitive-complexity-bin/gocognit
+        THRESHOLD: ${{ inputs.threshold }}
+        IGNORE: ${{ inputs.ignore }}
+        SCAN_PATHS: ${{ inputs.scan-paths }}
+      run: ${{ github.action_path }}/run.sh

@@ -1213,6 +1213,16 @@ jobs:
 - The caller checks out its own source and controls `runs-on`/`timeout-minutes`/fork guarding at the job level.
 - A composite action cannot declare `timeout-minutes` on its steps; set `timeout-minutes` on the caller job (default ~10m is reasonable for most modules).
 
+### Cognitive Complexity
+
+Lists Go functions whose cognitive complexity (gocognit) is above a threshold,
+highest first, in the job log and the job summary. Report only: it never fails
+on findings.
+
+**Location:** `.github/actions/cognitive-complexity`
+
+**Usage:** see the [cognitive-complexity README](./.github/actions/cognitive-complexity/README.md).
+
 ### CVE Scan
 
 Scans a container image for CVEs with a swappable scanner backend (Snyk ships
