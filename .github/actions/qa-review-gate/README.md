@@ -30,9 +30,10 @@ A trusted bot PR (`bot-prs`: a login and the branch prefix it opens PRs from, by
 default `loft-bot` from `backport/` and `vcluster-qa-bot[bot]` from `flake-fixer/`)
 was reviewed before it was opened: a backport on main, a flake-fixer PR by the QA
 agent itself. On its `opened` event (mode `bot`) both check-runs complete as success
-at once on the head the bot opened it with, so the repo's auto-approve workflow can
-approve it without waiting on the panel. Any later head, whoever pushed it, has no
-check-runs until the panel's verdict and the e2e report grade it like any other PR.
+at once on every head the bot pushes (the opened head and its import fix), so the
+repo's auto-approve workflow can approve it without waiting on the panel. A head a
+person pushed has no check-runs until the panel's verdict and the e2e report grade it
+like any other PR.
 (Commit authorship cannot tell the two apart: a bot backport keeps the original
 author.)
 
@@ -107,7 +108,7 @@ checkout and the event filter.
 
 |      INPUT      |  TYPE  | REQUIRED |                                DEFAULT                                |                                                                                                DESCRIPTION                                                                                                 |
 |-----------------|--------|----------|-----------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-|     bot-prs     | string |  false   |       `"loft-bot:backport/,vcluster-qa-bot[bot]:flake-fixer/"`        |                                          Comma-separated login:branch-prefix pairs whose PRs pass <br>both check-runs on the head the <br>bot opened them with.                                            |
+|     bot-prs     | string |  false   |       `"loft-bot:backport/,vcluster-qa-bot[bot]:flake-fixer/"`        |                                          Comma-separated login:branch-prefix pairs whose PRs pass <br>both check-runs on every head the <br>bot itself pushed.                                            |
 |   check-name    | string |  false   |                             `"qa-review"`                             |                                                                                       Name of the verdict check-run.                                                                                       |
 |  github-token   | string |  false   |                        `"${{ github.token }}"`                        |                                      Token for gh. The calling job <br>must grant checks: write and pull-requests: <br>write; ci mode also needs actions: <br>read.                                        |
 |      mode       | string |   true   |                                                                       |                "review" (pull_request_review event), "comment" (issue_comment event), "ci" (workflow_run event of the e2e workflow) <br>or "bot" (pull_request event of a trusted bot PR).                 |

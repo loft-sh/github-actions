@@ -329,11 +329,16 @@ def test_backport_needs_the_bot_author_and_the_backport_branch(pr):
 
 
 @pytest.mark.parametrize("event", [backport_event(sender="roehrijn"),
-                                   backport_event(action="synchronize"),
-                                   backport_event(action="synchronize", sender="roehrijn")])
-def test_only_the_head_the_bot_opened_gets_a_free_pass(event):
+                                   backport_event(action="synchronize", sender="roehrijn"),
+                                   backport_event(action="reopened")])
+def test_only_a_head_the_bot_pushed_gets_a_free_pass(event):
     decision = gate.decide_bot(event, BOTS, "qa-review")
-    assert decision == {"skip": "only the head the bot opened the PR with passes; the panel reviews this head"}
+    assert decision == {"skip": "only a head the bot pushed passes; the panel reviews this head"}
+
+
+def test_the_bots_own_later_push_gets_a_free_pass_too():
+    decision = gate.decide_bot(backport_event(action="synchronize"), BOTS, "qa-review")
+    assert [c["conclusion"] for c in decision["checks"]] == ["success", "success"]
 
 
 def test_panel_verdict_on_a_backport_counts():

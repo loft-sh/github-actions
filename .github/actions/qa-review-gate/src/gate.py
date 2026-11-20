@@ -134,14 +134,15 @@ def bot_checks(pr, login, prefix, check_name, test_check):
 
 
 def decide_bot(event, bots, check_name, test_check="qa-test-run"):
-    """Map a pull_request event to the two green check-runs, or to a skip."""
+    """Map a pull_request event to the two green check-runs, or to a skip.
+    The bot pushes again after opening (backport-fix-imports), so its own synchronize counts."""
     pr = event.get("pull_request") or {}
     login = bot_pr(pr, bots)
     if login is None:
         return {"skip": f"PR by {(pr.get('user') or {}).get('login') or 'unknown'} is not a trusted bot PR"}
     pusher = (event.get("sender") or {}).get("login", "")
-    if event.get("action") != "opened" or pusher != login:
-        return {"skip": "only the head the bot opened the PR with passes; the panel reviews this head"}
+    if event.get("action") not in ("opened", "synchronize") or pusher != login:
+        return {"skip": "only a head the bot pushed passes; the panel reviews this head"}
     return {"checks": bot_checks(pr, login, bots[login], check_name, test_check), "request_qa_review": False,
             "pr_number": pr.get("number")}
 

@@ -10,8 +10,8 @@ description: |
   handles `/qa-review override [<reason>]` (override teams and logins only) and `/qa-review human`
   (members); `ci` mode runs when the e2e workflow finishes and checks every spec the PR
   adds against the run's Ginkgo report, completing `qa-test-run`. `bot` mode runs on
-  `pull_request` events and completes both check-runs as success when a trusted bot
-  opened the PR from its branch prefix (an automated backport, a flake-fixer PR).
+  `pull_request` events and completes both check-runs as success on a head a trusted
+  bot pushed to its own PR (an automated backport, a flake-fixer PR).
 author: "vCluster Labs"
 branding:
   icon: "shield"
@@ -38,7 +38,7 @@ inputs:
     required: false
     default: ''
   bot-prs:
-    description: 'Comma-separated login:branch-prefix pairs whose PRs pass both check-runs on the head the bot opened them with.'
+    description: 'Comma-separated login:branch-prefix pairs whose PRs pass both check-runs on every head the bot itself pushed.'
     required: false
     default: 'loft-bot:backport/,vcluster-qa-bot[bot]:flake-fixer/'
   qa-team:

@@ -23,7 +23,7 @@ on:
         type: string
         default: 'loft-bot'
       bot-prs:
-        description: 'Comma-separated login:branch-prefix pairs whose PRs pass both check-runs on the head the bot opened them with.'
+        description: 'Comma-separated login:branch-prefix pairs whose PRs pass both check-runs on every head the bot itself pushed.'
         type: string
         default: 'loft-bot:backport/,vcluster-qa-bot[bot]:flake-fixer/'
       qa-team:
