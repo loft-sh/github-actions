@@ -5,7 +5,8 @@ name: QA review gate
 # and qa-test-run check-runs (both green at once on a trusted bot PR and on a PR
 # outside the QA-owned paths). The caller filters reviews and comments (the panel's
 # login, the /qa-review command) in its job `if:` so most of those spin no runner,
-# lets every pull_request event through, and passes a read:org token as
+# lets every pull_request event through, runs the sweep over open PRs on
+# workflow_dispatch before the ruleset goes live, and passes a read:org token as
 # `org-token` so /qa-review override can check team membership.
 
 on:
@@ -75,7 +76,7 @@ jobs:
           sparse-checkout: .github/actions/qa-review-gate
       - uses: ./.github/actions/qa-review-gate
         with:
-          mode: ${{ github.event_name == 'pull_request_review' && 'review' || github.event_name == 'workflow_run' && 'ci' || github.event_name == 'pull_request' && 'bot' || 'comment' }}
+          mode: ${{ github.event_name == 'pull_request_review' && 'review' || github.event_name == 'workflow_run' && 'ci' || github.event_name == 'pull_request' && 'bot' || github.event_name == 'workflow_dispatch' && 'sweep' || 'comment' }}
           override-logins: ${{ inputs.override-logins }}
           override-teams: ${{ inputs.override-teams }}
           org-token: ${{ secrets.org-token }} # zizmor: ignore[secrets-outside-env] -- PAT passed through workflow_call; the action maps it to env itself

@@ -200,11 +200,49 @@ def decide_bot(event, bots, check_name, test_check="qa-test-run", passed_before=
     pusher = (event.get("sender") or {}).get("login", "")
     action = event.get("action")
     if action not in ("opened", "synchronize") or pusher != login:
-        return {"skip": "only a head the bot pushed passes; the panel reviews this head"}
+        return {"skip": "only a head the bot pushed passes; the panel reviews this head", "final": True}
     if action == "synchronize" and not passed_before(event.get("before") or ""):
-        return {"skip": "the bot built on a head the gate had not passed; the panel reviews this head"}
+        return {"skip": "the bot built on a head the gate had not passed; the panel reviews this head",
+                "final": True}
     return {"checks": bot_checks(pr, login, bots[login], check_name, test_check), "request_qa_review": False,
             "pr_number": pr.get("number")}
+
+
+def decide_pull_request(event, repo, token, bots, qa_paths, check_name, test_check="qa-test-run",
+                        passed_before=lambda sha: False):
+    """A pull_request event: the trusted-bot pass first, then the QA-scope pass for any other
+    PR. A trusted bot PR whose exemption was declined goes to review whatever it touches."""
+    decision = decide_bot(event, bots, check_name, test_check, passed_before=passed_before)
+    if "skip" not in decision or decision.get("final"):
+        return decision
+    print(f"::notice::qa-review-gate: {decision['skip']}")
+    return decide_scope(event, repo, token, qa_paths, check_name, test_check)
+
+
+def sweep(repo, token, bots, qa_paths, check_name, test_check, qa_team, run_url, panel_login):
+    """Before the ruleset goes live: give every open PR whose head has no `check_name` yet the
+    QA-scope pass it would have got on `opened`. Trusted bot PRs are left alone (their opened
+    head got its checks then; a later head needs review), and so is every PR that touches a
+    QA-owned path: those need the panel or an override."""
+    pages = gh_api([f"repos/{repo}/pulls?state=open&per_page=100", "--paginate", "--slurp"], token)
+    done = 0
+    for pr in (pr for page in pages for pr in page):
+        head = (pr.get("head") or {}).get("sha", "")
+        if gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={check_name}"], token).get("check_runs"):
+            continue
+        if bot_pr(pr, bots):
+            print(f"::notice::qa-review-gate: #{pr.get('number')} is a trusted bot PR on a later head; a person reviews it")
+            continue
+        event = {"action": "opened", "pull_request": pr, "sender": pr.get("user") or {}}
+        decision = decide_scope(event, repo, token, qa_paths, check_name, test_check)
+        if "skip" in decision:
+            print(f"::notice::qa-review-gate: #{pr.get('number')}: {decision['skip']}")
+            continue
+        apply(decision, repo, token, qa_team, run_url, panel_login)
+        done += 1
+        print(f"qa-review-gate: #{pr.get('number')} {head[:7]} passed as out of scope")
+    print(f"qa-review-gate: sweep passed {done} open PR(s) as out of scope")
+    return done
 
 
 def decide_review(event, panel_login, check_name):
@@ -795,16 +833,18 @@ def main():
         decision = collect_ci(event, repo, token, test_check,
                               parse_trees(os.environ.get("INPUT_REPORT_TREES", DEFAULT_TREES)))
     elif mode == "bot":
-        decision = decide_bot(event, parse_bots(os.environ.get("INPUT_BOT_PRS", DEFAULT_BOTS)),
-                              check_name, test_check,
-                              passed_before=lambda sha: wait_for_bot_pass(repo, sha, check_name, token))
-        if "skip" in decision:
-            print(f"::notice::qa-review-gate: {decision['skip']}")
-            decision = decide_scope(event, repo, token,
-                                    parse_paths(os.environ.get("INPUT_QA_PATHS", DEFAULT_QA_PATHS)),
-                                    check_name, test_check)
+        decision = decide_pull_request(event, repo, token,
+                                       parse_bots(os.environ.get("INPUT_BOT_PRS", DEFAULT_BOTS)),
+                                       parse_paths(os.environ.get("INPUT_QA_PATHS", DEFAULT_QA_PATHS)),
+                                       check_name, test_check,
+                                       passed_before=lambda sha: wait_for_bot_pass(repo, sha, check_name, token))
+    elif mode == "sweep":
+        sweep(repo, token, parse_bots(os.environ.get("INPUT_BOT_PRS", DEFAULT_BOTS)),
+              parse_paths(os.environ.get("INPUT_QA_PATHS", DEFAULT_QA_PATHS)), check_name, test_check,
+              os.environ.get("INPUT_QA_TEAM", ""), os.environ.get("INPUT_RUN_URL", ""), panel_login)
+        return 0
     else:
-        raise GateError(f"INPUT_MODE must be review, comment, ci or bot, got {mode!r}")
+        raise GateError(f"INPUT_MODE must be review, comment, ci, bot or sweep, got {mode!r}")
     if "skip" in decision:
         print(f"::notice::qa-review-gate: {decision['skip']}")
         return 0

@@ -405,6 +405,62 @@ def test_main_bot_mode_falls_through_to_the_scope_check(tmp_path, monkeypatch, c
     assert "is not a trusted bot PR" in capsys.readouterr().out
 
 
+def test_main_sweep_mode(tmp_path, monkeypatch, capsys):
+    event_file = tmp_path / "event.json"
+    event_file.write_text("{}")
+    for key, value in {"INPUT_MODE": "sweep", "GITHUB_EVENT_PATH": str(event_file), "GITHUB_REPOSITORY": "o/r",
+                       "INPUT_GITHUB_TOKEN": "tok"}.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None: [[]] if "pulls?" in args[0] else {})
+    assert gate.main() == 0
+    assert "sweep passed 0 open PR(s)" in capsys.readouterr().out
+
+
+def test_a_declined_bot_exemption_never_takes_the_scope_pass(monkeypatch):
+    # A person's conflict fix on a docs-only backport: no QA path, still no pass.
+    event = backport_event(sender="roehrijn", action="synchronize")
+    monkeypatch.setattr(gate, "gh_api", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no lookup")))
+    decision = gate.decide_pull_request(event, "o/r", "tok", BOTS, QA_PATHS, "qa-review")
+    assert decision == {"skip": "only a head the bot pushed passes; the panel reviews this head", "final": True}
+
+
+def test_a_bot_push_on_an_unpassed_head_never_takes_the_scope_pass(monkeypatch):
+    event = backport_event(action="synchronize")
+    monkeypatch.setattr(gate, "gh_api", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no lookup")))
+    decision = gate.decide_pull_request(event, "o/r", "tok", BOTS, QA_PATHS, "qa-review",
+                                        passed_before=lambda sha: False)
+    assert decision["final"] and "had not passed" in decision["skip"]
+
+
+def test_sweep_passes_only_open_prs_without_a_check_that_touch_no_qa_path(monkeypatch, capsys):
+    prs = [
+        {"number": 1, "user": {"login": "roehrijn"}, "head": {"sha": "1" * 40, "ref": "a"}, "base": {"sha": BASE}},
+        {"number": 2, "user": {"login": "roehrijn"}, "head": {"sha": "2" * 40, "ref": "b"}, "base": {"sha": BASE}},
+        {"number": 3, "user": {"login": "roehrijn"}, "head": {"sha": "3" * 40, "ref": "c"}, "base": {"sha": BASE}},
+        {"number": 4, "user": {"login": "loft-bot"}, "head": {"sha": "4" * 40, "ref": "backport/x"}, "base": {"sha": BASE}},
+    ]
+    files = {"1" * 40: ["docs/a.md"], "2" * 40: ["pkg/b.go"], "3" * 40: ["e2e/c.go"], "4" * 40: ["docs/d.md"]}
+    writes = []
+    def api(args, token, payload=None):
+        if args[0].startswith("repos/o/r/pulls?"):
+            return [prs]
+        if "check-runs?" in args[0]:
+            return {"check_runs": [{"id": 9}] if ("1" * 40) in args[0] else []}
+        if "/compare/" in args[0]:
+            head = args[0].split("...")[1]
+            return {"files": [{"filename": f} for f in files[head]]}
+        if payload is not None:
+            writes.append(payload)
+            return {"id": 1}
+        return {}
+    monkeypatch.setattr(gate, "gh_api", api)
+    assert gate.sweep("o/r", "tok", BOTS, QA_PATHS, "qa-review", "qa-test-run", "", "https://run", "loft-bot") == 1
+    assert [(w["name"], w["head_sha"]) for w in writes] == [("qa-review", "2" * 40), ("qa-test-run", "2" * 40)]
+    out = capsys.readouterr().out
+    assert "#3: 1 changed file(s) under a QA-owned path" in out
+    assert "#4 is a trusted bot PR on a later head" in out
+
+
 def test_backport_by_the_bot_gets_both_checks_green():
     decision = gate.decide_bot(backport_event(), BOTS, "qa-review")
     names = [(c["name"], c["conclusion"], c["head_sha"]) for c in decision["checks"]]
@@ -422,7 +478,7 @@ def test_backport_needs_the_bot_author_and_the_backport_branch(pr):
                                    backport_event(action="reopened")])
 def test_only_a_head_the_bot_pushed_gets_a_free_pass(event):
     decision = gate.decide_bot(event, BOTS, "qa-review")
-    assert decision == {"skip": "only a head the bot pushed passes; the panel reviews this head"}
+    assert decision == {"skip": "only a head the bot pushed passes; the panel reviews this head", "final": True}
 
 
 def test_the_bots_own_later_push_gets_a_free_pass_when_it_builds_on_a_passed_head():
@@ -436,7 +492,8 @@ def test_the_bots_own_later_push_gets_a_free_pass_when_it_builds_on_a_passed_hea
 def test_a_bot_push_on_a_head_the_gate_did_not_pass_goes_to_the_panel():
     decision = gate.decide_bot(backport_event(action="synchronize"), BOTS, "qa-review",
                                passed_before=lambda sha: False)
-    assert decision == {"skip": "the bot built on a head the gate had not passed; the panel reviews this head"}
+    assert decision == {"skip": "the bot built on a head the gate had not passed; the panel reviews this head",
+                        "final": True}
 
 
 def test_bot_passed_reads_this_gates_own_bot_check(monkeypatch):
