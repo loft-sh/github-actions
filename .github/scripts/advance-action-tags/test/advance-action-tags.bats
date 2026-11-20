@@ -104,11 +104,15 @@ write_event() {
 }
 
 @test "major-release label fails without moving any tag" {
+  export GITHUB_OUTPUT="$TEST_ROOT/output"
   write_event '[{"name":"major-release"}]'
   run bash -c "cd '$WORK' && bash '$SCRIPT'"
   [ "$status" -ne 0 ]
   [[ "$output" == *"declares major-release"* ]]
   [ "$(git --git-dir="$REMOTE" rev-parse refs/tags/example-action/v4)" = "$OLD_V4_OID" ]
+  # A tag failure keeps the tag-recovery comment.
+  run grep -q 'failure-reason=' "$GITHUB_OUTPUT"
+  [ "$status" -ne 0 ]
 }
 
 @test "action with no published major tag is skipped" {
@@ -431,21 +435,26 @@ dispatched_release() {
 
 @test "a release build that fails after the dispatch fails the run" {
   publish_binary_tag
+  export GITHUB_OUTPUT="$TEST_ROOT/output"
   export GH_WATCH_STATUS=1 GH_RUN_CONCLUSION=failure
   merge_files ".github/actions/linear-release-sync/action.yml=name: lrs"
   run bash -c "cd '$WORK' && bash '$SCRIPT'"
   [ "$status" -ne 0 ]
   [[ "$output" == *"Release build 4242 for linear-release-sync/v1 ended failure"* ]]
   [[ "$output" == *"gh workflow run release-linear-release-sync.yaml"* ]]
+  # The PR comment points at the release build, not at the tags.
+  grep -qx 'failure-reason=release-build' "$GITHUB_OUTPUT"
 }
 
 @test "a release build still running at the watch deadline fails the run" {
+  # The deadline needs coreutils timeout, as on the CI runner; stock macOS has none.
+  command -v timeout >/dev/null || skip "needs coreutils timeout"
   publish_binary_tag
   export GH_WATCH_SLEEP=5 ADVANCE_TAGS_WATCH_TIMEOUT=1 GH_RUN_CONCLUSION=""
   merge_files ".github/actions/linear-release-sync/action.yml=name: lrs"
   run bash -c "cd '$WORK' && bash '$SCRIPT'"
   [ "$status" -ne 0 ]
-  [[ "$output" == *"Release build 4242 for linear-release-sync/v1 ended still running"* ]]
+  [[ "$output" == *"Release build 4242 for linear-release-sync/v1 did not finish"* ]]
 }
 
 @test "a release build that never appears fails the run" {
@@ -506,12 +515,14 @@ dispatched_release() {
 
 @test "a failed release dispatch fails the run and names the manual rebuild" {
   publish_binary_tag
+  export GITHUB_OUTPUT="$TEST_ROOT/output"
   export GH_DISPATCH_FAIL=1
   merge_files ".github/actions/linear-release-sync/action.yml=name: lrs"
   run bash -c "cd '$WORK' && bash '$SCRIPT'"
   [ "$status" -ne 0 ]
   [ "$(tag_commit linear-release-sync/v1)" = "$MERGE_SHA" ]
   [[ "$output" == *"gh workflow run release-linear-release-sync.yaml"* ]]
+  grep -qx 'failure-reason=release-build' "$GITHUB_OUTPUT"
 }
 
 @test "a binary action with no major tag is skipped without a release build" {

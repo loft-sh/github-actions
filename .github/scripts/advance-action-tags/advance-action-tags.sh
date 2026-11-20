@@ -304,7 +304,16 @@ for tag in "${!dispatch_ids[@]}"; do
     echo "Release build $run_id for $tag was cancelled for a newer build; $tag has moved to $current."
     continue
   fi
-  echo "::error::Release build $run_id for $tag ended ${conclusion:-still running}, so its release binary may be stale. $remedy" >&2
+  if [[ -n "$conclusion" ]]; then
+    echo "::error::Release build $run_id for $tag ended $conclusion, so its release binary may be stale. $remedy" >&2
+  else
+    echo "::error::Release build $run_id for $tag did not finish before the deadline, so its release binary may be stale. $remedy" >&2
+  fi
   release_failed=1
 done
-[[ -z "$release_failed" ]] || exit 1
+# Every tag moved by now, so the PR comment points at the release build
+# rather than at tag recovery.
+if [[ -n "$release_failed" ]]; then
+  [[ -z "${GITHUB_OUTPUT:-}" ]] || echo "failure-reason=release-build" >> "$GITHUB_OUTPUT"
+  exit 1
+fi
