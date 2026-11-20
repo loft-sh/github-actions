@@ -26,6 +26,11 @@ already: success when the PR adds no e2e spec, action_required naming the new
 specs otherwise, until an e2e run reports (below). So both check-runs can be
 required without blocking a PR that adds no spec.
 
+Callers trigger `bot` mode on `pull_request_target`, not `pull_request`: a `pull_request`
+run for a fork PR gets a read-only token and could not write the check-runs, and the gate
+never checks out PR code (it checks out its own action only), which is what makes the
+target trigger safe here.
+
 A PR that touches no QA-owned path (`qa-paths`, by default the top-level `e2e*/` trees and
 `staging/github.com/loft-sh/vcluster/e2e/`, the same paths the dispatcher starts the panel
 on) gets both check-runs as success at once, titled "out of scope", on every push. The files
