@@ -30,10 +30,11 @@ A trusted bot PR (`bot-prs`: a login and the branch prefix it opens PRs from, by
 default `loft-bot` from `backport/` and `vcluster-qa-bot[bot]` from `flake-fixer/`)
 was reviewed before it was opened: a backport on main, a flake-fixer PR by the QA
 agent itself. On its `opened` event (mode `bot`) both check-runs complete as success
-at once on every head the bot pushes (the opened head and its import fix), so the
-repo's auto-approve workflow can approve it without waiting on the panel. A head a
-person pushed has no check-runs until the panel's verdict and the e2e report grade it
-like any other PR.
+at once on the opened head and on the bot's import fix, when that fix builds on a head
+this gate already passed (the bot commits on the branch tip, so a person's edit
+underneath would ride along), and the repo's auto-approve workflow can approve it
+without waiting on the panel. Any other head has no check-runs until the panel's verdict
+and the e2e report grade it like any other PR.
 (Commit authorship cannot tell the two apart: a bot backport keeps the original
 author.)
 

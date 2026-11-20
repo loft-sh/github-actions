@@ -43,7 +43,10 @@ def comment_event(body, login="sowmyav27", association="MEMBER", on_pr=True):
 
 
 def backport_event(pr=None, sender="loft-bot", action="opened"):
-    return {"action": action, "pull_request": pr or backport_pr(), "sender": {"login": sender}}
+    event = {"action": action, "pull_request": pr or backport_pr(), "sender": {"login": sender}}
+    if action == "synchronize":
+        event["before"] = "b" * 40
+    return event
 
 
 def panel_review(head=HEAD, submitted_at="2026-11-18T09:00:00Z", login="loft-bot"):
@@ -336,9 +339,29 @@ def test_only_a_head_the_bot_pushed_gets_a_free_pass(event):
     assert decision == {"skip": "only a head the bot pushed passes; the panel reviews this head"}
 
 
-def test_the_bots_own_later_push_gets_a_free_pass_too():
-    decision = gate.decide_bot(backport_event(action="synchronize"), BOTS, "qa-review")
+def test_the_bots_own_later_push_gets_a_free_pass_when_it_builds_on_a_passed_head():
+    asked = []
+    decision = gate.decide_bot(backport_event(action="synchronize"), BOTS, "qa-review",
+                               passed_before=lambda sha: asked.append(sha) or True)
     assert [c["conclusion"] for c in decision["checks"]] == ["success", "success"]
+    assert asked == ["b" * 40]
+
+
+def test_a_bot_push_on_a_head_the_gate_did_not_pass_goes_to_the_panel():
+    decision = gate.decide_bot(backport_event(action="synchronize"), BOTS, "qa-review",
+                               passed_before=lambda sha: False)
+    assert decision == {"skip": "the bot built on a head the gate had not passed; the panel reviews this head"}
+
+
+def test_bot_passed_reads_this_gates_own_bot_check(monkeypatch):
+    runs = {"check_runs": [{"external_id": "qa-review-gate:bot", "conclusion": "success"}]}
+    monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None: runs)
+    assert gate.bot_passed("o/r", "a" * 40, "qa-review", "tok") is True
+    runs["check_runs"] = [{"external_id": None, "conclusion": "success"},
+                          {"external_id": "qa-review-gate:bot", "conclusion": "failure"}]
+    assert gate.bot_passed("o/r", "a" * 40, "qa-review", "tok") is False
+    runs["check_runs"] = []
+    assert gate.bot_passed("o/r", "a" * 40, "qa-review", "tok") is False
 
 
 def test_panel_verdict_on_a_backport_counts():
@@ -594,6 +617,7 @@ def test_apply_posts_every_check_in_the_decision(monkeypatch):
     gate.apply(decision, "loft-sh/loft-enterprise", "tok", "loft-sh/eng-qa", "https://run")
     assert [p["name"] for a, p in calls] == ["qa-review", "qa-test-run"]
     assert all(p["head_sha"] == HEAD and p["conclusion"] == "success" for a, p in calls)
+    assert all(p["external_id"] == "qa-review-gate:bot" for a, p in calls)
 
 
 def test_apply_posts_check_run_and_requests_team(monkeypatch):

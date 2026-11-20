@@ -65,6 +65,7 @@ REPORT_ARTIFACT = "ginkgo-report"
 DEFAULT_TREES = f"{REPORT_ARTIFACT}="
 TREES_EXTERNAL_ID = "qa-review-gate:trees:"
 OPENER_EXTERNAL_ID = "qa-review-gate-provisional-opener"
+BOT_EXTERNAL_ID = "qa-review-gate:bot"
 SHA_PREFIX = re.compile(r"^[0-9a-f]{7,40}$")
 COMPARE_FILE_CAP = 300  # the compare API lists at most this many files and says nothing when it cuts
 DEFAULT_BOTS = "loft-bot:backport/,vcluster-qa-bot[bot]:flake-fixer/"
@@ -127,22 +128,33 @@ def bot_checks(pr, login, prefix, check_name, test_check):
     what = "automated backport" if prefix == "backport/" else f"{login} PR"
     summary = (f"PR opened by {login}: reviewed before it was opened, so the QA review is "
                f"skipped here.\n\nPR: {pr.get('html_url', '')}")
-    return [{"name": check_name, "head_sha": head, "conclusion": "success",
+    return [{"name": check_name, "head_sha": head, "conclusion": "success", "external_id": BOT_EXTERNAL_ID,
              "title": f"QA review: {what}, skipped", "summary": summary},
-            {"name": test_check, "head_sha": head, "conclusion": "success",
+            {"name": test_check, "head_sha": head, "conclusion": "success", "external_id": BOT_EXTERNAL_ID,
              "title": f"QA test run: {what}, skipped", "summary": summary}]
 
 
-def decide_bot(event, bots, check_name, test_check="qa-test-run"):
+def bot_passed(repo, sha, check_name, token):
+    """True when this gate's bot mode already passed `sha` (the chain a bot push may extend)."""
+    runs = gh_api([f"repos/{repo}/commits/{sha}/check-runs?check_name={check_name}&filter=all&per_page=100"],
+                  token).get("check_runs") or []
+    return any(r.get("external_id") == BOT_EXTERNAL_ID and r.get("conclusion") == "success" for r in runs)
+
+
+def decide_bot(event, bots, check_name, test_check="qa-test-run", passed_before=lambda sha: False):
     """Map a pull_request event to the two green check-runs, or to a skip.
-    The bot pushes again after opening (backport-fix-imports), so its own synchronize counts."""
+    The bot pushes again after opening (backport-fix-imports) on top of the branch tip, so its
+    synchronize counts only when the tip it built on (`before`) was itself a bot-passed head."""
     pr = event.get("pull_request") or {}
     login = bot_pr(pr, bots)
     if login is None:
         return {"skip": f"PR by {(pr.get('user') or {}).get('login') or 'unknown'} is not a trusted bot PR"}
     pusher = (event.get("sender") or {}).get("login", "")
-    if event.get("action") not in ("opened", "synchronize") or pusher != login:
+    action = event.get("action")
+    if action not in ("opened", "synchronize") or pusher != login:
         return {"skip": "only a head the bot pushed passes; the panel reviews this head"}
+    if action == "synchronize" and not passed_before(event.get("before") or ""):
+        return {"skip": "the bot built on a head the gate had not passed; the panel reviews this head"}
     return {"checks": bot_checks(pr, login, bots[login], check_name, test_check), "request_qa_review": False,
             "pr_number": pr.get("number")}
 
@@ -669,7 +681,8 @@ def main():
                               parse_trees(os.environ.get("INPUT_REPORT_TREES", DEFAULT_TREES)))
     elif mode == "bot":
         decision = decide_bot(event, parse_bots(os.environ.get("INPUT_BOT_PRS", DEFAULT_BOTS)),
-                              check_name, test_check)
+                              check_name, test_check,
+                              passed_before=lambda sha: bot_passed(repo, sha, check_name, token))
     else:
         raise GateError(f"INPUT_MODE must be review, comment, ci or bot, got {mode!r}")
     if "skip" in decision:
