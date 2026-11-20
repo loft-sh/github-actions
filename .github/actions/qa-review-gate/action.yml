@@ -10,8 +10,12 @@ description: |
   handles `/qa-review override [<reason>]` (override teams and logins only) and `/qa-review human`
   (members); `ci` mode runs when the e2e workflow finishes and checks every spec the PR
   adds against the run's Ginkgo report, completing `qa-test-run`. `bot` mode runs on
-  `pull_request` events and completes both check-runs as success when a trusted bot
-  opened the PR from its branch prefix (an automated backport, a flake-fixer PR).
+  `pull_request` events and completes both check-runs as success on a head a trusted
+  bot pushed to its own PR (an automated backport, a flake-fixer PR) and on any PR
+  that touches no QA-owned path (the panel never runs there); a trusted bot PR whose
+  exemption was declined goes to review whatever it touches. `sweep` mode
+  (workflow_dispatch) gives every open PR whose head has no check yet the same QA-scope
+  pass, for the PRs already open when the ruleset goes live.
 author: "vCluster Labs"
 branding:
   icon: "shield"
@@ -19,7 +23,7 @@ branding:
 
 inputs:
   mode:
-    description: '"review" (pull_request_review event), "comment" (issue_comment event), "ci" (workflow_run event of the e2e workflow) or "bot" (pull_request event of a trusted bot PR).'
+    description: '"review" (pull_request_review event), "comment" (issue_comment event), "ci" (workflow_run event of the e2e workflow), "bot" (pull_request event: trusted bot PRs and the QA-scope check) or "sweep" (workflow_dispatch: the QA-scope check for every open PR without a check).'
     required: true
   panel-login:
     description: 'Login that posts the panel review. Reviews by anyone else are ignored.'
@@ -38,9 +42,13 @@ inputs:
     required: false
     default: ''
   bot-prs:
-    description: 'Comma-separated login:branch-prefix pairs whose PRs pass both check-runs on the head the bot opened them with.'
+    description: 'Comma-separated login:branch-prefix pairs whose PRs pass both check-runs on every head the bot itself pushed.'
     required: false
     default: 'loft-bot:backport/,vcluster-qa-bot[bot]:flake-fixer/'
+  qa-paths:
+    description: 'Comma-separated glob patterns of the QA-owned paths the review panel runs on. A PR that touches none of them passes both check-runs as out of scope.'
+    required: false
+    default: 'e2e*/**,staging/github.com/loft-sh/vcluster/e2e/**'
   qa-team:
     description: 'org/slug of the team asked for a review on /qa-review human. Empty skips the request.'
     required: false
@@ -76,6 +84,7 @@ runs:
         INPUT_ORG_TOKEN: ${{ inputs.org-token }}
         INPUT_BOT_PRS: ${{ inputs.bot-prs }}
         INPUT_QA_TEAM: ${{ inputs.qa-team }}
+        INPUT_QA_PATHS: ${{ inputs.qa-paths }}
         INPUT_CHECK_NAME: ${{ inputs.check-name }}
         INPUT_TEST_CHECK_NAME: ${{ inputs.test-check-name }}
         INPUT_REPORT_TREES: ${{ inputs.report-trees }}

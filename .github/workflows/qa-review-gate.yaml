@@ -2,9 +2,13 @@ name: QA review gate
 
 # Wraps the qa-review-gate composite action for the production repos: picks the
 # mode from the event, sparse-checks-out the action, and publishes the qa-review
-# and qa-test-run check-runs (both green at once on a trusted bot PR). The caller
-# filters the events (the panel's login, the /qa-review command, the bot logins)
-# in its job `if:` so most events spin no runner, and passes a read:org token as
+# and qa-test-run check-runs (both green at once on a trusted bot PR and on a PR
+# outside the QA-owned paths). The caller filters reviews and comments (the panel's
+# login, the /qa-review command) in its job `if:` so most of those spin no runner,
+# lets every pull_request_target event through (pull_request would give a fork PR a
+# read-only token, so no check-run could be written for it; the gate checks out
+# nothing from the PR), runs the sweep over open PRs on
+# workflow_dispatch before the ruleset goes live, and passes a read:org token as
 # `org-token` so /qa-review override can check team membership.
 
 on:
@@ -23,9 +27,13 @@ on:
         type: string
         default: 'loft-bot'
       bot-prs:
-        description: 'Comma-separated login:branch-prefix pairs whose PRs pass both check-runs on the head the bot opened them with.'
+        description: 'Comma-separated login:branch-prefix pairs whose PRs pass both check-runs on every head the bot itself pushed.'
         type: string
         default: 'loft-bot:backport/,vcluster-qa-bot[bot]:flake-fixer/'
+      qa-paths:
+        description: 'Comma-separated glob patterns of the QA-owned paths the review panel runs on. A PR that touches none of them passes both check-runs as out of scope.'
+        type: string
+        default: 'e2e*/**,staging/github.com/loft-sh/vcluster/e2e/**'
       qa-team:
         description: 'org/slug of the team asked for a review on /qa-review human.'
         type: string
@@ -51,8 +59,10 @@ jobs:
   gate:
     runs-on: ubuntu-latest
     # The Pro and OSS e2e runs of one head each read the recorded tree results, then write.
+    # A /test-e2e dispatch on a fork PR runs the base branch, so its head_sha is the base
+    # commit shared by every such run; its title names the PR and tested commit instead.
     concurrency:
-      group: qa-review-gate-${{ github.event.workflow_run.head_sha || github.run_id }}
+      group: qa-review-gate-${{ github.event.workflow_run.event == 'workflow_dispatch' && github.event.workflow_run.display_title || github.event.workflow_run.head_sha || github.run_id }}
       cancel-in-progress: false
     permissions:
       checks: write
@@ -70,13 +80,14 @@ jobs:
           sparse-checkout: .github/actions/qa-review-gate
       - uses: ./.github/actions/qa-review-gate
         with:
-          mode: ${{ github.event_name == 'pull_request_review' && 'review' || github.event_name == 'workflow_run' && 'ci' || github.event_name == 'pull_request' && 'bot' || 'comment' }}
+          mode: ${{ github.event_name == 'pull_request_review' && 'review' || github.event_name == 'workflow_run' && 'ci' || (github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && 'bot' || github.event_name == 'workflow_dispatch' && 'sweep' || 'comment' }}
           override-logins: ${{ inputs.override-logins }}
           override-teams: ${{ inputs.override-teams }}
           org-token: ${{ secrets.org-token }} # zizmor: ignore[secrets-outside-env] -- PAT passed through workflow_call; the action maps it to env itself
           panel-login: ${{ inputs.panel-login }}
           bot-prs: ${{ inputs.bot-prs }}
           qa-team: ${{ inputs.qa-team }}
+          qa-paths: ${{ inputs.qa-paths }}
           check-name: ${{ inputs.check-name }}
           test-check-name: ${{ inputs.test-check-name }}
           report-trees: ${{ inputs.report-trees }}
