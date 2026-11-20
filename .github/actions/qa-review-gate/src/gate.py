@@ -219,29 +219,47 @@ def decide_pull_request(event, repo, token, bots, qa_paths, check_name, test_che
     return decide_scope(event, repo, token, qa_paths, check_name, test_check)
 
 
+def missing_checks(repo, head, names, token):
+    """The check names in `names` that have no completed run on `head`."""
+    missing = []
+    for name in names:
+        runs = gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={name}"], token).get("check_runs") or []
+        if not any(run.get("status") == "completed" for run in runs):
+            missing.append(name)
+    return missing
+
+
 def sweep(repo, token, bots, qa_paths, check_name, test_check, qa_team, run_url, panel_login):
-    """Before the ruleset goes live: give every open PR whose head has no `check_name` yet the
-    QA-scope pass it would have got on `opened`. Trusted bot PRs are left alone (their opened
-    head got its checks then; a later head needs review), and so is every PR that touches a
-    QA-owned path: those need the panel or an override."""
+    """Before the ruleset goes live: give every open PR whose head lacks either check the
+    QA-scope pass it would have got on `opened`, creating only what is missing (a retry after a
+    partial write completes it). Trusted bot PRs are left alone (their opened head got its
+    checks then; a later head needs review), and so is every PR that touches a QA-owned path:
+    those need the panel or an override. Every head still missing a check is listed at the end."""
     pages = gh_api([f"repos/{repo}/pulls?state=open&per_page=100", "--paginate", "--slurp"], token)
-    done = 0
+    done, stuck = 0, []
     for pr in (pr for page in pages for pr in page):
-        head = (pr.get("head") or {}).get("sha", "")
-        if gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={check_name}"], token).get("check_runs"):
+        number, head = pr.get("number"), (pr.get("head") or {}).get("sha", "")
+        missing = missing_checks(repo, head, (check_name, test_check), token)
+        if not missing:
             continue
         if bot_pr(pr, bots):
-            print(f"::notice::qa-review-gate: #{pr.get('number')} is a trusted bot PR on a later head; a person reviews it")
+            print(f"::notice::qa-review-gate: #{number} is a trusted bot PR on a later head; a person reviews it")
+            stuck.append((number, head, missing))
             continue
         event = {"action": "opened", "pull_request": pr, "sender": pr.get("user") or {}}
         decision = decide_scope(event, repo, token, qa_paths, check_name, test_check)
         if "skip" in decision:
-            print(f"::notice::qa-review-gate: #{pr.get('number')}: {decision['skip']}")
+            print(f"::notice::qa-review-gate: #{number}: {decision['skip']}")
+            stuck.append((number, head, missing))
             continue
+        decision["checks"] = [c for c in decision["checks"] if c["name"] in missing]
         apply(decision, repo, token, qa_team, run_url, panel_login)
         done += 1
-        print(f"qa-review-gate: #{pr.get('number')} {head[:7]} passed as out of scope")
-    print(f"qa-review-gate: sweep passed {done} open PR(s) as out of scope")
+        print(f"qa-review-gate: #{number} {head[:7]} passed as out of scope ({', '.join(missing)} created)")
+    for number, head, missing in stuck:
+        print(f"::warning::qa-review-gate: #{number} {head[:7]} still lacks {', '.join(missing)}; "
+              "needs /vcluster-review from a person or /qa-review override before the ruleset is enabled")
+    print(f"qa-review-gate: sweep passed {done} open PR(s) as out of scope, {len(stuck)} still lack a check")
     return done
 
 
@@ -696,13 +714,17 @@ def reconcile_opener(repo, head, name, opener_id, token, run_url):
                 and run.get("external_id") != OPENER_EXTERNAL_ID]
     if not previous:
         return
-    result = max(previous, key=lambda run: run["id"])
+    # An override outranks any result, however new; a result only fills an empty opener.
+    overrides = [run for run in previous if run.get("external_id") == OVERRIDE_EXTERNAL_ID]
+    result = max(overrides or previous, key=lambda run: run["id"])
     output = result.get("output") or {}
     gh_api([f"repos/{repo}/check-runs/{opener_id}", "-X", "PATCH"], token, {
         "status": "completed", "conclusion": result["conclusion"],
         "details_url": result.get("details_url") or run_url,
         "output": {"title": output.get("title", ""), "summary": output.get("summary", "")},
     })
+    # An override may have landed after the read above; put it back on top.
+    reconcile_override(repo, head, name, token, run_url)
 
 
 def override_run(repo, head, name, token):

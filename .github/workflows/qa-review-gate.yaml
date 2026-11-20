@@ -59,8 +59,10 @@ jobs:
   gate:
     runs-on: ubuntu-latest
     # The Pro and OSS e2e runs of one head each read the recorded tree results, then write.
+    # A /test-e2e dispatch on a fork PR runs the base branch, so its head_sha is the base
+    # commit shared by every such run; its title names the PR and tested commit instead.
     concurrency:
-      group: qa-review-gate-${{ github.event.workflow_run.head_sha || github.run_id }}
+      group: qa-review-gate-${{ github.event.workflow_run.event == 'workflow_dispatch' && github.event.workflow_run.display_title || github.event.workflow_run.head_sha || github.run_id }}
       cancel-in-progress: false
     permissions:
       checks: write

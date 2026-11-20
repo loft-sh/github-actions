@@ -445,7 +445,7 @@ def test_sweep_passes_only_open_prs_without_a_check_that_touch_no_qa_path(monkey
         if args[0].startswith("repos/o/r/pulls?"):
             return [prs]
         if "check-runs?" in args[0]:
-            return {"check_runs": [{"id": 9}] if ("1" * 40) in args[0] else []}
+            return {"check_runs": [{"id": 9, "status": "completed"}] if ("1" * 40) in args[0] else []}
         if "/compare/" in args[0]:
             head = args[0].split("...")[1]
             return {"files": [{"filename": f} for f in files[head]]}
@@ -459,6 +459,46 @@ def test_sweep_passes_only_open_prs_without_a_check_that_touch_no_qa_path(monkey
     out = capsys.readouterr().out
     assert "#3: 1 changed file(s) under a QA-owned path" in out
     assert "#4 is a trusted bot PR on a later head" in out
+    assert "::warning::qa-review-gate: #3 3333333 still lacks qa-review, qa-test-run" in out
+    assert "::warning::qa-review-gate: #4 4444444 still lacks qa-review, qa-test-run" in out
+    assert "2 still lack a check" in out
+
+
+def test_sweep_retry_creates_only_the_missing_check(monkeypatch):
+    # The first sweep wrote qa-review, then the qa-test-run POST failed.
+    pr = {"number": 5, "user": {"login": "roehrijn"}, "head": {"sha": "5" * 40, "ref": "a"}, "base": {"sha": BASE}}
+    writes = []
+    def api(args, token, payload=None):
+        if args[0].startswith("repos/o/r/pulls?"):
+            return [[pr]]
+        if "check-runs?" in args[0]:
+            return {"check_runs": [{"id": 9, "status": "completed"}] if "check_name=qa-review" in args[0] else []}
+        if "/compare/" in args[0]:
+            return {"files": [{"filename": "docs/a.md"}]}
+        if payload is not None:
+            writes.append(payload)
+            return {"id": 1}
+        return {}
+    monkeypatch.setattr(gate, "gh_api", api)
+    assert gate.sweep("o/r", "tok", BOTS, QA_PATHS, "qa-review", "qa-test-run", "", "https://run", "loft-bot") == 1
+    assert [w["name"] for w in writes] == ["qa-test-run"]
+
+
+def test_opener_reconciliation_prefers_an_override_over_a_newer_failure(monkeypatch):
+    calls = []
+    runs = {"check_runs": [
+        {"id": 3, "status": "completed", "external_id": "qa-review-gate:override", "conclusion": "success",
+         "details_url": "https://c", "output": {"title": "QA test run: overridden by @sowmyav27", "summary": "why"}},
+        {"id": 20, "status": "completed", "conclusion": "failure", "output": {"title": "E2E failed", "summary": "d"}},
+        {"id": 21, "status": "completed", "conclusion": "action_required", "external_id": gate.OPENER_EXTERNAL_ID},
+    ]}
+    monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None:
+                        calls.append((args, payload)) or (runs if "check-runs?" in args[0] else {}))
+    gate.reconcile_opener("o/r", HEAD, "qa-test-run", None, "tok", "https://run")
+    patches = [(a, p) for a, p in calls if p]
+    assert patches[0][0] == ["repos/o/r/check-runs/21", "-X", "PATCH"]
+    assert patches[0][1]["conclusion"] == "success"
+    assert patches[0][1]["output"]["title"] == "QA test run: overridden by @sowmyav27"
 
 
 def test_backport_by_the_bot_gets_both_checks_green():
@@ -834,7 +874,8 @@ def test_ci_run_without_a_report_asks_a_person_only_for_the_tree_still_missing(m
 
 def test_ci_jobs_of_one_head_are_serialized():
     text = pathlib.Path(__file__).parents[3].joinpath("workflows", "qa-review-gate.yaml").read_text()
-    assert "group: qa-review-gate-${{ github.event.workflow_run.head_sha || github.run_id }}" in text
+    assert ("group: qa-review-gate-${{ github.event.workflow_run.event == 'workflow_dispatch' && "
+            "github.event.workflow_run.display_title || github.event.workflow_run.head_sha || github.run_id }}") in text
     assert "cancel-in-progress: false" in text
 
 

@@ -44,9 +44,11 @@ bumps and every code-only change. A PR that does touch one of those paths gets n
 this step: the panel's verdict and the e2e report grade it.
 
 Before the ruleset goes live, run the caller's `workflow_dispatch` once (mode `sweep`): every
-open PR whose head has no `qa-review` yet gets the same QA-scope pass it would have got on
-`opened`. Trusted bot PRs and PRs that touch a QA-owned path are listed in the log and left
-for the panel or an override.
+open PR whose head lacks `qa-review` or `qa-test-run` gets the same QA-scope pass it would
+have got on `opened`, and only the missing check is created, so a retry after a partial write
+completes the pair. The log ends with a warning per head still lacking a check (trusted bot
+PRs on a later head, PRs that touch a QA-owned path): those need `/vcluster-review` from a
+person or `/qa-review override` before the ruleset is enabled.
 
 A trusted bot PR (`bot-prs`: a login and the branch prefix it opens PRs from, by
 default `loft-bot` from `backport/` and `vcluster-qa-bot[bot]` from `flake-fixer/`)
