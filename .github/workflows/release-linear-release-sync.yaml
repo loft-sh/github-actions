@@ -1,4 +1,6 @@
 name: Release linear-release-sync
+# The dispatch id lets "Advance action tags" find the run it started.
+run-name: Release ${{ inputs.tag || github.ref_name }}${{ inputs.dispatch-id && format(' [{0}]', inputs.dispatch-id) || '' }}
 
 on:
   push:
@@ -9,9 +11,19 @@ on:
       tag:
         description: 'Release tag (e.g. linear-release-sync/v1)'
         required: true
+      dispatch-id:
+        description: 'Set by Advance action tags to find this run; leave empty'
+        required: false
+        default: ''
 
 permissions:
   contents: write
+
+# One build per tag at a time. A newer pending build replaces an older pending
+# one, so the last build to publish is the newest, and none is cut off midway.
+concurrency:
+  group: release-linear-release-sync-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -41,7 +53,33 @@ jobs:
         working-directory: .github/actions/linear-release-sync
         run: sha256sum linear-release-sync-linux-amd64 > linear-release-sync-linux-amd64.sha256
 
+      # A build started for the tag itself builds the tag's commit at the time
+      # it started. When the tag has moved on since, a newer build is queued
+      # behind this one, so this one must not overwrite the release. A build
+      # dispatched from a branch is a deliberate manual rebuild and always
+      # publishes.
+      - name: Check the tag still points at this build
+        id: current
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          [[ "$GITHUB_REF" == "refs/tags/$TAG" ]] || exit 0
+          ref=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq '.object.type + " " + .object.sha') \
+            || { echo "::error::Could not read $TAG to check this build is current"; exit 1; }
+          read -r type sha <<< "$ref"
+          # An annotated tag points at a tag object; compare its commit.
+          if [[ "$type" == tag ]]; then
+            sha=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$sha" --jq '.object.sha') \
+              || { echo "::error::Could not read the commit of $TAG"; exit 1; }
+          fi
+          if [[ "$sha" != "$GITHUB_SHA" ]]; then
+            echo "::notice::$TAG moved from $GITHUB_SHA to $sha; a newer build publishes it, so this one does not."
+            echo "superseded=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Create or update release
+        if: steps.current.outputs.superseded != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
