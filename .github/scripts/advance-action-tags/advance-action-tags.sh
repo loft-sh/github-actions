@@ -186,6 +186,10 @@ while [[ ${#queue[@]} -gt 0 ]]; do
 done
 
 declare -a tags_to_move=()
+# Binary actions whose release binary is rebuilt below: every changed one
+# whose tag is at the merge commit after this run, moved now or by an earlier
+# attempt. A re-run after a failed build then rebuilds instead of going green.
+declare -a release_tags=()
 declare -A old_shas=()
 declare -A old_ref_oids=()
 # The walk above checked every action here: each has an action.yml at the
@@ -211,6 +215,7 @@ for action in "${!changed_actions[@]}"; do
   old_sha=$(git rev-parse "$best_tag^{commit}") || fail "Could not resolve existing tag $best_tag"
   old_ref_oid=$(git rev-parse "refs/tags/$best_tag") || fail "Could not resolve tag ref $best_tag"
   git merge-base --is-ancestor "$old_sha" "$merge_sha" || fail "Tag $best_tag ($old_sha) is not an ancestor of merge commit $merge_sha; refusing a backwards or unrelated move"
+  [[ -z "${release_workflows[$action]:-}" ]] || release_tags+=("$best_tag")
   if [[ "$old_sha" != "$merge_sha" ]]; then
     tags_to_move+=("$best_tag")
     old_shas["$best_tag"]=$old_sha
@@ -236,22 +241,70 @@ for tag in "${tags_to_move[@]}"; do
   echo "Advanced $tag from ${old_shas[$tag]} to $merge_sha."
 done
 
-# Rebuild the binary of every binary action whose tag moved. Each dispatch is
-# tried even when an earlier one fails, so one failure does not leave the
-# other binaries stale.
-dispatch_failed=""
-for tag in "${tags_to_move[@]}"; do
-  workflow=${release_workflows[${tag%/v*}]:-}
-  [[ -n "$workflow" ]] || continue
-  if gh workflow run "$workflow" --repo "$GITHUB_REPOSITORY" --ref "$tag" -f "tag=$tag"; then
-    echo "Started $workflow for $tag to rebuild its release binary."
-  else
-    echo "::error::Moved $tag but could not start $workflow, so its release binary is stale. Run: gh workflow run $workflow --repo $GITHUB_REPOSITORY --ref $tag -f tag=$tag" >&2
-    dispatch_failed=1
-  fi
-done
-[[ -z "$dispatch_failed" ]] || exit 1
-
 if [[ ${#tags_to_move[@]} -eq 0 ]]; then
   echo "No existing action tags need advancing for PR #$pr_number."
 fi
+
+# Rebuild the binary of every binary action in release_tags, then wait for
+# each build, so a build that fails fails this run and reaches the PR comment.
+# Every dispatch is tried before failing, so one failure does not leave the
+# other binaries stale. Each dispatch carries an id the release workflow puts
+# in its run name, which is how its run is found: back-to-back merges dispatch
+# the same tag within seconds, so the tag and the time are not enough.
+release_failed=""
+declare -A dispatch_ids=()
+for tag in "${release_tags[@]}"; do
+  action=${tag%/v*}
+  workflow=${release_workflows[$action]:-}
+  [[ -n "$workflow" ]] || continue
+  dispatch_id="${GITHUB_RUN_ID:-0}.${GITHUB_RUN_ATTEMPT:-1}-$action"
+  if gh workflow run "$workflow" --repo "$GITHUB_REPOSITORY" --ref "$tag" -f "tag=$tag" -f "dispatch-id=$dispatch_id"; then
+    echo "Started $workflow for $tag to rebuild its release binary."
+    dispatch_ids["$tag"]=$dispatch_id
+  else
+    echo "::error::Moved $tag but could not start $workflow, so its release binary is stale. Run: gh workflow run $workflow --repo $GITHUB_REPOSITORY --ref $tag -f tag=$tag" >&2
+    release_failed=1
+  fi
+done
+
+for tag in "${!dispatch_ids[@]}"; do
+  workflow=${release_workflows[${tag%/v*}]}
+  dispatch_id=${dispatch_ids[$tag]}
+  remedy="Run: gh workflow run $workflow --repo $GITHUB_REPOSITORY --ref $tag -f tag=$tag"
+  run_id=""
+  # A dispatched run takes a few seconds to be listed.
+  for attempt in 1 2 3 4 5 6; do
+    run_id=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "$workflow" --event workflow_dispatch --limit 50 \
+      --json databaseId,displayTitle --jq "[.[] | select(.displayTitle | endswith(\"[$dispatch_id]\"))][0].databaseId // empty") || run_id=""
+    [[ -z "$run_id" && "$attempt" -lt 6 ]] || break
+    sleep "${ADVANCE_TAGS_LOOKUP_DELAY:-10}"
+  done
+  if [[ -z "$run_id" ]]; then
+    echo "::error::Could not find the $workflow run started for $tag (dispatch id $dispatch_id), so its release binary may be stale. $remedy" >&2
+    release_failed=1
+    continue
+  fi
+  echo "Waiting for release build $run_id for $tag."
+  # A deadline keeps a stuck build from holding this job, and so the PR
+  # comment, for hours. timeout is in coreutils on the runner; without it the
+  # watch is unbounded.
+  watch=(gh run watch "$run_id" --repo "$GITHUB_REPOSITORY" --exit-status --interval "${ADVANCE_TAGS_WATCH_INTERVAL:-15}")
+  if command -v timeout >/dev/null; then
+    watch=(timeout "${ADVANCE_TAGS_WATCH_TIMEOUT:-1800}" "${watch[@]}")
+  fi
+  if "${watch[@]}" >/dev/null; then
+    echo "Release build $run_id for $tag succeeded."
+    continue
+  fi
+  conclusion=$(gh run view "$run_id" --repo "$GITHUB_REPOSITORY" --json conclusion --jq .conclusion) || conclusion=unknown
+  # The release workflow lets only the newest pending build of a tag run, so a
+  # build cancelled after a later merge moved the tag was replaced, not lost.
+  current=$(git_authenticated ls-remote origin "refs/tags/$tag" "refs/tags/$tag^{}" | awk '{sha=$1} END {print sha}') || current=""
+  if [[ "$conclusion" == cancelled && -n "$current" && "$current" != "$merge_sha" ]]; then
+    echo "Release build $run_id for $tag was cancelled for a newer build; $tag has moved to $current."
+    continue
+  fi
+  echo "::error::Release build $run_id for $tag ended ${conclusion:-still running}, so its release binary may be stale. $remedy" >&2
+  release_failed=1
+done
+[[ -z "$release_failed" ]] || exit 1

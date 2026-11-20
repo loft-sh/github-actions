@@ -37,6 +37,9 @@ setup() {
   export GITHUB_REPOSITORY=owner/repo
   export ADVANCE_TAGS_LOOKUP_DELAY=0
   export GH_DISPATCHES="$TEST_ROOT/dispatches"
+  export GH_RUN_LISTS="$TEST_ROOT/run-lists"
+  export GITHUB_RUN_ID=99 GITHUB_RUN_ATTEMPT=1
+  export ADVANCE_TAGS_WATCH_INTERVAL=0
   export PATH="$MOCK:$PATH"
   cat > "$MOCK/gh" <<'MOCK_GH'
 #!/usr/bin/env bash
@@ -58,6 +61,24 @@ case "$*" in
   "workflow run "*)
     echo "$*" >> "$GH_DISPATCHES"
     [[ -z "${GH_DISPATCH_FAIL:-}" ]] || exit 1 ;;
+  "run list "*)
+    echo "$*" >> "$GH_RUN_LISTS"
+    # Apply the script's own --jq filter to two runs, one from another
+    # dispatch, so a wrong id or filter finds nothing.
+    filter=""
+    while [[ $# -gt 0 ]]; do
+      [[ "$1" != --jq ]] || filter=$2
+      shift
+    done
+    runs='[{"databaseId":1111,"displayTitle":"Release linear-release-sync/v1 [98.1-linear-release-sync]"},{"databaseId":4242,"displayTitle":"Release linear-release-sync/v1 [99.1-linear-release-sync]"}]'
+    [[ -z "${GH_RUN_MISSING:-}" ]] || runs='[{"databaseId":1111,"displayTitle":"Release linear-release-sync/v1 [98.1-linear-release-sync]"}]'
+    jq -r "$filter" <<< "$runs" ;;
+  "run watch 4242 "*)
+    # A newer merge can move the tag while this build waits in its queue.
+    [[ -z "${GH_WATCH_MOVES_TAG:-}" ]] || git --git-dir="$REMOTE" update-ref refs/tags/linear-release-sync/v1 "$GH_WATCH_MOVES_TAG"
+    [[ -z "${GH_WATCH_SLEEP:-}" ]] || sleep "$GH_WATCH_SLEEP"
+    exit "${GH_WATCH_STATUS:-0}" ;;
+  "run view 4242 "*) echo "${GH_RUN_CONCLUSION-failure}" ;;
   *) exit 2 ;;
 esac
 MOCK_GH
@@ -370,7 +391,7 @@ publish_binary_tag() {
 }
 
 dispatched_release() {
-  grep -qxF "workflow run release-linear-release-sync.yaml --repo owner/repo --ref linear-release-sync/v1 -f tag=linear-release-sync/v1" "$GH_DISPATCHES"
+  grep -qxF "workflow run release-linear-release-sync.yaml --repo owner/repo --ref linear-release-sync/v1 -f tag=linear-release-sync/v1 -f dispatch-id=99.1-linear-release-sync" "$GH_DISPATCHES"
 }
 
 @test "a binary action advances its tag and dispatches its release build" {
@@ -383,6 +404,79 @@ dispatched_release() {
   dispatched_release
   [ "$(wc -l < "$GH_DISPATCHES")" -eq 1 ]
   [[ "$output" == *"Started release-linear-release-sync.yaml for linear-release-sync/v1"* ]]
+  # The run is found by the dispatch id in its title, not by time.
+  grep -qF '99.1-linear-release-sync' "$GH_RUN_LISTS"
+  [[ "$output" == *"Release build 4242 for linear-release-sync/v1 succeeded"* ]]
+}
+
+@test "a re-run after the tag already moved still rebuilds the release binary" {
+  merge_files ".github/actions/linear-release-sync/action.yml=name: lrs"
+  # The first attempt moved the tag, then its build failed.
+  git -C "$WORK" tag linear-release-sync/v1 "$MERGE_SHA"
+  git -C "$WORK" push origin refs/tags/linear-release-sync/v1 >/dev/null 2>&1
+  run bash -c "cd '$WORK' && bash '$SCRIPT'"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"Advanced linear-release-sync/v1"* ]]
+  dispatched_release
+  [[ "$output" == *"Release build 4242 for linear-release-sync/v1 succeeded"* ]]
+}
+
+@test "a run that moves no tag says so" {
+  git -C "$WORK" tag -f example-action/v4 "$MERGE_SHA" >/dev/null
+  git -C "$WORK" push --force origin refs/tags/example-action/v4 >/dev/null 2>&1
+  run bash -c "cd '$WORK' && bash '$SCRIPT'"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"No existing action tags need advancing for PR #17."* ]]
+}
+
+@test "a release build that fails after the dispatch fails the run" {
+  publish_binary_tag
+  export GH_WATCH_STATUS=1 GH_RUN_CONCLUSION=failure
+  merge_files ".github/actions/linear-release-sync/action.yml=name: lrs"
+  run bash -c "cd '$WORK' && bash '$SCRIPT'"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Release build 4242 for linear-release-sync/v1 ended failure"* ]]
+  [[ "$output" == *"gh workflow run release-linear-release-sync.yaml"* ]]
+}
+
+@test "a release build still running at the watch deadline fails the run" {
+  publish_binary_tag
+  export GH_WATCH_SLEEP=5 ADVANCE_TAGS_WATCH_TIMEOUT=1 GH_RUN_CONCLUSION=""
+  merge_files ".github/actions/linear-release-sync/action.yml=name: lrs"
+  run bash -c "cd '$WORK' && bash '$SCRIPT'"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Release build 4242 for linear-release-sync/v1 ended still running"* ]]
+}
+
+@test "a release build that never appears fails the run" {
+  publish_binary_tag
+  export GH_RUN_MISSING=1
+  merge_files ".github/actions/linear-release-sync/action.yml=name: lrs"
+  run bash -c "cd '$WORK' && bash '$SCRIPT'"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Could not find the release-linear-release-sync.yaml run"* ]]
+}
+
+@test "a release build cancelled for a newer build of a moved tag is not a failure" {
+  publish_binary_tag
+  merge_files ".github/actions/linear-release-sync/action.yml=name: lrs"
+  first_merge=$MERGE_SHA
+  merge_files ".github/actions/linear-release-sync/src/main.go=package main"
+  export REMOTE GH_WATCH_MOVES_TAG=$MERGE_SHA GH_WATCH_STATUS=1 GH_RUN_CONCLUSION=cancelled
+  MERGE_SHA=$first_merge write_event '[]'
+  export GH_FILES_JSON='[[{"filename":".github/actions/linear-release-sync/action.yml"}]]'
+  run bash -c "cd '$WORK' && bash '$SCRIPT'"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"was cancelled for a newer build"* ]]
+}
+
+@test "a cancelled release build of the current tag fails the run" {
+  publish_binary_tag
+  export GH_WATCH_STATUS=1 GH_RUN_CONCLUSION=cancelled
+  merge_files ".github/actions/linear-release-sync/action.yml=name: lrs"
+  run bash -c "cd '$WORK' && bash '$SCRIPT'"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"ended cancelled"* ]]
 }
 
 @test "a binary action changed with another action advances both tags" {

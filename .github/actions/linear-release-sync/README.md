@@ -89,7 +89,7 @@ This triggers the workflow automatically via `on: push: tags`.
 
 **Update an existing version** (e.g. rebuild `v1` after a source change):
 
-After a pull request that changes this action merges to `main`, the "Advance action tags" workflow moves `linear-release-sync/v1` to the merge commit and dispatches `release-linear-release-sync.yaml` against it. Nothing else is needed.
+After a pull request that changes this action merges to `main`, the "Advance action tags" workflow moves `linear-release-sync/v1` to the merge commit, dispatches `release-linear-release-sync.yaml` against it and waits for the build. Nothing else is needed. Builds of the tag run one at a time, and a build whose commit is no longer the tag's commit does not upload, so the newest build always publishes last.
 
 To rebuild by hand, either move the tag yourself, which triggers the workflow through `on: push: tags` for the tag's commit:
 

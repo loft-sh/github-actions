@@ -145,9 +145,11 @@ then leaves every tag alone, comments on the pull request, and fails so the
 maintainer can cut and publish the new major. For an action whose callers
 download a binary from its GitHub release, such as `linear-release-sync`, the
 workflow also dispatches that action's release workflow against the moved tag,
-which rebuilds the binary. A tag pushed by the workflow's own token starts no
-workflow, so the dispatch is what rebuilds it; if the dispatch fails, the run
-fails and names the command to rebuild by hand. Actions without a
+which rebuilds the binary, and waits for that build. A tag pushed by the
+workflow's own token starts no workflow, so the dispatch is what rebuilds it.
+If the dispatch or the build fails, the run fails and names the command to
+rebuild by hand. A build replaced by a newer build of the same tag is not a
+failure. Actions without a
 tag are skipped; create their first tag manually. Review callers and requirements
 before merging, since a compatible update reaches callers automatically.
 

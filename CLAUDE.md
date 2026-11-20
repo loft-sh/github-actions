@@ -75,7 +75,8 @@ removed or renamed action and fails the workflow. Before
 merging a change that needs a new major, add the
 `major-release` label. The workflow then fails and comments without moving any
 tags. For `linear-release-sync`, whose callers download a binary release, it
-moves the tag and then dispatches `release-linear-release-sync.yaml` against it.
+moves the tag, dispatches `release-linear-release-sync.yaml` against it and
+waits for the build to finish.
 Create the first tag of a new action manually. For manual recovery:
 
 ```bash
