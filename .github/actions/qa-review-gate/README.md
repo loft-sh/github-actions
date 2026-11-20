@@ -28,7 +28,10 @@ required without blocking a PR that adds no spec.
 
 A PR that touches no QA-owned path (`qa-paths`, by default the top-level `e2e*/` trees and
 `staging/github.com/loft-sh/vcluster/e2e/`, the same paths the dispatcher starts the panel
-on) gets both check-runs as success at once, titled "out of scope", on every push. The panel
+on) gets both check-runs as success at once, titled "out of scope", on every push. The files
+are those between the event's own base and head SHAs, never the PR's current files, so a
+queued or rerun job cannot grade an older SHA by a newer diff; a compare that may be cut
+leaves the decision to the panel or an override. The panel
 never runs on such a PR, so without this a required check would block Renovate, version
 bumps and every code-only change. A PR that does touch one of those paths gets nothing from
 this step: the panel's verdict and the e2e report grade it.
@@ -47,9 +50,10 @@ and the e2e report grade it like any other PR.
 author.)
 
 An override is final for its head: a later e2e result or panel verdict on the same commit
-does not replace it (the gate skips the write and says so in the log). When an override
-lands while such a write is in flight, the gate copies the override onto the run it just
-created, so the newest run still shows the override.
+does not replace it (the gate skips the write and says so in the log). Whenever the gate
+finds an override on a head, it also makes sure the newest run of that name shows it: a
+result that landed during a write, or one whose repair failed, is patched to the override on
+the next gate run of any mode.
 
 A `/test-e2e` run on a fork PR dispatches the base branch's workflow, so the run's own
 `head_sha` is the base commit. The gate reads the PR and the tested commit from the run-name

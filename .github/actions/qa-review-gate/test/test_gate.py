@@ -319,14 +319,21 @@ def test_parse_bots_rejects_a_half_entry(bad):
         gate.parse_bots(bad)
 
 
+BASE = "b" * 40
+
+
 def human_pr_event(files, action="opened"):
     pr = {"number": 12, "user": {"login": "roehrijn"}, "head": {"sha": HEAD, "ref": "fix/thing"},
-          "html_url": "https://github.com/o/r/pull/12"}
+          "base": {"sha": BASE, "ref": "main"}, "html_url": "https://github.com/o/r/pull/12"}
     return {"action": action, "pull_request": pr, "sender": {"login": "roehrijn"}}, files
 
 
-def files_api(files):
-    return lambda args, token, payload=None: [[{"filename": f} for f in files]]
+def files_api(files, seen=None):
+    def api(args, token, payload=None):
+        if seen is not None:
+            seen.append(args[0])
+        return {"files": [{"filename": f} for f in files]}
+    return api
 
 
 QA_PATHS = gate.parse_paths(gate.DEFAULT_QA_PATHS)
@@ -352,11 +359,22 @@ def test_a_pr_touching_a_qa_path_is_left_to_the_panel(monkeypatch, path):
         {"skip": "1 changed file(s) under a QA-owned path; the panel decides"}
 
 
-def test_scope_reads_every_page_of_files(monkeypatch):
+def test_scope_grades_the_event_head_not_the_pr_current_head(monkeypatch):
+    # A stale event: the PR has moved on, but the compare is bound to the event's own SHAs.
+    event, files = human_pr_event(["pkg/a.go"])
+    seen = []
+    monkeypatch.setattr(gate, "gh_api", files_api(files, seen))
+    decision = gate.decide_scope(event, "o/r", "tok", QA_PATHS, "qa-review")
+    assert seen == [f"repos/o/r/compare/{BASE}...{HEAD}"]
+    assert all(c["head_sha"] == HEAD for c in decision["checks"])
+
+
+def test_scope_leaves_a_possibly_cut_file_list_to_a_person(monkeypatch):
     event, _ = human_pr_event([])
-    monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None:
-                        [[{"filename": "pkg/a.go"}], [{"filename": "e2e/b.go"}]])
-    assert "skip" in gate.decide_scope(event, "o/r", "tok", QA_PATHS, "qa-review")
+    many = [{"filename": f"pkg/f{i}.go"} for i in range(gate.COMPARE_FILE_CAP)]
+    monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None: {"files": many})
+    decision = gate.decide_scope(event, "o/r", "tok", QA_PATHS, "qa-review")
+    assert "skip" in decision and "may be cut" in decision["skip"]
 
 
 def test_scope_ignores_other_pull_request_actions(monkeypatch):
@@ -375,8 +393,8 @@ def test_main_bot_mode_falls_through_to_the_scope_check(tmp_path, monkeypatch, c
         monkeypatch.setenv(key, value)
     writes = []
     def api(args, token, payload=None):
-        if "/files" in args[0]:
-            return [[{"filename": f} for f in files]]
+        if "/compare/" in args[0]:
+            return {"files": [{"filename": f} for f in files]}
         if payload is not None:
             writes.append(payload)
             return {"id": 1}
@@ -472,6 +490,38 @@ def test_the_import_fix_gives_up_when_the_opened_head_never_passes(monkeypatch):
     assert naps == [1, 1]
 
 
+def test_a_rerun_puts_the_override_back_on_top_after_a_failed_repair(monkeypatch):
+    # CI published 44 after the override 3; the repair PATCH failed; the gate reran.
+    calls = []
+    runs = {"check_runs": [
+        {"id": 3, "external_id": "qa-review-gate:override", "conclusion": "success", "details_url": "https://c",
+         "output": {"title": "QA test run: overridden by @sowmyav27", "summary": "why"}},
+        {"id": 44, "conclusion": "failure", "output": {"title": "QA test run: 1 new spec(s) did not run or pass"}},
+    ]}
+    monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None:
+                        calls.append((args, payload)) or (runs if "check-runs?" in args[0] else {}))
+    late = {"check": {"name": "qa-test-run", "head_sha": HEAD, "conclusion": "failure",
+                      "title": "QA test run: 1 new spec(s) did not run or pass", "summary": "s"},
+            "pr_number": 9, "request_qa_review": False}
+    gate.apply(late, "o/r", "tok", "", "https://run")
+    writes = [(a, p) for a, p in calls if p]
+    assert writes == [(["repos/o/r/check-runs/44", "-X", "PATCH"],
+                       {"status": "completed", "conclusion": "success", "details_url": "https://c",
+                        "output": {"title": "QA test run: overridden by @sowmyav27", "summary": "why"}})]
+
+
+def test_an_override_that_is_already_newest_needs_no_repair(monkeypatch):
+    calls = []
+    runs = {"check_runs": [{"id": 44, "conclusion": "failure"},
+                           {"id": 45, "external_id": "qa-review-gate:override", "conclusion": "success"}]}
+    monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None:
+                        calls.append((args, payload)) or (runs if "check-runs?" in args[0] else {}))
+    late = {"check": {"name": "qa-test-run", "head_sha": HEAD, "conclusion": "failure", "title": "t", "summary": "s"},
+            "pr_number": 9, "request_qa_review": False}
+    gate.apply(late, "o/r", "tok", "", "https://run")
+    assert not [p for a, p in calls if p]
+
+
 def test_an_override_landing_during_the_write_still_wins(monkeypatch):
     calls = []
     state = {"reads": 0}
@@ -482,7 +532,7 @@ def test_an_override_landing_during_the_write_still_wins(monkeypatch):
         calls.append((args, payload))
         if "check-runs?" in args[0]:
             state["reads"] += 1
-            return {"check_runs": [override] if state["reads"] > 1 else []}
+            return {"check_runs": [override, {"id": 44, "conclusion": "failure"}] if state["reads"] > 1 else []}
         return {"id": 44}
     monkeypatch.setattr(gate, "gh_api", api)
     late = {"check": {"name": "qa-test-run", "head_sha": HEAD, "conclusion": "failure",

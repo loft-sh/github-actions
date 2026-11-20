@@ -154,9 +154,13 @@ def parse_paths(text):
     return [p.strip() for p in (text or "").split(",") if p.strip()]
 
 
-def pr_files(repo, pr_number, token):
-    pages = gh_api([f"repos/{repo}/pulls/{pr_number}/files?per_page=100", "--paginate", "--slurp"], token)
-    return [f.get("filename", "") for page in pages for f in page]
+def changed_files(repo, base_sha, head_sha, token):
+    """The files between the event's own base and head. The PR files endpoint would answer
+    for the PR's current head, which a queued or rerun job must not grade the event SHA by."""
+    files = gh_api([f"repos/{repo}/compare/{base_sha}...{head_sha}"], token).get("files") or []
+    if len(files) >= COMPARE_FILE_CAP:
+        raise GateError(f"compare lists {COMPARE_FILE_CAP} files; the list may be cut")
+    return [f.get("filename", "") for f in files]
 
 
 def decide_scope(event, repo, token, qa_paths, check_name, test_check="qa-test-run"):
@@ -165,11 +169,15 @@ def decide_scope(event, repo, token, qa_paths, check_name, test_check="qa-test-r
     pr = event.get("pull_request") or {}
     if event.get("action") not in ("opened", "synchronize", "reopened"):
         return {"skip": f"pull_request {event.get('action')}: nothing to decide"}
-    files = pr_files(repo, pr.get("number"), token)
+    head = (pr.get("head") or {}).get("sha", "")
+    base = (pr.get("base") or {}).get("sha", "")
+    try:
+        files = changed_files(repo, base, head, token)
+    except GateError as error:
+        return {"skip": f"cannot list the changed files of {head[:7]} ({error}); the panel or an override decides"}
     owned = [f for f in files if any(fnmatch.fnmatch(f, pattern) for pattern in qa_paths)]
     if owned:
         return {"skip": f"{len(owned)} changed file(s) under a QA-owned path; the panel decides"}
-    head = (pr.get("head") or {}).get("sha", "")
     summary = (f"No changed file is under a QA-owned path ({', '.join(qa_paths)}), so the review "
                f"panel does not run on this PR.\n\nPR: {pr.get('html_url', '')}")
     return {"checks": [{"name": check_name, "head_sha": head, "conclusion": "success",
@@ -671,6 +679,28 @@ def overridden(repo, head, name, token):
     return override_run(repo, head, name, token) is not None
 
 
+def reconcile_override(repo, head, name, token, run_url):
+    """Make the newest run of `name` on `head` show the override, when one exists. A result
+    published after the override, or one whose repair PATCH failed, would otherwise stay
+    on top; a rerun of the gate lands here and fixes it."""
+    runs = gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={name}&filter=all&per_page=100"],
+                  token).get("check_runs") or []
+    overrides = [run for run in runs if run.get("external_id") == OVERRIDE_EXTERNAL_ID]
+    if not overrides or not runs:
+        return False
+    winner = max(overrides, key=lambda run: run.get("id", 0))
+    newest = max(runs, key=lambda run: run.get("id", 0))
+    if newest["id"] == winner["id"]:
+        return False
+    output = winner.get("output") or {}
+    gh_api([f"repos/{repo}/check-runs/{newest['id']}", "-X", "PATCH"], token, {
+        "status": "completed", "conclusion": winner.get("conclusion", "success"),
+        "details_url": winner.get("details_url") or run_url,
+        "output": {"title": output.get("title", ""), "summary": output.get("summary", "")},
+    })
+    return True
+
+
 def wait_for_bot_pass(repo, sha, check_name, token, attempts=15, delay=20, sleep=time.sleep):
     """`bot_passed`, retried: the `opened` and `synchronize` gate jobs of one bot PR run in
     either order, so the import fix may arrive before the opened head carries its pass."""
@@ -697,6 +727,7 @@ def apply(decision, repo, token, qa_team, run_url, panel_login="loft-bot"):
     for check in checks:
         if check.get("external_id") != OVERRIDE_EXTERNAL_ID and overridden(repo, head, check["name"], token):
             # A late e2e result or panel verdict must not undo an authorized override.
+            reconcile_override(repo, head, check["name"], token, run_url)
             print(f"::notice::qa-review-gate: {check['name']} on {head[:7]} stays overridden")
             continue
         if check["name"] == decision.get("opener_name"):
@@ -721,14 +752,7 @@ def apply(decision, repo, token, qa_team, run_url, panel_login="loft-bot"):
         elif check.get("external_id") != OVERRIDE_EXTERNAL_ID:
             # An override may have landed between the lookup and this write. The newest
             # run is what GitHub shows, so copy the override onto ours.
-            winner = override_run(repo, head, check["name"], token)
-            if winner:
-                output = winner.get("output") or {}
-                gh_api([f"repos/{repo}/check-runs/{created['id']}", "-X", "PATCH"], token, {
-                    "status": "completed", "conclusion": winner.get("conclusion", "success"),
-                    "details_url": winner.get("details_url") or run_url,
-                    "output": {"title": output.get("title", ""), "summary": output.get("summary", "")},
-                })
+            reconcile_override(repo, head, check["name"], token, run_url)
     if decision.get("reconcile"):
         reconcile_opener(repo, head, decision["reconcile"], None, token, run_url)
     pr_number = decision["pr_number"]
