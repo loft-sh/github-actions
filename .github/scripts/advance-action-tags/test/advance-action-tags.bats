@@ -36,6 +36,7 @@ setup() {
   export GITHUB_EVENT_PATH="$TEST_ROOT/event.json"
   export GITHUB_REPOSITORY=owner/repo
   export ADVANCE_TAGS_LOOKUP_DELAY=0
+  export GH_DISPATCHES="$TEST_ROOT/dispatches"
   export PATH="$MOCK:$PATH"
   cat > "$MOCK/gh" <<'MOCK_GH'
 #!/usr/bin/env bash
@@ -54,6 +55,9 @@ case "$*" in
   *"repos/owner/repo/pulls/17"*)
     [[ -z "${GH_PR_FAIL:-}" ]] || exit 1
     printf '%s\n' "$GH_PR_JSON" ;;
+  "workflow run "*)
+    echo "$*" >> "$GH_DISPATCHES"
+    [[ -z "${GH_DISPATCH_FAIL:-}" ]] || exit 1 ;;
   *) exit 2 ;;
 esac
 MOCK_GH
@@ -108,14 +112,6 @@ write_event() {
   [ "$status" -ne 0 ]
   [[ "$output" == *"is not an ancestor of merge commit"* ]]
   [ "$(git --git-dir="$REMOTE" rev-parse refs/tags/example-action/v4)" = "$FUTURE_SHA" ]
-}
-
-@test "binary action ambiguity prevents all tag updates" {
-  export GH_FILES_JSON='[[{"filename":".github/actions/example-action/action.yml"},{"filename":".github/actions/linear-release-sync/src/main.go"}]]'
-  run bash -c "cd '$WORK' && bash '$SCRIPT'"
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"linear-release-sync is a binary action"* ]]
-  [ "$(git --git-dir="$REMOTE" rev-parse 'refs/tags/example-action/v4^{commit}')" = "$OLD_SHA" ]
 }
 
 @test "malformed GitHub API response fails closed" {
@@ -365,15 +361,77 @@ tag_commit() {
   [[ "$output" == *"No existing major tag for third-action; skipping."* ]]
 }
 
-@test "a binary action that loads a changed library stops every tag update" {
+# A binary action's callers download its binary from the release, so moving
+# the tag must also start the release build. A tag pushed with GITHUB_TOKEN
+# starts no workflow, so the script dispatches it.
+publish_binary_tag() {
+  git -C "$WORK" tag linear-release-sync/v1 "$OLD_SHA"
+  git -C "$WORK" push origin refs/tags/linear-release-sync/v1 >/dev/null 2>&1
+}
+
+dispatched_release() {
+  grep -qxF "workflow run release-linear-release-sync.yaml --repo owner/repo --ref linear-release-sync/v1 -f tag=linear-release-sync/v1" "$GH_DISPATCHES"
+}
+
+@test "a binary action advances its tag and dispatches its release build" {
+  publish_binary_tag
+  merge_files ".github/actions/linear-release-sync/action.yml=name: lrs" \
+    ".github/actions/linear-release-sync/src/main.go=package main"
+  run bash -c "cd '$WORK' && bash '$SCRIPT'"
+  [ "$status" -eq 0 ]
+  [ "$(tag_commit linear-release-sync/v1)" = "$MERGE_SHA" ]
+  dispatched_release
+  [ "$(wc -l < "$GH_DISPATCHES")" -eq 1 ]
+  [[ "$output" == *"Started release-linear-release-sync.yaml for linear-release-sync/v1"* ]]
+}
+
+@test "a binary action changed with another action advances both tags" {
+  publish_binary_tag
+  merge_files ".github/actions/linear-release-sync/action.yml=name: lrs" \
+    ".github/actions/example-action/action.yml=# fix"
+  run bash -c "cd '$WORK' && bash '$SCRIPT'"
+  [ "$status" -eq 0 ]
+  [ "$(tag_commit linear-release-sync/v1)" = "$MERGE_SHA" ]
+  [ "$(tag_commit example-action/v4)" = "$MERGE_SHA" ]
+  dispatched_release
+  [ "$(wc -l < "$GH_DISPATCHES")" -eq 1 ]
+}
+
+@test "a binary action that loads a changed library advances and dispatches its release build" {
+  publish_binary_tag
   merge_files ".github/actions/linear-release-sync/action.yml=name: lrs" \
     ".github/actions/linear-release-sync/run.sh=source ../shared-lib/lib.sh" \
     ".github/actions/second-action/run.sh=source ../shared-lib/lib.sh"
   merge_files ".github/actions/shared-lib/lib.sh=fix"
   run bash -c "cd '$WORK' && bash '$SCRIPT'"
+  [ "$status" -eq 0 ]
+  [ "$(tag_commit linear-release-sync/v1)" = "$MERGE_SHA" ]
+  [ "$(tag_commit second-action/v1)" = "$MERGE_SHA" ]
+  dispatched_release
+}
+
+@test "a failed release dispatch fails the run and names the manual rebuild" {
+  publish_binary_tag
+  export GH_DISPATCH_FAIL=1
+  merge_files ".github/actions/linear-release-sync/action.yml=name: lrs"
+  run bash -c "cd '$WORK' && bash '$SCRIPT'"
   [ "$status" -ne 0 ]
-  [[ "$output" == *"linear-release-sync is a binary action"* ]]
-  [ "$(tag_commit second-action/v1)" = "$OLD_SHA" ]
+  [ "$(tag_commit linear-release-sync/v1)" = "$MERGE_SHA" ]
+  [[ "$output" == *"gh workflow run release-linear-release-sync.yaml"* ]]
+}
+
+@test "a binary action with no major tag is skipped without a release build" {
+  merge_files ".github/actions/linear-release-sync/action.yml=name: lrs"
+  run bash -c "cd '$WORK' && bash '$SCRIPT'"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"No existing major tag for linear-release-sync; skipping."* ]]
+  [ ! -e "$GH_DISPATCHES" ]
+}
+
+@test "an ordinary action starts no release build" {
+  run bash -c "cd '$WORK' && bash '$SCRIPT'"
+  [ "$status" -eq 0 ]
+  [ ! -e "$GH_DISPATCHES" ]
 }
 
 @test "a removed action that another action mentions still fails closed" {

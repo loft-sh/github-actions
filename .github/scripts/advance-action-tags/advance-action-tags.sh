@@ -145,6 +145,13 @@ users_of() {
   sed -nE "s#^$merge_sha:\.github/actions/([^/]+)/.*#\1#p" <<< "$matches" | sort -u
 }
 
+# Actions whose callers download a binary from the action's GitHub release.
+# Moving the tag alone would leave that binary stale, so the release workflow
+# is dispatched against the moved tag. A tag pushed with GITHUB_TOKEN starts no
+# workflow by itself, which is why it is dispatched rather than left to its
+# on: push: tags trigger.
+declare -A release_workflows=([linear-release-sync]=release-linear-release-sync.yaml)
+
 declare -a queue=("${!changed_actions[@]}")
 declare -A visited=()
 while [[ ${#queue[@]} -gt 0 ]]; do
@@ -152,9 +159,6 @@ while [[ ${#queue[@]} -gt 0 ]]; do
   queue=("${queue[@]:1}")
   [[ -z "${visited[$dir]:-}" ]] || continue
   visited[$dir]=1
-  # Actions that download versioned binaries need their release workflow too;
-  # moving their coordination tag alone would point callers at stale artifacts.
-  [[ "$dir" != linear-release-sync ]] || fail "linear-release-sync is a binary action; its tag cannot be moved without rebuilding its release artifact"
 
   library=false
   if ! git cat-file -e "$merge_sha:.github/actions/$dir/action.yml" 2>/dev/null; then
@@ -185,7 +189,7 @@ declare -a tags_to_move=()
 declare -A old_shas=()
 declare -A old_ref_oids=()
 # The walk above checked every action here: each has an action.yml at the
-# merge commit and none is linear-release-sync.
+# merge commit.
 for action in "${!changed_actions[@]}"; do
   best_version=0
   best_tag=""
@@ -231,6 +235,22 @@ fi
 for tag in "${tags_to_move[@]}"; do
   echo "Advanced $tag from ${old_shas[$tag]} to $merge_sha."
 done
+
+# Rebuild the binary of every binary action whose tag moved. Each dispatch is
+# tried even when an earlier one fails, so one failure does not leave the
+# other binaries stale.
+dispatch_failed=""
+for tag in "${tags_to_move[@]}"; do
+  workflow=${release_workflows[${tag%/v*}]:-}
+  [[ -n "$workflow" ]] || continue
+  if gh workflow run "$workflow" --repo "$GITHUB_REPOSITORY" --ref "$tag" -f "tag=$tag"; then
+    echo "Started $workflow for $tag to rebuild its release binary."
+  else
+    echo "::error::Moved $tag but could not start $workflow, so its release binary is stale. Run: gh workflow run $workflow --repo $GITHUB_REPOSITORY --ref $tag -f tag=$tag" >&2
+    dispatch_failed=1
+  fi
+done
+[[ -z "$dispatch_failed" ]] || exit 1
 
 if [[ ${#tags_to_move[@]} -eq 0 ]]; then
   echo "No existing action tags need advancing for PR #$pr_number."

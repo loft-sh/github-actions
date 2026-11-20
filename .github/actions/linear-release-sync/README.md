@@ -89,13 +89,19 @@ This triggers the workflow automatically via `on: push: tags`.
 
 **Update an existing version** (e.g. rebuild `v1` after a source change):
 
-Force-pushing an existing tag does not trigger `on: push: tags` in GitHub Actions. Use `workflow_dispatch` instead:
+After a pull request that changes this action merges to `main`, the "Advance action tags" workflow moves `linear-release-sync/v1` to the merge commit and dispatches `release-linear-release-sync.yaml` against it. Nothing else is needed.
+
+To rebuild by hand, either move the tag yourself, which triggers the workflow through `on: push: tags` for the tag's commit:
 
 ```bash
-# Via GitHub CLI
-gh workflow run release-linear-release-sync.yaml -f tag=linear-release-sync/v1
-
-# Or use the "Run workflow" button in the GitHub Actions UI
+git tag -f linear-release-sync/v1 <commit>
+git push origin refs/tags/linear-release-sync/v1 --force
 ```
 
-The workflow builds the binary from the branch it is dispatched against and uploads it to the existing release with `--clobber`.
+or dispatch the workflow, which builds the ref it is dispatched against:
+
+```bash
+gh workflow run release-linear-release-sync.yaml --ref linear-release-sync/v1 -f tag=linear-release-sync/v1
+```
+
+A tag pushed by a workflow with its own `GITHUB_TOKEN` does not trigger `on: push: tags`, because GitHub starts no workflow from that token's events except `workflow_dispatch` and `repository_dispatch`. Either way, the binary and checksum are uploaded to the existing release with `--clobber`.

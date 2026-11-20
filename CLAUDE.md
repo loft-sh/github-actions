@@ -74,7 +74,8 @@ never had one is such a library and has no tag of its own; any other one is a
 removed or renamed action and fails the workflow. Before
 merging a change that needs a new major, add the
 `major-release` label. The workflow then fails and comments without moving any
-tags. It also stops for `linear-release-sync`, which needs a binary release.
+tags. For `linear-release-sync`, whose callers download a binary release, it
+moves the tag and then dispatches `release-linear-release-sync.yaml` against it.
 Create the first tag of a new action manually. For manual recovery:
 
 ```bash
@@ -104,4 +105,4 @@ gh search code 'loft-sh/github-actions/.github/actions/<action-name>@ org:loft-s
 ### Go actions with pre-built binaries (linear-release-sync)
 These actions download a pre-built binary from a GitHub release at runtime.
 - **New version**: push a new tag (`git tag linear-release-sync/v1 && git push origin linear-release-sync/v1`) — triggers `release-linear-release-sync.yaml` automatically
-- **Update existing version**: force-pushing a tag does NOT trigger workflows — use `workflow_dispatch` instead: `gh workflow run release-linear-release-sync.yaml -f tag=linear-release-sync/v1`
+- **Update existing version**: automatic after merge ("Advance action tags" moves the tag and dispatches the release build). By hand, a personal force-push of the tag triggers the build, or dispatch it: `gh workflow run release-linear-release-sync.yaml --ref linear-release-sync/v1 -f tag=linear-release-sync/v1`. A tag pushed with a workflow's `GITHUB_TOKEN` triggers nothing.

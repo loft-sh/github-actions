@@ -10,6 +10,8 @@ jobs:
   advance:
     runs-on: ubuntu-latest
     permissions:
+      # actions: write dispatches the release build of a binary action.
+      actions: write
       contents: write
       pull-requests: read
     outputs:
