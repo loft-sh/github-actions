@@ -31,7 +31,8 @@ default `loft-bot` from `backport/` and `vcluster-qa-bot[bot]` from `flake-fixer
 was reviewed before it was opened: a backport on main, a flake-fixer PR by the QA
 agent itself. On its `opened` event (mode `bot`) both check-runs complete as success
 at once on the opened head and on the bot's import fix, when that fix builds on a head
-this gate already passed (the bot commits on the branch tip, so a person's edit
+this gate already passed (the import fix's job waits up to five minutes for the opened
+head's pass, since the two jobs run in either order) (the bot commits on the branch tip, so a person's edit
 underneath would ride along), and the repo's auto-approve workflow can approve it
 without waiting on the panel. Any other head has no check-runs until the panel's verdict
 and the e2e report grade it like any other PR.
@@ -39,7 +40,9 @@ and the e2e report grade it like any other PR.
 author.)
 
 An override is final for its head: a later e2e result or panel verdict on the same commit
-does not replace it (the gate skips the write and says so in the log).
+does not replace it (the gate skips the write and says so in the log). When an override
+lands while such a write is in flight, the gate copies the override onto the run it just
+created, so the newest run still shows the override.
 
 A `/test-e2e` run on a fork PR dispatches the base branch's workflow, so the run's own
 `head_sha` is the base commit. The gate reads the PR and the tested commit from the run-name

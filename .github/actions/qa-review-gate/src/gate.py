@@ -44,6 +44,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 
 MARKER = re.compile(
     r"<!--\s*qa-review\s+verdict=(?P<verdict>[a-z_]+)\s+classes=(?P<classes>\S*)"
@@ -622,11 +623,27 @@ def reconcile_opener(repo, head, name, opener_id, token, run_url):
     })
 
 
-def overridden(repo, head, name, token):
-    """True when an authorized /qa-review override already completed `name` on `head`."""
+def override_run(repo, head, name, token):
+    """The newest /qa-review override that completed `name` on `head`, or None."""
     runs = gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={name}&filter=all&per_page=100"],
                   token).get("check_runs") or []
-    return any(run.get("external_id") == OVERRIDE_EXTERNAL_ID for run in runs)
+    overrides = [run for run in runs if run.get("external_id") == OVERRIDE_EXTERNAL_ID]
+    return max(overrides, key=lambda run: run.get("id", 0)) if overrides else None
+
+
+def overridden(repo, head, name, token):
+    return override_run(repo, head, name, token) is not None
+
+
+def wait_for_bot_pass(repo, sha, check_name, token, attempts=15, delay=20, sleep=time.sleep):
+    """`bot_passed`, retried: the `opened` and `synchronize` gate jobs of one bot PR run in
+    either order, so the import fix may arrive before the opened head carries its pass."""
+    for attempt in range(attempts):
+        if bot_passed(repo, sha, check_name, token):
+            return True
+        if attempt + 1 < attempts:
+            sleep(delay)
+    return False
 
 
 def apply(decision, repo, token, qa_team, run_url, panel_login="loft-bot"):
@@ -665,6 +682,17 @@ def apply(decision, repo, token, qa_team, run_url, panel_login="loft-bot"):
             # opener. Copy it onto the newer opener without creating another run:
             # any result published after the opener remains the newest check.
             reconcile_opener(repo, head, check["name"], created["id"], token, run_url)
+        elif check.get("external_id") != OVERRIDE_EXTERNAL_ID:
+            # An override may have landed between the lookup and this write. The newest
+            # run is what GitHub shows, so copy the override onto ours.
+            winner = override_run(repo, head, check["name"], token)
+            if winner:
+                output = winner.get("output") or {}
+                gh_api([f"repos/{repo}/check-runs/{created['id']}", "-X", "PATCH"], token, {
+                    "status": "completed", "conclusion": winner.get("conclusion", "success"),
+                    "details_url": winner.get("details_url") or run_url,
+                    "output": {"title": output.get("title", ""), "summary": output.get("summary", "")},
+                })
     if decision.get("reconcile"):
         reconcile_opener(repo, head, decision["reconcile"], None, token, run_url)
     pr_number = decision["pr_number"]
@@ -709,7 +737,7 @@ def main():
     elif mode == "bot":
         decision = decide_bot(event, parse_bots(os.environ.get("INPUT_BOT_PRS", DEFAULT_BOTS)),
                               check_name, test_check,
-                              passed_before=lambda sha: bot_passed(repo, sha, check_name, token))
+                              passed_before=lambda sha: wait_for_bot_pass(repo, sha, check_name, token))
     else:
         raise GateError(f"INPUT_MODE must be review, comment, ci or bot, got {mode!r}")
     if "skip" in decision:

@@ -385,6 +385,49 @@ def test_run_target_falls_back_to_the_run_head_and_its_pull_request(monkeypatch)
                             "display_title": f"E2E for PR #77 at {'c' * 40}"}, "o/r", "tok") == (HEAD, 5)
 
 
+def test_the_import_fix_waits_for_the_opened_head_to_carry_its_pass(monkeypatch):
+    seen = {"polls": 0}
+    def api(args, token, payload=None):
+        seen["polls"] += 1
+        runs = [{"external_id": "qa-review-gate:bot", "conclusion": "success"}] if seen["polls"] >= 3 else []
+        return {"check_runs": runs}
+    monkeypatch.setattr(gate, "gh_api", api)
+    naps = []
+    assert gate.wait_for_bot_pass("o/r", "b" * 40, "qa-review", "tok", attempts=5, delay=7, sleep=naps.append)
+    assert seen["polls"] == 3 and naps == [7, 7]
+
+
+def test_the_import_fix_gives_up_when_the_opened_head_never_passes(monkeypatch):
+    monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None: {"check_runs": []})
+    naps = []
+    assert not gate.wait_for_bot_pass("o/r", "b" * 40, "qa-review", "tok", attempts=3, delay=1, sleep=naps.append)
+    assert naps == [1, 1]
+
+
+def test_an_override_landing_during_the_write_still_wins(monkeypatch):
+    calls = []
+    state = {"reads": 0}
+    override = {"id": 3, "external_id": "qa-review-gate:override", "conclusion": "success",
+                "details_url": "https://comment",
+                "output": {"title": "QA test run: overridden by @sowmyav27", "summary": "why"}}
+    def api(args, token, payload=None):
+        calls.append((args, payload))
+        if "check-runs?" in args[0]:
+            state["reads"] += 1
+            return {"check_runs": [override] if state["reads"] > 1 else []}
+        return {"id": 44}
+    monkeypatch.setattr(gate, "gh_api", api)
+    late = {"check": {"name": "qa-test-run", "head_sha": HEAD, "conclusion": "failure",
+                      "title": "QA test run: 1 new spec(s) did not run or pass", "summary": "s"},
+            "pr_number": 9, "request_qa_review": False}
+    gate.apply(late, "o/r", "tok", "", "https://run")
+    writes = [(a, p) for a, p in calls if p]
+    assert writes[0][0] == ["repos/o/r/check-runs", "-X", "POST"]
+    assert writes[-1][0] == ["repos/o/r/check-runs/44", "-X", "PATCH"]
+    assert writes[-1][1]["conclusion"] == "success"
+    assert writes[-1][1]["output"]["title"] == "QA test run: overridden by @sowmyav27"
+
+
 def test_a_late_result_does_not_undo_an_override(monkeypatch):
     calls = []
     override = {"check_runs": [{"id": 3, "external_id": "qa-review-gate:override", "conclusion": "success"}]}
