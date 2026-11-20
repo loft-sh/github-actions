@@ -37,6 +37,7 @@ Every decision is a plain dict so the tests never touch the network; `apply` is 
 function that creates check-runs.
 """
 
+import fnmatch
 import glob
 import json
 import os
@@ -73,6 +74,10 @@ DISPATCH_TITLE = re.compile(r"#(\d+)\b.*\b([0-9a-f]{40})\b")
 SHA_PREFIX = re.compile(r"^[0-9a-f]{7,40}$")
 COMPARE_FILE_CAP = 300  # the compare API lists at most this many files and says nothing when it cuts
 DEFAULT_BOTS = "loft-bot:backport/,vcluster-qa-bot[bot]:flake-fixer/"
+# Mirrors the dispatcher's auto-review paths (slack-ai-bot config.py AutoReviewConfig.paths):
+# a PR outside them never gets the panel, so the gate passes it as out of QA scope itself.
+DEFAULT_QA_PATHS = "e2e*/**,staging/github.com/loft-sh/vcluster/e2e/**"
+SCOPE_EXTERNAL_ID = "qa-review-gate:scope"
 OVERRIDE_HINT = ("Override with `/qa-review override [<reason>]` (`/qa-review override <sha> "
                  "[<reason>]` when the panel has not posted on this head).")
 
@@ -143,6 +148,37 @@ def bot_passed(repo, sha, check_name, token):
     runs = gh_api([f"repos/{repo}/commits/{sha}/check-runs?check_name={check_name}&filter=all&per_page=100"],
                   token).get("check_runs") or []
     return any(r.get("external_id") == BOT_EXTERNAL_ID and r.get("conclusion") == "success" for r in runs)
+
+
+def parse_paths(text):
+    return [p.strip() for p in (text or "").split(",") if p.strip()]
+
+
+def pr_files(repo, pr_number, token):
+    pages = gh_api([f"repos/{repo}/pulls/{pr_number}/files?per_page=100", "--paginate", "--slurp"], token)
+    return [f.get("filename", "") for page in pages for f in page]
+
+
+def decide_scope(event, repo, token, qa_paths, check_name, test_check="qa-test-run"):
+    """Pass a PR that touches no QA-owned path: the panel never runs on it (the dispatcher
+    triggers on these paths only), so a required check would block it for nothing."""
+    pr = event.get("pull_request") or {}
+    if event.get("action") not in ("opened", "synchronize", "reopened"):
+        return {"skip": f"pull_request {event.get('action')}: nothing to decide"}
+    files = pr_files(repo, pr.get("number"), token)
+    owned = [f for f in files if any(fnmatch.fnmatch(f, pattern) for pattern in qa_paths)]
+    if owned:
+        return {"skip": f"{len(owned)} changed file(s) under a QA-owned path; the panel decides"}
+    head = (pr.get("head") or {}).get("sha", "")
+    summary = (f"No changed file is under a QA-owned path ({', '.join(qa_paths)}), so the review "
+               f"panel does not run on this PR.\n\nPR: {pr.get('html_url', '')}")
+    return {"checks": [{"name": check_name, "head_sha": head, "conclusion": "success",
+                        "external_id": SCOPE_EXTERNAL_ID,
+                        "title": "QA review: out of scope, no QA-owned path", "summary": summary},
+                       {"name": test_check, "head_sha": head, "conclusion": "success",
+                        "external_id": SCOPE_EXTERNAL_ID,
+                        "title": "QA test run: out of scope, no QA-owned path", "summary": summary}],
+            "request_qa_review": False, "pr_number": pr.get("number")}
 
 
 def decide_bot(event, bots, check_name, test_check="qa-test-run", passed_before=lambda sha: False):
@@ -738,6 +774,11 @@ def main():
         decision = decide_bot(event, parse_bots(os.environ.get("INPUT_BOT_PRS", DEFAULT_BOTS)),
                               check_name, test_check,
                               passed_before=lambda sha: wait_for_bot_pass(repo, sha, check_name, token))
+        if "skip" in decision:
+            print(f"::notice::qa-review-gate: {decision['skip']}")
+            decision = decide_scope(event, repo, token,
+                                    parse_paths(os.environ.get("INPUT_QA_PATHS", DEFAULT_QA_PATHS)),
+                                    check_name, test_check)
     else:
         raise GateError(f"INPUT_MODE must be review, comment, ci or bot, got {mode!r}")
     if "skip" in decision:

@@ -319,6 +319,74 @@ def test_parse_bots_rejects_a_half_entry(bad):
         gate.parse_bots(bad)
 
 
+def human_pr_event(files, action="opened"):
+    pr = {"number": 12, "user": {"login": "roehrijn"}, "head": {"sha": HEAD, "ref": "fix/thing"},
+          "html_url": "https://github.com/o/r/pull/12"}
+    return {"action": action, "pull_request": pr, "sender": {"login": "roehrijn"}}, files
+
+
+def files_api(files):
+    return lambda args, token, payload=None: [[{"filename": f} for f in files]]
+
+
+QA_PATHS = gate.parse_paths(gate.DEFAULT_QA_PATHS)
+
+
+def test_a_pr_outside_the_qa_paths_passes_as_out_of_scope(monkeypatch):
+    event, files = human_pr_event(["docs/README.md", "pkg/foo.go", ".github/workflows/e2e-ginkgo.yaml"])
+    monkeypatch.setattr(gate, "gh_api", files_api(files))
+    decision = gate.decide_scope(event, "o/r", "tok", QA_PATHS, "qa-review")
+    names = [(c["name"], c["conclusion"], c["head_sha"], c["external_id"]) for c in decision["checks"]]
+    assert names == [("qa-review", "success", HEAD, "qa-review-gate:scope"),
+                     ("qa-test-run", "success", HEAD, "qa-review-gate:scope")]
+    assert decision["checks"][0]["title"] == "QA review: out of scope, no QA-owned path"
+    assert decision["pr_number"] == 12 and decision["request_qa_review"] is False
+
+
+@pytest.mark.parametrize("path", ["e2e/test_foo/foo.go", "e2e-next/setup/x.go",
+                                  "staging/github.com/loft-sh/vcluster/e2e/bar.go"])
+def test_a_pr_touching_a_qa_path_is_left_to_the_panel(monkeypatch, path):
+    event, files = human_pr_event(["pkg/foo.go", path])
+    monkeypatch.setattr(gate, "gh_api", files_api(files))
+    assert gate.decide_scope(event, "o/r", "tok", QA_PATHS, "qa-review") == \
+        {"skip": "1 changed file(s) under a QA-owned path; the panel decides"}
+
+
+def test_scope_reads_every_page_of_files(monkeypatch):
+    event, _ = human_pr_event([])
+    monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None:
+                        [[{"filename": "pkg/a.go"}], [{"filename": "e2e/b.go"}]])
+    assert "skip" in gate.decide_scope(event, "o/r", "tok", QA_PATHS, "qa-review")
+
+
+def test_scope_ignores_other_pull_request_actions(monkeypatch):
+    event, _ = human_pr_event(["pkg/a.go"], action="labeled")
+    monkeypatch.setattr(gate, "gh_api", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no lookup")))
+    assert gate.decide_scope(event, "o/r", "tok", QA_PATHS, "qa-review") == \
+        {"skip": "pull_request labeled: nothing to decide"}
+
+
+def test_main_bot_mode_falls_through_to_the_scope_check(tmp_path, monkeypatch, capsys):
+    event, files = human_pr_event(["docs/README.md"])
+    event_file = tmp_path / "event.json"
+    event_file.write_text(json.dumps(event))
+    for key, value in {"INPUT_MODE": "bot", "GITHUB_EVENT_PATH": str(event_file), "GITHUB_REPOSITORY": "o/r",
+                       "INPUT_GITHUB_TOKEN": "tok"}.items():
+        monkeypatch.setenv(key, value)
+    writes = []
+    def api(args, token, payload=None):
+        if "/files" in args[0]:
+            return [[{"filename": f} for f in files]]
+        if payload is not None:
+            writes.append(payload)
+            return {"id": 1}
+        return {}
+    monkeypatch.setattr(gate, "gh_api", api)
+    assert gate.main() == 0
+    assert [w["name"] for w in writes] == ["qa-review", "qa-test-run"]
+    assert "is not a trusted bot PR" in capsys.readouterr().out
+
+
 def test_backport_by_the_bot_gets_both_checks_green():
     decision = gate.decide_bot(backport_event(), BOTS, "qa-review")
     names = [(c["name"], c["conclusion"], c["head_sha"]) for c in decision["checks"]]

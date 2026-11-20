@@ -26,6 +26,13 @@ already: success when the PR adds no e2e spec, action_required naming the new
 specs otherwise, until an e2e run reports (below). So both check-runs can be
 required without blocking a PR that adds no spec.
 
+A PR that touches no QA-owned path (`qa-paths`, by default the top-level `e2e*/` trees and
+`staging/github.com/loft-sh/vcluster/e2e/`, the same paths the dispatcher starts the panel
+on) gets both check-runs as success at once, titled "out of scope", on every push. The panel
+never runs on such a PR, so without this a required check would block Renovate, version
+bumps and every code-only change. A PR that does touch one of those paths gets nothing from
+this step: the panel's verdict and the e2e report grade it.
+
 A trusted bot PR (`bot-prs`: a login and the branch prefix it opens PRs from, by
 default `loft-bot` from `backport/` and `vcluster-qa-bot[bot]` from `flake-fixer/`)
 was reviewed before it was opened: a backport on main, a flake-fixer PR by the QA
@@ -122,11 +129,12 @@ checkout and the event filter.
 |     bot-prs     | string |  false   |       `"loft-bot:backport/,vcluster-qa-bot[bot]:flake-fixer/"`        |                                           Comma-separated login:branch-prefix pairs whose PRs pass <br>both check-runs on every head the <br>bot itself pushed.                                            |
 |   check-name    | string |  false   |                             `"qa-review"`                             |                                                                                       Name of the verdict check-run.                                                                                       |
 |  github-token   | string |  false   |                        `"${{ github.token }}"`                        |                                      Token for gh. The calling job <br>must grant checks: write and pull-requests: <br>write; ci mode also needs actions: <br>read.                                        |
-|      mode       | string |   true   |                                                                       |                "review" (pull_request_review event), "comment" (issue_comment event), "ci" (workflow_run event of the e2e workflow) <br>or "bot" (pull_request event of a trusted bot PR).                 |
+|      mode       | string |   true   |                                                                       |      "review" (pull_request_review event), "comment" (issue_comment event), "ci" (workflow_run event of the e2e workflow) <br>or "bot" (pull_request event: trusted bot PRs and the QA-scope check).       |
 |    org-token    | string |  false   |                                                                       |                                         Token with read:org, used only to <br>read override-teams membership. GITHUB_TOKEN cannot; empty <br>disables the teams.                                           |
 | override-logins | string |  false   |                                                                       |                                                         Comma-separated logins allowed to run /qa-review <br>override, on top of override-teams.                                                           |
 | override-teams  | string |  false   | `"loft-sh/eng-tech-leads,loft-sh/eng-staff-engineers,loft-sh/eng-qa"` |                                           Comma-separated org/slug teams whose members may <br>run /qa-review override. Membership is read <br>with org-token.                                             |
 |   panel-login   | string |  false   |                             `"loft-bot"`                              |                                                                Login that posts the panel review. <br>Reviews by anyone else are ignored.                                                                  |
+|    qa-paths     | string |  false   |        `"e2e*/**,staging/github.com/loft-sh/vcluster/e2e/**"`         |                   Comma-separated glob patterns of the QA-owned <br>paths the review panel runs on. <br>A PR that touches none of <br>them passes both check-runs as out <br>of scope.                     |
 |     qa-team     | string |  false   |                          `"loft-sh/eng-qa"`                           |                                                       org/slug of the team asked for <br>a review on /qa-review human. Empty <br>skips the request.                                                        |
 |  report-trees   | string |  false   |                          `"ginkgo-report="`                           | Comma-separated artifact=path-prefix pairs: which Ginkgo report <br>artifact covers which source tree. One <br>tree by default; vcluster-pro adds oss-ginkgo-report=staging/github.com/loft-sh/vcluster/.  |
 | test-check-name | string |  false   |                            `"qa-test-run"`                            |                                                             Name of the check-run that says <br>whether the new e2e specs ran <br>and passed.                                                              |
