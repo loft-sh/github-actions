@@ -510,10 +510,37 @@ def test_scope_grades_the_event_head_not_the_pr_current_head(monkeypatch):
     assert all(c["head_sha"] == HEAD for c in decision["checks"])
 
 
-def test_scope_leaves_a_possibly_cut_file_list_to_a_person(monkeypatch):
+MANY = [{"filename": f"pkg/f{i}.go"} for i in range(gate.COMPARE_FILE_CAP)]
+
+
+def test_a_compare_at_the_cap_falls_back_to_the_paginated_pr_files(monkeypatch):
+    # loft-enterprise#9650: 429 files, none under a QA path; the compare stops at 300.
+    seen = []
+    def api(args, token, payload=None):
+        seen.append(args[0])
+        if "/compare/" in args[0]:
+            return {"files": MANY}
+        if args[0] == "repos/o/r/pulls/12":
+            return {"head": {"sha": HEAD}, "base": {"sha": BASE}}
+        if "/pulls/12/files" in args[0]:
+            return [[{"filename": f"pkg/f{i}.go"} for i in range(100)] for _ in range(4)] + [[{"filename": "docs/x.md"}]]
+        return {}
+    monkeypatch.setattr(gate, "gh_api", api)
     event, _ = human_pr_event([])
-    many = [{"filename": f"pkg/f{i}.go"} for i in range(gate.COMPARE_FILE_CAP)]
-    monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None: {"files": many})
+    decision = gate.decide_scope(event, "o/r", "tok", QA_PATHS, "qa-review")
+    assert [c["conclusion"] for c in decision["checks"]] == ["success", "success"]
+    assert "repos/o/r/pulls/12/files?per_page=100" in seen
+
+
+def test_a_compare_at_the_cap_on_a_pr_that_moved_on_is_left_to_a_person(monkeypatch):
+    def api(args, token, payload=None):
+        if "/compare/" in args[0]:
+            return {"files": MANY}
+        if args[0] == "repos/o/r/pulls/12":
+            return {"head": {"sha": "f" * 40}, "base": {"sha": BASE}}
+        pytest.fail(f"the PR files list must not be read for another head: {args[0]}")
+    monkeypatch.setattr(gate, "gh_api", api)
+    event, _ = human_pr_event([])
     decision = gate.decide_scope(event, "o/r", "tok", QA_PATHS, "qa-review")
     assert "skip" in decision and "may be cut" in decision["skip"]
 

@@ -171,13 +171,19 @@ def qa_owned(files, patterns):
             and any(matches(parts, pattern.split("/")) for pattern in patterns)]
 
 
-def changed_files(repo, base_sha, head_sha, token):
+def changed_files(repo, base_sha, head_sha, token, number=None):
     """The files between the event's own base and head. The PR files endpoint would answer
-    for the PR's current head, which a queued or rerun job must not grade the event SHA by."""
+    for the PR's current head, which a queued or rerun job must not grade the event SHA by;
+    it is the fallback when the compare hits its cap, and only while the PR still sits on
+    the event's own head and base, so it lists the same diff."""
     files = gh_api([f"repos/{repo}/compare/{base_sha}...{head_sha}"], token).get("files") or []
-    if len(files) >= COMPARE_FILE_CAP:
-        raise GateError(f"compare lists {COMPARE_FILE_CAP} files; the list may be cut")
-    return [f.get("filename", "") for f in files]
+    if len(files) < COMPARE_FILE_CAP:
+        return [f.get("filename", "") for f in files]
+    pr = gh_api([f"repos/{repo}/pulls/{number}"], token) if number is not None else {}
+    if ((pr.get("head") or {}).get("sha"), (pr.get("base") or {}).get("sha")) != (head_sha, base_sha):
+        raise GateError(f"compare lists {COMPARE_FILE_CAP} files and the PR has moved on; the list may be cut")
+    pages = gh_api([f"repos/{repo}/pulls/{number}/files?per_page=100", "--paginate", "--slurp"], token)
+    return [f.get("filename", "") for page in pages for f in page]
 
 
 def scope_owned(runs):
@@ -228,7 +234,7 @@ def decide_scope(event, repo, token, qa_paths, check_name, test_check="qa-test-r
                                        f"PR: {pr.get('html_url', '')}"} for n in names],
                 "request_qa_review": False, "pr_number": pr.get("number")}
     try:
-        files = changed_files(repo, base, head, token)
+        files = changed_files(repo, base, head, token, pr.get("number"))
     except GateError as error:
         if action == "edited":
             return placeholders("scope unknown")
