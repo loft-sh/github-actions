@@ -340,23 +340,85 @@ QA_PATHS = gate.parse_paths(gate.DEFAULT_QA_PATHS)
 
 
 def test_a_pr_outside_the_qa_paths_passes_as_out_of_scope(monkeypatch):
-    event, files = human_pr_event(["docs/README.md", "pkg/foo.go", ".github/workflows/e2e-ginkgo.yaml"])
+    event, files = human_pr_event(["docs/README.md", "pkg/foo.go", ".github/workflows/unit.yaml"])
     monkeypatch.setattr(gate, "gh_api", files_api(files))
     decision = gate.decide_scope(event, "o/r", "tok", QA_PATHS, "qa-review")
     names = [(c["name"], c["conclusion"], c["head_sha"], c["external_id"]) for c in decision["checks"]]
     assert names == [("qa-review", "success", HEAD, "qa-review-gate:scope"),
                      ("qa-test-run", "success", HEAD, "qa-review-gate:scope")]
-    assert decision["checks"][0]["title"] == "QA review: out of scope, no QA-owned path"
+    assert decision["checks"][0]["title"] == f"QA review: out of scope, no QA-owned path (base main@{BASE[:7]})"
     assert decision["pr_number"] == 12 and decision["request_qa_review"] is False
 
 
 @pytest.mark.parametrize("path", ["e2e/test_foo/foo.go", "e2e-next/setup/x.go",
-                                  "staging/github.com/loft-sh/vcluster/e2e/bar.go"])
+                                  "staging/github.com/loft-sh/vcluster/e2e/bar.go",
+                                  ".github/workflows/e2e-ginkgo.yaml"])
 def test_a_pr_touching_a_qa_path_is_left_to_the_panel(monkeypatch, path):
     event, files = human_pr_event(["pkg/foo.go", path])
     monkeypatch.setattr(gate, "gh_api", files_api(files))
     assert gate.decide_scope(event, "o/r", "tok", QA_PATHS, "qa-review") == \
         {"skip": "1 changed file(s) under a QA-owned path; the panel decides"}
+
+
+@pytest.mark.parametrize("path", ["e2e/vendor/example.go", "e2e-next/vendor/github.com/x/y.go",
+                                  "staging/github.com/loft-sh/vcluster/e2e/vendor/z.go", "pkg/e2e/foo.go"])
+def test_scope_matches_paths_like_the_dispatcher(monkeypatch, path):
+    # The dispatcher ignores vendored files and keeps a star inside one segment, so the
+    # panel never runs on these; the gate must pass them, or the PR gets no check at all.
+    event, files = human_pr_event([path])
+    monkeypatch.setattr(gate, "gh_api", files_api(files))
+    assert "checks" in gate.decide_scope(event, "o/r", "tok", QA_PATHS, "qa-review")
+
+
+def test_qa_owned_agrees_with_the_dispatcher_matcher():
+    patterns = QA_PATHS
+    assert gate.qa_owned(["e2e/a.go", "e2e-next/b/c.go", "e2eX/d.go"], patterns) == \
+        ["e2e/a.go", "e2e-next/b/c.go", "e2eX/d.go"]
+    assert gate.qa_owned(["e2e", "docs/e2e/a.go", "e2e/vendor/a.go", "staging/github.com/loft-sh/vcluster/e2e"],
+                         patterns) == []
+
+
+def retarget_event(files, newest_external_id):
+    event, files = human_pr_event(files, action="edited")
+    event["changes"] = {"base": {"ref": {"from": "main"}, "sha": {"from": "9" * 40}}}
+    event["pull_request"]["base"] = {"sha": BASE, "ref": "release-1.0"}
+    def api(args, token, payload=None):
+        if "check-runs?" in args[0]:
+            return {"check_runs": [{"id": 5, "external_id": "x"}, {"id": 7, "external_id": newest_external_id}]}
+        return {"files": [{"filename": f} for f in files]}
+    return event, api
+
+
+def test_a_retarget_into_scope_takes_the_out_of_scope_pass_back(monkeypatch):
+    event, api = retarget_event(["e2e/a.go"], gate.SCOPE_EXTERNAL_ID)
+    monkeypatch.setattr(gate, "gh_api", api)
+    decision = gate.decide_scope(event, "o/r", "tok", QA_PATHS, "qa-review")
+    assert [(c["name"], c["conclusion"], c["head_sha"]) for c in decision["checks"]] == \
+        [("qa-review", "action_required", HEAD), ("qa-test-run", "action_required", HEAD)]
+    assert decision["checks"][0]["title"] == "QA review: in scope after retarget to release-1.0, the panel decides"
+
+
+def test_a_retarget_into_scope_leaves_a_panel_verdict_alone(monkeypatch):
+    event, api = retarget_event(["e2e/a.go"], "")
+    monkeypatch.setattr(gate, "gh_api", api)
+    assert gate.decide_scope(event, "o/r", "tok", QA_PATHS, "qa-review") == \
+        {"skip": "1 changed file(s) under a QA-owned path; the panel decides"}
+
+
+def test_a_retarget_that_stays_out_of_scope_passes_against_the_new_base(monkeypatch):
+    event, api = retarget_event(["docs/a.md"], gate.SCOPE_EXTERNAL_ID)
+    monkeypatch.setattr(gate, "gh_api", api)
+    decision = gate.decide_scope(event, "o/r", "tok", QA_PATHS, "qa-review")
+    assert decision["checks"][0]["conclusion"] == "success"
+    assert decision["checks"][0]["title"] == f"QA review: out of scope, no QA-owned path (base release-1.0@{BASE[:7]})"
+
+
+def test_an_edit_without_a_base_change_is_ignored(monkeypatch):
+    event, files = human_pr_event(["docs/a.md"], action="edited")
+    event["changes"] = {"title": {"from": "old"}}
+    monkeypatch.setattr(gate, "gh_api", lambda *a, **k: pytest.fail("no API call expected"))
+    assert gate.decide_scope(event, "o/r", "tok", QA_PATHS, "qa-review") == \
+        {"skip": "pull_request edited: the base did not change"}
 
 
 def test_scope_grades_the_event_head_not_the_pr_current_head(monkeypatch):
@@ -445,7 +507,11 @@ def test_sweep_passes_only_open_prs_without_a_check_that_touch_no_qa_path(monkey
         if args[0].startswith("repos/o/r/pulls?"):
             return [prs]
         if "check-runs?" in args[0]:
-            return {"check_runs": [{"id": 9, "status": "completed"}] if ("1" * 40) in args[0] else []}
+            if ("1" * 40) in args[0]:
+                return {"check_runs": [{"id": 9, "status": "completed", "app": {"slug": "github-actions"}}]}
+            if ("2" * 40) in args[0]:  # a check by another app does not satisfy the ruleset
+                return {"check_runs": [{"id": 8, "status": "completed", "app": {"slug": "some-other-app"}}]}
+            return {"check_runs": []}
         if "/compare/" in args[0]:
             head = args[0].split("...")[1]
             return {"files": [{"filename": f} for f in files[head]]}
@@ -472,7 +538,8 @@ def test_sweep_retry_creates_only_the_missing_check(monkeypatch):
         if args[0].startswith("repos/o/r/pulls?"):
             return [[pr]]
         if "check-runs?" in args[0]:
-            return {"check_runs": [{"id": 9, "status": "completed"}] if "check_name=qa-review" in args[0] else []}
+            return {"check_runs": [{"id": 9, "status": "completed", "app": {"slug": "github-actions"}}]
+                    if "check_name=qa-review" in args[0] else []}
         if "/compare/" in args[0]:
             return {"files": [{"filename": "docs/a.md"}]}
         if payload is not None:
@@ -872,11 +939,13 @@ def test_ci_run_without_a_report_asks_a_person_only_for_the_tree_still_missing(m
     assert decision["check"]["external_id"] == "qa-review-gate:trees:oss-ginkgo-report=success"
 
 
-def test_ci_jobs_of_one_head_are_serialized():
+def test_ci_jobs_of_one_tested_commit_are_serialized():
+    # A PR run (head_sha) and a /test-e2e dispatch (sha in the title) of the same commit
+    # must land in one queue, so the commit is resolved in a job before the group is chosen.
     text = pathlib.Path(__file__).parents[3].joinpath("workflows", "qa-review-gate.yaml").read_text()
-    assert ("group: qa-review-gate-${{ github.event.workflow_run.event == 'workflow_dispatch' && "
-            "github.event.workflow_run.display_title || github.event.workflow_run.head_sha || github.run_id }}") in text
-    assert "cancel-in-progress: false" in text
+    assert "group: qa-review-gate-${{ needs.tested.outputs.sha }}" in text
+    assert "needs: tested" in text and "cancel-in-progress: false" in text
+    assert "grep -oE '[0-9a-f]{40}' <<<\"$TITLE\" | tail -n1" in text
 
 
 def test_bot_backport_keeps_the_title_the_panel_matches():

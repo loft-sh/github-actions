@@ -37,7 +37,7 @@ Every decision is a plain dict so the tests never touch the network; `apply` is 
 function that creates check-runs.
 """
 
-import fnmatch
+from fnmatch import fnmatchcase
 import glob
 import json
 import os
@@ -76,7 +76,7 @@ COMPARE_FILE_CAP = 300  # the compare API lists at most this many files and says
 DEFAULT_BOTS = "loft-bot:backport/,vcluster-qa-bot[bot]:flake-fixer/"
 # Mirrors the dispatcher's auto-review paths (slack-ai-bot config.py AutoReviewConfig.paths):
 # a PR outside them never gets the panel, so the gate passes it as out of QA scope itself.
-DEFAULT_QA_PATHS = "e2e*/**,staging/github.com/loft-sh/vcluster/e2e/**"
+DEFAULT_QA_PATHS = "e2e*/**,staging/github.com/loft-sh/vcluster/e2e/**,.github/workflows/e2e*.yaml"
 SCOPE_EXTERNAL_ID = "qa-review-gate:scope"
 OVERRIDE_HINT = ("Override with `/qa-review override [<reason>]` (`/qa-review override <sha> "
                  "[<reason>]` when the panel has not posted on this head).")
@@ -154,6 +154,23 @@ def parse_paths(text):
     return [p.strip() for p in (text or "").split(",") if p.strip()]
 
 
+def qa_owned(files, patterns):
+    """The files under a QA-owned path, matched the way the dispatcher's `touches_e2e` does
+    (slack-ai-bot auto_review.py): a star stays inside one path segment, a `**` segment spans
+    any depth, and a vendored file never counts. The two must agree, or a PR gets no check."""
+    def matches(parts, pattern):
+        if not pattern:
+            return not parts
+        if pattern[0] == "**":
+            if len(pattern) == 1:
+                return bool(parts)
+            return matches(parts, pattern[1:]) or bool(parts and matches(parts[1:], pattern))
+        return bool(parts and fnmatchcase(parts[0], pattern[0]) and matches(parts[1:], pattern[1:]))
+
+    return [f for f in files if "vendor" not in (parts := f.split("/"))
+            and any(matches(parts, pattern.split("/")) for pattern in patterns)]
+
+
 def changed_files(repo, base_sha, head_sha, token):
     """The files between the event's own base and head. The PR files endpoint would answer
     for the PR's current head, which a queued or rerun job must not grade the event SHA by."""
@@ -163,29 +180,54 @@ def changed_files(repo, base_sha, head_sha, token):
     return [f.get("filename", "") for f in files]
 
 
+def scope_passed(repo, head, check_name, token):
+    """True when the newest `check_name` on `head` is the out-of-scope pass."""
+    runs = gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={check_name}&filter=all&per_page=100"],
+                  token).get("check_runs") or []
+    newest = max(runs, key=lambda run: run.get("id", 0), default=None)
+    return bool(newest) and newest.get("external_id") == SCOPE_EXTERNAL_ID
+
+
 def decide_scope(event, repo, token, qa_paths, check_name, test_check="qa-test-run"):
     """Pass a PR that touches no QA-owned path: the panel never runs on it (the dispatcher
-    triggers on these paths only), so a required check would block it for nothing."""
+    triggers on these paths only), so a required check would block it for nothing. The verdict
+    depends on the base, so a retarget (`edited` with a base change, same head) grades again
+    and takes a pass back when the new diff is in scope."""
     pr = event.get("pull_request") or {}
-    if event.get("action") not in ("opened", "synchronize", "reopened"):
-        return {"skip": f"pull_request {event.get('action')}: nothing to decide"}
+    action = event.get("action")
+    if action == "edited" and not (event.get("changes") or {}).get("base"):
+        return {"skip": "pull_request edited: the base did not change"}
+    if action not in ("opened", "synchronize", "reopened", "edited"):
+        return {"skip": f"pull_request {action}: nothing to decide"}
     head = (pr.get("head") or {}).get("sha", "")
     base = (pr.get("base") or {}).get("sha", "")
+    base_ref = (pr.get("base") or {}).get("ref", "")
     try:
         files = changed_files(repo, base, head, token)
     except GateError as error:
         return {"skip": f"cannot list the changed files of {head[:7]} ({error}); the panel or an override decides"}
-    owned = [f for f in files if any(fnmatch.fnmatch(f, pattern) for pattern in qa_paths)]
+    owned = qa_owned(files, qa_paths)
+    graded = f"base {base_ref}@{base[:7]}"
     if owned:
-        return {"skip": f"{len(owned)} changed file(s) under a QA-owned path; the panel decides"}
-    summary = (f"No changed file is under a QA-owned path ({', '.join(qa_paths)}), so the review "
-               f"panel does not run on this PR.\n\nPR: {pr.get('html_url', '')}")
+        if action != "edited" or not scope_passed(repo, head, check_name, token):
+            return {"skip": f"{len(owned)} changed file(s) under a QA-owned path; the panel decides"}
+        summary = (f"After the retarget to {base_ref}, {len(owned)} changed file(s) are under a QA-owned "
+                   f"path. The earlier out-of-scope pass no longer applies: comment /vcluster-review "
+                   f"for the panel.\n\nPR: {pr.get('html_url', '')}")
+        return {"checks": [{"name": name, "head_sha": head, "conclusion": "action_required",
+                            "external_id": SCOPE_EXTERNAL_ID,
+                            "title": f"{label}: in scope after retarget to {base_ref}, the panel decides",
+                            "summary": summary}
+                           for name, label in ((check_name, "QA review"), (test_check, "QA test run"))],
+                "request_qa_review": False, "pr_number": pr.get("number")}
+    summary = (f"No changed file is under a QA-owned path ({', '.join(qa_paths)}) against {graded}, "
+               f"so the review panel does not run on this PR.\n\nPR: {pr.get('html_url', '')}")
     return {"checks": [{"name": check_name, "head_sha": head, "conclusion": "success",
                         "external_id": SCOPE_EXTERNAL_ID,
-                        "title": "QA review: out of scope, no QA-owned path", "summary": summary},
+                        "title": f"QA review: out of scope, no QA-owned path ({graded})", "summary": summary},
                        {"name": test_check, "head_sha": head, "conclusion": "success",
                         "external_id": SCOPE_EXTERNAL_ID,
-                        "title": "QA test run: out of scope, no QA-owned path", "summary": summary}],
+                        "title": f"QA test run: out of scope, no QA-owned path ({graded})", "summary": summary}],
             "request_qa_review": False, "pr_number": pr.get("number")}
 
 
@@ -220,11 +262,13 @@ def decide_pull_request(event, repo, token, bots, qa_paths, check_name, test_che
 
 
 def missing_checks(repo, head, names, token):
-    """The check names in `names` that have no completed run on `head`."""
+    """The check names in `names` with no completed run from GitHub Actions on `head`: the
+    ruleset requires that source, so a check by another app does not count."""
     missing = []
     for name in names:
         runs = gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={name}"], token).get("check_runs") or []
-        if not any(run.get("status") == "completed" for run in runs):
+        if not any(run.get("status") == "completed" and (run.get("app") or {}).get("slug") == "github-actions"
+                   for run in runs):
             missing.append(name)
     return missing
 

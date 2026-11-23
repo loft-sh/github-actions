@@ -48,7 +48,7 @@ inputs:
   qa-paths:
     description: 'Comma-separated glob patterns of the QA-owned paths the review panel runs on. A PR that touches none of them passes both check-runs as out of scope.'
     required: false
-    default: 'e2e*/**,staging/github.com/loft-sh/vcluster/e2e/**'
+    default: 'e2e*/**,staging/github.com/loft-sh/vcluster/e2e/**,.github/workflows/e2e*.yaml'
   qa-team:
     description: 'org/slug of the team asked for a review on /qa-review human. Empty skips the request.'
     required: false

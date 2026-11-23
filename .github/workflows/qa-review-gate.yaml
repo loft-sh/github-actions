@@ -33,7 +33,7 @@ on:
       qa-paths:
         description: 'Comma-separated glob patterns of the QA-owned paths the review panel runs on. A PR that touches none of them passes both check-runs as out of scope.'
         type: string
-        default: 'e2e*/**,staging/github.com/loft-sh/vcluster/e2e/**'
+        default: 'e2e*/**,staging/github.com/loft-sh/vcluster/e2e/**,.github/workflows/e2e*.yaml'
       qa-team:
         description: 'org/slug of the team asked for a review on /qa-review human.'
         type: string
@@ -56,13 +56,28 @@ on:
         required: false
 
 jobs:
-  gate:
+  tested:
+    # The e2e runs of one tested commit (Pro and OSS trees; a PR run and a /test-e2e
+    # dispatch) each read the recorded tree results, then write, so they must share one
+    # queue. A dispatch run's head_sha is the base commit; its title names the tested one.
     runs-on: ubuntu-latest
-    # The Pro and OSS e2e runs of one head each read the recorded tree results, then write.
-    # A /test-e2e dispatch on a fork PR runs the base branch, so its head_sha is the base
-    # commit shared by every such run; its title names the PR and tested commit instead.
+    outputs:
+      sha: ${{ steps.sha.outputs.sha }}
+    steps:
+      - id: sha
+        env:
+          DISPATCH: ${{ github.event.workflow_run.event == 'workflow_dispatch' }}
+          TITLE: ${{ github.event.workflow_run.display_title }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          if [ "$DISPATCH" = true ]; then sha="$(grep -oE '[0-9a-f]{40}' <<<"$TITLE" | tail -n1 || true)"; else sha="$HEAD_SHA"; fi
+          echo "sha=${sha:-$RUN_ID}" >> "$GITHUB_OUTPUT"
+  gate:
+    needs: tested
+    runs-on: ubuntu-latest
     concurrency:
-      group: qa-review-gate-${{ github.event.workflow_run.event == 'workflow_dispatch' && github.event.workflow_run.display_title || github.event.workflow_run.head_sha || github.run_id }}
+      group: qa-review-gate-${{ needs.tested.outputs.sha }}
       cancel-in-progress: false
     permissions:
       checks: write
