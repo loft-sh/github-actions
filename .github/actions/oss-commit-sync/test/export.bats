@@ -31,8 +31,9 @@ teardown() {
   GIT_COMMITTER_DATE="2030-01-01T00:00:00Z" run bash "$EXPORT"
   [ "$status" -eq 0 ]
   [ "$(output_value exported-count)" = "1" ]
-  [ "$(git -C "$OSS_REMOTE" log -1 --format=%aI main)" = "2020-01-01T00:00:00Z" ]
-  [ "$(git -C "$OSS_REMOTE" log -1 --format=%cI main)" = "2030-01-01T00:00:00Z" ]
+  # Epochs, not %aI/%cI: git before 2.45 prints UTC as +00:00 rather than Z.
+  [ "$(git -C "$OSS_REMOTE" log -1 --format=%at main)" = "1577836800" ]
+  [ "$(git -C "$OSS_REMOTE" log -1 --format=%ct main)" = "1893456000" ]
 }
 
 @test "multiple commits export in order" {

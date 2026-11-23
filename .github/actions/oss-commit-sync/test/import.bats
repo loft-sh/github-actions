@@ -197,7 +197,7 @@ Signed-off-by: alice <alice@contributor.example>")
   [ "$(cd "$MONO" && git rev-parse "automation/sync-from-oss-main^{tree}")" = "$first_tree" ]
 }
 
-@test "a later re-run on the same base rebuilds the same commits, so the push is a no-op" {
+@test "a later re-run on the same base rebuilds the same commit shas" {
   external_commit ext.go "external" "feat: external contribution" >/dev/null
   external_commit ext2.go "external 2" "feat: second contribution" >/dev/null
 
