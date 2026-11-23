@@ -8,7 +8,7 @@ The panel (loft-sh/ai-agents, `pr-review`) posts a COMMENT review as `loft-bot`
 whose body ends with one marker line:
 
 ```
-<!-- qa-review verdict=block classes=a:0,b:1,c:2,d:0 head=<40-char sha> -->
+<!-- qa-review verdict=block classes=a:0,b:1,c:2,d:0 head=<40-char sha> base=<base branch> -->
 ```
 
 | Verdict | `qa-review` | Meaning |
@@ -19,7 +19,9 @@ whose body ends with one marker line:
 | `not_run` | action_required | the QA lanes did not run on this PR; neutral would count as passed once the check is required |
 
 A marker whose `head` is not the PR's current head is ignored, so an old review
-never grades a new push.
+never grades a new push. A marker whose `base` is not the base the PR targets when
+the gate writes is ignored too: a panel run that started before a retarget graded the
+old diff, and the panel runs again on the new one.
 
 The same review event opens `qa-test-run` on that head, unless one is there
 already: success when the PR adds no e2e spec, action_required naming the new
@@ -54,7 +56,12 @@ whatever order the jobs ran in. The same ownership rule holds for every scope wr
 (`opened`, `reopened`, the sweep): the scope check never writes over a result for the
 current base, a request for a person, an override or a bot pass. A fresh panel verdict
 likewise replaces a `qa-test-run` result from another base with its own opener, and an e2e
-run combines only tree results graded against the same base. A retarget whose diff cannot be listed (the compare cap) withdraws the pass the same
+run combines only tree results graded against the same base. A PR-triggered e2e run
+tests the merge commit of the head and the base at that moment, so its `run-name` must
+name that base (`... onto <base-ref>`, from `github.event.pull_request.base.ref`): a run
+that names another base than the PR now targets, or none, is not credited, and a new run
+grades the PR. A `/test-e2e` dispatch checks out the head alone, so its report holds for
+any base. A retarget whose diff cannot be listed (the compare cap) withdraws the pass the same
 way. The sweep grades each PR as it is at that moment, not as the open-PR list captured it
 (the missing checks are counted on the current head), and checks the base again after
 writing. Every gate job that writes to a head queues on that head (the tested commit for an

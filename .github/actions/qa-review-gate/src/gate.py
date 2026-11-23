@@ -49,8 +49,9 @@ import time
 
 MARKER = re.compile(
     r"<!--\s*qa-review\s+verdict=(?P<verdict>[a-z_]+)\s+classes=(?P<classes>\S*)"
-    r"\s+head=(?P<head>[0-9a-f]{40})\s*-->"
+    r"\s+head=(?P<head>[0-9a-f]{40})\s+base=(?P<base>\S+)\s*-->"
 )
+RUN_BASE = re.compile(r"\bonto (\S+)")  # the e2e run title names the base its merge commit used
 CONCLUSION = {"block": "failure", "pass": "success", "needs_human": "action_required",
               "not_run": "action_required"}
 CLASS_WORDS = {"a": "need a test", "b": "weak test", "c": "no test", "d": "product gap"}
@@ -91,7 +92,9 @@ class GateError(Exception):
 
 
 def parse_marker(body):
-    """Return (verdict, {class: count}, head) from a panel review body, or None."""
+    """Return (verdict, {class: count}, head, base) from a panel review body, or None. The
+    marker names the base the panel reviewed: the gate cannot tell otherwise whether a
+    verdict posted after a retarget graded the old diff or the new one."""
     match = MARKER.search(body or "")
     if not match:
         return None
@@ -104,7 +107,7 @@ def parse_marker(body):
         if key not in CLASS_WORDS or not count.isdigit():
             raise GateError(f"malformed classes in qa-review marker: {item!r}")
         classes[key] = int(count)
-    return verdict, classes, match.group("head")
+    return verdict, classes, match.group("head"), match.group("base")
 
 
 def class_summary(classes):
@@ -428,7 +431,7 @@ def decide_review(event, panel_login, check_name):
     parsed = parse_marker(review.get("body"))
     if parsed is None:
         return {"skip": "panel review carries no qa-review marker"}
-    verdict, classes, head = parsed
+    verdict, classes, head, base = parsed
     current = (pr.get("head") or {}).get("sha", "")
     if head != current:
         return {"skip": f"marker is for {head[:7]}, PR head is {current[:7] or 'unknown'}"}
@@ -447,7 +450,7 @@ def decide_review(event, panel_login, check_name):
         "request_qa_review": False,
         "assign_author": verdict == "needs_human",
         "pr_number": pr.get("number"),
-        "base_ref": (pr.get("base") or {}).get("ref", ""),
+        "base_ref": base,
     }
 
 
@@ -474,6 +477,11 @@ def collect_review(event, repo, token, panel_login, check_name, test_check="qa-t
         return decision
     head = decision["check"]["head_sha"]
     pr_number = decision["pr_number"]
+    live = ((gh_api([f"repos/{repo}/pulls/{pr_number}"], token).get("base") or {}).get("ref", ""))
+    if live != decision["base_ref"]:
+        # A panel run that started before a retarget graded the old diff; the panel runs again.
+        return {"skip": f"marker is for base {decision['base_ref']}, PR targets {live or 'unknown'}; "
+                        "the panel reviews the new base"}
     existing = from_actions(gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={test_check}"], token).get("check_runs"))
     if existing and not scope_may_write(existing, decision["base_ref"]):
         # A retry: our own provisional opener may still hide a real result behind it.
@@ -710,6 +718,15 @@ def run_pr_number(run, repo, token):
     return None
 
 
+def run_base(run):
+    """The base a PR-triggered e2e run merged the head with, from its title (`onto <ref>`);
+    a dispatch run checks out the head alone, so its report holds for any base."""
+    if run.get("event") != "pull_request":
+        return None
+    named = RUN_BASE.search(run.get("display_title") or "")
+    return named.group(1) if named else ""
+
+
 def run_target(run, repo, token):
     """(tested commit, PR number) of an e2e run. A /test-e2e run on a fork PR dispatches the
     base branch's workflow, so `head_sha` is the base commit; the run-name carries the PR
@@ -754,23 +771,34 @@ def collect_ci(event, repo, token, test_check="qa-test-run", trees=None):
         return {"skip": "e2e run is not for an open pull request"}
     try:
         pr = gh_api([f"repos/{repo}/pulls/{pr_number}"], token)
-        current = pr["head"]["sha"]
-        if current != head:
-            return {"skip": f"e2e run is for {head[:7]}, PR head is {current[:7]}; superseded"}
-        added = added_specs(pr_diff(repo, pr["base"]["ref"], head, token))
     except GateError as error:
         return ask_person(test_check, head, pr_number,
-                          "QA test run: cannot identify new specs, a person checks them",
-                          str(error))
-    if not added:
-        return {"skip": "the PR adds no e2e spec"}
+                          "QA test run: cannot identify new specs, a person checks them", str(error))
+    current, base_ref = pr["head"]["sha"], pr["base"]["ref"]
+    if current != head:
+        return {"skip": f"e2e run is for {head[:7]}, PR head is {current[:7]}; superseded"}
+    tested = run_base(run)
+    if tested == "":
+        return {"skip": "the e2e run names no base (its run-name lacks `onto <base-ref>`), so the gate "
+                        "cannot tell which base its merge commit used; a run that names it grades the PR"}
+    if tested is not None and tested != base_ref:
+        return {"skip": f"the e2e run tested the head onto {tested}, the PR now targets {base_ref}; "
+                        "a new run grades it"}
 
     def graded_against(decision):
-        return {**decision, "base_ref": pr["base"]["ref"]}
+        return {**decision, "base_ref": base_ref}
+    try:
+        added = added_specs(pr_diff(repo, base_ref, head, token))
+    except GateError as error:
+        return graded_against(ask_person(test_check, head, pr_number,
+                                         "QA test run: cannot identify new specs, a person checks them",
+                                         str(error)))
+    if not added:
+        return {"skip": "the PR adds no e2e spec"}
     uploaded = {a["name"] for a in (gh_api([f"repos/{repo}/actions/runs/{run['id']}/artifacts"], token)
                                     .get("artifacts") or [])}
     reported = [a for a in trees if a in uploaded]
-    known = tree_results(repo, head, test_check, token, pr["base"]["ref"]) if len(trees) > 1 else {}
+    known = tree_results(repo, head, test_check, token, base_ref) if len(trees) > 1 else {}
     if not reported:
         # A run that uploaded nothing (build failure) must not drop the other tree's result.
         missing = sorted({spec_tree(s, trees) for s in added} - set(known))

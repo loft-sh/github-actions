@@ -15,8 +15,8 @@ OTHER = "b" * 40
 BOTS = gate.parse_bots(gate.DEFAULT_BOTS)
 
 
-def marker(verdict="block", classes="a:0,b:1,c:2,d:0", head=HEAD):
-    return f"Panel review: 3 blocking.\n\n<!-- qa-review verdict={verdict} classes={classes} head={head} -->"
+def marker(verdict="block", classes="a:0,b:1,c:2,d:0", head=HEAD, base="main"):
+    return f"Panel review: 3 blocking.\n\n<!-- qa-review verdict={verdict} classes={classes} head={head} base={base} -->"
 
 
 def review_event(login="loft-bot", body=None, head=HEAD):
@@ -65,7 +65,8 @@ def pr_api(reviews=None):
 
 
 def test_parse_marker_reads_verdict_classes_and_head():
-    assert gate.parse_marker(marker()) == ("block", {"a": 0, "b": 1, "c": 2, "d": 0}, HEAD)
+    assert gate.parse_marker(marker()) == ("block", {"a": 0, "b": 1, "c": 2, "d": 0}, HEAD, "main")
+    assert gate.parse_marker(marker().replace(" base=main", "")) is None  # a marker without its base is no marker
 
 
 def test_parse_marker_absent_returns_none():
@@ -115,7 +116,7 @@ def review_api(check_runs=(), files=None, author="dev-x"):
                 raise gate.GateError("gh api compare failed: 500")
             return {"files": files}
         if "/pulls/" in args[0]:
-            return {"head": {"sha": HEAD}, "user": {"login": author}}
+            return {"head": {"sha": HEAD}, "base": {"ref": "main"}, "user": {"login": author}}
         return {}
     fake.writes = writes
     return fake
@@ -220,6 +221,16 @@ def test_review_opener_reconciles_result_posted_between_lookup_and_create(monkey
     assert payload == {"status": "completed", "conclusion": conclusion,
                        "details_url": "https://e2e",
                        "output": {"title": "E2E result", "summary": "details"}}
+
+
+def test_a_verdict_for_another_base_than_the_pr_targets_is_ignored(monkeypatch):
+    # The panel started on main, the PR was retargeted to release-1.0 meanwhile.
+    api = review_api(files=NEW_SPEC)
+    monkeypatch.setattr(gate, "gh_api", api)
+    decision = gate.collect_review(review_event(body=marker(verdict="pass", base="release-1.0")),
+                                   "o/r", "tok", "loft-bot", "qa-review")
+    assert decision == {"skip": "marker is for base release-1.0, PR targets main; the panel reviews the new base"}
+    assert not api.writes
 
 
 def test_review_leaves_an_existing_test_run_check_alone(monkeypatch):
@@ -1193,8 +1204,24 @@ def test_ci_diff_failure_asks_a_person_instead_of_failing_the_job(monkeypatch):
     decision = gate.collect_ci({"workflow_run": ci_run()}, "o/r", "tok")
     assert decision["check"]["name"] == "qa-test-run"
     assert decision["check"]["conclusion"] == "action_required"
+    assert decision["base_ref"] == "main"  # a retarget can replace this result too
     assert decision["check"]["head_sha"] == HEAD and decision["pr_number"] == 9
     assert "/test-e2e" in decision["check"]["summary"]
+
+
+def test_a_pr_run_is_credited_only_for_the_base_it_merged_with(monkeypatch):
+    files = [{"filename": "e2e/a_test.go", "patch": '@@ -1,0 +1 @@\n+\tIt("x", func() {'}]
+    monkeypatch.setattr(gate, "gh_api", ci_api(files=files))
+    run = {**ci_run(), "event": "pull_request", "display_title": f"E2E for PR #9 at {HEAD} onto release-1.0"}
+    decision = gate.collect_ci({"workflow_run": run}, "o/r", "tok")
+    assert decision == {"skip": "the e2e run tested the head onto release-1.0, the PR now targets main; a new run grades it"}
+    run["display_title"] = "E2E Ginkgo test suites"
+    decision = gate.collect_ci({"workflow_run": run}, "o/r", "tok")
+    assert "skip" in decision and "names no base" in decision["skip"]
+    run["display_title"] = f"E2E for PR #9 at {HEAD} onto main"
+    assert "skip" not in gate.collect_ci({"workflow_run": run}, "o/r", "tok")
+    dispatch = {**ci_run(), "event": "workflow_dispatch", "display_title": f"E2E for PR #9 (x) at {HEAD}"}
+    assert "skip" not in gate.collect_ci({"workflow_run": dispatch}, "o/r", "tok")  # the head alone, any base
 
 
 def test_ci_run_for_an_older_head_is_superseded(monkeypatch):
@@ -1430,7 +1457,7 @@ def test_apply_posts_check_run_and_requests_team(monkeypatch):
     [panel_review(head=OTHER)],                               # graded an older head only
     [panel_review(submitted_at="2026-11-18T10:05:00Z")],      # graded this head after the comment
     [panel_review(login="dev-x")],                            # a person pasted a marker
-    [{"user": {"login": "loft-bot"}, "body": "<!-- qa-review verdict=weird classes= head=" + HEAD + " -->",
+    [{"user": {"login": "loft-bot"}, "body": "<!-- qa-review verdict=weird classes= head=" + HEAD + " base=main -->",
       "submitted_at": "2026-11-18T09:00:00Z"}],               # malformed marker is skipped
 ])
 def test_override_binds_to_a_panel_verdict_on_the_current_head(monkeypatch, capsys, reviews):
