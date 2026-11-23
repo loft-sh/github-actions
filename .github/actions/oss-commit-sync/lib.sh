@@ -878,6 +878,8 @@ ensure_not_merge() {
 # "stable" also sets the committer date to the author date, so the same replay
 # on the same base always yields the same sha. The export must not use it: OSS
 # keeps those commits, and an old date would sort them before their parent.
+# The import can: the sync PR is rebase- or squash-merged, and GitHub rewrites
+# the committer date on both, so the pinned date never reaches the base branch.
 replay_commit() {
   local src="$1" key="$2" dir="$3" stable="${4:-}" msgfile author_name author_email author_date
   local -a commit_env

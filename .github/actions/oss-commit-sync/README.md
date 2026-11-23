@@ -164,6 +164,11 @@ commit, i.e. a sync that has never run or whose subtree was rewritten.
   recognizes such commits as benign by comparing their post-image blobs.
 - A conflicting external commit fails the 3-way apply loudly; the run exits
   non-zero with `conflict-sha` set and a clean worktree.
+- A re-run on an unchanged base rebuilds the same commit shas: each replayed
+  commit's committer date is its author date, not the wall clock. The caller's
+  force-push of the PR branch is then a no-op until the base or OSS moves. This
+  relies on the sync PR being rebase- or squash-merged, which rewrite the
+  committer date; a merge commit would bring the old dates onto the base branch.
 - The checkout must be at the base branch (`branch` input) with full history.
 
 **Merge the sync PR with rebase, never squash.** Squashing collapses the
