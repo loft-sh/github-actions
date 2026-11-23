@@ -180,20 +180,18 @@ def changed_files(repo, base_sha, head_sha, token):
     return [f.get("filename", "") for f in files]
 
 
+def scope_owned(runs):
+    """True when the newest run is the scope check's own (a pass or a retarget placeholder),
+    which the panel's decision or a regrade may replace; a verdict, result or override is not."""
+    newest = max(runs, key=lambda run: run.get("id", 0), default=None)
+    return bool(newest) and newest.get("external_id") == SCOPE_EXTERNAL_ID
+
+
 def scope_holds(repo, head, check_name, token):
-    """True when the scope check owns `check_name` on `head`: no run yet, or the newest run is
-    the scope check's own (a pass or a retarget placeholder)."""
+    """True when the scope check owns `check_name` on `head`: no run yet, or `scope_owned`."""
     runs = gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={check_name}&filter=all&per_page=100"],
                   token).get("check_runs") or []
-    newest = max(runs, key=lambda run: run.get("id", 0), default=None)
-    return newest is None or newest.get("external_id") == SCOPE_EXTERNAL_ID
-
-
-def placeholder(runs):
-    """True when the newest run is a retarget placeholder the panel's own decision replaces."""
-    newest = max(runs, key=lambda run: run.get("id", 0), default=None)
-    return bool(newest) and newest.get("external_id") == SCOPE_EXTERNAL_ID \
-        and newest.get("conclusion") == "action_required"
+    return not runs or scope_owned(runs)
 
 
 def current_base(repo, number, token):
@@ -214,32 +212,38 @@ def decide_scope(event, repo, token, qa_paths, check_name, test_check="qa-test-r
     head = (pr.get("head") or {}).get("sha", "")
     base = (pr.get("base") or {}).get("sha", "")
     base_ref = (pr.get("base") or {}).get("ref", "")
+    labels = {check_name: "QA review", test_check: "QA test run"}
+    # A retarget touches only the checks the scope check still owns: a panel verdict, an e2e
+    # result or an override on either check stays, whatever job order produced it.
+    names = ([n for n in labels if scope_holds(repo, head, n, token)] if action == "edited" else list(labels))
+    if not names:
+        return {"skip": "retarget: the panel's verdict or an override owns both checks"}
+
+    def placeholders(reason):
+        return {"checks": [{"name": n, "head_sha": head, "conclusion": "action_required",
+                            "external_id": SCOPE_EXTERNAL_ID,
+                            "title": f"{labels[n]}: {reason} after retarget to {base_ref}, the panel decides",
+                            "summary": f"After the retarget to {base_ref} the earlier out-of-scope pass no longer "
+                                       f"applies ({reason}): comment /vcluster-review for the panel.\n\n"
+                                       f"PR: {pr.get('html_url', '')}"} for n in names],
+                "request_qa_review": False, "pr_number": pr.get("number")}
     try:
         files = changed_files(repo, base, head, token)
     except GateError as error:
+        if action == "edited":
+            return placeholders("scope unknown")
         return {"skip": f"cannot list the changed files of {head[:7]} ({error}); the panel or an override decides"}
     owned = qa_owned(files, qa_paths)
     graded = f"base {base_ref}@{base[:7]}"
     if owned:
-        if action != "edited" or not scope_holds(repo, head, check_name, token):
+        if action != "edited":
             return {"skip": f"{len(owned)} changed file(s) under a QA-owned path; the panel decides"}
-        summary = (f"After the retarget to {base_ref}, {len(owned)} changed file(s) are under a QA-owned "
-                   f"path. The earlier out-of-scope pass no longer applies: comment /vcluster-review "
-                   f"for the panel.\n\nPR: {pr.get('html_url', '')}")
-        return {"checks": [{"name": name, "head_sha": head, "conclusion": "action_required",
-                            "external_id": SCOPE_EXTERNAL_ID,
-                            "title": f"{label}: in scope after retarget to {base_ref}, the panel decides",
-                            "summary": summary}
-                           for name, label in ((check_name, "QA review"), (test_check, "QA test run"))],
-                "request_qa_review": False, "pr_number": pr.get("number")}
+        return placeholders(f"{len(owned)} file(s) in scope")
     summary = (f"No changed file is under a QA-owned path ({', '.join(qa_paths)}) against {graded}, "
                f"so the review panel does not run on this PR.\n\nPR: {pr.get('html_url', '')}")
-    return {"checks": [{"name": check_name, "head_sha": head, "conclusion": "success",
-                        "external_id": SCOPE_EXTERNAL_ID,
-                        "title": f"QA review: out of scope, no QA-owned path ({graded})", "summary": summary},
-                       {"name": test_check, "head_sha": head, "conclusion": "success",
-                        "external_id": SCOPE_EXTERNAL_ID,
-                        "title": f"QA test run: out of scope, no QA-owned path ({graded})", "summary": summary}],
+    return {"checks": [{"name": n, "head_sha": head, "conclusion": "success", "external_id": SCOPE_EXTERNAL_ID,
+                        "title": f"{labels[n]}: out of scope, no QA-owned path ({graded})", "summary": summary}
+                       for n in names],
             "request_qa_review": False, "pr_number": pr.get("number")}
 
 
@@ -324,6 +328,9 @@ def sweep(repo, token, bots, qa_paths, check_name, test_check, qa_team, run_url,
             print(f"::notice::qa-review-gate: #{number} is a trusted bot PR on a later head; a person reviews it")
             stuck.append((number, head, missing))
             continue
+        # The list is a snapshot; a retarget or push since then must not be graded by it.
+        pr = gh_api([f"repos/{repo}/pulls/{number}"], token) or pr
+        head = (pr.get("head") or {}).get("sha", head)
         event = {"action": "opened", "pull_request": pr, "sender": pr.get("user") or {}}
         decision = decide_scope(event, repo, token, qa_paths, check_name, test_check)
         if "skip" in decision:
@@ -334,6 +341,8 @@ def sweep(repo, token, bots, qa_paths, check_name, test_check, qa_team, run_url,
         apply(decision, repo, token, qa_team, run_url, panel_login)
         done += 1
         print(f"qa-review-gate: #{number} {head[:7]} passed as out of scope ({', '.join(missing)} created)")
+        if regrade_if_retargeted(event, repo, token, qa_paths, check_name, test_check, qa_team, run_url, panel_login):
+            print(f"qa-review-gate: #{number} {head[:7]} retargeted meanwhile; graded again")
     for number, head, missing in stuck:
         print(f"::warning::qa-review-gate: #{number} {head[:7]} still lacks {', '.join(missing)}; "
               "needs /vcluster-review from a person or /qa-review override before the ruleset is enabled")
@@ -398,7 +407,7 @@ def collect_review(event, repo, token, panel_login, check_name, test_check="qa-t
     head = decision["check"]["head_sha"]
     pr_number = decision["pr_number"]
     existing = gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={test_check}"], token)
-    if existing.get("check_runs") and not placeholder(existing["check_runs"]):
+    if existing.get("check_runs") and not scope_owned(existing["check_runs"]):
         # A retry: our own provisional opener may still hide a real result behind it.
         decision["reconcile"] = test_check
         return decision
@@ -870,7 +879,7 @@ def apply(decision, repo, token, qa_team, run_url, panel_login="loft-bot"):
             continue
         if check["name"] == decision.get("opener_name"):
             existing = gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={check['name']}"], token)
-            if existing.get("check_runs") and not placeholder(existing["check_runs"]):
+            if existing.get("check_runs") and not scope_owned(existing["check_runs"]):
                 # A retry after a failed reconciliation: the newest run may still be our
                 # provisional opener while a real result sits behind it.
                 reconcile_opener(repo, head, check["name"], None, token, run_url)

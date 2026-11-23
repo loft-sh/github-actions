@@ -135,6 +135,22 @@ PLACEHOLDER = {"id": 7, "status": "completed", "conclusion": "action_required", 
                "output": {"title": "QA test run: in scope after retarget to main, the panel decides", "summary": "s"}}
 
 
+def test_panel_verdict_replaces_a_scope_pass_the_retarget_job_has_not_withdrawn_yet(monkeypatch):
+    # Base changed, the panel ran first: the old out-of-scope success on qa-test-run must
+    # give way to the opener that waits for the newly added spec.
+    scope_pass = {"id": 7, "status": "completed", "conclusion": "success", "external_id": "qa-review-gate:scope",
+                  "output": {"title": "QA test run: out of scope, no QA-owned path (base main@b)", "summary": "s"}}
+    api = review_api(check_runs=[scope_pass], files=NEW_SPEC)
+    monkeypatch.setattr(gate, "gh_api", api)
+    decision = gate.collect_review(review_event(body=marker("pass")), "o/r", "tok", "loft-bot", "qa-review")
+    assert [(c["name"], c["conclusion"]) for c in decision["checks"]] == [
+        ("qa-review", "success"), ("qa-test-run", "action_required")]
+    gate.apply(decision, "o/r", "tok", "", "https://run")
+    posts = [p for a, p in api.writes if a == "repos/o/r/check-runs"]
+    assert [(p["name"], p["conclusion"]) for p in posts] == [("qa-review", "success"), ("qa-test-run", "action_required")]
+    assert "wait for" in posts[1]["output"]["title"]
+
+
 def test_panel_verdict_replaces_the_retarget_placeholder(monkeypatch):
     # A retarget brought only an e2e workflow change into scope (no new spec): the panel
     # passes, and qa-test-run must turn green instead of staying on the placeholder.
@@ -414,7 +430,7 @@ def test_a_retarget_into_scope_takes_the_out_of_scope_pass_back(monkeypatch):
     decision = gate.decide_scope(event, "o/r", "tok", QA_PATHS, "qa-review")
     assert [(c["name"], c["conclusion"], c["head_sha"]) for c in decision["checks"]] == \
         [("qa-review", "action_required", HEAD), ("qa-test-run", "action_required", HEAD)]
-    assert decision["checks"][0]["title"] == "QA review: in scope after retarget to release-1.0, the panel decides"
+    assert decision["checks"][0]["title"] == "QA review: 1 file(s) in scope after retarget to release-1.0, the panel decides"
 
 
 def test_a_retarget_into_scope_before_any_check_writes_the_placeholder(monkeypatch):
@@ -430,7 +446,42 @@ def test_a_retarget_into_scope_leaves_a_panel_verdict_alone(monkeypatch):
     event, api = retarget_event(["e2e/a.go"], "")
     monkeypatch.setattr(gate, "gh_api", api)
     assert gate.decide_scope(event, "o/r", "tok", QA_PATHS, "qa-review") == \
-        {"skip": "1 changed file(s) under a QA-owned path; the panel decides"}
+        {"skip": "retarget: the panel's verdict or an override owns both checks"}
+
+
+def test_a_retarget_replaces_only_the_checks_the_scope_check_still_owns(monkeypatch):
+    # The panel ran between the base change and this job: its verdict owns qa-review, its
+    # opener owns qa-test-run; the opposite split (a verdict, a scope-owned test run) is the
+    # one Piotr reproduced, so each check is decided on its own.
+    event, _ = retarget_event(["e2e/a.go"], "")
+    def api(args, token, payload=None):
+        if "check_name=qa-review&" in args[0]:
+            return {"check_runs": [{"id": 9, "external_id": ""}]}
+        if "check_name=qa-test-run&" in args[0]:
+            return {"check_runs": [{"id": 8, "external_id": gate.SCOPE_EXTERNAL_ID, "conclusion": "success"}]}
+        return {"files": [{"filename": "e2e/a.go"}]}
+    monkeypatch.setattr(gate, "gh_api", api)
+    decision = gate.decide_scope(event, "o/r", "tok", QA_PATHS, "qa-review")
+    assert [(c["name"], c["conclusion"]) for c in decision["checks"]] == [("qa-test-run", "action_required")]
+
+
+def test_a_retarget_whose_diff_cannot_be_listed_withdraws_the_pass(monkeypatch):
+    event, _ = retarget_event(["e2e/a.go"], gate.SCOPE_EXTERNAL_ID)
+    def api(args, token, payload=None):
+        if "check-runs?" in args[0]:
+            return {"check_runs": [{"id": 7, "external_id": gate.SCOPE_EXTERNAL_ID, "conclusion": "success"}]}
+        return {"files": [{"filename": f"f{i}.go"} for i in range(gate.COMPARE_FILE_CAP)]}
+    monkeypatch.setattr(gate, "gh_api", api)
+    decision = gate.decide_scope(event, "o/r", "tok", QA_PATHS, "qa-review")
+    assert [(c["name"], c["conclusion"]) for c in decision["checks"]] == \
+        [("qa-review", "action_required"), ("qa-test-run", "action_required")]
+    assert decision["checks"][0]["title"] == "QA review: scope unknown after retarget to release-1.0, the panel decides"
+
+
+def test_a_retarget_out_of_scope_never_overwrites_a_panel_verdict(monkeypatch):
+    event, api = retarget_event(["docs/a.md"], "")
+    monkeypatch.setattr(gate, "gh_api", api)
+    assert "skip" in gate.decide_scope(event, "o/r", "tok", QA_PATHS, "qa-review")
 
 
 def test_a_retarget_that_stays_out_of_scope_passes_against_the_new_base(monkeypatch):
@@ -600,6 +651,33 @@ def test_sweep_passes_only_open_prs_without_a_check_that_touch_no_qa_path(monkey
     assert "::warning::qa-review-gate: #3 3333333 still lacks qa-review, qa-test-run" in out
     assert "::warning::qa-review-gate: #4 4444444 still lacks qa-review, qa-test-run" in out
     assert "2 still lack a check" in out
+
+
+def test_sweep_grades_the_pr_as_it_is_now_and_regrades_after_a_retarget(monkeypatch, capsys):
+    # The open-PR list captured base main (docs-only); the PR now targets release-1.0 where
+    # the same head also changes e2e: no stale pass may land.
+    listed = {"number": 6, "user": {"login": "roehrijn"}, "head": {"sha": "6" * 40, "ref": "a"},
+              "base": {"sha": BASE, "ref": "main"}}
+    now = {**listed, "base": {"sha": "c" * 40, "ref": "release-1.0"}, "html_url": "u"}
+    writes = []
+    def api(args, token, payload=None):
+        if args[0].startswith("repos/o/r/pulls?"):
+            return [[listed]]
+        if args[0] == "repos/o/r/pulls/6":
+            return now
+        if "check-runs?" in args[0]:
+            return {"check_runs": []}
+        if "/compare/" in args[0]:
+            base = args[0].split("/compare/")[1].split("...")[0]
+            return {"files": [{"filename": "docs/a.md"}] + ([{"filename": "e2e/x.go"}] if base == "c" * 40 else [])}
+        if payload is not None:
+            writes.append(payload)
+            return {"id": 1}
+        return {}
+    monkeypatch.setattr(gate, "gh_api", api)
+    assert gate.sweep("o/r", "tok", BOTS, QA_PATHS, "qa-review", "qa-test-run", "", "https://run", "loft-bot") == 0
+    assert writes == []
+    assert "#6: 1 changed file(s) under a QA-owned path; the panel decides" in capsys.readouterr().out
 
 
 def test_sweep_retry_creates_only_the_missing_check(monkeypatch):

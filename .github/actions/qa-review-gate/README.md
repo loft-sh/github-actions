@@ -41,16 +41,21 @@ or rerun job cannot grade an older SHA by a newer diff; a compare that may be cu
 decision to the panel or an override. The check names the base it graded, and a retarget
 (`pull_request_target` `edited` with a base change, same head) grades again: a head that is
 now in scope gets both checks back as `action_required` until the panel or an override
-decides, so callers list `edited` among their types. The panel's verdict replaces that
-placeholder with its normal test-run decision (green when the PR adds no spec, waiting for
-an e2e run otherwise). A scope pass is published only while the PR still targets the graded
-base, and the job checks the base once more after writing, so a retarget that overtakes a
-queued `opened` job cannot leave a pass on a head that is now in scope. A trusted bot PR
-whose exemption was declined (a head the bot did not push, or a bot push on a head the gate
-had not passed) never takes this pass: it goes to review whatever it touches. The panel
-never runs on such a PR, so without this a required check would block Renovate, version
-bumps and every code-only change. A PR that does touch one of those paths gets nothing from
-this step: the panel's verdict and the e2e report grade it.
+decides, so callers list `edited` among their types. The panel's verdict replaces whatever
+the scope check wrote on `qa-test-run` (a pass or that placeholder) with its normal test-run
+decision (green when the PR adds no spec, waiting for an e2e run otherwise), and a retarget
+touches only the checks the scope check still owns: a panel verdict, an e2e result or an
+override on either check stays, whatever order the jobs ran in. A retarget whose diff cannot
+be listed (the compare cap) withdraws the pass the same way. The sweep grades each PR as it
+is at that moment, not as the open-PR list captured it, and checks the base again after
+writing. A scope pass is published only while the PR still targets the graded base, and the
+job checks the base once more after writing, so a retarget that overtakes a queued `opened`
+job cannot leave a pass on a head that is now in scope. A trusted bot PR whose exemption was
+declined (a head the bot did not push, or a bot push on a head the gate had not passed)
+never takes this pass: it goes to review whatever it touches. The panel never runs on such a
+PR, so without this a required check would block Renovate, version bumps and every code-only
+change. A PR that does touch one of those paths gets nothing from this step: the panel's
+verdict and the e2e report grade it.
 
 Before the ruleset goes live, run the caller's `workflow_dispatch` once (mode `sweep`):
 every open PR whose head lacks `qa-review` or `qa-test-run` from GitHub Actions (the source
