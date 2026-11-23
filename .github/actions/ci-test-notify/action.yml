@@ -25,6 +25,10 @@ inputs:
     description: 'Label for the run link in the context footer. The footer always links the run; this only replaces the default `<repo> · Run #<number>` text, for callers whose repo name reads like the subject of the message (for example a CVE scan of an image named like the repo). Empty or blank keeps the default.'
     required: false
     default: ''
+  header-emoji:
+    description: 'Emoji at the start of the header, in place of the one the status picks (for example `👀` for a review request, which is not a test result). The status still sets the suffix, so pair it with `info` or `warning` for a header with no suffix. Empty or blank keeps the status emoji.'
+    required: false
+    default: ''
 
 runs:
   using: "composite"
@@ -50,6 +54,7 @@ runs:
         RUN_NUMBER: ${{ github.run_number }}
         RUN_LINK_POSITION: ${{ inputs.run-link-position }}
         FOOTER_TEXT: ${{ inputs.footer-text }}
+        HEADER_EMOJI: ${{ inputs.header-emoji }}
       run: ${{ github.action_path }}/build-payload.sh
 
     - name: Send Slack notification
