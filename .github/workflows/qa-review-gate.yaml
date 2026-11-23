@@ -60,7 +60,34 @@ on:
         required: false
 
 jobs:
+  sweep:
+    # The manual run with no pr-number only lists the open PRs lacking a check and starts
+    # one gate run per PR. It is the one job that needs actions: write (a dispatch), so the
+    # gate job stays on actions: read for every event; a called job can only lower the
+    # caller's grant, so the caller still grants write.
+    if: github.event_name == 'workflow_dispatch' && inputs.pr-number == ''
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      checks: read
+      pull-requests: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          persist-credentials: false
+          sparse-checkout: .github/actions/qa-review-gate
+      - uses: ./.github/actions/qa-review-gate
+        with:
+          mode: sweep
+          check-name: ${{ inputs.check-name }}
+          test-check-name: ${{ inputs.test-check-name }}
+          caller-workflow: ${{ github.workflow_ref }}
   tested:
+    # Every event but the sweep listing above; `gate` follows through `needs`.
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.pr-number == '') }}
     # Every writer for one head shares a queue: the e2e runs of one tested commit (Pro and
     # OSS trees; a PR run and a /test-e2e dispatch) each read the recorded tree results,
     # then write, and a PR event job (retarget), the panel verdict job and an e2e result
@@ -80,7 +107,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RUN_ID: ${{ github.run_id }}
         run: |
-          if [ -n "$PR" ]; then sha="$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha || true)"; elif [ "$DISPATCH" = true ]; then sha="$(grep -oE '[0-9a-f]{40}' <<<"$TITLE" | tail -n1 || true)"; else sha="$HEAD_SHA"; fi
+          if [ -n "$PR" ]; then
+            sha="$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" || { echo "::error::qa-review-gate: cannot read the head of #$PR"; exit 1; }
+          elif [ "$DISPATCH" = true ]; then
+            sha="$(grep -oE '[0-9a-f]{40}' <<<"$TITLE" | tail -n1 || true)"
+          else
+            sha="$HEAD_SHA"
+          fi
           echo "sha=${sha:-$RUN_ID}" >> "$GITHUB_OUTPUT"
   gate:
     needs: tested
@@ -95,7 +128,7 @@ jobs:
       checks: write
       pull-requests: write
       contents: read
-      actions: write # read for the e2e report, write for the sweep to start one run per PR
+      actions: read # the e2e report; the sweep listing above is the one job that writes
     steps:
       # job.workflow_sha is the commit the caller's `uses:` tag resolved to, so the
       # action comes from the same revision as this workflow, not from main.
@@ -119,4 +152,4 @@ jobs:
           test-check-name: ${{ inputs.test-check-name }}
           report-trees: ${{ inputs.report-trees }}
           pr-number: ${{ inputs.pr-number }}
-          caller-workflow: ${{ github.workflow_ref }}
+          queued-sha: ${{ needs.tested.outputs.sha }}

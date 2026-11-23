@@ -69,12 +69,16 @@ inputs:
     description: 'sweep mode: grade this one PR under its head queue. Empty: list the open PRs lacking a check and start one run of caller-workflow per PR.'
     required: false
     default: ''
+  queued-sha:
+    description: 'sweep mode with pr-number: the head the calling job queued for (the reusable workflow resolves it before the queue). The run grades the PR only while it still sits on that head.'
+    required: false
+    default: ''
   caller-workflow:
-    description: 'sweep mode: the caller workflow to start per PR, as github.workflow_ref (owner/repo/.github/workflows/<file>@<ref>). The calling job needs actions: write.'
+    description: 'sweep mode without pr-number: the caller workflow to start per PR, as github.workflow_ref (owner/repo/.github/workflows/<file>@<ref>). Only this listing job needs actions: write.'
     required: false
     default: ''
   github-token:
-    description: 'Token for gh. The calling job must grant checks: write and pull-requests: write; ci mode also needs actions: read, sweep mode actions: write.'
+    description: 'Token for gh. The calling job must grant checks: write and pull-requests: write; ci mode also needs actions: read, the sweep listing (sweep mode without pr-number) actions: write.'
     required: false
     default: ${{ github.token }}
 
@@ -97,6 +101,7 @@ runs:
         INPUT_TEST_CHECK_NAME: ${{ inputs.test-check-name }}
         INPUT_REPORT_TREES: ${{ inputs.report-trees }}
         INPUT_PR_NUMBER: ${{ inputs.pr-number }}
+        INPUT_QUEUED_SHA: ${{ inputs.queued-sha }}
         INPUT_CALLER_WORKFLOW: ${{ inputs.caller-workflow }}
         INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}
         INPUT_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

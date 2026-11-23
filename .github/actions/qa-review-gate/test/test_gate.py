@@ -131,14 +131,14 @@ def test_review_opens_the_test_run_check_green_when_the_pr_adds_no_spec(monkeypa
         ("qa-review", "failure"), ("qa-test-run", "success")]
 
 
-PLACEHOLDER = {"id": 7, "status": "completed", "conclusion": "action_required", "external_id": "qa-review-gate:scope",
+PLACEHOLDER = {"app": {"slug": "github-actions"}, "id": 7, "status": "completed", "conclusion": "action_required", "external_id": "qa-review-gate:scope",
                "output": {"title": "QA test run: in scope after retarget to main, the panel decides", "summary": "s"}}
 
 
 def test_panel_verdict_replaces_a_scope_pass_the_retarget_job_has_not_withdrawn_yet(monkeypatch):
     # Base changed, the panel ran first: the old out-of-scope success on qa-test-run must
     # give way to the opener that waits for the newly added spec.
-    scope_pass = {"id": 7, "status": "completed", "conclusion": "success", "external_id": "qa-review-gate:scope",
+    scope_pass = {"app": {"slug": "github-actions"}, "id": 7, "status": "completed", "conclusion": "success", "external_id": "qa-review-gate:scope",
                   "output": {"title": "QA test run: out of scope, no QA-owned path (base main@b)", "summary": "s"}}
     api = review_api(check_runs=[scope_pass], files=NEW_SPEC)
     monkeypatch.setattr(gate, "gh_api", api)
@@ -190,7 +190,7 @@ def test_review_opener_rechecks_for_a_result_before_posting(monkeypatch):
     api = review_api(files=NEW_SPEC)
     monkeypatch.setattr(gate, "gh_api", api)
     decision = gate.collect_review(review_event(), "o/r", "tok", "loft-bot", "qa-review")
-    completed = review_api(check_runs=[{"conclusion": "success"}], files=NEW_SPEC)
+    completed = review_api(check_runs=[{"app": {"slug": "github-actions"}, "conclusion": "success"}], files=NEW_SPEC)
     monkeypatch.setattr(gate, "gh_api", completed)
     gate.apply(decision, "o/r", "tok", "", "https://run")
     assert [payload["name"] for _, payload in completed.writes] == ["qa-review"]
@@ -201,12 +201,12 @@ def test_review_opener_reconciles_result_posted_between_lookup_and_create(monkey
     monkeypatch.setattr(gate, "gh_api", review_api(files=NEW_SPEC))
     decision = gate.collect_review(review_event(), "o/r", "tok", "loft-bot", "qa-review")
     writes = []
-    result = {"id": 20, "status": "completed", "conclusion": conclusion,
+    result = {"app": {"slug": "github-actions"}, "id": 20, "status": "completed", "conclusion": conclusion,
               "details_url": "https://e2e", "output": {"title": "E2E result", "summary": "details"}}
 
     def api(args, token, payload=None):
         if "check-runs?" in args[0]:
-            return {"check_runs": [result, {"id": 21, "status": "completed"}]
+            return {"check_runs": [result, {"app": {"slug": "github-actions"}, "id": 21, "status": "completed"}]
                     if "filter=all" in args[0] else []}
         if payload is not None:
             writes.append((args, payload))
@@ -223,7 +223,7 @@ def test_review_opener_reconciles_result_posted_between_lookup_and_create(monkey
 
 
 def test_review_leaves_an_existing_test_run_check_alone(monkeypatch):
-    monkeypatch.setattr(gate, "gh_api", review_api(check_runs=[{"conclusion": "success"}], files=NEW_SPEC))
+    monkeypatch.setattr(gate, "gh_api", review_api(check_runs=[{"app": {"slug": "github-actions"}, "conclusion": "success"}], files=NEW_SPEC))
     decision = gate.collect_review(review_event(), "o/r", "tok", "loft-bot", "qa-review")
     assert "checks" not in decision and decision["check"]["name"] == "qa-review"
 
@@ -419,7 +419,7 @@ def retarget_event(files, newest_external_id):
     event["pull_request"]["base"] = {"sha": BASE, "ref": "release-1.0"}
     def api(args, token, payload=None):
         if "check-runs?" in args[0]:
-            return {"check_runs": [{"id": 5, "external_id": "x"}, {"id": 7, "external_id": newest_external_id}]}
+            return {"check_runs": [{"app": {"slug": "github-actions"}, "id": 5, "external_id": "x"}, {"app": {"slug": "github-actions"}, "id": 7, "external_id": newest_external_id}]}
         return {"files": [{"filename": f} for f in files]}
     return event, api
 
@@ -456,9 +456,9 @@ def test_a_retarget_replaces_only_the_checks_the_scope_check_still_owns(monkeypa
     event, _ = retarget_event(["e2e/a.go"], "")
     def api(args, token, payload=None):
         if "check_name=qa-review&" in args[0]:
-            return {"check_runs": [{"id": 9, "external_id": ""}]}
+            return {"check_runs": [{"app": {"slug": "github-actions"}, "id": 9, "external_id": ""}]}
         if "check_name=qa-test-run&" in args[0]:
-            return {"check_runs": [{"id": 8, "external_id": gate.SCOPE_EXTERNAL_ID, "conclusion": "success"}]}
+            return {"check_runs": [{"app": {"slug": "github-actions"}, "id": 8, "external_id": gate.SCOPE_EXTERNAL_ID, "conclusion": "success"}]}
         return {"files": [{"filename": "e2e/a.go"}]}
     monkeypatch.setattr(gate, "gh_api", api)
     decision = gate.decide_scope(event, "o/r", "tok", QA_PATHS, "qa-review")
@@ -469,7 +469,7 @@ def test_a_retarget_whose_diff_cannot_be_listed_withdraws_the_pass(monkeypatch):
     event, _ = retarget_event(["e2e/a.go"], gate.SCOPE_EXTERNAL_ID)
     def api(args, token, payload=None):
         if "check-runs?" in args[0]:
-            return {"check_runs": [{"id": 7, "external_id": gate.SCOPE_EXTERNAL_ID, "conclusion": "success"}]}
+            return {"check_runs": [{"app": {"slug": "github-actions"}, "id": 7, "external_id": gate.SCOPE_EXTERNAL_ID, "conclusion": "success"}]}
         return {"files": [{"filename": f"f{i}.go"} for i in range(gate.COMPARE_FILE_CAP)]}
     monkeypatch.setattr(gate, "gh_api", api)
     decision = gate.decide_scope(event, "o/r", "tok", QA_PATHS, "qa-review")
@@ -624,7 +624,7 @@ def test_a_scope_write_keeps_a_verdict_that_landed_during_it(monkeypatch, capsys
             return {"id": 40}
         if "check-runs?" in args[0]:
             reads["n"] += 1
-            return {"check_runs": [{"id": 20, "status": "completed", "external_id": gate.SCOPE_EXTERNAL_ID}]
+            return {"check_runs": [{"app": {"slug": "github-actions"}, "id": 20, "status": "completed", "external_id": gate.SCOPE_EXTERNAL_ID}]
                     + ([verdict] if reads["n"] > 2 else [])}  # the verdict shows up after the pre-write read
         return {}
     monkeypatch.setattr(gate, "gh_api", api)
@@ -653,7 +653,7 @@ def test_main_regrades_when_a_retarget_overtook_the_scope_write(tmp_path, monkey
         if args[0] == "repos/o/r/pulls/12":
             return next(pulls)
         if "check-runs?" in args[0]:
-            return {"check_runs": [{"id": 1, "external_id": gate.SCOPE_EXTERNAL_ID, "conclusion": "success"}]}
+            return {"check_runs": [{"app": {"slug": "github-actions"}, "id": 1, "external_id": gate.SCOPE_EXTERNAL_ID, "conclusion": "success"}]}
         if payload is not None:
             writes.append(payload)
             return {"id": 1}
@@ -691,7 +691,7 @@ def test_main_sweep_mode(tmp_path, monkeypatch, capsys):
 def test_main_sweep_mode_with_a_pr_number_grades_that_pr(tmp_path, monkeypatch, capsys):
     event_file = tmp_path / "event.json"
     event_file.write_text("{}")
-    for key, value in {"INPUT_MODE": "sweep", "INPUT_PR_NUMBER": "12", "GITHUB_EVENT_PATH": str(event_file),
+    for key, value in {"INPUT_MODE": "sweep", "INPUT_PR_NUMBER": "12", "INPUT_QUEUED_SHA": HEAD, "GITHUB_EVENT_PATH": str(event_file),
                        "GITHUB_REPOSITORY": "o/r", "INPUT_GITHUB_TOKEN": "tok"}.items():
         monkeypatch.setenv(key, value)
     pr = {"number": 12, "user": {"login": "roehrijn"}, "head": {"sha": HEAD, "ref": "a"}, "base": {"sha": BASE, "ref": "main"}}
@@ -770,15 +770,24 @@ def test_sweep_passes_only_open_prs_without_a_check_that_touch_no_qa_path(monkey
     assert "sweep started 3 run(s): #2, #3, #4" in capsys.readouterr().out
     # Each dispatched run grades its PR under that head's queue.
     writes.clear()
-    assert gate.sweep_one("o/r", "tok", 2, BOTS, QA_PATHS, "qa-review", "qa-test-run", "", "https://run", "loft-bot")
+    assert gate.sweep_one("o/r", "tok", 2, "2" * 40, BOTS, QA_PATHS, "qa-review", "qa-test-run", "", "https://run", "loft-bot")
     assert [(w["name"], w["head_sha"]) for w in writes] == [("qa-review", "2" * 40), ("qa-test-run", "2" * 40)]
-    assert not gate.sweep_one("o/r", "tok", 3, BOTS, QA_PATHS, "qa-review", "qa-test-run", "", "https://run", "loft-bot")
-    assert not gate.sweep_one("o/r", "tok", 4, BOTS, QA_PATHS, "qa-review", "qa-test-run", "", "https://run", "loft-bot")
-    assert not gate.sweep_one("o/r", "tok", 1, BOTS, QA_PATHS, "qa-review", "qa-test-run", "", "https://run", "loft-bot")
+    assert not gate.sweep_one("o/r", "tok", 3, "3" * 40, BOTS, QA_PATHS, "qa-review", "qa-test-run", "", "https://run", "loft-bot")
+    assert not gate.sweep_one("o/r", "tok", 4, "4" * 40, BOTS, QA_PATHS, "qa-review", "qa-test-run", "", "https://run", "loft-bot")
+    assert not gate.sweep_one("o/r", "tok", 1, "1" * 40, BOTS, QA_PATHS, "qa-review", "qa-test-run", "", "https://run", "loft-bot")
     out = capsys.readouterr().out
     assert "::warning::qa-review-gate: #3 3333333 still lacks qa-review, qa-test-run (1 changed file(s) under a QA-owned path" in out
     assert "::warning::qa-review-gate: #4 4444444 still lacks qa-review, qa-test-run (a trusted bot PR on a later head" in out
     assert "#1 1111111 has both checks" in out
+
+
+def test_sweep_run_skips_a_pr_that_moved_after_it_queued(monkeypatch, capsys):
+    pr = {"number": 8, "user": {"login": "roehrijn"}, "head": {"sha": "b" * 40, "ref": "a"}, "base": {"sha": BASE, "ref": "main"}}
+    calls = []
+    monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None: calls.append((args, payload)) or pr)
+    assert not gate.sweep_one("o/r", "tok", 8, "a" * 40, BOTS, QA_PATHS, "qa-review", "qa-test-run", "", "https://run", "loft-bot")
+    assert calls == [(["repos/o/r/pulls/8"], None)]
+    assert "#8 is on bbbbbbb, this run queued for aaaaaaa" in capsys.readouterr().out
 
 
 def test_sweep_grades_the_pr_as_it_is_now_and_regrades_after_a_retarget(monkeypatch, capsys):
@@ -803,13 +812,13 @@ def test_sweep_grades_the_pr_as_it_is_now_and_regrades_after_a_retarget(monkeypa
             return {"id": 1}
         return {}
     monkeypatch.setattr(gate, "gh_api", api)
-    assert not gate.sweep_one("o/r", "tok", 6, BOTS, QA_PATHS, "qa-review", "qa-test-run", "", "https://run", "loft-bot")
+    assert not gate.sweep_one("o/r", "tok", 6, "6" * 40, BOTS, QA_PATHS, "qa-review", "qa-test-run", "", "https://run", "loft-bot")
     assert writes == []
     assert "#6 6666666 still lacks qa-review, qa-test-run (1 changed file(s) under a QA-owned path" in capsys.readouterr().out
 
 
-def test_sweep_counts_the_missing_checks_on_the_current_head(monkeypatch):
-    # The listed head had qa-review only; a commit since then left the new head with neither.
+def test_sweep_counts_the_missing_checks_on_the_queued_head(monkeypatch):
+    # The listed head had qa-review only; the run queued for the new head, which has neither.
     listed = {"number": 7, "user": {"login": "roehrijn"}, "head": {"sha": "7" * 40, "ref": "a"},
               "base": {"sha": BASE, "ref": "main"}}
     now = {**listed, "head": {"sha": "8" * 40, "ref": "a"}, "html_url": "u"}
@@ -829,7 +838,7 @@ def test_sweep_counts_the_missing_checks_on_the_current_head(monkeypatch):
             return {"id": 1}
         return {}
     monkeypatch.setattr(gate, "gh_api", api)
-    assert gate.sweep_one("o/r", "tok", 7, BOTS, QA_PATHS, "qa-review", "qa-test-run", "", "https://run", "loft-bot")
+    assert gate.sweep_one("o/r", "tok", 7, "8" * 40, BOTS, QA_PATHS, "qa-review", "qa-test-run", "", "https://run", "loft-bot")
     assert writes == [("qa-review", "8" * 40), ("qa-test-run", "8" * 40)]
 
 
@@ -850,17 +859,17 @@ def test_sweep_retry_creates_only_the_missing_check(monkeypatch):
             return {"id": 1}
         return {}
     monkeypatch.setattr(gate, "gh_api", api)
-    assert gate.sweep_one("o/r", "tok", 5, BOTS, QA_PATHS, "qa-review", "qa-test-run", "", "https://run", "loft-bot")
+    assert gate.sweep_one("o/r", "tok", 5, "5" * 40, BOTS, QA_PATHS, "qa-review", "qa-test-run", "", "https://run", "loft-bot")
     assert [w["name"] for w in writes] == ["qa-test-run"]
 
 
 def test_opener_reconciliation_prefers_an_override_over_a_newer_failure(monkeypatch):
     calls = []
     runs = {"check_runs": [
-        {"id": 3, "status": "completed", "external_id": "qa-review-gate:override", "conclusion": "success",
+        {"app": {"slug": "github-actions"}, "id": 3, "status": "completed", "external_id": "qa-review-gate:override", "conclusion": "success",
          "details_url": "https://c", "output": {"title": "QA test run: overridden by @sowmyav27", "summary": "why"}},
-        {"id": 20, "status": "completed", "conclusion": "failure", "output": {"title": "E2E failed", "summary": "d"}},
-        {"id": 21, "status": "completed", "conclusion": "action_required", "external_id": gate.OPENER_EXTERNAL_ID},
+        {"app": {"slug": "github-actions"}, "id": 20, "status": "completed", "conclusion": "failure", "output": {"title": "E2E failed", "summary": "d"}},
+        {"app": {"slug": "github-actions"}, "id": 21, "status": "completed", "conclusion": "action_required", "external_id": gate.OPENER_EXTERNAL_ID},
     ]}
     monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None:
                         calls.append((args, payload)) or (runs if "check-runs?" in args[0] else {}))
@@ -906,12 +915,34 @@ def test_a_bot_push_on_a_head_the_gate_did_not_pass_goes_to_the_panel():
                         "final": True}
 
 
+def test_runs_from_another_app_never_count(monkeypatch):
+    other = {"slug": "some-other-app"}
+    runs = {"check_runs": [{"id": 3, "status": "completed", "app": other, "external_id": "qa-review-gate:override",
+                            "conclusion": "success"}]}
+    monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None: runs)
+    assert gate.override_run("o/r", HEAD, "qa-test-run", "tok") is None
+    runs["check_runs"] = [{"id": 3, "status": "completed", "app": other, "external_id": "qa-review-gate:bot",
+                           "conclusion": "success"}]
+    assert gate.bot_passed("o/r", HEAD, "qa-review", "tok") is False
+    runs["check_runs"] = [{"id": 1, "status": "completed", "app": other,
+                           "external_id": "qa-review-gate:trees:ginkgo-report=success"}]
+    assert gate.tree_results("o/r", HEAD, "qa-test-run", "tok") == {}
+    calls = []
+    runs["check_runs"] = [
+        {"id": 20, "status": "completed", "app": other, "conclusion": "failure", "output": {"title": "x", "summary": "y"}},
+        {"id": 21, "status": "completed", "app": {"slug": "github-actions"}, "conclusion": "action_required",
+         "external_id": gate.OPENER_EXTERNAL_ID}]
+    monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None: calls.append((args, payload)) or runs)
+    gate.reconcile_opener("o/r", HEAD, "qa-test-run", None, "tok", "https://run")
+    assert not [p for a, p in calls if p]
+
+
 def test_bot_passed_reads_this_gates_own_bot_check(monkeypatch):
-    runs = {"check_runs": [{"external_id": "qa-review-gate:bot", "conclusion": "success"}]}
+    runs = {"check_runs": [{"app": {"slug": "github-actions"}, "external_id": "qa-review-gate:bot", "conclusion": "success"}]}
     monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None: runs)
     assert gate.bot_passed("o/r", "a" * 40, "qa-review", "tok") is True
-    runs["check_runs"] = [{"external_id": None, "conclusion": "success"},
-                          {"external_id": "qa-review-gate:bot", "conclusion": "failure"}]
+    runs["check_runs"] = [{"app": {"slug": "github-actions"}, "external_id": None, "conclusion": "success"},
+                          {"app": {"slug": "github-actions"}, "external_id": "qa-review-gate:bot", "conclusion": "failure"}]
     assert gate.bot_passed("o/r", "a" * 40, "qa-review", "tok") is False
     runs["check_runs"] = []
     assert gate.bot_passed("o/r", "a" * 40, "qa-review", "tok") is False
@@ -942,7 +973,7 @@ def test_the_import_fix_waits_for_the_opened_head_to_carry_its_pass(monkeypatch)
     seen = {"polls": 0}
     def api(args, token, payload=None):
         seen["polls"] += 1
-        runs = [{"external_id": "qa-review-gate:bot", "conclusion": "success"}] if seen["polls"] >= 3 else []
+        runs = [{"app": {"slug": "github-actions"}, "external_id": "qa-review-gate:bot", "conclusion": "success"}] if seen["polls"] >= 3 else []
         return {"check_runs": runs}
     monkeypatch.setattr(gate, "gh_api", api)
     naps = []
@@ -961,9 +992,9 @@ def test_a_rerun_puts_the_override_back_on_top_after_a_failed_repair(monkeypatch
     # CI published 44 after the override 3; the repair PATCH failed; the gate reran.
     calls = []
     runs = {"check_runs": [
-        {"id": 3, "external_id": "qa-review-gate:override", "conclusion": "success", "details_url": "https://c",
+        {"app": {"slug": "github-actions"}, "id": 3, "external_id": "qa-review-gate:override", "conclusion": "success", "details_url": "https://c",
          "output": {"title": "QA test run: overridden by @sowmyav27", "summary": "why"}},
-        {"id": 44, "conclusion": "failure", "output": {"title": "QA test run: 1 new spec(s) did not run or pass"}},
+        {"app": {"slug": "github-actions"}, "id": 44, "conclusion": "failure", "output": {"title": "QA test run: 1 new spec(s) did not run or pass"}},
     ]}
     monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None:
                         calls.append((args, payload)) or (runs if "check-runs?" in args[0] else {}))
@@ -979,8 +1010,8 @@ def test_a_rerun_puts_the_override_back_on_top_after_a_failed_repair(monkeypatch
 
 def test_an_override_that_is_already_newest_needs_no_repair(monkeypatch):
     calls = []
-    runs = {"check_runs": [{"id": 44, "conclusion": "failure"},
-                           {"id": 45, "external_id": "qa-review-gate:override", "conclusion": "success"}]}
+    runs = {"check_runs": [{"app": {"slug": "github-actions"}, "id": 44, "conclusion": "failure"},
+                           {"app": {"slug": "github-actions"}, "id": 45, "external_id": "qa-review-gate:override", "conclusion": "success"}]}
     monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None:
                         calls.append((args, payload)) or (runs if "check-runs?" in args[0] else {}))
     late = {"check": {"name": "qa-test-run", "head_sha": HEAD, "conclusion": "failure", "title": "t", "summary": "s"},
@@ -992,14 +1023,14 @@ def test_an_override_that_is_already_newest_needs_no_repair(monkeypatch):
 def test_an_override_landing_during_the_write_still_wins(monkeypatch):
     calls = []
     state = {"reads": 0}
-    override = {"id": 3, "external_id": "qa-review-gate:override", "conclusion": "success",
+    override = {"app": {"slug": "github-actions"}, "id": 3, "external_id": "qa-review-gate:override", "conclusion": "success",
                 "details_url": "https://comment",
                 "output": {"title": "QA test run: overridden by @sowmyav27", "summary": "why"}}
     def api(args, token, payload=None):
         calls.append((args, payload))
         if "check-runs?" in args[0]:
             state["reads"] += 1
-            return {"check_runs": [override, {"id": 44, "conclusion": "failure"}] if state["reads"] > 1 else []}
+            return {"check_runs": [override, {"app": {"slug": "github-actions"}, "id": 44, "conclusion": "failure"}] if state["reads"] > 1 else []}
         return {"id": 44}
     monkeypatch.setattr(gate, "gh_api", api)
     late = {"check": {"name": "qa-test-run", "head_sha": HEAD, "conclusion": "failure",
@@ -1015,7 +1046,7 @@ def test_an_override_landing_during_the_write_still_wins(monkeypatch):
 
 def test_a_late_result_does_not_undo_an_override(monkeypatch):
     calls = []
-    override = {"check_runs": [{"id": 3, "external_id": "qa-review-gate:override", "conclusion": "success"}]}
+    override = {"check_runs": [{"app": {"slug": "github-actions"}, "id": 3, "external_id": "qa-review-gate:override", "conclusion": "success"}]}
     monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None:
                         calls.append((args, payload)) or (override if "check-runs?" in args[0] else {}))
     late = {"check": {"name": "qa-test-run", "head_sha": HEAD, "conclusion": "failure",
@@ -1027,7 +1058,7 @@ def test_a_late_result_does_not_undo_an_override(monkeypatch):
 
 def test_an_override_writes_its_mark_and_still_posts_over_an_older_override(monkeypatch):
     calls = []
-    older = {"check_runs": [{"id": 3, "external_id": "qa-review-gate:override", "conclusion": "success"}]}
+    older = {"check_runs": [{"app": {"slug": "github-actions"}, "id": 3, "external_id": "qa-review-gate:override", "conclusion": "success"}]}
     monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None:
                         calls.append((args, payload)) or (older if "check-runs?" in args[0] else {}))
     decision = gate.decide_comment(comment_event("/qa-review override flaky env"), {"sowmyav27"}, "qa-review")
@@ -1084,7 +1115,7 @@ def ci_api(head=HEAD, files=None, artifacts=("ginkgo-report",), check_runs=()):
 
 
 def ci_run(number=9):
-    return {"id": 7, "pull_requests": [{"number": number}], "head_sha": HEAD, "conclusion": "success"}
+    return {"app": {"slug": "github-actions"}, "id": 7, "pull_requests": [{"number": number}], "head_sha": HEAD, "conclusion": "success"}
 
 
 def test_ci_diff_failure_asks_a_person_instead_of_failing_the_job(monkeypatch):
@@ -1194,8 +1225,8 @@ def test_ci_failure_recorded_by_an_earlier_run_names_the_tree():
 def test_collect_ci_reads_the_other_tree_from_the_newest_tagged_check_run(monkeypatch):
     files = [{"filename": OSS, "patch": '@@ -4,0 +5 @@\n+\tIt("oss", func() {'},
              {"filename": "e2e/pro_test.go", "patch": '@@ -9,0 +10 @@\n+\tIt("pro", func() {'}]
-    runs = [{"id": 1, "external_id": "qa-review-gate:trees:ginkgo-report=success"},
-            {"id": 2, "external_id": gate.OPENER_EXTERNAL_ID}]
+    runs = [{"app": {"slug": "github-actions"}, "id": 1, "external_id": "qa-review-gate:trees:ginkgo-report=success"},
+            {"app": {"slug": "github-actions"}, "id": 2, "external_id": gate.OPENER_EXTERNAL_ID}]
     monkeypatch.setattr(gate, "gh_api", ci_api(files=files, artifacts=("oss-ginkgo-report",), check_runs=runs))
     report = [{"SpecReports": [leaf(5, "passed", file=RUNNER + OSS)]}]
 
@@ -1210,8 +1241,8 @@ def test_collect_ci_reads_the_other_tree_from_the_newest_tagged_check_run(monkey
 
 
 def test_retry_leaves_a_real_newest_result_alone(monkeypatch):
-    runs = [{"id": 21, "status": "completed", "conclusion": "action_required", "external_id": gate.OPENER_EXTERNAL_ID},
-            {"id": 22, "status": "completed", "conclusion": "success", "external_id": "qa-review-gate:trees:ginkgo-report=success"}]
+    runs = [{"app": {"slug": "github-actions"}, "id": 21, "status": "completed", "conclusion": "action_required", "external_id": gate.OPENER_EXTERNAL_ID},
+            {"app": {"slug": "github-actions"}, "id": 22, "status": "completed", "conclusion": "success", "external_id": "qa-review-gate:trees:ginkgo-report=success"}]
     api = review_api(check_runs=runs, files=NEW_SPEC)
     monkeypatch.setattr(gate, "gh_api", api)
     gate.apply(gate.collect_review(review_event(), "o/r", "tok", "loft-bot", "qa-review"), "o/r", "tok", "", "https://panel")
@@ -1219,7 +1250,7 @@ def test_retry_leaves_a_real_newest_result_alone(monkeypatch):
 
 
 def no_report_api(files, known):
-    runs = [{"id": 1, "external_id": "qa-review-gate:trees:" + known}] if known else []
+    runs = [{"app": {"slug": "github-actions"}, "id": 1, "external_id": "qa-review-gate:trees:" + known}] if known else []
     return ci_api(files=files, artifacts=(), check_runs=runs)
 
 
@@ -1252,9 +1283,13 @@ def test_ci_jobs_of_one_tested_commit_are_serialized():
     assert "grep -oE '[0-9a-f]{40}' <<<\"$TITLE\" | tail -n1" in text
     # A PR event job and the panel verdict job write to the same head as the e2e jobs do.
     assert "HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}" in text
-    # A sweep run for one PR queues on that PR's current head.
-    assert 'if [ -n "$PR" ]; then sha="$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha || true)"' in text
-    assert "caller-workflow: ${{ github.workflow_ref }}" in text and "actions: write" in text
+    # A sweep run for one PR queues on that PR's current head, fails when it cannot read it,
+    # and grades only while the PR still sits on it; the listing alone holds actions: write.
+    assert 'sha="$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" || { echo "::error::' in text
+    assert "queued-sha: ${{ needs.tested.outputs.sha }}" in text
+    assert "if: github.event_name == 'workflow_dispatch' && inputs.pr-number == ''" in text
+    assert "caller-workflow: ${{ github.workflow_ref }}" in text
+    assert text.count("\n      actions: write\n") == 1 and "\n      actions: read # the e2e report" in text
 
 
 def test_bot_backport_keeps_the_title_the_panel_matches():
@@ -1267,8 +1302,8 @@ def test_bot_backport_keeps_the_title_the_panel_matches():
 def test_retry_reconciles_an_existing_provisional_opener(monkeypatch):
     """The first attempt posted the opener, then its PATCH failed: the retry sees the opener
     at the first lookup, posts only qa-review, and still copies the real result onto it."""
-    runs = [{"id": 20, "status": "completed", "conclusion": "success", "output": {"title": "passed", "summary": "ok"}},
-            {"id": 21, "status": "completed", "conclusion": "action_required", "external_id": gate.OPENER_EXTERNAL_ID}]
+    runs = [{"app": {"slug": "github-actions"}, "id": 20, "status": "completed", "conclusion": "success", "output": {"title": "passed", "summary": "ok"}},
+            {"app": {"slug": "github-actions"}, "id": 21, "status": "completed", "conclusion": "action_required", "external_id": gate.OPENER_EXTERNAL_ID}]
     monkeypatch.setattr(gate, "gh_api", review_api(check_runs=runs, files=NEW_SPEC))
     decision = gate.collect_review(review_event(), "o/r", "tok", "loft-bot", "qa-review")
     assert "checks" not in decision and decision["reconcile"] == "qa-test-run"
@@ -1501,7 +1536,7 @@ def test_spec_state_matches_file_suffix_and_line_not_text():
 
 
 def run(conclusion="success"):
-    return {"id": 7, "conclusion": conclusion, "head_sha": HEAD,
+    return {"app": {"slug": "github-actions"}, "id": 7, "conclusion": conclusion, "head_sha": HEAD,
             "html_url": "https://github.com/o/r/actions/runs/7"}
 
 
@@ -1551,8 +1586,8 @@ def test_reconciliation_ignores_other_provisional_openers(monkeypatch):
     def api(args, token, payload=None):
         if "check-runs?" in args[0]:
             return {"check_runs": [
-                {"id": 20, "status": "completed", "conclusion": "success", "output": {"title": "passed", "summary": "passed"}},
-                {"id": 21, "status": "completed", "conclusion": "action_required", "external_id": gate.OPENER_EXTERNAL_ID},
+                {"app": {"slug": "github-actions"}, "id": 20, "status": "completed", "conclusion": "success", "output": {"title": "passed", "summary": "passed"}},
+                {"app": {"slug": "github-actions"}, "id": 21, "status": "completed", "conclusion": "action_required", "external_id": gate.OPENER_EXTERNAL_ID},
             ] if "filter=all" in args[0] else []}
         if payload is not None:
             writes.append((args, payload))

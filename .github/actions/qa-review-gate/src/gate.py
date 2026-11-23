@@ -146,8 +146,7 @@ def bot_checks(pr, login, prefix, check_name, test_check):
 
 def bot_passed(repo, sha, check_name, token):
     """True when this gate's bot mode already passed `sha` (the chain a bot push may extend)."""
-    runs = gh_api([f"repos/{repo}/commits/{sha}/check-runs?check_name={check_name}&filter=all&per_page=100"],
-                  token).get("check_runs") or []
+    runs = from_actions(gh_api([f"repos/{repo}/commits/{sha}/check-runs?check_name={check_name}&filter=all&per_page=100"], token).get("check_runs"))
     return any(r.get("external_id") == BOT_EXTERNAL_ID and r.get("conclusion") == "success" for r in runs)
 
 
@@ -194,6 +193,12 @@ def changed_files(repo, base_sha, head_sha, token, number=None):
     return names
 
 
+def from_actions(runs):
+    """Only the runs GitHub Actions published: the ruleset requires that source, and any app
+    with checks: write could otherwise pass an override, a bot pass or a result off as ours."""
+    return [run for run in runs or [] if (run.get("app") or {}).get("slug") == "github-actions"]
+
+
 def scope_owned(runs):
     """True when the newest run is the scope check's own (a pass or a retarget placeholder),
     which the panel's decision or a regrade may replace; a verdict, result or override is not."""
@@ -203,8 +208,7 @@ def scope_owned(runs):
 
 def scope_holds(repo, head, check_name, token):
     """True when the scope check owns `check_name` on `head`: no run yet, or `scope_owned`."""
-    runs = gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={check_name}&filter=all&per_page=100"],
-                  token).get("check_runs") or []
+    runs = from_actions(gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={check_name}&filter=all&per_page=100"], token).get("check_runs"))
     return not runs or scope_owned(runs)
 
 
@@ -318,13 +322,11 @@ def regrade_if_retargeted(event, repo, token, qa_paths, check_name, test_check, 
 
 
 def missing_checks(repo, head, names, token):
-    """The check names in `names` with no completed run from GitHub Actions on `head`: the
-    ruleset requires that source, so a check by another app does not count."""
+    """The check names in `names` with no completed run from GitHub Actions on `head`."""
     missing = []
     for name in names:
-        runs = gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={name}"], token).get("check_runs") or []
-        if not any(run.get("status") == "completed" and (run.get("app") or {}).get("slug") == "github-actions"
-                   for run in runs):
+        runs = from_actions(gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={name}"], token).get("check_runs"))
+        if not any(run.get("status") == "completed" for run in runs):
             missing.append(name)
     return missing
 
@@ -352,13 +354,19 @@ def sweep(repo, token, check_name, test_check, caller_workflow):
     return len(dispatched)
 
 
-def sweep_one(repo, token, number, bots, qa_paths, check_name, test_check, qa_team, run_url, panel_login):
-    """One PR of the sweep, run under its head's queue: the QA-scope pass it would have got on
-    `opened`, creating only what is missing (a retry after a partial write completes it). A
-    trusted bot PR on a later head and a PR that touches a QA-owned path are left for the
-    panel or an override, with a warning."""
+def sweep_one(repo, token, number, queued_sha, bots, qa_paths, check_name, test_check, qa_team, run_url,
+              panel_login):
+    """One PR of the sweep, run under the queue of `queued_sha` (the head the `tested` job
+    resolved): the QA-scope pass it would have got on `opened`, creating only what is missing
+    (a retry after a partial write completes it). A PR that moved to another head since is
+    graded by that head's own event; a trusted bot PR on a later head and a PR that touches
+    a QA-owned path are left for the panel or an override, with a warning."""
     pr = gh_api([f"repos/{repo}/pulls/{number}"], token)
     head = (pr.get("head") or {}).get("sha", "")
+    if head != queued_sha:
+        print(f"::notice::qa-review-gate: #{number} is on {head[:7]}, this run queued for "
+              f"{queued_sha[:7] or 'no head'}; the head's own event grades it")
+        return False
     missing = missing_checks(repo, head, (check_name, test_check), token)
     if not missing:
         print(f"qa-review-gate: #{number} {head[:7]} has both checks")
@@ -438,8 +446,8 @@ def collect_review(event, repo, token, panel_login, check_name, test_check="qa-t
         return decision
     head = decision["check"]["head_sha"]
     pr_number = decision["pr_number"]
-    existing = gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={test_check}"], token)
-    if existing.get("check_runs") and not scope_owned(existing["check_runs"]):
+    existing = from_actions(gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={test_check}"], token).get("check_runs"))
+    if existing and not scope_owned(existing):
         # A retry: our own provisional opener may still hide a real result behind it.
         decision["reconcile"] = test_check
         return decision
@@ -594,8 +602,7 @@ def trees_id(results):
 
 def tree_results(repo, head, test_check, token):
     """Per-tree conclusions recorded on the newest `qa-test-run` check-run of this head."""
-    runs = gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={test_check}&filter=all&per_page=100"],
-                  token).get("check_runs") or []
+    runs = from_actions(gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={test_check}&filter=all&per_page=100"], token).get("check_runs"))
     tagged = [r for r in runs if (r.get("external_id") or "").startswith(TREES_EXTERNAL_ID)]
     if not tagged:
         return {}
@@ -821,8 +828,7 @@ def comment_head(decision, repo, token, panel_login):
 def reconcile_opener(repo, head, name, opener_id, token, run_url):
     """Copy the newest real result onto a provisional opener it would otherwise hide.
     `opener_id` None means: the newest run on the head, if it is a provisional opener."""
-    runs = gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={name}&filter=all&per_page=100"],
-                  token).get("check_runs") or []
+    runs = from_actions(gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={name}&filter=all&per_page=100"], token).get("check_runs"))
     if opener_id is None:
         newest = max(runs, key=lambda run: run.get("id", 0), default=None)
         if not newest or newest.get("external_id") != OPENER_EXTERNAL_ID:
@@ -848,8 +854,7 @@ def reconcile_opener(repo, head, name, opener_id, token, run_url):
 
 def override_run(repo, head, name, token):
     """The newest /qa-review override that completed `name` on `head`, or None."""
-    runs = gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={name}&filter=all&per_page=100"],
-                  token).get("check_runs") or []
+    runs = from_actions(gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={name}&filter=all&per_page=100"], token).get("check_runs"))
     overrides = [run for run in runs if run.get("external_id") == OVERRIDE_EXTERNAL_ID]
     return max(overrides, key=lambda run: run.get("id", 0)) if overrides else None
 
@@ -859,8 +864,7 @@ def overridden(repo, head, name, token):
 
 
 def newest_run_id(repo, head, name, token):
-    runs = gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={name}&filter=all&per_page=100"],
-                  token).get("check_runs") or []
+    runs = from_actions(gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={name}&filter=all&per_page=100"], token).get("check_runs"))
     return max((run.get("id", 0) for run in runs), default=0)
 
 
@@ -868,10 +872,9 @@ def reconcile_scope_write(repo, head, name, created_id, since_id, token, run_url
     """A scope write runs outside the head's queue (the sweep) or after its ownership read:
     a panel verdict or an e2e result that landed in between (id after `since_id`, before
     ours) must not be hidden by ours, so it is copied onto our run, ownership included."""
-    runs = gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={name}&filter=all&per_page=100"],
-                  token).get("check_runs") or []
+    runs = from_actions(gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={name}&filter=all&per_page=100"], token).get("check_runs"))
     landed = [run for run in runs if since_id < run.get("id", 0) < created_id
-              and run.get("status") == "completed" and (run.get("app") or {}).get("slug") == "github-actions"
+              and run.get("status") == "completed"
               and run.get("external_id") not in (SCOPE_EXTERNAL_ID, OPENER_EXTERNAL_ID)]
     if not landed:
         return False
@@ -890,8 +893,7 @@ def reconcile_override(repo, head, name, token, run_url):
     """Make the newest run of `name` on `head` show the override, when one exists. A result
     published after the override, or one whose repair PATCH failed, would otherwise stay
     on top; a rerun of the gate lands here and fixes it."""
-    runs = gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={name}&filter=all&per_page=100"],
-                  token).get("check_runs") or []
+    runs = from_actions(gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={name}&filter=all&per_page=100"], token).get("check_runs"))
     overrides = [run for run in runs if run.get("external_id") == OVERRIDE_EXTERNAL_ID]
     if not overrides or not runs:
         return False
@@ -938,8 +940,8 @@ def apply(decision, repo, token, qa_team, run_url, panel_login="loft-bot"):
             print(f"::notice::qa-review-gate: {check['name']} on {head[:7]} stays overridden")
             continue
         if check["name"] == decision.get("opener_name"):
-            existing = gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={check['name']}"], token)
-            if existing.get("check_runs") and not scope_owned(existing["check_runs"]):
+            existing = from_actions(gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={check['name']}"], token).get("check_runs"))
+            if existing and not scope_owned(existing):
                 # A retry after a failed reconciliation: the newest run may still be our
                 # provisional opener while a real result sits behind it.
                 reconcile_opener(repo, head, check["name"], None, token, run_url)
@@ -1013,7 +1015,8 @@ def main():
     elif mode == "sweep":
         number = os.environ.get("INPUT_PR_NUMBER", "").strip()
         if number:
-            sweep_one(repo, token, int(number), parse_bots(os.environ.get("INPUT_BOT_PRS", DEFAULT_BOTS)),
+            sweep_one(repo, token, int(number), os.environ.get("INPUT_QUEUED_SHA", "").strip(),
+                      parse_bots(os.environ.get("INPUT_BOT_PRS", DEFAULT_BOTS)),
                       parse_paths(os.environ.get("INPUT_QA_PATHS", DEFAULT_QA_PATHS)), check_name, test_check,
                       os.environ.get("INPUT_QA_TEAM", ""), os.environ.get("INPUT_RUN_URL", ""), panel_login)
         else:
