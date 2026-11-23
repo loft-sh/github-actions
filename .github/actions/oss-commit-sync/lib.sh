@@ -870,12 +870,19 @@ ensure_not_merge() {
   fi
 }
 
-# replay_commit <src-sha> <trailer-key> <git-dir>
+# replay_commit <src-sha> <trailer-key> <git-dir> [stable]
 # Commit whatever is currently staged in <git-dir>, preserving <src-sha>'s
 # author name/email/date and full message, with "<trailer-key>: <src-sha>"
 # appended as a proper trailer. The committer stays the CI identity.
+#
+# "stable" also sets the committer date to the author date, so the same replay
+# on the same base always yields the same sha. The export must not use it: OSS
+# keeps those commits, and an old date would sort them before their parent.
+# The import can: the sync PR is rebase- or squash-merged, and GitHub rewrites
+# the committer date on both, so the pinned date never reaches the base branch.
 replay_commit() {
-  local src="$1" key="$2" dir="$3" msgfile author_name author_email author_date
+  local src="$1" key="$2" dir="$3" stable="${4:-}" msgfile author_name author_email author_date
+  local -a commit_env
   msgfile=$(mktemp)
   # --no-divider, because git otherwise treats a bare "---" as end-of-message and
   # writes the trailer above it, outside the paragraph %(trailers) reads. Every
@@ -889,10 +896,15 @@ replay_commit() {
         --no-divider --trailer "${key}: ${src}" > "$msgfile"
   IFS=$'\x1f' read -r author_name author_email author_date \
     < <(git log -1 --format='%an%x1f%ae%x1f%aI' "$src")
-  GIT_AUTHOR_NAME="$author_name" \
-  GIT_AUTHOR_EMAIL="$author_email" \
-  GIT_AUTHOR_DATE="$author_date" \
-    git -C "$dir" commit --quiet -F "$msgfile"
+  commit_env=(
+    GIT_AUTHOR_NAME="$author_name"
+    GIT_AUTHOR_EMAIL="$author_email"
+    GIT_AUTHOR_DATE="$author_date"
+  )
+  if [ "$stable" = "stable" ]; then
+    commit_env+=(GIT_COMMITTER_DATE="$author_date")
+  fi
+  env "${commit_env[@]}" git -C "$dir" commit --quiet -F "$msgfile"
   rm -f "$msgfile"
 }
 

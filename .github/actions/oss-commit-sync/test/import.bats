@@ -197,6 +197,20 @@ Signed-off-by: alice <alice@contributor.example>")
   [ "$(cd "$MONO" && git rev-parse "automation/sync-from-oss-main^{tree}")" = "$first_tree" ]
 }
 
+@test "a later re-run on the same base rebuilds the same commit shas" {
+  external_commit ext.go "external" "feat: external contribution" >/dev/null
+  external_commit ext2.go "external 2" "feat: second contribution" >/dev/null
+
+  # Two cron ticks half an hour apart: only the wall clock differs.
+  GIT_COMMITTER_DATE="2026-01-01T00:00:00Z" bash "$IMPORT"
+  first=$(git -C "$MONO" rev-parse automation/sync-from-oss-main)
+  git -C "$MONO" switch -q main
+  GIT_COMMITTER_DATE="2026-01-01T00:30:00Z" run bash "$IMPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value replayed-count)" = "2" ]
+  [ "$(git -C "$MONO" rev-parse automation/sync-from-oss-main)" = "$first" ]
+}
+
 @test "seed: first run without trailers uses SEED_OSS_COMMIT" {
   # Strip the trailer state: reset main to before the seed-state commit, so
   # no Oss-Commit trailer exists anywhere on the branch.
