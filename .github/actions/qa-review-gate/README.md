@@ -15,7 +15,7 @@ whose body ends with one marker line:
 |---|---|---|
 | `block` | failure | a confirmed class a/c/d finding: a test is needed, missing, or the product has a gap |
 | `pass` | success | nothing blocks |
-| `needs_human` | action_required, PR assigned to its author | a class b finding or an open question; the author answers the panel, or tags QA with `/qa-review human` |
+| `needs_human` | action_required, PR assigned to its author | a class b finding (an open question alone leaves the verdict a pass); the author answers the panel, or tags QA with `/qa-review human` |
 | `not_run` | action_required | the QA lanes did not run on this PR; neutral would count as passed once the check is required |
 
 A marker whose `head` is not the PR's current head is ignored, so an old review
