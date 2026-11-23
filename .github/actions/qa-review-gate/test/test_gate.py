@@ -615,6 +615,7 @@ def test_a_scope_write_keeps_a_verdict_that_landed_during_it(monkeypatch, capsys
                             "external_id": gate.SCOPE_EXTERNAL_ID, "title": "QA review: out of scope", "summary": "s"}],
                 "request_qa_review": False, "pr_number": 12}
     verdict = {"id": 30, "status": "completed", "conclusion": "failure", "external_id": "",
+               "app": {"slug": "github-actions"},  # a run from another app is never copied
                "details_url": "https://panel", "output": {"title": "QA review: blocked", "summary": "why"}}
     reads, writes = {"n": 0}, []
     def api(args, token, payload=None):
@@ -684,7 +685,32 @@ def test_main_sweep_mode(tmp_path, monkeypatch, capsys):
         monkeypatch.setenv(key, value)
     monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None: [[]] if "pulls?" in args[0] else {})
     assert gate.main() == 0
-    assert "sweep passed 0 open PR(s)" in capsys.readouterr().out
+    assert "sweep started 0 run(s)" in capsys.readouterr().out
+
+
+def test_main_sweep_mode_with_a_pr_number_grades_that_pr(tmp_path, monkeypatch, capsys):
+    event_file = tmp_path / "event.json"
+    event_file.write_text("{}")
+    for key, value in {"INPUT_MODE": "sweep", "INPUT_PR_NUMBER": "12", "GITHUB_EVENT_PATH": str(event_file),
+                       "GITHUB_REPOSITORY": "o/r", "INPUT_GITHUB_TOKEN": "tok"}.items():
+        monkeypatch.setenv(key, value)
+    pr = {"number": 12, "user": {"login": "roehrijn"}, "head": {"sha": HEAD, "ref": "a"}, "base": {"sha": BASE, "ref": "main"}}
+    writes = []
+    def api(args, token, payload=None):
+        if args[0] == "repos/o/r/pulls/12":
+            return pr
+        if "check-runs?" in args[0]:
+            return {"check_runs": []}
+        if "/compare/" in args[0]:
+            return {"files": [{"filename": "docs/a.md"}]}
+        if payload is not None:
+            writes.append(payload["name"])
+            return {"id": 1}
+        return {}
+    monkeypatch.setattr(gate, "gh_api", api)
+    assert gate.main() == 0
+    assert writes == ["qa-review", "qa-test-run"]
+    assert "#12" in capsys.readouterr().out
 
 
 def test_a_declined_bot_exemption_never_takes_the_scope_pass(monkeypatch):
@@ -728,15 +754,31 @@ def test_sweep_passes_only_open_prs_without_a_check_that_touch_no_qa_path(monkey
             writes.append(payload)
             return {"id": 1}
         return {}
-    monkeypatch.setattr(gate, "gh_api", api)
-    assert gate.sweep("o/r", "tok", BOTS, QA_PATHS, "qa-review", "qa-test-run", "", "https://run", "loft-bot") == 1
+    def api_with_pr(args, token, payload=None):
+        if args[0].startswith("repos/o/r/pulls/") and args[0][len("repos/o/r/pulls/"):].isdigit():
+            return next(p for p in prs if p["number"] == int(args[0].rsplit("/", 1)[1]))
+        if "/dispatches" in args[0]:
+            writes.append(("dispatch", args[0], payload))
+            return {}
+        return api(args, token, payload)
+    monkeypatch.setattr(gate, "gh_api", api_with_pr)
+    # The manual run lists and dispatches: one run per PR lacking a check, none for #1.
+    assert gate.sweep("o/r", "tok", "qa-review", "qa-test-run",
+                      "o/r/.github/workflows/qa-review-gate.yaml@refs/heads/main") == 3
+    assert writes == [("dispatch", "repos/o/r/actions/workflows/qa-review-gate.yaml/dispatches",
+                       {"ref": "refs/heads/main", "inputs": {"pr-number": str(n)}}) for n in (2, 3, 4)]
+    assert "sweep started 3 run(s): #2, #3, #4" in capsys.readouterr().out
+    # Each dispatched run grades its PR under that head's queue.
+    writes.clear()
+    assert gate.sweep_one("o/r", "tok", 2, BOTS, QA_PATHS, "qa-review", "qa-test-run", "", "https://run", "loft-bot")
     assert [(w["name"], w["head_sha"]) for w in writes] == [("qa-review", "2" * 40), ("qa-test-run", "2" * 40)]
+    assert not gate.sweep_one("o/r", "tok", 3, BOTS, QA_PATHS, "qa-review", "qa-test-run", "", "https://run", "loft-bot")
+    assert not gate.sweep_one("o/r", "tok", 4, BOTS, QA_PATHS, "qa-review", "qa-test-run", "", "https://run", "loft-bot")
+    assert not gate.sweep_one("o/r", "tok", 1, BOTS, QA_PATHS, "qa-review", "qa-test-run", "", "https://run", "loft-bot")
     out = capsys.readouterr().out
-    assert "#3: 1 changed file(s) under a QA-owned path" in out
-    assert "#4 is a trusted bot PR on a later head" in out
-    assert "::warning::qa-review-gate: #3 3333333 still lacks qa-review, qa-test-run" in out
-    assert "::warning::qa-review-gate: #4 4444444 still lacks qa-review, qa-test-run" in out
-    assert "2 still lack a check" in out
+    assert "::warning::qa-review-gate: #3 3333333 still lacks qa-review, qa-test-run (1 changed file(s) under a QA-owned path" in out
+    assert "::warning::qa-review-gate: #4 4444444 still lacks qa-review, qa-test-run (a trusted bot PR on a later head" in out
+    assert "#1 1111111 has both checks" in out
 
 
 def test_sweep_grades_the_pr_as_it_is_now_and_regrades_after_a_retarget(monkeypatch, capsys):
@@ -761,9 +803,9 @@ def test_sweep_grades_the_pr_as_it_is_now_and_regrades_after_a_retarget(monkeypa
             return {"id": 1}
         return {}
     monkeypatch.setattr(gate, "gh_api", api)
-    assert gate.sweep("o/r", "tok", BOTS, QA_PATHS, "qa-review", "qa-test-run", "", "https://run", "loft-bot") == 0
+    assert not gate.sweep_one("o/r", "tok", 6, BOTS, QA_PATHS, "qa-review", "qa-test-run", "", "https://run", "loft-bot")
     assert writes == []
-    assert "#6: 1 changed file(s) under a QA-owned path; the panel decides" in capsys.readouterr().out
+    assert "#6 6666666 still lacks qa-review, qa-test-run (1 changed file(s) under a QA-owned path" in capsys.readouterr().out
 
 
 def test_sweep_counts_the_missing_checks_on_the_current_head(monkeypatch):
@@ -787,7 +829,7 @@ def test_sweep_counts_the_missing_checks_on_the_current_head(monkeypatch):
             return {"id": 1}
         return {}
     monkeypatch.setattr(gate, "gh_api", api)
-    assert gate.sweep("o/r", "tok", BOTS, QA_PATHS, "qa-review", "qa-test-run", "", "https://run", "loft-bot") == 1
+    assert gate.sweep_one("o/r", "tok", 7, BOTS, QA_PATHS, "qa-review", "qa-test-run", "", "https://run", "loft-bot")
     assert writes == [("qa-review", "8" * 40), ("qa-test-run", "8" * 40)]
 
 
@@ -796,8 +838,8 @@ def test_sweep_retry_creates_only_the_missing_check(monkeypatch):
     pr = {"number": 5, "user": {"login": "roehrijn"}, "head": {"sha": "5" * 40, "ref": "a"}, "base": {"sha": BASE}}
     writes = []
     def api(args, token, payload=None):
-        if args[0].startswith("repos/o/r/pulls?"):
-            return [[pr]]
+        if args[0] == "repos/o/r/pulls/5":
+            return pr
         if "check-runs?" in args[0]:
             return {"check_runs": [{"id": 9, "status": "completed", "app": {"slug": "github-actions"}}]
                     if "check_name=qa-review" in args[0] else []}
@@ -808,7 +850,7 @@ def test_sweep_retry_creates_only_the_missing_check(monkeypatch):
             return {"id": 1}
         return {}
     monkeypatch.setattr(gate, "gh_api", api)
-    assert gate.sweep("o/r", "tok", BOTS, QA_PATHS, "qa-review", "qa-test-run", "", "https://run", "loft-bot") == 1
+    assert gate.sweep_one("o/r", "tok", 5, BOTS, QA_PATHS, "qa-review", "qa-test-run", "", "https://run", "loft-bot")
     assert [w["name"] for w in writes] == ["qa-test-run"]
 
 
@@ -1210,6 +1252,9 @@ def test_ci_jobs_of_one_tested_commit_are_serialized():
     assert "grep -oE '[0-9a-f]{40}' <<<\"$TITLE\" | tail -n1" in text
     # A PR event job and the panel verdict job write to the same head as the e2e jobs do.
     assert "HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}" in text
+    # A sweep run for one PR queues on that PR's current head.
+    assert 'if [ -n "$PR" ]; then sha="$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha || true)"' in text
+    assert "caller-workflow: ${{ github.workflow_ref }}" in text and "actions: write" in text
 
 
 def test_bot_backport_keeps_the_title_the_panel_matches():

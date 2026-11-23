@@ -329,43 +329,57 @@ def missing_checks(repo, head, names, token):
     return missing
 
 
-def sweep(repo, token, bots, qa_paths, check_name, test_check, qa_team, run_url, panel_login):
-    """Before the ruleset goes live: give every open PR whose head lacks either check the
-    QA-scope pass it would have got on `opened`, creating only what is missing (a retry after a
-    partial write completes it). Trusted bot PRs are left alone (their opened head got its
-    checks then; a later head needs review), and so is every PR that touches a QA-owned path:
-    those need the panel or an override. Every head still missing a check is listed at the end."""
+def sweep(repo, token, check_name, test_check, caller_workflow):
+    """Before the ruleset goes live: start one run of the caller workflow per open PR whose
+    current head lacks either check. Each run grades its PR under that head's own queue
+    (`sweep_one`), so it cannot cross a panel verdict or an e2e result on the way; this job
+    only lists and dispatches. `caller_workflow` is `github.workflow_ref`."""
+    path, _, ref = caller_workflow.partition("@")
+    workflow = path.rsplit("/", 1)[-1]
     pages = gh_api([f"repos/{repo}/pulls?state=open&per_page=100", "--paginate", "--slurp"], token)
-    done, stuck = 0, []
+    dispatched = []
     for pr in (pr for page in pages for pr in page):
         number = pr.get("number")
-        # The list is a snapshot; a retarget or a new commit since then must not be graded by it.
         pr = gh_api([f"repos/{repo}/pulls/{number}"], token) or pr
         head = (pr.get("head") or {}).get("sha", "")
-        missing = missing_checks(repo, head, (check_name, test_check), token)
-        if not missing:
+        if not missing_checks(repo, head, (check_name, test_check), token):
             continue
-        if bot_pr(pr, bots):
-            print(f"::notice::qa-review-gate: #{number} is a trusted bot PR on a later head; a person reviews it")
-            stuck.append((number, head, missing))
-            continue
+        gh_api([f"repos/{repo}/actions/workflows/{workflow}/dispatches", "-X", "POST"], token,
+               {"ref": ref, "inputs": {"pr-number": str(number)}})
+        dispatched.append(number)
+        print(f"qa-review-gate: #{number} {head[:7]} lacks a check; started a run for it")
+    print(f"qa-review-gate: sweep started {len(dispatched)} run(s): {', '.join(f'#{n}' for n in dispatched) or 'none'}")
+    return len(dispatched)
+
+
+def sweep_one(repo, token, number, bots, qa_paths, check_name, test_check, qa_team, run_url, panel_login):
+    """One PR of the sweep, run under its head's queue: the QA-scope pass it would have got on
+    `opened`, creating only what is missing (a retry after a partial write completes it). A
+    trusted bot PR on a later head and a PR that touches a QA-owned path are left for the
+    panel or an override, with a warning."""
+    pr = gh_api([f"repos/{repo}/pulls/{number}"], token)
+    head = (pr.get("head") or {}).get("sha", "")
+    missing = missing_checks(repo, head, (check_name, test_check), token)
+    if not missing:
+        print(f"qa-review-gate: #{number} {head[:7]} has both checks")
+        return False
+    reason = None
+    if bot_pr(pr, bots):
+        reason = "a trusted bot PR on a later head; a person reviews it"
+    else:
         event = {"action": "opened", "pull_request": pr, "sender": pr.get("user") or {}}
         decision = decide_scope(event, repo, token, qa_paths, check_name, test_check)
-        if "skip" in decision:
-            print(f"::notice::qa-review-gate: #{number}: {decision['skip']}")
-            stuck.append((number, head, missing))
-            continue
-        decision["checks"] = [c for c in decision["checks"] if c["name"] in missing]
-        apply(decision, repo, token, qa_team, run_url, panel_login)
-        done += 1
-        print(f"qa-review-gate: #{number} {head[:7]} passed as out of scope ({', '.join(missing)} created)")
-        if regrade_if_retargeted(event, repo, token, qa_paths, check_name, test_check, qa_team, run_url, panel_login):
-            print(f"qa-review-gate: #{number} {head[:7]} retargeted meanwhile; graded again")
-    for number, head, missing in stuck:
-        print(f"::warning::qa-review-gate: #{number} {head[:7]} still lacks {', '.join(missing)}; "
+        reason = decision.get("skip")
+    if reason:
+        print(f"::warning::qa-review-gate: #{number} {head[:7]} still lacks {', '.join(missing)} ({reason}); "
               "needs /vcluster-review from a person or /qa-review override before the ruleset is enabled")
-    print(f"qa-review-gate: sweep passed {done} open PR(s) as out of scope, {len(stuck)} still lack a check")
-    return done
+        return False
+    decision["checks"] = [c for c in decision["checks"] if c["name"] in missing]
+    apply(decision, repo, token, qa_team, run_url, panel_login)
+    print(f"qa-review-gate: #{number} {head[:7]} passed as out of scope ({', '.join(missing)} created)")
+    if regrade_if_retargeted(event, repo, token, qa_paths, check_name, test_check, qa_team, run_url, panel_login):
+        print(f"qa-review-gate: #{number} {head[:7]} retargeted meanwhile; graded again")
+    return True
 
 
 def decide_review(event, panel_login, check_name):
@@ -857,7 +871,7 @@ def reconcile_scope_write(repo, head, name, created_id, since_id, token, run_url
     runs = gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={name}&filter=all&per_page=100"],
                   token).get("check_runs") or []
     landed = [run for run in runs if since_id < run.get("id", 0) < created_id
-              and run.get("status") == "completed"
+              and run.get("status") == "completed" and (run.get("app") or {}).get("slug") == "github-actions"
               and run.get("external_id") not in (SCOPE_EXTERNAL_ID, OPENER_EXTERNAL_ID)]
     if not landed:
         return False
@@ -997,9 +1011,13 @@ def main():
                                        check_name, test_check,
                                        passed_before=lambda sha: wait_for_bot_pass(repo, sha, check_name, token))
     elif mode == "sweep":
-        sweep(repo, token, parse_bots(os.environ.get("INPUT_BOT_PRS", DEFAULT_BOTS)),
-              parse_paths(os.environ.get("INPUT_QA_PATHS", DEFAULT_QA_PATHS)), check_name, test_check,
-              os.environ.get("INPUT_QA_TEAM", ""), os.environ.get("INPUT_RUN_URL", ""), panel_login)
+        number = os.environ.get("INPUT_PR_NUMBER", "").strip()
+        if number:
+            sweep_one(repo, token, int(number), parse_bots(os.environ.get("INPUT_BOT_PRS", DEFAULT_BOTS)),
+                      parse_paths(os.environ.get("INPUT_QA_PATHS", DEFAULT_QA_PATHS)), check_name, test_check,
+                      os.environ.get("INPUT_QA_TEAM", ""), os.environ.get("INPUT_RUN_URL", ""), panel_login)
+        else:
+            sweep(repo, token, check_name, test_check, os.environ.get("INPUT_CALLER_WORKFLOW", ""))
         return 0
     else:
         raise GateError(f"INPUT_MODE must be review, comment, ci, bot or sweep, got {mode!r}")

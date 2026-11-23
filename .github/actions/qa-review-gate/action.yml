@@ -65,8 +65,16 @@ inputs:
     description: 'Comma-separated artifact=path-prefix pairs: which Ginkgo report artifact covers which source tree. One tree by default; vcluster-pro adds oss-ginkgo-report=staging/github.com/loft-sh/vcluster/.'
     required: false
     default: 'ginkgo-report='
+  pr-number:
+    description: 'sweep mode: grade this one PR under its head queue. Empty: list the open PRs lacking a check and start one run of caller-workflow per PR.'
+    required: false
+    default: ''
+  caller-workflow:
+    description: 'sweep mode: the caller workflow to start per PR, as github.workflow_ref (owner/repo/.github/workflows/<file>@<ref>). The calling job needs actions: write.'
+    required: false
+    default: ''
   github-token:
-    description: 'Token for gh. The calling job must grant checks: write and pull-requests: write; ci mode also needs actions: read.'
+    description: 'Token for gh. The calling job must grant checks: write and pull-requests: write; ci mode also needs actions: read, sweep mode actions: write.'
     required: false
     default: ${{ github.token }}
 
@@ -88,6 +96,8 @@ runs:
         INPUT_CHECK_NAME: ${{ inputs.check-name }}
         INPUT_TEST_CHECK_NAME: ${{ inputs.test-check-name }}
         INPUT_REPORT_TREES: ${{ inputs.report-trees }}
+        INPUT_PR_NUMBER: ${{ inputs.pr-number }}
+        INPUT_CALLER_WORKFLOW: ${{ inputs.caller-workflow }}
         INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}
         INPUT_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       run: python3 -I "$ACTION_PATH/src/gate.py"

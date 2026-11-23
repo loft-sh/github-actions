@@ -18,6 +18,10 @@ on:
         description: 'Comma-separated logins allowed to run /qa-review override, on top of override-teams.'
         type: string
         default: ''
+      pr-number:
+        description: 'Sweep: grade this one PR under its head queue (set by the sweep itself, one run per PR). Empty on the manual run: list the open PRs lacking a check and start a run per PR.'
+        type: string
+        default: ''
       override-teams:
         description: 'Comma-separated org/slug teams whose members may run /qa-review override. Membership is read with the org-token secret.'
         type: string
@@ -71,9 +75,12 @@ jobs:
           DISPATCH: ${{ github.event.workflow_run.event == 'workflow_dispatch' }}
           TITLE: ${{ github.event.workflow_run.display_title }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}
+          PR: ${{ inputs.pr-number }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
           RUN_ID: ${{ github.run_id }}
         run: |
-          if [ "$DISPATCH" = true ]; then sha="$(grep -oE '[0-9a-f]{40}' <<<"$TITLE" | tail -n1 || true)"; else sha="$HEAD_SHA"; fi
+          if [ -n "$PR" ]; then sha="$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha || true)"; elif [ "$DISPATCH" = true ]; then sha="$(grep -oE '[0-9a-f]{40}' <<<"$TITLE" | tail -n1 || true)"; else sha="$HEAD_SHA"; fi
           echo "sha=${sha:-$RUN_ID}" >> "$GITHUB_OUTPUT"
   gate:
     needs: tested
@@ -88,7 +95,7 @@ jobs:
       checks: write
       pull-requests: write
       contents: read
-      actions: read
+      actions: write # read for the e2e report, write for the sweep to start one run per PR
     steps:
       # job.workflow_sha is the commit the caller's `uses:` tag resolved to, so the
       # action comes from the same revision as this workflow, not from main.
@@ -111,3 +118,5 @@ jobs:
           check-name: ${{ inputs.check-name }}
           test-check-name: ${{ inputs.test-check-name }}
           report-trees: ${{ inputs.report-trees }}
+          pr-number: ${{ inputs.pr-number }}
+          caller-workflow: ${{ github.workflow_ref }}
