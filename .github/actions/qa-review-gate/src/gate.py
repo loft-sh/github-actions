@@ -180,12 +180,24 @@ def changed_files(repo, base_sha, head_sha, token):
     return [f.get("filename", "") for f in files]
 
 
-def scope_passed(repo, head, check_name, token):
-    """True when the newest `check_name` on `head` is the out-of-scope pass."""
+def scope_holds(repo, head, check_name, token):
+    """True when the scope check owns `check_name` on `head`: no run yet, or the newest run is
+    the scope check's own (a pass or a retarget placeholder)."""
     runs = gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={check_name}&filter=all&per_page=100"],
                   token).get("check_runs") or []
     newest = max(runs, key=lambda run: run.get("id", 0), default=None)
-    return bool(newest) and newest.get("external_id") == SCOPE_EXTERNAL_ID
+    return newest is None or newest.get("external_id") == SCOPE_EXTERNAL_ID
+
+
+def placeholder(runs):
+    """True when the newest run is a retarget placeholder the panel's own decision replaces."""
+    newest = max(runs, key=lambda run: run.get("id", 0), default=None)
+    return bool(newest) and newest.get("external_id") == SCOPE_EXTERNAL_ID \
+        and newest.get("conclusion") == "action_required"
+
+
+def current_base(repo, number, token):
+    return ((gh_api([f"repos/{repo}/pulls/{number}"], token).get("base") or {}).get("ref", ""))
 
 
 def decide_scope(event, repo, token, qa_paths, check_name, test_check="qa-test-run"):
@@ -209,7 +221,7 @@ def decide_scope(event, repo, token, qa_paths, check_name, test_check="qa-test-r
     owned = qa_owned(files, qa_paths)
     graded = f"base {base_ref}@{base[:7]}"
     if owned:
-        if action != "edited" or not scope_passed(repo, head, check_name, token):
+        if action != "edited" or not scope_holds(repo, head, check_name, token):
             return {"skip": f"{len(owned)} changed file(s) under a QA-owned path; the panel decides"}
         summary = (f"After the retarget to {base_ref}, {len(owned)} changed file(s) are under a QA-owned "
                    f"path. The earlier out-of-scope pass no longer applies: comment /vcluster-review "
@@ -258,7 +270,29 @@ def decide_pull_request(event, repo, token, bots, qa_paths, check_name, test_che
     if "skip" not in decision or decision.get("final"):
         return decision
     print(f"::notice::qa-review-gate: {decision['skip']}")
+    pr = event.get("pull_request") or {}
+    graded, current = (pr.get("base") or {}).get("ref", ""), current_base(repo, pr.get("number"), token)
+    if current != graded:
+        # A queued `opened` job must not green a head the PR has since retargeted.
+        return {"skip": f"PR now targets {current}, not {graded}; the retarget event grades it"}
     return decide_scope(event, repo, token, qa_paths, check_name, test_check)
+
+
+def regrade_if_retargeted(event, repo, token, qa_paths, check_name, test_check, qa_team, run_url, panel_login):
+    """After a scope write: a retarget that landed meanwhile grades the head again, as its
+    `edited` event would, so the pass just written cannot outlive the base it graded."""
+    pr = event.get("pull_request") or {}
+    current = gh_api([f"repos/{repo}/pulls/{pr.get('number')}"], token)
+    if ((current.get("base") or {}).get("ref", "")) == (pr.get("base") or {}).get("ref", ""):
+        return None
+    edited = {"action": "edited", "changes": {"base": {"ref": {"from": (pr.get("base") or {}).get("ref", "")}}},
+              "pull_request": current, "sender": event.get("sender") or {}}
+    decision = decide_scope(edited, repo, token, qa_paths, check_name, test_check)
+    if "skip" in decision:
+        print(f"::notice::qa-review-gate: {decision['skip']}")
+        return None
+    apply(decision, repo, token, qa_team, run_url, panel_login)
+    return decision
 
 
 def missing_checks(repo, head, names, token):
@@ -364,7 +398,7 @@ def collect_review(event, repo, token, panel_login, check_name, test_check="qa-t
     head = decision["check"]["head_sha"]
     pr_number = decision["pr_number"]
     existing = gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={test_check}"], token)
-    if existing.get("check_runs"):
+    if existing.get("check_runs") and not placeholder(existing["check_runs"]):
         # A retry: our own provisional opener may still hide a real result behind it.
         decision["reconcile"] = test_check
         return decision
@@ -755,7 +789,7 @@ def reconcile_opener(repo, head, name, opener_id, token, run_url):
         opener_id = newest["id"]
     previous = [run for run in runs
                 if run.get("id", 0) < opener_id and run.get("status") == "completed"
-                and run.get("external_id") != OPENER_EXTERNAL_ID]
+                and run.get("external_id") not in (OPENER_EXTERNAL_ID, SCOPE_EXTERNAL_ID)]
     if not previous:
         return
     # An override outranks any result, however new; a result only fills an empty opener.
@@ -836,7 +870,7 @@ def apply(decision, repo, token, qa_team, run_url, panel_login="loft-bot"):
             continue
         if check["name"] == decision.get("opener_name"):
             existing = gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={check['name']}"], token)
-            if existing.get("check_runs"):
+            if existing.get("check_runs") and not placeholder(existing["check_runs"]):
                 # A retry after a failed reconciliation: the newest run may still be our
                 # provisional opener while a real result sits behind it.
                 reconcile_opener(repo, head, check["name"], None, token, run_url)
@@ -914,10 +948,15 @@ def main():
     if "skip" in decision:
         print(f"::notice::qa-review-gate: {decision['skip']}")
         return 0
-    head = apply(decision, repo, token, os.environ.get("INPUT_QA_TEAM", ""),
-                 os.environ.get("INPUT_RUN_URL", ""), panel_login)
+    qa_team, run_url = os.environ.get("INPUT_QA_TEAM", ""), os.environ.get("INPUT_RUN_URL", "")
+    head = apply(decision, repo, token, qa_team, run_url, panel_login)
     for check in decision.get("checks") or [decision["check"]] if head else []:
         print(f"qa-review-gate: {check['name']} -> {check['conclusion']} on {head[:7]}")
+    if mode == "bot" and any(c.get("external_id") == SCOPE_EXTERNAL_ID for c in decision.get("checks") or []):
+        regraded = regrade_if_retargeted(event, repo, token, parse_paths(os.environ.get("INPUT_QA_PATHS", DEFAULT_QA_PATHS)),
+                                         check_name, test_check, qa_team, run_url, panel_login)
+        for check in (regraded or {}).get("checks") or []:
+            print(f"qa-review-gate: {check['name']} -> {check['conclusion']} on {head[:7]} (retargeted meanwhile)")
     return 0
 
 

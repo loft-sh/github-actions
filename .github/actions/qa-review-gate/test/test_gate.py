@@ -131,6 +131,25 @@ def test_review_opens_the_test_run_check_green_when_the_pr_adds_no_spec(monkeypa
         ("qa-review", "failure"), ("qa-test-run", "success")]
 
 
+PLACEHOLDER = {"id": 7, "status": "completed", "conclusion": "action_required", "external_id": "qa-review-gate:scope",
+               "output": {"title": "QA test run: in scope after retarget to main, the panel decides", "summary": "s"}}
+
+
+def test_panel_verdict_replaces_the_retarget_placeholder(monkeypatch):
+    # A retarget brought only an e2e workflow change into scope (no new spec): the panel
+    # passes, and qa-test-run must turn green instead of staying on the placeholder.
+    api = review_api(check_runs=[PLACEHOLDER], files=[])
+    monkeypatch.setattr(gate, "gh_api", api)
+    decision = gate.collect_review(review_event(body=marker("pass")), "o/r", "tok", "loft-bot", "qa-review")
+    assert [(c["name"], c["conclusion"]) for c in decision["checks"]] == [
+        ("qa-review", "success"), ("qa-test-run", "success")]
+    gate.apply(decision, "o/r", "tok", "", "https://run")
+    posts = [(a, p) for a, p in api.writes if a == "repos/o/r/check-runs"]
+    assert [(p["name"], p["conclusion"]) for a, p in posts] == [("qa-review", "success"), ("qa-test-run", "success")]
+    patches = [(a, p) for a, p in api.writes if a != "repos/o/r/check-runs"]
+    assert not any(p.get("conclusion") == "action_required" for a, p in patches), "the placeholder must not be copied back"
+
+
 def test_review_opens_the_test_run_check_waiting_when_the_pr_adds_specs(monkeypatch):
     monkeypatch.setattr(gate, "gh_api", review_api(files=NEW_SPEC))
     decision = gate.collect_review(review_event(), "o/r", "tok", "loft-bot", "qa-review")
@@ -398,6 +417,15 @@ def test_a_retarget_into_scope_takes_the_out_of_scope_pass_back(monkeypatch):
     assert decision["checks"][0]["title"] == "QA review: in scope after retarget to release-1.0, the panel decides"
 
 
+def test_a_retarget_into_scope_before_any_check_writes_the_placeholder(monkeypatch):
+    # The retarget job overtook the queued opened job: nothing to revoke yet, still a placeholder.
+    event, _ = retarget_event(["e2e/a.go"], "")
+    monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None:
+                        {"check_runs": []} if "check-runs?" in args[0] else {"files": [{"filename": "e2e/a.go"}]})
+    decision = gate.decide_scope(event, "o/r", "tok", QA_PATHS, "qa-review")
+    assert [c["conclusion"] for c in decision["checks"]] == ["action_required", "action_required"]
+
+
 def test_a_retarget_into_scope_leaves_a_panel_verdict_alone(monkeypatch):
     event, api = retarget_event(["e2e/a.go"], "")
     monkeypatch.setattr(gate, "gh_api", api)
@@ -457,6 +485,8 @@ def test_main_bot_mode_falls_through_to_the_scope_check(tmp_path, monkeypatch, c
     def api(args, token, payload=None):
         if "/compare/" in args[0]:
             return {"files": [{"filename": f} for f in files]}
+        if args[0] == "repos/o/r/pulls/12":
+            return {"number": 12, "base": {"ref": "main", "sha": BASE}, "head": {"sha": HEAD}}
         if payload is not None:
             writes.append(payload)
             return {"id": 1}
@@ -465,6 +495,48 @@ def test_main_bot_mode_falls_through_to_the_scope_check(tmp_path, monkeypatch, c
     assert gate.main() == 0
     assert [w["name"] for w in writes] == ["qa-review", "qa-test-run"]
     assert "is not a trusted bot PR" in capsys.readouterr().out
+
+
+def test_main_regrades_when_a_retarget_overtook_the_scope_write(tmp_path, monkeypatch, capsys):
+    # The opened job graded docs-only against main; by the time it wrote, the PR targeted
+    # release-1.0, where the same head also changes an e2e file.
+    event, _ = human_pr_event(["docs/README.md"])
+    event_file = tmp_path / "event.json"
+    event_file.write_text(json.dumps(event))
+    for key, value in {"INPUT_MODE": "bot", "GITHUB_EVENT_PATH": str(event_file), "GITHUB_REPOSITORY": "o/r",
+                       "INPUT_GITHUB_TOKEN": "tok"}.items():
+        monkeypatch.setenv(key, value)
+    writes, pulls = [], iter([{"base": {"ref": "main"}}, {"number": 12, "base": {"ref": "release-1.0", "sha": "c" * 40},
+                                                          "head": {"sha": HEAD}, "html_url": "u"}])
+    def api(args, token, payload=None):
+        if "/compare/" in args[0]:
+            base = args[0].split("/compare/")[1].split("...")[0]
+            return {"files": [{"filename": "docs/README.md"}] + ([{"filename": "e2e/x.go"}] if base == "c" * 40 else [])}
+        if args[0] == "repos/o/r/pulls/12":
+            return next(pulls)
+        if "check-runs?" in args[0]:
+            return {"check_runs": [{"id": 1, "external_id": gate.SCOPE_EXTERNAL_ID, "conclusion": "success"}]}
+        if payload is not None:
+            writes.append(payload)
+            return {"id": 1}
+        return {}
+    monkeypatch.setattr(gate, "gh_api", api)
+    assert gate.main() == 0
+    assert [(w["name"], w["conclusion"]) for w in writes] == [
+        ("qa-review", "success"), ("qa-test-run", "success"),
+        ("qa-review", "action_required"), ("qa-test-run", "action_required")]
+    assert "(retargeted meanwhile)" in capsys.readouterr().out
+
+
+def test_a_queued_opened_job_skips_a_pr_retargeted_meanwhile(monkeypatch):
+    event, files = human_pr_event(["docs/README.md"])
+    def api(args, token, payload=None):
+        if args[0] == "repos/o/r/pulls/12":
+            return {"base": {"ref": "release-1.0"}}
+        pytest.fail(f"no compare or write expected, got {args[0]}")
+    monkeypatch.setattr(gate, "gh_api", api)
+    assert gate.decide_pull_request(event, "o/r", "tok", BOTS, QA_PATHS, "qa-review") == \
+        {"skip": "PR now targets release-1.0, not main; the retarget event grades it"}
 
 
 def test_main_sweep_mode(tmp_path, monkeypatch, capsys):
@@ -945,6 +1017,7 @@ def test_ci_jobs_of_one_tested_commit_are_serialized():
     text = pathlib.Path(__file__).parents[3].joinpath("workflows", "qa-review-gate.yaml").read_text()
     assert "group: qa-review-gate-${{ needs.tested.outputs.sha }}" in text
     assert "needs: tested" in text and "cancel-in-progress: false" in text
+    assert "queue: max" in text  # two e2e completions may queue behind an active gate job
     assert "grep -oE '[0-9a-f]{40}' <<<\"$TITLE\" | tail -n1" in text
 
 

@@ -76,9 +76,12 @@ jobs:
   gate:
     needs: tested
     runs-on: ubuntu-latest
+    # queue: max keeps every queued completion; the default single pending slot would
+    # cancel one of two e2e results that queue behind an active gate job of this commit.
     concurrency:
       group: qa-review-gate-${{ needs.tested.outputs.sha }}
       cancel-in-progress: false
+      queue: max
     permissions:
       checks: write
       pull-requests: write
