@@ -92,8 +92,11 @@ jobs:
     # OSS trees; a PR run and a /test-e2e dispatch) each read the recorded tree results,
     # then write, and a PR event job (retarget), the panel verdict job and an e2e result
     # job each read what the head carries before writing. A dispatch run's head_sha is
-    # the base commit; its title names the tested one. A comment names no head: run id.
+    # the base commit; its title names the tested one (else its head, as run_target reads
+    # it). A comment names no head: run id.
     runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
     outputs:
       sha: ${{ steps.sha.outputs.sha }}
     steps:
@@ -110,11 +113,10 @@ jobs:
           if [ -n "$PR" ]; then
             sha="$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" || { echo "::error::qa-review-gate: cannot read the head of #$PR"; exit 1; }
           elif [ "$DISPATCH" = true ]; then
-            sha="$(grep -oE '[0-9a-f]{40}' <<<"$TITLE" | tail -n1 || true)"
-          else
-            sha="$HEAD_SHA"
+            # The same parse as the action's run_target: `#<n> ... <sha>`, else the run's head.
+            sha="$(grep -oE '#[0-9]+\b.*\b[0-9a-f]{40}\b' <<<"$TITLE" | grep -oE '[0-9a-f]{40}' | tail -n1 || true)"
           fi
-          echo "sha=${sha:-$RUN_ID}" >> "$GITHUB_OUTPUT"
+          echo "sha=${sha:-${HEAD_SHA:-$RUN_ID}}" >> "$GITHUB_OUTPUT"
   gate:
     needs: tested
     runs-on: ubuntu-latest

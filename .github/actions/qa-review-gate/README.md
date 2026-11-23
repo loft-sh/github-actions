@@ -46,9 +46,15 @@ head) grades again: a head that is now in scope gets both checks back as `action
 until the panel or an override decides, so callers list `edited` among their types. The
 panel's verdict replaces whatever the scope check wrote on `qa-test-run` (a pass or that
 placeholder) with its normal test-run decision (green when the PR adds no spec, waiting for
-an e2e run otherwise), and a retarget touches only the checks the scope check still owns: a
-panel verdict, an e2e result or an override on either check stays, whatever order the jobs
-ran in. A retarget whose diff cannot be listed (the compare cap) withdraws the pass the same
+an e2e run otherwise). Every run the gate writes carries the base it graded against in its
+external id (`<kind>^<base>`; an override, a bot pass and a request for a person carry
+none), so a retarget replaces a verdict, an opener or an e2e result graded against the old
+base and keeps one for the new base; an override, a bot pass or `/qa-review human` stays,
+whatever order the jobs ran in. The same ownership rule holds for every scope write
+(`opened`, `reopened`, the sweep): the scope check never writes over a result for the
+current base, a request for a person, an override or a bot pass. A fresh panel verdict
+likewise replaces a `qa-test-run` result from another base with its own opener, and an e2e
+run combines only tree results graded against the same base. A retarget whose diff cannot be listed (the compare cap) withdraws the pass the same
 way. The sweep grades each PR as it is at that moment, not as the open-PR list captured it
 (the missing checks are counted on the current head), and checks the base again after
 writing. Every gate job that writes to a head queues on that head (the tested commit for an
