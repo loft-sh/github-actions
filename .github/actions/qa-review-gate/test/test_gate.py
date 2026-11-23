@@ -521,7 +521,7 @@ def test_a_compare_at_the_cap_falls_back_to_the_paginated_pr_files(monkeypatch):
         if "/compare/" in args[0]:
             return {"files": MANY}
         if args[0] == "repos/o/r/pulls/12":
-            return {"head": {"sha": HEAD}, "base": {"sha": BASE}}
+            return {"head": {"sha": HEAD}, "base": {"sha": BASE}, "changed_files": 401}
         if "/pulls/12/files" in args[0]:
             return [[{"filename": f"pkg/f{i}.go"} for i in range(100)] for _ in range(4)] + [[{"filename": "docs/x.md"}]]
         return {}
@@ -530,6 +530,30 @@ def test_a_compare_at_the_cap_falls_back_to_the_paginated_pr_files(monkeypatch):
     decision = gate.decide_scope(event, "o/r", "tok", QA_PATHS, "qa-review")
     assert [c["conclusion"] for c in decision["checks"]] == ["success", "success"]
     assert "repos/o/r/pulls/12/files?per_page=100" in seen
+    assert seen.count("repos/o/r/pulls/12") == 2  # the SHAs are read again after paging
+
+
+@pytest.mark.parametrize("changed, pages, moved", [
+    (3001, 30, False),   # the PR files API stops at 3000: the list is cut
+    (401, 4, False),     # fewer files than the PR says it has
+    (401, 4, True),      # a commit landed while paging
+])
+def test_a_cut_or_overtaken_fallback_list_is_not_used(monkeypatch, changed, pages, moved):
+    calls = {"pr": 0}
+    def api(args, token, payload=None):
+        if "/compare/" in args[0]:
+            return {"files": MANY}
+        if args[0] == "repos/o/r/pulls/12":
+            calls["pr"] += 1
+            head = "f" * 40 if moved and calls["pr"] > 1 else HEAD
+            return {"head": {"sha": head}, "base": {"sha": BASE}, "changed_files": changed}
+        if "/pulls/12/files" in args[0]:
+            return [[{"filename": f"pkg/f{p}_{i}.go"} for i in range(100)] for p in range(pages)]
+        return {}
+    monkeypatch.setattr(gate, "gh_api", api)
+    event, _ = human_pr_event([])
+    decision = gate.decide_scope(event, "o/r", "tok", QA_PATHS, "qa-review")
+    assert "skip" in decision
 
 
 def test_a_compare_at_the_cap_on_a_pr_that_moved_on_is_left_to_a_person(monkeypatch):
@@ -705,6 +729,31 @@ def test_sweep_grades_the_pr_as_it_is_now_and_regrades_after_a_retarget(monkeypa
     assert gate.sweep("o/r", "tok", BOTS, QA_PATHS, "qa-review", "qa-test-run", "", "https://run", "loft-bot") == 0
     assert writes == []
     assert "#6: 1 changed file(s) under a QA-owned path; the panel decides" in capsys.readouterr().out
+
+
+def test_sweep_counts_the_missing_checks_on_the_current_head(monkeypatch):
+    # The listed head had qa-review only; a commit since then left the new head with neither.
+    listed = {"number": 7, "user": {"login": "roehrijn"}, "head": {"sha": "7" * 40, "ref": "a"},
+              "base": {"sha": BASE, "ref": "main"}}
+    now = {**listed, "head": {"sha": "8" * 40, "ref": "a"}, "html_url": "u"}
+    writes = []
+    def api(args, token, payload=None):
+        if args[0].startswith("repos/o/r/pulls?"):
+            return [[listed]]
+        if args[0] == "repos/o/r/pulls/7":
+            return now
+        if "check-runs?" in args[0]:
+            old_head_review = ("7" * 40) in args[0] and "check_name=qa-review" in args[0]
+            return {"check_runs": [{"id": 1, "status": "completed", "app": {"slug": "github-actions"}}] if old_head_review else []}
+        if "/compare/" in args[0]:
+            return {"files": [{"filename": "docs/a.md"}]}
+        if payload is not None:
+            writes.append((payload["name"], payload["head_sha"]))
+            return {"id": 1}
+        return {}
+    monkeypatch.setattr(gate, "gh_api", api)
+    assert gate.sweep("o/r", "tok", BOTS, QA_PATHS, "qa-review", "qa-test-run", "", "https://run", "loft-bot") == 1
+    assert writes == [("qa-review", "8" * 40), ("qa-test-run", "8" * 40)]
 
 
 def test_sweep_retry_creates_only_the_missing_check(monkeypatch):
@@ -1124,6 +1173,8 @@ def test_ci_jobs_of_one_tested_commit_are_serialized():
     assert "needs: tested" in text and "cancel-in-progress: false" in text
     assert "queue: max" in text  # two e2e completions may queue behind an active gate job
     assert "grep -oE '[0-9a-f]{40}' <<<\"$TITLE\" | tail -n1" in text
+    # A PR event job and the panel verdict job write to the same head as the e2e jobs do.
+    assert "HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}" in text
 
 
 def test_bot_backport_keeps_the_title_the_panel_matches():

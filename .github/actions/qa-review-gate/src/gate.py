@@ -73,6 +73,7 @@ OVERRIDE_EXTERNAL_ID = "qa-review-gate:override"
 DISPATCH_TITLE = re.compile(r"#(\d+)\b.*\b([0-9a-f]{40})\b")
 SHA_PREFIX = re.compile(r"^[0-9a-f]{7,40}$")
 COMPARE_FILE_CAP = 300  # the compare API lists at most this many files and says nothing when it cuts
+PR_FILES_CAP = 3000  # the PR files API stops here too
 DEFAULT_BOTS = "loft-bot:backport/,vcluster-qa-bot[bot]:flake-fixer/"
 # Mirrors the dispatcher's auto-review paths (slack-ai-bot config.py AutoReviewConfig.paths):
 # a PR outside them never gets the panel, so the gate passes it as out of QA scope itself.
@@ -179,11 +180,18 @@ def changed_files(repo, base_sha, head_sha, token, number=None):
     files = gh_api([f"repos/{repo}/compare/{base_sha}...{head_sha}"], token).get("files") or []
     if len(files) < COMPARE_FILE_CAP:
         return [f.get("filename", "") for f in files]
-    pr = gh_api([f"repos/{repo}/pulls/{number}"], token) if number is not None else {}
-    if ((pr.get("head") or {}).get("sha"), (pr.get("base") or {}).get("sha")) != (head_sha, base_sha):
+    def same_shas():
+        pr = gh_api([f"repos/{repo}/pulls/{number}"], token) if number is not None else {}
+        return ((pr.get("head") or {}).get("sha"), (pr.get("base") or {}).get("sha")) == (head_sha, base_sha), pr
+    same, pr = same_shas()
+    if not same:
         raise GateError(f"compare lists {COMPARE_FILE_CAP} files and the PR has moved on; the list may be cut")
     pages = gh_api([f"repos/{repo}/pulls/{number}/files?per_page=100", "--paginate", "--slurp"], token)
-    return [f.get("filename", "") for page in pages for f in page]
+    names = [f.get("filename", "") for page in pages for f in page]
+    # The PR files list stops at 3000 and a commit during pagination mixes two heads.
+    if len(names) != pr.get("changed_files") or len(names) >= PR_FILES_CAP or not same_shas()[0]:
+        raise GateError(f"the PR files list is cut ({len(names)} of {pr.get('changed_files')}) or the PR moved on")
+    return names
 
 
 def scope_owned(runs):
@@ -326,7 +334,10 @@ def sweep(repo, token, bots, qa_paths, check_name, test_check, qa_team, run_url,
     pages = gh_api([f"repos/{repo}/pulls?state=open&per_page=100", "--paginate", "--slurp"], token)
     done, stuck = 0, []
     for pr in (pr for page in pages for pr in page):
-        number, head = pr.get("number"), (pr.get("head") or {}).get("sha", "")
+        number = pr.get("number")
+        # The list is a snapshot; a retarget or a new commit since then must not be graded by it.
+        pr = gh_api([f"repos/{repo}/pulls/{number}"], token) or pr
+        head = (pr.get("head") or {}).get("sha", "")
         missing = missing_checks(repo, head, (check_name, test_check), token)
         if not missing:
             continue
@@ -334,9 +345,6 @@ def sweep(repo, token, bots, qa_paths, check_name, test_check, qa_team, run_url,
             print(f"::notice::qa-review-gate: #{number} is a trusted bot PR on a later head; a person reviews it")
             stuck.append((number, head, missing))
             continue
-        # The list is a snapshot; a retarget or push since then must not be graded by it.
-        pr = gh_api([f"repos/{repo}/pulls/{number}"], token) or pr
-        head = (pr.get("head") or {}).get("sha", head)
         event = {"action": "opened", "pull_request": pr, "sender": pr.get("user") or {}}
         decision = decide_scope(event, repo, token, qa_paths, check_name, test_check)
         if "skip" in decision:
