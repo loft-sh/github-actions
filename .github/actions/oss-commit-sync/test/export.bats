@@ -25,6 +25,16 @@ teardown() {
   [ "$(oss_file pkg/app.go)" = "l1-changed" ]
 }
 
+@test "an exported commit is dated by the run, not by its monorepo author date" {
+  GIT_AUTHOR_DATE="2020-01-01T00:00:00Z" company_commit pkg/app.go "l1-changed" "feat: old change" >/dev/null
+
+  GIT_COMMITTER_DATE="2030-01-01T00:00:00Z" run bash "$EXPORT"
+  [ "$status" -eq 0 ]
+  [ "$(output_value exported-count)" = "1" ]
+  [ "$(git -C "$OSS_REMOTE" log -1 --format=%aI main)" = "2020-01-01T00:00:00Z" ]
+  [ "$(git -C "$OSS_REMOTE" log -1 --format=%cI main)" = "2030-01-01T00:00:00Z" ]
+}
+
 @test "multiple commits export in order" {
   company_commit pkg/a.go "a" "feat: first"
   company_commit pkg/b.go "b" "feat: second"

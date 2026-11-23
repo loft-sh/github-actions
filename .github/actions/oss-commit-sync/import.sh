@@ -204,7 +204,7 @@ while read -r E; do
     echo "Skipping ${E} (applies as a no-op; content already in ${SUBTREE_PREFIX})"
     continue
   fi
-  replay_commit "$E" "$OSS_TRAILER" "."
+  replay_commit "$E" "$OSS_TRAILER" "." stable
   replayed=$((replayed + 1))
   echo "Replayed ${E} -> $(git rev-parse HEAD) ($(git log -1 --format=%s "$E"))"
 done <<< "$replay_range"
