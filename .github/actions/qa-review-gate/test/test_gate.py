@@ -599,6 +599,41 @@ def test_main_bot_mode_falls_through_to_the_scope_check(tmp_path, monkeypatch, c
     assert "is not a trusted bot PR" in capsys.readouterr().out
 
 
+def test_regrade_stays_on_the_head_this_job_queued_for(monkeypatch, capsys):
+    event, _ = human_pr_event(["docs/README.md"])
+    moved = {"number": 12, "base": {"ref": "release-1.0", "sha": "c" * 40}, "head": {"sha": "9" * 40}}
+    monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None:
+                        moved if args[0] == "repos/o/r/pulls/12" else pytest.fail(f"no other call expected: {args[0]}"))
+    assert gate.regrade_if_retargeted(event, "o/r", "tok", QA_PATHS, "qa-review", "qa-test-run", "", "u", "loft-bot") is None
+    assert "its own event grades it" in capsys.readouterr().out
+
+
+def test_a_scope_write_keeps_a_verdict_that_landed_during_it(monkeypatch, capsys):
+    # The sweep runs outside the head's queue: between its read and its POST the panel
+    # passed qa-review; the sweep's pass must show the verdict, not hide it.
+    decision = {"checks": [{"name": "qa-review", "head_sha": HEAD, "conclusion": "success",
+                            "external_id": gate.SCOPE_EXTERNAL_ID, "title": "QA review: out of scope", "summary": "s"}],
+                "request_qa_review": False, "pr_number": 12}
+    verdict = {"id": 30, "status": "completed", "conclusion": "failure", "external_id": "",
+               "details_url": "https://panel", "output": {"title": "QA review: blocked", "summary": "why"}}
+    reads, writes = {"n": 0}, []
+    def api(args, token, payload=None):
+        if payload is not None:
+            writes.append((args, payload))
+            return {"id": 40}
+        if "check-runs?" in args[0]:
+            reads["n"] += 1
+            return {"check_runs": [{"id": 20, "status": "completed", "external_id": gate.SCOPE_EXTERNAL_ID}]
+                    + ([verdict] if reads["n"] > 2 else [])}  # the verdict shows up after the pre-write read
+        return {}
+    monkeypatch.setattr(gate, "gh_api", api)
+    gate.apply(decision, "o/r", "tok", "", "https://run")
+    patches = [(a, p) for a, p in writes if a[0] == "repos/o/r/check-runs/40"]
+    assert patches and patches[0][1]["conclusion"] == "failure"
+    assert patches[0][1]["output"]["title"] == "QA review: blocked" and patches[0][1]["external_id"] == ""
+    assert "a result landed during the scope write" in capsys.readouterr().out
+
+
 def test_main_regrades_when_a_retarget_overtook_the_scope_write(tmp_path, monkeypatch, capsys):
     # The opened job graded docs-only against main; by the time it wrote, the PR targeted
     # release-1.0, where the same head also changes an e2e file.

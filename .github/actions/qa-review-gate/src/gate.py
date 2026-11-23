@@ -303,6 +303,10 @@ def regrade_if_retargeted(event, repo, token, qa_paths, check_name, test_check, 
     current = gh_api([f"repos/{repo}/pulls/{pr.get('number')}"], token)
     if ((current.get("base") or {}).get("ref", "")) == (pr.get("base") or {}).get("ref", ""):
         return None
+    if ((current.get("head") or {}).get("sha", "")) != (pr.get("head") or {}).get("sha", ""):
+        # This job queues on the old head; the new head's own event grades it in its queue.
+        print(f"::notice::qa-review-gate: retargeted and moved to {current['head']['sha'][:7]}; its own event grades it")
+        return None
     edited = {"action": "edited", "changes": {"base": {"ref": {"from": (pr.get("base") or {}).get("ref", "")}}},
               "pull_request": current, "sender": event.get("sender") or {}}
     decision = decide_scope(edited, repo, token, qa_paths, check_name, test_check)
@@ -840,6 +844,34 @@ def overridden(repo, head, name, token):
     return override_run(repo, head, name, token) is not None
 
 
+def newest_run_id(repo, head, name, token):
+    runs = gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={name}&filter=all&per_page=100"],
+                  token).get("check_runs") or []
+    return max((run.get("id", 0) for run in runs), default=0)
+
+
+def reconcile_scope_write(repo, head, name, created_id, since_id, token, run_url):
+    """A scope write runs outside the head's queue (the sweep) or after its ownership read:
+    a panel verdict or an e2e result that landed in between (id after `since_id`, before
+    ours) must not be hidden by ours, so it is copied onto our run, ownership included."""
+    runs = gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={name}&filter=all&per_page=100"],
+                  token).get("check_runs") or []
+    landed = [run for run in runs if since_id < run.get("id", 0) < created_id
+              and run.get("status") == "completed"
+              and run.get("external_id") not in (SCOPE_EXTERNAL_ID, OPENER_EXTERNAL_ID)]
+    if not landed:
+        return False
+    winner = max(landed, key=lambda run: run["id"])
+    output = winner.get("output") or {}
+    gh_api([f"repos/{repo}/check-runs/{created_id}", "-X", "PATCH"], token, {
+        "status": "completed", "conclusion": winner.get("conclusion", "success"),
+        "details_url": winner.get("details_url") or run_url, "external_id": winner.get("external_id") or "",
+        "output": {"title": output.get("title", ""), "summary": output.get("summary", "")},
+    })
+    print(f"::notice::qa-review-gate: {name} on {head[:7]}: a result landed during the scope write; kept it")
+    return True
+
+
 def reconcile_override(repo, head, name, token, run_url):
     """Make the newest run of `name` on `head` show the override, when one exists. A result
     published after the override, or one whose repair PATCH failed, would otherwise stay
@@ -898,6 +930,7 @@ def apply(decision, repo, token, qa_team, run_url, panel_login="loft-bot"):
                 # provisional opener while a real result sits behind it.
                 reconcile_opener(repo, head, check["name"], None, token, run_url)
                 continue
+        since = newest_run_id(repo, head, check["name"], token) if check.get("external_id") == SCOPE_EXTERNAL_ID else 0
         created = gh_api([f"repos/{repo}/check-runs", "-X", "POST"], token, {
             "name": check["name"], "head_sha": head, "status": "completed",
             "conclusion": check["conclusion"], "details_url": run_url,
@@ -911,6 +944,8 @@ def apply(decision, repo, token, qa_team, run_url, panel_login="loft-bot"):
             # any result published after the opener remains the newest check.
             reconcile_opener(repo, head, check["name"], created["id"], token, run_url)
         elif check.get("external_id") != OVERRIDE_EXTERNAL_ID:
+            if check.get("external_id") == SCOPE_EXTERNAL_ID:
+                reconcile_scope_write(repo, head, check["name"], created["id"], since, token, run_url)
             # An override may have landed between the lookup and this write. The newest
             # run is what GitHub shows, so copy the override onto ours.
             reconcile_override(repo, head, check["name"], token, run_url)

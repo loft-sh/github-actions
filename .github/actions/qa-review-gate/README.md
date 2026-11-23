@@ -53,15 +53,18 @@ way. The sweep grades each PR as it is at that moment, not as the open-PR list c
 (the missing checks are counted on the current head), and checks the base again after
 writing. Every gate job that writes to a head queues on that head (the tested commit for an
 e2e run, the PR head for a PR event or a panel verdict), so a verdict or an e2e result
-cannot land between a retarget job's read and its write. A scope pass is published only
-while the PR still targets the graded base, and the job checks the base once more after
-writing, so a retarget that overtakes a queued `opened` job cannot leave a pass on a head
-that is now in scope. A trusted bot PR whose exemption was declined (a head the bot did not
-push, or a bot push on a head the gate had not passed) never takes this pass: it goes to
-review whatever it touches. The panel never runs on such a PR, so without this a required
-check would block Renovate, version bumps and every code-only change. A PR that does touch
-one of those paths gets nothing from this step: the panel's verdict and the e2e report grade
-it.
+cannot land between a retarget job's read and its write; the sweep runs outside those
+queues, so every scope write re-reads the head afterwards and copies a verdict or result
+that landed meanwhile onto its own run, ownership included. The post-write regrade stays on
+the head the job queued for: a head that moved on is graded by its own event. A scope pass
+is published only while the PR still targets the graded base, and the job checks the base
+once more after writing, so a retarget that overtakes a queued `opened` job cannot leave a
+pass on a head that is now in scope. A trusted bot PR whose exemption was declined (a head
+the bot did not push, or a bot push on a head the gate had not passed) never takes this
+pass: it goes to review whatever it touches. The panel never runs on such a PR, so without
+this a required check would block Renovate, version bumps and every code-only change. A PR
+that does touch one of those paths gets nothing from this step: the panel's verdict and the
+e2e report grade it.
 
 Before the ruleset goes live, run the caller's `workflow_dispatch` once (mode `sweep`):
 every open PR whose head lacks `qa-review` or `qa-test-run` from GitHub Actions (the source
