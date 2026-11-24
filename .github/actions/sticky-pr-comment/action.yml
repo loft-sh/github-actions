@@ -2,7 +2,7 @@ name: Sticky PR Comment
 description: |
   Upserts a sticky comment on a pull request, identified by a stable HTML
   marker. If a comment with the marker already exists it is updated in place,
-  otherwise a new comment is created. Domain-agnostic — the caller composes
+  otherwise a new comment is created, unless update-only is "true". Domain-agnostic — the caller composes
   the body. Uses the GitHub CLI (gh) which is pre-installed on hosted runners.
 inputs:
   marker:
@@ -26,12 +26,16 @@ inputs:
     description: 'Login of the comment author to match. Comments with the marker but a different author are ignored, so users cannot squat on the sticky slot. Defaults to "github-actions[bot]" which is the author when secrets.GITHUB_TOKEN is used; override when posting via a PAT or GitHub App.'
     required: false
     default: 'github-actions[bot]'
+  update-only:
+    description: 'When "true", only update an existing matching comment and never create one. Use it to edit a comment only on PRs that already have it.'
+    required: false
+    default: 'false'
 outputs:
   comment-id:
-    description: 'Numeric ID of the upserted comment.'
+    description: 'Numeric ID of the upserted comment. Empty when action-taken is "skipped".'
     value: ${{ steps.upsert.outputs.comment-id }}
   action-taken:
-    description: 'Either "created" or "updated".'
+    description: '"created", "updated", or "skipped" when update-only is "true" and no matching comment exists.'
     value: ${{ steps.upsert.outputs.action-taken }}
 runs:
   using: composite
@@ -46,6 +50,7 @@ runs:
         INPUT_PR_NUMBER: ${{ inputs.pr-number }}
         INPUT_REPO: ${{ inputs.repo }}
         INPUT_EXPECTED_AUTHOR: ${{ inputs.expected-author }}
+        INPUT_UPDATE_ONLY: ${{ inputs.update-only }}
       run: ${{ github.action_path }}/src/upsert-comment.sh
 branding:
   icon: 'message-square'

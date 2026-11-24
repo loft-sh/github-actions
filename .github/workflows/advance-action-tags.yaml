@@ -10,10 +10,13 @@ jobs:
   advance:
     runs-on: ubuntu-latest
     permissions:
+      # actions: write dispatches the release build of a binary action.
+      actions: write
       contents: write
       pull-requests: read
     outputs:
       pr-number: ${{ steps.advance.outputs.pr-number }}
+      failure-reason: ${{ steps.advance.outputs.failure-reason }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -39,4 +42,11 @@ jobs:
           GH_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ needs.advance.outputs.pr-number }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: gh pr comment "$PR_NUMBER" --body "Action tags were not fully advanced. Check the [workflow log]($RUN_URL), review the release requirements and callers, then publish or recover the affected tags manually. A major-release label requires a new major tag."
+          FAILURE_REASON: ${{ needs.advance.outputs.failure-reason }}
+        run: |
+          if [[ "$FAILURE_REASON" == release-build ]]; then
+            body="Action tags were advanced, but a binary action's release build did not start or did not finish, so its release binary may be stale. Check the [workflow log]($RUN_URL) for the release run and the command to rebuild it. While the tag still points at this merge, re-running this workflow also rebuilds it; once a later merge has moved the tag, that merge's build has already refreshed the binary."
+          else
+            body="Action tags were not fully advanced. Check the [workflow log]($RUN_URL), review the release requirements and callers, then publish or recover the affected tags manually. A major-release label requires a new major tag."
+          fi
+          gh pr comment "$PR_NUMBER" --body "$body"

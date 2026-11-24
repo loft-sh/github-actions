@@ -1,9 +1,10 @@
-.PHONY: test-testing-tailnet test test-ghcr-tag-guard test-release-on-merge test-retry-approved-pr-ci test-secret-broker-request test-secret-broker-response test-semver-validation test-setup-semstat test-linear-pr-commenter test-link-backport-prs test-fork-review-check test-select-backport-source-prs test-release-notification test-linear-release-sync test-linear-cve-summary test-delete-previous-head-image test-aws-test-infra test-cleanup-head-charts test-advance-action-tags test-ci-test-notify test-auto-approve-bot-prs test-ai-pr-review test-ai-step test-release-summary test-release-notes test-publish-helm-chart test-govulncheck test-go-licenses test-run-ginkgo test-sticky-pr-comment test-repository-dispatch test-parse-label-filter test-release-branch-freeze test-prerelease-setup test-vcluster-release test-platform-release test-release-lib test-subtree-mirror test-oss-commit-sync test-oss-mirror-staleness test-backport-legacy-allowlist test-backport-legacy-split test-backport-fix-imports test-promote-release test-wait-for-release test-cve-scan test-commitlint test-resolve-github-release test-comment-triggered-check test-conflict-check build-linear-release-sync lint check-bats-jobs check-edit-last install-auto-doc generate-docs check-docs help
+.PHONY: test-testing-tailnet test test-ghcr-tag-guard test-release-on-merge test-retry-approved-pr-ci test-secret-broker-request test-secret-broker-response test-semver-validation test-setup-semstat test-linear-pr-commenter test-link-backport-prs test-fork-review-check test-select-backport-source-prs test-release-notification test-linear-release-sync test-linear-cve-summary test-delete-previous-head-image test-aws-test-infra test-cleanup-head-charts test-advance-action-tags test-ci-test-notify test-auto-approve-bot-prs test-ai-pr-review test-ai-step test-release-summary test-release-notes test-publish-helm-chart test-govulncheck test-cognitive-complexity test-go-licenses test-run-ginkgo test-sticky-pr-comment test-repository-dispatch test-parse-label-filter test-release-branch-freeze test-prerelease-setup test-vcluster-release test-platform-release test-release-lib test-subtree-mirror test-oss-commit-sync test-oss-mirror-staleness test-backport-legacy-allowlist test-backport-legacy-split test-backport-fix-imports test-promote-release test-wait-for-release test-cve-scan test-commitlint test-resolve-github-release test-comment-triggered-check test-conflict-check build-linear-release-sync lint check-bats-jobs check-edit-last install-auto-doc generate-docs check-docs help
 
 ACTIONS_DIR := .github/actions
 .PHONY: test-check-action-pins
 .PHONY: test-resolve-pr-event
 .PHONY: test-qa-review-gate
+.PHONY: test-ui-verifier-image
 WORKFLOWS_DIR := .github/workflows
 SCRIPTS_DIR := .github/scripts
 
@@ -96,7 +97,7 @@ check-docs: generate-docs ## verify docs are up to date (fails if drift detected
 help: ## show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-30s %s\n", $$1, $$2}'
 
-test: test-testing-tailnet test-ghcr-tag-guard test-release-on-merge test-retry-approved-pr-ci test-secret-broker-request test-secret-broker-response test-semver-validation test-setup-semstat test-linear-pr-commenter test-link-backport-prs test-fork-review-check test-select-backport-source-prs test-release-notification test-linear-release-sync test-linear-cve-summary test-delete-previous-head-image test-aws-test-infra test-cleanup-head-charts test-advance-action-tags test-auto-approve-bot-prs test-ai-pr-review test-ai-step test-release-summary test-release-notes test-ci-test-notify test-go-licenses test-publish-helm-chart test-govulncheck test-run-ginkgo test-sticky-pr-comment test-repository-dispatch test-parse-label-filter test-release-branch-freeze test-prerelease-setup test-vcluster-release test-platform-release test-release-lib test-subtree-mirror test-oss-commit-sync test-oss-mirror-staleness test-backport-legacy-allowlist test-backport-legacy-split test-backport-fix-imports test-promote-release test-wait-for-release test-cve-scan test-commitlint test-resolve-github-release test-comment-triggered-check test-conflict-check ## run all action tests
+test: test-ui-verifier-image test-testing-tailnet test-ghcr-tag-guard test-release-on-merge test-retry-approved-pr-ci test-secret-broker-request test-secret-broker-response test-semver-validation test-setup-semstat test-linear-pr-commenter test-link-backport-prs test-fork-review-check test-select-backport-source-prs test-release-notification test-linear-release-sync test-linear-cve-summary test-delete-previous-head-image test-aws-test-infra test-cleanup-head-charts test-advance-action-tags test-auto-approve-bot-prs test-ai-pr-review test-ai-step test-release-summary test-release-notes test-ci-test-notify test-go-licenses test-publish-helm-chart test-govulncheck test-cognitive-complexity test-run-ginkgo test-sticky-pr-comment test-repository-dispatch test-parse-label-filter test-release-branch-freeze test-prerelease-setup test-vcluster-release test-platform-release test-release-lib test-subtree-mirror test-oss-commit-sync test-oss-mirror-staleness test-backport-legacy-allowlist test-backport-legacy-split test-backport-fix-imports test-promote-release test-wait-for-release test-cve-scan test-commitlint test-resolve-github-release test-comment-triggered-check test-conflict-check ## run all action tests
 
 test-retry-approved-pr-ci: ## run approved PR CI retry pytest tests
 	uv run --with pytest==8.3.3 pytest $(ACTIONS_DIR)/retry-approved-pr-ci/test/ -q
@@ -172,6 +173,7 @@ test-advance-action-tags: ## run action tag advancement bats tests
 
 test-auto-approve-bot-prs: ## run auto-approve-bot-prs bats tests
 	bats $(ACTIONS_DIR)/auto-approve-bot-prs/test/*.bats
+	python3 -m unittest discover -s $(ACTIONS_DIR)/auto-approve-bot-prs/test -p 'test_*.py'
 
 test-ai-pr-review: ## run ai-pr-review bats tests
 	bats $(ACTIONS_DIR)/ai-pr-review/test/*.bats
@@ -195,6 +197,9 @@ test-publish-helm-chart: ## run publish-helm-chart bats tests (requires mikefara
 
 test-govulncheck: ## run govulncheck bats tests
 	bats $(ACTIONS_DIR)/govulncheck/test/*.bats
+
+test-cognitive-complexity: ## run cognitive-complexity bats tests
+	bats $(ACTIONS_DIR)/cognitive-complexity/test/*.bats
 
 test-cve-scan: ## run cve-scan bats tests
 	bats $(ACTIONS_DIR)/cve-scan/test/*.bats
@@ -307,3 +312,6 @@ check-bats-jobs: ## fail if a workflow installs bats but never runs a suite
 
 # Reusable workflow tests (test-*.yaml for workflow_call workflows) run in CI only.
 # They require GitHub event context and cannot be executed locally.
+
+test-ui-verifier-image: ## run UI verifier image bats tests
+	bats $(ACTIONS_DIR)/ui-verifier-image/test/*.bats

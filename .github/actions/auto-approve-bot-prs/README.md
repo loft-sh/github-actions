@@ -13,6 +13,73 @@ still exits 0, so the job conclusion and any required check stay green.
 Safe patterns: `chore(` / `chore:` titles, `fix(deps):` titles,
 `backport/` / `renovate/` / `update-platform-version-` branches.
 
+## Completion-driven backport approval
+
+Call the reusable workflow from a `workflow_run: completed` caller. The event
+selects a backport-only mode that evaluates required checks once and never
+merges. Existing `pull_request` callers keep their polling behavior.
+
+```yaml
+on:
+  workflow_run:
+    workflows: ['E2E', 'UI CI', 'golangci-lint', 'Unit tests']
+    types: [completed]
+jobs:
+  approve:
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      startsWith(github.event.workflow_run.head_branch, 'backport/')
+    concurrency:
+      group: backport-approval-${{ github.event.workflow_run.head_branch }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pull-requests: write
+      checks: read
+      statuses: read
+    uses: loft-sh/github-actions/.github/workflows/auto-approve-bot-prs.yaml@auto-approve-bot-prs/v1
+    with:
+      trusted-authors: loft-bot
+      auto-merge: false
+    secrets:
+      gh-access-token: ${{ secrets.BOT_APPROVER_PAT }}
+```
+
+The workflow names above are the current `loft-enterprise` required-check
+producers. Other callers must list their own producers. Keep that list in sync
+when a required check moves to another workflow. Do not include this approval
+workflow itself. `check_suite` and `check_run` events do not wake workflows for
+GitHub Actions checks; use the producing workflows' completion events instead.
+See [GitHub's trigger rules](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_run).
+
+The handler resolves the completed SHA through the commit-to-PR API, including
+reruns with an empty event PR list. It reads current PR eligibility and the union
+of classic branch protection and active repository/organization rulesets. Each
+required context must be present and green from its configured app. Missing,
+pending, failed, cancelled or unreadable requirements skip approval. Optional
+checks do not gate this mode. If the test-merge commit has published checks,
+those must satisfy the gate too.
+
+Only open, ready, same-repository PRs from the trusted authors with a `backport/`
+branch qualify. Skip labels still leave the PR for a person. The head, base,
+eligibility and checks are read again before posting a review tied to the tested
+head. Duplicate completions and reruns do not add a second current approval by
+the same approver. The caller's branch lock serializes competing completions.
+
+This privileged handler checks out only the trusted shared action from `main`.
+It consumes no PR code or artifacts. CI reads use the caller's `GITHUB_TOKEN`
+(or existing `ci-read-token`); review reads/writes use the existing approval
+credential. No new secret or organization setting is needed. Branch rules need
+only metadata read access. API or schema errors log a warning and skip approval;
+policy skips log the PR number and reason. After a transient error, rerun the
+approval workflow or let the next producer completion reevaluate it.
+
+Ship the shared change and verify `auto-approve-bot-prs/v1` has advanced before
+merging a caller that adds completion events. The completion listener must exist on
+the caller's default branch. Backports targeting release branches then use that
+listener without having to backport the listener itself.
+
 ## Signals treated as CI
 
 Approval is blocked unless every non-self signal on the PR head resolves to

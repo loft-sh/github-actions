@@ -55,6 +55,25 @@ payload_field() {
   [ "$(payload_field '.text')" = "📊 My Test Suite" ]
 }
 
+@test "header emoji replaces the status emoji" {
+  STATUS="info" HEADER_EMOJI="👀" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(payload_field '.blocks[0].text.text')" = "👀 My Test Suite" ]
+  [ "$(payload_field '.text')" = "👀 My Test Suite" ]
+}
+
+@test "header emoji keeps the status suffix" {
+  STATUS="success" HEADER_EMOJI="👀" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(payload_field '.blocks[0].text.text')" = "👀 My Test Suite Success" ]
+}
+
+@test "blank header emoji keeps the status emoji" {
+  STATUS="failure" HEADER_EMOJI="  " run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(payload_field '.blocks[0].text.text')" = "❌ My Test Suite Failed" ]
+}
+
 @test "cancelled status produces correct emoji and text" {
   STATUS="cancelled" run bash "$SCRIPT"
   [ "$status" -eq 0 ]

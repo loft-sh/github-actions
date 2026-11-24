@@ -165,3 +165,47 @@ last_body() { awk 'BEGIN{RS="---END---\n"} END{printf "%s", $0}' "$GH_MOCK_BODY_
   run "$SCRIPT"
   [ "$status" -ne 0 ]
 }
+
+@test "update-only with no matching comment → skips and makes no write" {
+  export INPUT_UPDATE_ONLY="true"
+  export GH_MOCK_LIST_JSON='[
+    {"id": 99, "body": "unrelated comment", "user": {"login": "github-actions[bot]"}}
+  ]'
+  export INPUT_BODY="resolved"
+
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv action-taken)" = "action-taken=skipped" ]
+  [ "$(kv comment-id)" = "comment-id=" ]
+  [ "$(grep -c '^POST ' "$GH_MOCK_CALLS")" = 0 ]
+  [ "$(grep -c '^PATCH ' "$GH_MOCK_CALLS")" = 0 ]
+}
+
+@test "update-only with matching comment → updates it" {
+  export INPUT_UPDATE_ONLY="true"
+  export GH_MOCK_LIST_JSON='[
+    {"id": 777, "body": "<!-- e2e-status -->\nold body", "user": {"login": "github-actions[bot]"}}
+  ]'
+  export INPUT_BODY="resolved"
+
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv comment-id)" = "comment-id=777" ]
+  [ "$(kv action-taken)" = "action-taken=updated" ]
+  grep -q '^PATCH repos/owner/repo/issues/comments/777$' "$GH_MOCK_CALLS"
+  [ "$(grep -c '^POST ' "$GH_MOCK_CALLS")" = 0 ]
+}
+
+@test "update-only ignores a marker comment by another author" {
+  export INPUT_UPDATE_ONLY="true"
+  export GH_MOCK_LIST_JSON='[
+    {"id": 555, "body": "<!-- e2e-status -->\nsquatter body", "user": {"login": "evil-user"}}
+  ]'
+  export INPUT_BODY="resolved"
+
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(kv action-taken)" = "action-taken=skipped" ]
+  [ "$(grep -c '^PATCH ' "$GH_MOCK_CALLS")" = 0 ]
+  [ "$(grep -c '^POST ' "$GH_MOCK_CALLS")" = 0 ]
+}

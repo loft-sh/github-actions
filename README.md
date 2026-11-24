@@ -7,6 +7,11 @@ are written, tested, and structured.
 
 ## Available Actions
 
+### UI verifier image
+
+Build and push a private backend dev image for trusted UI verifier runs.
+See [UI verifier image](./.github/actions/ui-verifier-image/README.md) for prerequisites and caller safety.
+
 ### Testing tailnet
 
 Join the testing tailnet from trusted GitHub-hosted Linux jobs using OIDC.
@@ -290,7 +295,8 @@ Scans every tracked text file in the checked-out repository for git conflict
 markers, whatever the file extension, skipping `vendor` and `node_modules`.
 Reports `found` and a Markdown report file. It does not fail on markers itself:
 the caller decides, and the `conflict-check.yaml` reusable workflow comments on
-the PR and then fails the job. A scan that cannot run fails the step, so an error
+the PR and then fails the job, and on a later clean scan edits that comment to
+say the conflicts were resolved. A scan that cannot run fails the step, so an error
 never passes as a clean result. Released under the `conflict-check/v1` tag, shared with the
 `conflict-check.yaml` reusable workflow.
 
@@ -300,7 +306,7 @@ never passes as a clean result. Released under the `conflict-check/v1` tag, shar
 
 Upserts a sticky comment on a pull request, identified by a stable HTML
 marker. If a comment with the marker already exists it is updated in place,
-otherwise a new comment is created. Domain-agnostic — the caller composes
+otherwise a new comment is created, unless `update-only` is "true". Domain-agnostic — the caller composes
 the body. Useful for surfacing the last real run of a CI signal that the
 caller skips on some events (e.g. e2e tests skipped when PR description is
 unchanged), so reviewers always see the most recent meaningful result.
@@ -1211,6 +1217,16 @@ jobs:
 
 - The caller checks out its own source and controls `runs-on`/`timeout-minutes`/fork guarding at the job level.
 - A composite action cannot declare `timeout-minutes` on its steps; set `timeout-minutes` on the caller job (default ~10m is reasonable for most modules).
+
+### Cognitive Complexity
+
+Lists Go functions whose cognitive complexity (gocognit) is above a threshold,
+highest first, in the job log and the job summary. Report only: it never fails
+on findings.
+
+**Location:** `.github/actions/cognitive-complexity`
+
+**Usage:** see the [cognitive-complexity README](./.github/actions/cognitive-complexity/README.md).
 
 ### CVE Scan
 

@@ -3,7 +3,8 @@ set -euo pipefail
 
 # Required env vars: TEST_NAME, STATUS, DETAILS, PAYLOAD_FILE, RUN_URL, REPO, RUN_NUMBER
 # Optional env vars: RUN_LINK_POSITION (top, bottom or none; defaults to top),
-#   FOOTER_TEXT (label for the run link in the footer; defaults to "REPO · Run #N")
+#   FOOTER_TEXT (label for the run link in the footer; defaults to "REPO · Run #N"),
+#   HEADER_EMOJI (replaces the status emoji in the header; blank keeps it)
 
 command -v jq >/dev/null || { echo "::error::jq is required but not found"; exit 1; }
 
@@ -32,6 +33,14 @@ case "$STATUS" in
   skipped)    EMOJI="⏭️"; STATUS_TEXT="Skipped" ;;
   *)          EMOJI="❓"; STATUS_TEXT="Unknown ($STATUS)" ;;
 esac
+
+# Lets a message that is not a test result (a review request, say) lead with
+# its own icon instead of one that reads as pass, fail or report. The status
+# still picks the suffix. Blank keeps the status emoji, so callers can pass the
+# input unconditionally.
+if [[ "${HEADER_EMOJI:-}" =~ [^[:space:]] ]]; then
+  EMOJI="$HEADER_EMOJI"
+fi
 
 HEADER="${EMOJI} ${TEST_NAME}${STATUS_TEXT:+ ${STATUS_TEXT}}"
 
