@@ -168,8 +168,7 @@ def resolve(api, payload, event_name, source_workflow='', requested_number=None,
         candidates = run.get('pull_requests')
         if not isinstance(candidates, list):
             raise Reject('invalid signal pull request associations')
-        if not candidates:
-            candidates = paged(api, '/commits/%s/pulls' % run['head_sha'])
+        candidates = candidates + paged(api, '/commits/%s/pulls' % run['head_sha'])
         signal_sha = run['head_sha']
     else:
         raise Reject('unsupported event')
