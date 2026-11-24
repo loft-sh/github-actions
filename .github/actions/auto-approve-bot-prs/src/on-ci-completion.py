@@ -169,59 +169,86 @@ def evaluate(reader, approver, repo, event, authors, skip_labels):
     # Do not trust workflow_run.pull_requests, which can be empty on reruns.
     # Resolve the exact completed commit, then read current PR policy from API.
     candidates = reader.items(f"repos/{repo}/commits/{sha}/pulls?per_page=100")
+    evaluate_candidates(reader, approver, repo, candidates, authors, skip_labels, sha)
+
+
+def reconcile(reader, approver, repo, authors, skip_labels):
+    candidates = reader.items(f"repos/{repo}/pulls?state=open&per_page=100")
+    evaluate_candidates(reader, approver, repo, candidates, authors, skip_labels)
+
+
+def evaluate_candidates(reader, approver, repo, candidates, authors, skip_labels, sha=None):
     for candidate in candidates:
-        number = candidate["number"]
-        if type(number) is not int or number <= 0:
-            raise ValueError("invalid PR number")
-        path = f"repos/{repo}/pulls/{number}"
-        pr = reader.api(path)
-        if not eligible(pr, repo, sha, authors, skip_labels):
-            print(f"PR #{number}: skip: not eligible")
-            continue
         try:
-            pr = wait_for_mergeability(reader, path, pr, repo, sha, authors, skip_labels)
-            gate(reader, repo, pr)
-            login = approver.api("user")["login"]
-            if login == pr["user"]["login"]:
-                raise Skip("approver is the PR author")
-            reviews = approver.items(f"{path}/reviews?per_page=100")
-            own = [r for r in reviews if r["user"]["login"] == login
-                   and r["state"] != "COMMENTED" and r["state"] != "PENDING"]
-            if own:
-                latest = max(own, key=lambda r: r["id"])
-                if latest["state"] == "APPROVED" and latest["commit_id"] == sha:
-                    print(f"PR #{number}: already approved at {sha}")
-                    continue
-            current = reader.api(path)
-            current = wait_for_mergeability(reader, path, current, repo, sha, authors, skip_labels)
-            if (not eligible(current, repo, sha, authors, skip_labels)
-                    or current["base"]["ref"] != pr["base"]["ref"]
-                    or current["base"]["sha"] != pr["base"]["sha"]):
-                raise Skip("PR eligibility, head or base changed during evaluation")
-            gate(reader, repo, current)
-            # commit_id prevents a racing push receiving approval for its new SHA.
-            review = approver.api(f"{path}/reviews", {
-                "commit_id": sha, "event": "APPROVE",
-                "body": "Approved by the shared backport workflow after all required checks passed.",
-            })
-            if review["state"] != "APPROVED" or review["commit_id"] != sha:
-                raise ValueError("could not verify approval")
-            print(f"PR #{number}: approved tested commit {sha}")
-        except Skip as exc:
-            print(f"PR #{number}: skip: {exc}")
+            evaluate_candidate(reader, approver, repo, candidate, authors, skip_labels, sha)
+        except Exception as exc:
+            if sha is not None:
+                raise
+            # A broken candidate must not starve other PRs. Avoid printing API data.
+            print(f"::warning::Reconcile candidate failed ({type(exc).__name__}); retry on next schedule.")
+
+
+def evaluate_candidate(reader, approver, repo, candidate, authors, skip_labels, sha):
+    number = candidate["number"]
+    if type(number) is not int or number <= 0:
+        raise ValueError("invalid PR number")
+    path = f"repos/{repo}/pulls/{number}"
+    pr = reader.api(path)
+    sha = sha or pr["head"]["sha"]
+    if not re.fullmatch(r"[0-9a-f]{40}", sha):
+        raise ValueError("invalid PR SHA")
+    if not eligible(pr, repo, sha, authors, skip_labels):
+        print(f"PR #{number}: skip: not eligible")
+        return
+    try:
+        pr = wait_for_mergeability(reader, path, pr, repo, sha, authors, skip_labels)
+        gate(reader, repo, pr)
+        login = approver.api("user")["login"]
+        if login == pr["user"]["login"]:
+            raise Skip("approver is the PR author")
+        reviews = approver.items(f"{path}/reviews?per_page=100")
+        own = [r for r in reviews if r["user"]["login"] == login
+               and r["state"] != "COMMENTED" and r["state"] != "PENDING"]
+        if own:
+            latest = max(own, key=lambda r: r["id"])
+            if latest["state"] == "APPROVED" and latest["commit_id"] == sha:
+                print(f"PR #{number}: already approved at {sha}")
+                return
+        current = reader.api(path)
+        current = wait_for_mergeability(reader, path, current, repo, sha, authors, skip_labels)
+        if (not eligible(current, repo, sha, authors, skip_labels)
+                or current["base"]["ref"] != pr["base"]["ref"]
+                or current["base"]["sha"] != pr["base"]["sha"]):
+            raise Skip("PR eligibility, head or base changed during evaluation")
+        gate(reader, repo, current)
+        # commit_id prevents a racing push receiving approval for its new SHA.
+        review = approver.api(f"{path}/reviews", {
+            "commit_id": sha, "event": "APPROVE",
+            "body": "Approved by the shared backport workflow after all required checks passed.",
+        })
+        if review["state"] != "APPROVED" or review["commit_id"] != sha:
+            raise ValueError("could not verify approval")
+        print(f"PR #{number}: approved tested commit {sha}")
+    except Skip as exc:
+        print(f"PR #{number}: skip: {exc}")
 
 
 def main():
     try:
-        if os.environ["GITHUB_EVENT_NAME"] != "workflow_run":
-            raise ValueError("completion mode requires workflow_run")
+        event_name = os.environ["GITHUB_EVENT_NAME"]
+        if event_name not in ("workflow_run", "schedule"):
+            raise ValueError("expected workflow_run or schedule")
         repo = os.environ["GITHUB_REPOSITORY"]
         if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
             raise ValueError("invalid repository")
-        event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
-        evaluate(GitHub(os.environ["CI_READ_TOKEN"]), GitHub(os.environ["APPROVER_TOKEN"]),
-                 repo, event, set(os.environ["TRUSTED_AUTHORS"].split(",")),
-                 {s.strip().lower() for s in os.environ.get("SKIP_LABELS", "").split(",") if s.strip()})
+        reader, approver = GitHub(os.environ["CI_READ_TOKEN"]), GitHub(os.environ["APPROVER_TOKEN"])
+        authors = set(os.environ["TRUSTED_AUTHORS"].split(","))
+        labels = {s.strip().lower() for s in os.environ.get("SKIP_LABELS", "").split(",") if s.strip()}
+        if event_name == "schedule":
+            reconcile(reader, approver, repo, authors, labels)
+        else:
+            event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+            evaluate(reader, approver, repo, event, authors, labels)
     except Exception as exc:
         # Never print an API body, token, or attacker-controlled workflow command.
         status = None

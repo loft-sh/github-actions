@@ -21,17 +21,20 @@ merges. Existing `pull_request` callers keep their polling behavior.
 
 ```yaml
 on:
+  schedule:
+    - cron: '17,47 * * * *'
   workflow_run:
     workflows: ['E2E', 'UI CI', 'golangci-lint', 'Unit tests']
     types: [completed]
 jobs:
   approve:
     if: >-
+      github.event_name == 'schedule' || (github.event_name == 'workflow_run' &&
       github.event.workflow_run.event == 'pull_request' &&
       github.event.workflow_run.head_repository.full_name == github.repository &&
-      startsWith(github.event.workflow_run.head_branch, 'backport/')
+      startsWith(github.event.workflow_run.head_branch, 'backport/'))
     concurrency:
-      group: backport-approval-${{ github.event.workflow_run.head_branch }}
+      group: backport-approval-reconcile
       cancel-in-progress: false
     permissions:
       contents: read
@@ -65,15 +68,17 @@ Only open, ready, same-repository PRs from the trusted authors with a `backport/
 branch qualify. Skip labels still leave the PR for a person. The head, base,
 eligibility and checks are read again before posting a review tied to the tested
 head. Duplicate completions and reruns do not add a second current approval by
-the same approver. The caller's branch lock serializes competing completions.
+the same approver. The caller's lock serializes completion and scheduled runs.
 
 This privileged handler checks out only the trusted shared action from `main`.
 It consumes no PR code or artifacts. CI reads use the caller's `GITHUB_TOKEN`
 (or existing `ci-read-token`); review reads/writes use the existing approval
 credential. No new secret or organization setting is needed. Branch rules need
 only metadata read access. API or schema errors log a warning and skip approval;
-policy skips log the PR number and reason. After a transient error, rerun the
-approval workflow or let the next producer completion reevaluate it.
+policy skips log the PR number and reason. The schedule lists open PRs and runs
+the same gate, so a missed event or transient error is retried on a later run.
+Candidate errors do not stop the remaining PRs. GitHub schedules can be delayed
+or disabled, so timely recovery depends on the schedule remaining active.
 
 Ship the shared change and verify `auto-approve-bot-prs/v1` has advanced before
 merging a caller that adds completion events. The completion listener must exist on

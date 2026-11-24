@@ -76,6 +76,8 @@ class FakeGitHub:
             return self.reviews
         if "/commits/" in path and "/pulls?" in path:
             return [{"number": 123}]
+        if "/pulls?state=open" in path:
+            return [{"number": 123}]
         raise AssertionError(f"unexpected list path: {path}")
 
 
@@ -95,6 +97,45 @@ class CompletionTests(unittest.TestCase):
 
     def evaluate(self):
         completion.evaluate(self.api, self.api, REPO, self.event, {"loft-bot"}, {"manual"})
+
+    def reconcile(self):
+        completion.reconcile(self.api, self.api, REPO, {"loft-bot"}, {"manual", "backport-ai-resolved"})
+
+    def test_reconcile_recovers_after_last_completion_api_error(self):
+        self.api.fail_path = "/check-runs?"
+        with self.assertRaises(RuntimeError):
+            self.evaluate()
+        self.api.fail_path = None
+        self.reconcile()
+        self.assertEqual(len(self.api.writes), 1)
+
+    def test_reconcile_skips_label_and_non_green_checks(self):
+        for label, runs in [([{"name": "backport-ai-resolved"}], [check()]),
+                            ([], [check(conclusion="failure")]),
+                            ([], [check(status="queued", conclusion=None)])]:
+            with self.subTest(label=label, runs=runs):
+                self.api.pr["labels"] = label
+                self.api.runs = runs
+                self.reconcile()
+                self.assertEqual(self.api.writes, [])
+
+    def test_reconcile_existing_approval_is_noop(self):
+        self.reconcile()
+        self.reconcile()
+        self.assertEqual(len(self.api.writes), 1)
+
+    def test_reconcile_continues_after_candidate_error(self):
+        original = self.api.api
+        def read(path, payload=None, paginate=False):
+            if path.endswith('/pulls/124'):
+                raise RuntimeError('unavailable')
+            return original(path, payload, paginate)
+        self.api.api = read
+        with patch.object(self.api, 'items', wraps=self.api.items) as items:
+            items.side_effect = lambda path, key=None: ([{'number': 124}, {'number': 123}]
+                if '/pulls?state=open' in path else items._mock_wraps(path, key))
+            self.reconcile()
+        self.assertEqual(len(self.api.writes), 1)
 
     def test_green_completion_approves_exact_sha_and_duplicate_is_noop(self):
         self.evaluate()

@@ -50,7 +50,7 @@ jobs:
   auto-approve:
     runs-on: ubuntu-latest
     # Skip fork PRs — secrets are not available.
-    if: github.event_name != 'workflow_run' && github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name != 'workflow_run' && github.event_name != 'schedule' && github.event.pull_request.head.repo.full_name == github.repository
     # checks/statuses are what the CI poll reads via GITHUB_TOKEN. These lines
     # alone are NOT enough: "the GITHUB_TOKEN permissions passed from the caller
     # workflow can be only downgraded (not elevated) by the called workflow", and
@@ -92,10 +92,10 @@ jobs:
 
   approve-completed-backport:
     if: >-
-      github.event_name == 'workflow_run' &&
+      github.event_name == 'schedule' || (github.event_name == 'workflow_run' &&
       github.event.workflow_run.event == 'pull_request' &&
       github.event.workflow_run.head_repository.full_name == github.repository &&
-      startsWith(github.event.workflow_run.head_branch, 'backport/')
+      startsWith(github.event.workflow_run.head_branch, 'backport/'))
     runs-on: ubuntu-latest
     permissions:
       contents: read
