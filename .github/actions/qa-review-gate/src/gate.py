@@ -37,7 +37,6 @@ Every decision is a plain dict so the tests never touch the network; `apply` is 
 function that creates check-runs.
 """
 
-from fnmatch import fnmatchcase
 import glob
 import json
 import os
@@ -45,13 +44,11 @@ import re
 import subprocess
 import sys
 import tempfile
-import time
 
 MARKER = re.compile(
     r"<!--\s*qa-review\s+verdict=(?P<verdict>[a-z_]+)\s+classes=(?P<classes>\S*)"
-    r"\s+head=(?P<head>[0-9a-f]{40})\s+base=(?P<base>\S+)\s*-->"
+    r"\s+head=(?P<head>[0-9a-f]{40})\s*-->"
 )
-RUN_BASE = re.compile(r"\bonto (\S+)")  # the e2e run title names the base its merge commit used
 CONCLUSION = {"block": "failure", "pass": "success", "needs_human": "action_required",
               "not_run": "action_required"}
 CLASS_WORDS = {"a": "need a test", "b": "weak test", "c": "no test", "d": "product gap"}
@@ -68,21 +65,9 @@ REPORT_ARTIFACT = "ginkgo-report"
 DEFAULT_TREES = f"{REPORT_ARTIFACT}="
 TREES_EXTERNAL_ID = "qa-review-gate:trees:"
 OPENER_EXTERNAL_ID = "qa-review-gate-provisional-opener"
-BOT_EXTERNAL_ID = "qa-review-gate:bot"
-OVERRIDE_EXTERNAL_ID = "qa-review-gate:override"
-HUMAN_EXTERNAL_ID = "qa-review-gate:human"
-VERDICT_EXTERNAL_ID = "qa-review-gate:verdict"
-BASE_SEP = "^"  # never part of a git ref, so the base a run was graded against can follow it
-# A /test-e2e dispatch run names the PR and the commit it tested in its run-name.
-DISPATCH_TITLE = re.compile(r"#(\d+)\b.*\b([0-9a-f]{40})\b")
 SHA_PREFIX = re.compile(r"^[0-9a-f]{7,40}$")
 COMPARE_FILE_CAP = 300  # the compare API lists at most this many files and says nothing when it cuts
-PR_FILES_CAP = 3000  # the PR files API stops here too
 DEFAULT_BOTS = "loft-bot:backport/,vcluster-qa-bot[bot]:flake-fixer/"
-# Mirrors the dispatcher's auto-review paths (slack-ai-bot config.py AutoReviewConfig.paths):
-# a PR outside them never gets the panel, so the gate passes it as out of QA scope itself.
-DEFAULT_QA_PATHS = "e2e*/**,staging/github.com/loft-sh/vcluster/e2e/**,.github/workflows/e2e*.yaml"
-SCOPE_EXTERNAL_ID = "qa-review-gate:scope"
 OVERRIDE_HINT = ("Override with `/qa-review override [<reason>]` (`/qa-review override <sha> "
                  "[<reason>]` when the panel has not posted on this head).")
 
@@ -92,9 +77,7 @@ class GateError(Exception):
 
 
 def parse_marker(body):
-    """Return (verdict, {class: count}, head, base) from a panel review body, or None. The
-    marker names the base the panel reviewed: the gate cannot tell otherwise whether a
-    verdict posted after a retarget graded the old diff or the new one."""
+    """Return (verdict, {class: count}, head) from a panel review body, or None."""
     match = MARKER.search(body or "")
     if not match:
         return None
@@ -107,7 +90,7 @@ def parse_marker(body):
         if key not in CLASS_WORDS or not count.isdigit():
             raise GateError(f"malformed classes in qa-review marker: {item!r}")
         classes[key] = int(count)
-    return verdict, classes, match.group("head"), match.group("base")
+    return verdict, classes, match.group("head")
 
 
 def class_summary(classes):
@@ -144,281 +127,23 @@ def bot_checks(pr, login, prefix, check_name, test_check):
     what = "automated backport" if prefix == "backport/" else f"{login} PR"
     summary = (f"PR opened by {login}: reviewed before it was opened, so the QA review is "
                f"skipped here.\n\nPR: {pr.get('html_url', '')}")
-    return [{"name": check_name, "head_sha": head, "conclusion": "success", "external_id": BOT_EXTERNAL_ID,
+    return [{"name": check_name, "head_sha": head, "conclusion": "success",
              "title": f"QA review: {what}, skipped", "summary": summary},
-            {"name": test_check, "head_sha": head, "conclusion": "success", "external_id": BOT_EXTERNAL_ID,
+            {"name": test_check, "head_sha": head, "conclusion": "success",
              "title": f"QA test run: {what}, skipped", "summary": summary}]
 
 
-def bot_passed(repo, sha, check_name, token):
-    """True when this gate's bot mode already passed `sha` (the chain a bot push may extend)."""
-    runs = from_actions(gh_api([f"repos/{repo}/commits/{sha}/check-runs?check_name={check_name}&filter=all&per_page=100"], token).get("check_runs"))
-    return any(kind(r) == BOT_EXTERNAL_ID and r.get("conclusion") == "success" for r in runs)
-
-
-def parse_paths(text):
-    return [p.strip() for p in (text or "").split(",") if p.strip()]
-
-
-def qa_owned(files, patterns):
-    """The files under a QA-owned path, matched the way the dispatcher's `touches_e2e` does
-    (slack-ai-bot auto_review.py): a star stays inside one path segment, a `**` segment spans
-    any depth, and a vendored file never counts. The two must agree, or a PR gets no check."""
-    def matches(parts, pattern):
-        if not pattern:
-            return not parts
-        if pattern[0] == "**":
-            if len(pattern) == 1:
-                return bool(parts)
-            return matches(parts, pattern[1:]) or bool(parts and matches(parts[1:], pattern))
-        return bool(parts and fnmatchcase(parts[0], pattern[0]) and matches(parts[1:], pattern[1:]))
-
-    return [f for f in files if "vendor" not in (parts := f.split("/"))
-            and any(matches(parts, pattern.split("/")) for pattern in patterns)]
-
-
-def changed_files(repo, base_sha, head_sha, token, number=None):
-    """The files between the event's own base and head. The PR files endpoint would answer
-    for the PR's current head, which a queued or rerun job must not grade the event SHA by;
-    it is the fallback when the compare hits its cap, and only while the PR still sits on
-    the event's own head and base, so it lists the same diff."""
-    files = gh_api([f"repos/{repo}/compare/{base_sha}...{head_sha}"], token).get("files") or []
-    if len(files) < COMPARE_FILE_CAP:
-        return [f.get("filename", "") for f in files]
-    def same_shas():
-        pr = gh_api([f"repos/{repo}/pulls/{number}"], token) if number is not None else {}
-        return ((pr.get("head") or {}).get("sha"), (pr.get("base") or {}).get("sha")) == (head_sha, base_sha), pr
-    same, pr = same_shas()
-    if not same:
-        raise GateError(f"compare lists {COMPARE_FILE_CAP} files and the PR has moved on; the list may be cut")
-    pages = gh_api([f"repos/{repo}/pulls/{number}/files?per_page=100", "--paginate", "--slurp"], token)
-    names = [f.get("filename", "") for page in pages for f in page]
-    # The PR files list stops at 3000 and a commit during pagination mixes two heads.
-    if len(names) != pr.get("changed_files") or len(names) >= PR_FILES_CAP or not same_shas()[0]:
-        raise GateError(f"the PR files list is cut ({len(names)} of {pr.get('changed_files')}) or the PR moved on")
-    return names
-
-
-def kind(run):
-    """A run's external id without the base it was graded against."""
-    return (run.get("external_id") or "").partition(BASE_SEP)[0]
-
-
-def base_of(run):
-    return (run.get("external_id") or "").partition(BASE_SEP)[2]
-
-
-def with_base(external_id, base):
-    return f"{external_id}{BASE_SEP}{base}" if base else external_id
-
-
-def from_actions(runs):
-    """Only the runs GitHub Actions published: the ruleset requires that source, and any app
-    with checks: write could otherwise pass an override, a bot pass or a result off as ours."""
-    return [run for run in runs or [] if (run.get("app") or {}).get("slug") == "github-actions"]
-
-
-def scope_owned(runs):
-    """True when the newest run is the scope check's own (a pass or a retarget placeholder),
-    which the panel's decision or a regrade may replace; a verdict, result or override is not."""
-    newest = max(runs, key=lambda run: run.get("id", 0), default=None)
-    return bool(newest) and kind(newest) == SCOPE_EXTERNAL_ID
-
-
-def scope_may_write(runs, base):
-    """True when the scope check may write over the newest run of a check: no run yet, its
-    own run, or a verdict, opener or e2e result graded against another base (a retarget).
-    An override, a bot pass, a request for a person, or a result for this base stays."""
-    newest = max(runs, key=lambda run: run.get("id", 0), default=None)
-    if not newest or kind(newest) == SCOPE_EXTERNAL_ID:
-        return True
-    if kind(newest) in (OVERRIDE_EXTERNAL_ID, BOT_EXTERNAL_ID, HUMAN_EXTERNAL_ID):
-        return False
-    return bool(base_of(newest)) and base_of(newest) != base
-
-
-def scope_writable(repo, head, check_name, base, token):
-    runs = from_actions(gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={check_name}&filter=all&per_page=100"], token).get("check_runs"))
-    return scope_may_write(runs, base)
-
-
-def current_base(repo, number, token):
-    return ((gh_api([f"repos/{repo}/pulls/{number}"], token).get("base") or {}).get("ref", ""))
-
-
-def decide_scope(event, repo, token, qa_paths, check_name, test_check="qa-test-run"):
-    """Pass a PR that touches no QA-owned path: the panel never runs on it (the dispatcher
-    triggers on these paths only), so a required check would block it for nothing. The verdict
-    depends on the base, so a retarget (`edited` with a base change, same head) grades again
-    and takes a pass back when the new diff is in scope."""
-    pr = event.get("pull_request") or {}
-    action = event.get("action")
-    if action == "edited" and not (event.get("changes") or {}).get("base"):
-        return {"skip": "pull_request edited: the base did not change"}
-    if action not in ("opened", "synchronize", "reopened", "edited"):
-        return {"skip": f"pull_request {action}: nothing to decide"}
-    head = (pr.get("head") or {}).get("sha", "")
-    base = (pr.get("base") or {}).get("sha", "")
-    base_ref = (pr.get("base") or {}).get("ref", "")
-    labels = {check_name: "QA review", test_check: "QA test run"}
-    # Only the checks the scope check may write: a verdict, an e2e result or an override for
-    # this base, a request for a person or a bot pass stays, whatever job order produced it;
-    # a result graded against another base (a retarget) is replaced.
-    names = [n for n in labels if scope_writable(repo, head, n, base_ref, token)]
-    if not names:
-        return {"skip": "the panel's verdict, a request for a person or an override owns both checks"}
-
-    def placeholders(reason):
-        return {"checks": [{"name": n, "head_sha": head, "conclusion": "action_required",
-                            "external_id": SCOPE_EXTERNAL_ID,
-                            "title": f"{labels[n]}: {reason} after retarget to {base_ref}, the panel decides",
-                            "summary": f"After the retarget to {base_ref} the earlier out-of-scope pass no longer "
-                                       f"applies ({reason}): comment /vcluster-review for the panel.\n\n"
-                                       f"PR: {pr.get('html_url', '')}"} for n in names],
-                "request_qa_review": False, "pr_number": pr.get("number"), "base_ref": base_ref}
-    try:
-        files = changed_files(repo, base, head, token, pr.get("number"))
-    except GateError as error:
-        if action == "edited":
-            return placeholders("scope unknown")
-        return {"skip": f"cannot list the changed files of {head[:7]} ({error}); the panel or an override decides"}
-    owned = qa_owned(files, qa_paths)
-    graded = f"base {base_ref}@{base[:7]}"
-    if owned:
-        if action != "edited":
-            return {"skip": f"{len(owned)} changed file(s) under a QA-owned path; the panel decides"}
-        return placeholders(f"{len(owned)} file(s) in scope")
-    summary = (f"No changed file is under a QA-owned path ({', '.join(qa_paths)}) against {graded}, "
-               f"so the review panel does not run on this PR.\n\nPR: {pr.get('html_url', '')}")
-    return {"checks": [{"name": n, "head_sha": head, "conclusion": "success", "external_id": SCOPE_EXTERNAL_ID,
-                        "title": f"{labels[n]}: out of scope, no QA-owned path ({graded})", "summary": summary}
-                       for n in names],
-            "request_qa_review": False, "pr_number": pr.get("number"), "base_ref": base_ref}
-
-
-def decide_bot(event, bots, check_name, test_check="qa-test-run", passed_before=lambda sha: False):
-    """Map a pull_request event to the two green check-runs, or to a skip.
-    The bot pushes again after opening (backport-fix-imports) on top of the branch tip, so its
-    synchronize counts only when the tip it built on (`before`) was itself a bot-passed head."""
+def decide_bot(event, bots, check_name, test_check="qa-test-run"):
+    """Map a pull_request event to the two green check-runs, or to a skip."""
     pr = event.get("pull_request") or {}
     login = bot_pr(pr, bots)
     if login is None:
         return {"skip": f"PR by {(pr.get('user') or {}).get('login') or 'unknown'} is not a trusted bot PR"}
     pusher = (event.get("sender") or {}).get("login", "")
-    action = event.get("action")
-    if action not in ("opened", "synchronize") or pusher != login:
-        return {"skip": "only a head the bot pushed passes; the panel reviews this head", "final": True}
-    if action == "synchronize" and not passed_before(event.get("before") or ""):
-        return {"skip": "the bot built on a head the gate had not passed; the panel reviews this head",
-                "final": True}
+    if event.get("action") != "opened" or pusher != login:
+        return {"skip": "only the head the bot opened the PR with passes; the panel reviews this head"}
     return {"checks": bot_checks(pr, login, bots[login], check_name, test_check), "request_qa_review": False,
             "pr_number": pr.get("number")}
-
-
-def decide_pull_request(event, repo, token, bots, qa_paths, check_name, test_check="qa-test-run",
-                        passed_before=lambda sha: False):
-    """A pull_request event: the trusted-bot pass first, then the QA-scope pass for any other
-    PR. A trusted bot PR whose exemption was declined goes to review whatever it touches."""
-    decision = decide_bot(event, bots, check_name, test_check, passed_before=passed_before)
-    if "skip" not in decision or decision.get("final"):
-        return decision
-    print(f"::notice::qa-review-gate: {decision['skip']}")
-    pr = event.get("pull_request") or {}
-    graded, current = (pr.get("base") or {}).get("ref", ""), current_base(repo, pr.get("number"), token)
-    if current != graded:
-        # A queued `opened` job must not green a head the PR has since retargeted.
-        return {"skip": f"PR now targets {current}, not {graded}; the retarget event grades it"}
-    return decide_scope(event, repo, token, qa_paths, check_name, test_check)
-
-
-def regrade_if_retargeted(event, repo, token, qa_paths, check_name, test_check, qa_team, run_url, panel_login):
-    """After a scope write: a retarget that landed meanwhile grades the head again, as its
-    `edited` event would, so the pass just written cannot outlive the base it graded."""
-    pr = event.get("pull_request") or {}
-    current = gh_api([f"repos/{repo}/pulls/{pr.get('number')}"], token)
-    if ((current.get("base") or {}).get("ref", "")) == (pr.get("base") or {}).get("ref", ""):
-        return None
-    if ((current.get("head") or {}).get("sha", "")) != (pr.get("head") or {}).get("sha", ""):
-        # This job queues on the old head; the new head's own event grades it in its queue.
-        print(f"::notice::qa-review-gate: retargeted and moved to {current['head']['sha'][:7]}; its own event grades it")
-        return None
-    edited = {"action": "edited", "changes": {"base": {"ref": {"from": (pr.get("base") or {}).get("ref", "")}}},
-              "pull_request": current, "sender": event.get("sender") or {}}
-    decision = decide_scope(edited, repo, token, qa_paths, check_name, test_check)
-    if "skip" in decision:
-        print(f"::notice::qa-review-gate: {decision['skip']}")
-        return None
-    apply(decision, repo, token, qa_team, run_url, panel_login)
-    return decision
-
-
-def missing_checks(repo, head, names, token):
-    """The check names in `names` with no completed run from GitHub Actions on `head`."""
-    missing = []
-    for name in names:
-        runs = from_actions(gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={name}"], token).get("check_runs"))
-        if not any(run.get("status") == "completed" for run in runs):
-            missing.append(name)
-    return missing
-
-
-def sweep(repo, token, check_name, test_check, caller_workflow):
-    """Before the ruleset goes live: start one run of the caller workflow per open PR whose
-    current head lacks either check. Each run grades its PR under that head's own queue
-    (`sweep_one`), so it cannot cross a panel verdict or an e2e result on the way; this job
-    only lists and dispatches. `caller_workflow` is `github.workflow_ref`."""
-    path, _, ref = caller_workflow.partition("@")
-    workflow = path.rsplit("/", 1)[-1]
-    pages = gh_api([f"repos/{repo}/pulls?state=open&per_page=100", "--paginate", "--slurp"], token)
-    dispatched = []
-    for pr in (pr for page in pages for pr in page):
-        number = pr.get("number")
-        pr = gh_api([f"repos/{repo}/pulls/{number}"], token) or pr
-        head = (pr.get("head") or {}).get("sha", "")
-        if not missing_checks(repo, head, (check_name, test_check), token):
-            continue
-        gh_api([f"repos/{repo}/actions/workflows/{workflow}/dispatches", "-X", "POST"], token,
-               {"ref": ref, "inputs": {"pr-number": str(number)}})
-        dispatched.append(number)
-        print(f"qa-review-gate: #{number} {head[:7]} lacks a check; started a run for it")
-    print(f"qa-review-gate: sweep started {len(dispatched)} run(s): {', '.join(f'#{n}' for n in dispatched) or 'none'}")
-    return len(dispatched)
-
-
-def sweep_one(repo, token, number, queued_sha, bots, qa_paths, check_name, test_check, qa_team, run_url,
-              panel_login):
-    """One PR of the sweep, run under the queue of `queued_sha` (the head the `tested` job
-    resolved): the QA-scope pass it would have got on `opened`, creating only what is missing
-    (a retry after a partial write completes it). A PR that moved to another head since is
-    graded by that head's own event; a trusted bot PR on a later head and a PR that touches
-    a QA-owned path are left for the panel or an override, with a warning."""
-    pr = gh_api([f"repos/{repo}/pulls/{number}"], token)
-    head = (pr.get("head") or {}).get("sha", "")
-    if head != queued_sha:
-        print(f"::notice::qa-review-gate: #{number} is on {head[:7]}, this run queued for "
-              f"{queued_sha[:7] or 'no head'}; the head's own event grades it")
-        return False
-    missing = missing_checks(repo, head, (check_name, test_check), token)
-    if not missing:
-        print(f"qa-review-gate: #{number} {head[:7]} has both checks")
-        return False
-    reason = None
-    if bot_pr(pr, bots):
-        reason = "a trusted bot PR on a later head; a person reviews it"
-    else:
-        event = {"action": "opened", "pull_request": pr, "sender": pr.get("user") or {}}
-        decision = decide_scope(event, repo, token, qa_paths, check_name, test_check)
-        reason = decision.get("skip")
-    if reason:
-        print(f"::warning::qa-review-gate: #{number} {head[:7]} still lacks {', '.join(missing)} ({reason}); "
-              "needs /vcluster-review from a person or /qa-review override before the ruleset is enabled")
-        return False
-    decision["checks"] = [c for c in decision["checks"] if c["name"] in missing]
-    apply(decision, repo, token, qa_team, run_url, panel_login)
-    print(f"qa-review-gate: #{number} {head[:7]} passed as out of scope ({', '.join(missing)} created)")
-    if regrade_if_retargeted(event, repo, token, qa_paths, check_name, test_check, qa_team, run_url, panel_login):
-        print(f"qa-review-gate: #{number} {head[:7]} retargeted meanwhile; graded again")
-    return True
 
 
 def decide_review(event, panel_login, check_name):
@@ -431,7 +156,7 @@ def decide_review(event, panel_login, check_name):
     parsed = parse_marker(review.get("body"))
     if parsed is None:
         return {"skip": "panel review carries no qa-review marker"}
-    verdict, classes, head, base = parsed
+    verdict, classes, head = parsed
     current = (pr.get("head") or {}).get("sha", "")
     if head != current:
         return {"skip": f"marker is for {head[:7]}, PR head is {current[:7] or 'unknown'}"}
@@ -446,11 +171,11 @@ def decide_review(event, panel_login, check_name):
                "Ask for a person with `/qa-review human`.")
     return {
         "check": {"name": check_name, "head_sha": head, "conclusion": CONCLUSION[verdict],
-                  "title": title, "summary": summary, "external_id": VERDICT_EXTERNAL_ID},
+                  "title": title, "summary": summary},
         "request_qa_review": False,
         "assign_author": verdict == "needs_human",
         "pr_number": pr.get("number"),
-        "base_ref": base,
+        "base_ref": (pr.get("base") or {}).get("ref", ""),
     }
 
 
@@ -477,13 +202,8 @@ def collect_review(event, repo, token, panel_login, check_name, test_check="qa-t
         return decision
     head = decision["check"]["head_sha"]
     pr_number = decision["pr_number"]
-    live = ((gh_api([f"repos/{repo}/pulls/{pr_number}"], token).get("base") or {}).get("ref", ""))
-    if live != decision["base_ref"]:
-        # A panel run that started before a retarget graded the old diff; the panel runs again.
-        return {"skip": f"marker is for base {decision['base_ref']}, PR targets {live or 'unknown'}; "
-                        "the panel reviews the new base"}
-    existing = from_actions(gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={test_check}"], token).get("check_runs"))
-    if existing and not scope_may_write(existing, decision["base_ref"]):
+    existing = gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={test_check}"], token)
+    if existing.get("check_runs"):
         # A retry: our own provisional opener may still hide a real result behind it.
         decision["reconcile"] = test_check
         return decision
@@ -523,10 +243,8 @@ def decide_comment(event, override_logins, check_name, test_check="qa-test-run",
                    f"Comment: {comment.get('html_url', '')}")
         return {
             "checks": [{"name": check_name, "head_sha": None, "conclusion": "success",
-                        "external_id": OVERRIDE_EXTERNAL_ID,
                         "title": f"QA review: overridden by @{author}", "summary": summary},
                        {"name": test_check, "head_sha": None, "conclusion": "success",
-                        "external_id": OVERRIDE_EXTERNAL_ID,
                         "title": f"QA test run: overridden by @{author}", "summary": summary}],
             "request_qa_review": False,
             "pr_number": issue.get("number"),
@@ -539,7 +257,7 @@ def decide_comment(event, override_logins, check_name, test_check="qa-test-run",
             return {"skip": f"{author or 'unknown'} may not ask for a QA review here"}
         return {
             "check": {"name": check_name, "head_sha": None, "conclusion": "action_required",
-                      "external_id": HUMAN_EXTERNAL_ID, "title": "QA review: a QA engineer decides",
+                      "title": "QA review: a QA engineer decides",
                       "summary": f"@{author} asked for a person.\n\nComment: "
                                  f"{comment.get('html_url', '')}"},
             "request_qa_review": True,
@@ -636,14 +354,14 @@ def trees_id(results):
     return TREES_EXTERNAL_ID + ";".join(f"{a}={c}" for a, c in sorted(results.items()))
 
 
-def tree_results(repo, head, test_check, token, base=""):
-    """Per-tree conclusions recorded on the newest `qa-test-run` check-run of this head that
-    was graded against `base`."""
-    runs = from_actions(gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={test_check}&filter=all&per_page=100"], token).get("check_runs"))
-    tagged = [r for r in runs if kind(r).startswith(TREES_EXTERNAL_ID) and base_of(r) == base]
+def tree_results(repo, head, test_check, token):
+    """Per-tree conclusions recorded on the newest `qa-test-run` check-run of this head."""
+    runs = gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={test_check}&filter=all&per_page=100"],
+                  token).get("check_runs") or []
+    tagged = [r for r in runs if (r.get("external_id") or "").startswith(TREES_EXTERNAL_ID)]
     if not tagged:
         return {}
-    newest = kind(max(tagged, key=lambda r: r["id"]))[len(TREES_EXTERNAL_ID):]
+    newest = max(tagged, key=lambda r: r["id"])["external_id"][len(TREES_EXTERNAL_ID):]
     return dict(item.split("=", 1) for item in newest.split(";") if "=" in item)
 
 
@@ -718,26 +436,6 @@ def run_pr_number(run, repo, token):
     return None
 
 
-def run_base(run):
-    """The base a PR-triggered e2e run merged the head with, from its title (`onto <ref>`);
-    a dispatch run checks out the head alone, so its report holds for any base."""
-    if run.get("event") != "pull_request":
-        return None
-    named = RUN_BASE.search(run.get("display_title") or "")
-    return named.group(1) if named else ""
-
-
-def run_target(run, repo, token):
-    """(tested commit, PR number) of an e2e run. A /test-e2e run on a fork PR dispatches the
-    base branch's workflow, so `head_sha` is the base commit; the run-name carries the PR
-    and the commit it checked out (`E2E for PR #<n> (<label>) at <sha>`)."""
-    if run.get("event") == "workflow_dispatch":
-        named = DISPATCH_TITLE.search(run.get("display_title") or "")
-        if named:
-            return named.group(2), int(named.group(1))
-    return run.get("head_sha", ""), run_pr_number(run, repo, token)
-
-
 def pr_diff(repo, base_ref, head_sha, token):
     """The diff of the commits an e2e run tested: the PR base compared with the run's head
     (three dots, so from the merge base), in the `+++ b/<path>` shape added_specs reads."""
@@ -763,54 +461,40 @@ def collect_ci(event, repo, token, test_check="qa-test-run", trees=None):
     """Fetch the diff and the Ginkgo report(s) for a finished e2e run, then decide."""
     trees = trees or {REPORT_ARTIFACT: ""}
     run = event.get("workflow_run") or {}
+    head = run.get("head_sha", "")
     if run.get("conclusion") not in ("success", "failure"):
         return {"skip": f"e2e run ended {run.get('conclusion') or 'unknown'}, nothing to compare"}
-    head, pr_number = run_target(run, repo, token)
-    run = {**run, "head_sha": head}
+    pr_number = run_pr_number(run, repo, token)
     if pr_number is None:
         return {"skip": "e2e run is not for an open pull request"}
     try:
         pr = gh_api([f"repos/{repo}/pulls/{pr_number}"], token)
+        current = pr["head"]["sha"]
+        if current != head:
+            return {"skip": f"e2e run is for {head[:7]}, PR head is {current[:7]}; superseded"}
+        added = added_specs(pr_diff(repo, pr["base"]["ref"], head, token))
     except GateError as error:
         return ask_person(test_check, head, pr_number,
-                          "QA test run: cannot identify new specs, a person checks them", str(error))
-    current, base_ref = pr["head"]["sha"], pr["base"]["ref"]
-    if current != head:
-        return {"skip": f"e2e run is for {head[:7]}, PR head is {current[:7]}; superseded"}
-    tested = run_base(run)
-    if tested == "":
-        return {"skip": "the e2e run names no base (its run-name lacks `onto <base-ref>`), so the gate "
-                        "cannot tell which base its merge commit used; a run that names it grades the PR"}
-    if tested is not None and tested != base_ref:
-        return {"skip": f"the e2e run tested the head onto {tested}, the PR now targets {base_ref}; "
-                        "a new run grades it"}
-
-    def graded_against(decision):
-        return {**decision, "base_ref": base_ref}
-    try:
-        added = added_specs(pr_diff(repo, base_ref, head, token))
-    except GateError as error:
-        return graded_against(ask_person(test_check, head, pr_number,
-                                         "QA test run: cannot identify new specs, a person checks them",
-                                         str(error)))
+                          "QA test run: cannot identify new specs, a person checks them",
+                          str(error))
     if not added:
         return {"skip": "the PR adds no e2e spec"}
     uploaded = {a["name"] for a in (gh_api([f"repos/{repo}/actions/runs/{run['id']}/artifacts"], token)
                                     .get("artifacts") or [])}
     reported = [a for a in trees if a in uploaded]
-    known = tree_results(repo, head, test_check, token, base_ref) if len(trees) > 1 else {}
+    known = tree_results(repo, head, test_check, token) if len(trees) > 1 else {}
     if not reported:
         # A run that uploaded nothing (build failure) must not drop the other tree's result.
         missing = sorted({spec_tree(s, trees) for s in added} - set(known))
         if not missing:
-            return graded_against(decide_ci(run, pr_number, added, {}, test_check, trees, [], known))
+            return decide_ci(run, pr_number, added, {}, test_check, trees, [], known)
         count = sum(spec_tree(s, trees) in missing for s in added)
         decision = ask_person(test_check, head, pr_number,
                               f"QA test run: no {' or '.join(missing)} for {count} new spec(s), "
                               "a person checks them", f"run {run.get('html_url', '')} uploaded no report")
         if known:
             decision["check"]["external_id"] = trees_id(known)
-        return graded_against(decision)
+        return decision
     states = {}
     with tempfile.TemporaryDirectory() as tmp:
         for artifact in reported:
@@ -818,13 +502,13 @@ def collect_ci(event, repo, token, test_check="qa-test-run", trees=None):
                 gh(["run", "download", str(run["id"]), "-R", repo, "-n", artifact, "-D",
                     os.path.join(tmp, artifact)], token)
             except GateError as error:
-                return graded_against(ask_person(
-                    test_check, head, pr_number,
-                    f"QA test run: {artifact} could not be read, a person checks the new specs", str(error)))
+                return ask_person(test_check, head, pr_number,
+                                  f"QA test run: {artifact} could not be read, a person checks the new specs",
+                                  str(error))
         for path in sorted(glob.glob(os.path.join(tmp, "**", "*.json"), recursive=True)):
             with open(path, encoding="utf-8") as fh:
                 report_specs(json.load(fh), states)
-    return graded_against(decide_ci(run, pr_number, added, states, test_check, trees, reported, known))
+    return decide_ci(run, pr_number, added, states, test_check, trees, reported, known)
 
 
 def team_member(login, teams, org_token):
@@ -888,99 +572,25 @@ def comment_head(decision, repo, token, panel_login):
 def reconcile_opener(repo, head, name, opener_id, token, run_url):
     """Copy the newest real result onto a provisional opener it would otherwise hide.
     `opener_id` None means: the newest run on the head, if it is a provisional opener."""
-    runs = from_actions(gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={name}&filter=all&per_page=100"], token).get("check_runs"))
+    runs = gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={name}&filter=all&per_page=100"],
+                  token).get("check_runs") or []
     if opener_id is None:
         newest = max(runs, key=lambda run: run.get("id", 0), default=None)
-        if not newest or kind(newest) != OPENER_EXTERNAL_ID:
+        if not newest or newest.get("external_id") != OPENER_EXTERNAL_ID:
             return
         opener_id = newest["id"]
-    opener_base = next((base_of(run) for run in runs if run.get("id") == opener_id), "")
     previous = [run for run in runs
                 if run.get("id", 0) < opener_id and run.get("status") == "completed"
-                and kind(run) not in (OPENER_EXTERNAL_ID, SCOPE_EXTERNAL_ID)
-                and (kind(run) == OVERRIDE_EXTERNAL_ID or base_of(run) == opener_base)]
+                and run.get("external_id") != OPENER_EXTERNAL_ID]
     if not previous:
         return
-    # An override outranks any result, however new; a result only fills an empty opener.
-    overrides = [run for run in previous if kind(run) == OVERRIDE_EXTERNAL_ID]
-    result = max(overrides or previous, key=lambda run: run["id"])
+    result = max(previous, key=lambda run: run["id"])
     output = result.get("output") or {}
     gh_api([f"repos/{repo}/check-runs/{opener_id}", "-X", "PATCH"], token, {
         "status": "completed", "conclusion": result["conclusion"],
         "details_url": result.get("details_url") or run_url,
         "output": {"title": output.get("title", ""), "summary": output.get("summary", "")},
     })
-    # An override may have landed after the read above; put it back on top.
-    reconcile_override(repo, head, name, token, run_url)
-
-
-def override_run(repo, head, name, token):
-    """The newest /qa-review override that completed `name` on `head`, or None."""
-    runs = from_actions(gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={name}&filter=all&per_page=100"], token).get("check_runs"))
-    overrides = [run for run in runs if kind(run) == OVERRIDE_EXTERNAL_ID]
-    return max(overrides, key=lambda run: run.get("id", 0)) if overrides else None
-
-
-def overridden(repo, head, name, token):
-    return override_run(repo, head, name, token) is not None
-
-
-def newest_run_id(repo, head, name, token):
-    runs = from_actions(gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={name}&filter=all&per_page=100"], token).get("check_runs"))
-    return max((run.get("id", 0) for run in runs), default=0)
-
-
-def reconcile_scope_write(repo, head, name, created_id, since_id, token, run_url):
-    """A scope write runs outside the head's queue (the sweep) or after its ownership read:
-    a panel verdict or an e2e result that landed in between (id after `since_id`, before
-    ours) must not be hidden by ours, so it is copied onto our run, ownership included."""
-    runs = from_actions(gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={name}&filter=all&per_page=100"], token).get("check_runs"))
-    landed = [run for run in runs if since_id < run.get("id", 0) < created_id
-              and run.get("status") == "completed"
-              and kind(run) not in (SCOPE_EXTERNAL_ID, OPENER_EXTERNAL_ID)]
-    if not landed:
-        return False
-    winner = max(landed, key=lambda run: run["id"])
-    output = winner.get("output") or {}
-    gh_api([f"repos/{repo}/check-runs/{created_id}", "-X", "PATCH"], token, {
-        "status": "completed", "conclusion": winner.get("conclusion", "success"),
-        "details_url": winner.get("details_url") or run_url, "external_id": winner.get("external_id") or "",
-        "output": {"title": output.get("title", ""), "summary": output.get("summary", "")},
-    })
-    print(f"::notice::qa-review-gate: {name} on {head[:7]}: a result landed during the scope write; kept it")
-    return True
-
-
-def reconcile_override(repo, head, name, token, run_url):
-    """Make the newest run of `name` on `head` show the override, when one exists. A result
-    published after the override, or one whose repair PATCH failed, would otherwise stay
-    on top; a rerun of the gate lands here and fixes it."""
-    runs = from_actions(gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={name}&filter=all&per_page=100"], token).get("check_runs"))
-    overrides = [run for run in runs if kind(run) == OVERRIDE_EXTERNAL_ID]
-    if not overrides or not runs:
-        return False
-    winner = max(overrides, key=lambda run: run.get("id", 0))
-    newest = max(runs, key=lambda run: run.get("id", 0))
-    if newest["id"] == winner["id"]:
-        return False
-    output = winner.get("output") or {}
-    gh_api([f"repos/{repo}/check-runs/{newest['id']}", "-X", "PATCH"], token, {
-        "status": "completed", "conclusion": winner.get("conclusion", "success"),
-        "details_url": winner.get("details_url") or run_url,
-        "output": {"title": output.get("title", ""), "summary": output.get("summary", "")},
-    })
-    return True
-
-
-def wait_for_bot_pass(repo, sha, check_name, token, attempts=15, delay=20, sleep=time.sleep):
-    """`bot_passed`, retried: the `opened` and `synchronize` gate jobs of one bot PR run in
-    either order, so the import fix may arrive before the opened head carries its pass."""
-    for attempt in range(attempts):
-        if bot_passed(repo, sha, check_name, token):
-            return True
-        if attempt + 1 < attempts:
-            sleep(delay)
-    return False
 
 
 def apply(decision, repo, token, qa_team, run_url, panel_login="loft-bot"):
@@ -996,39 +606,25 @@ def apply(decision, repo, token, qa_team, run_url, panel_login="loft-bot"):
                   "/qa-review override <sha> [<reason>])")
             return None
     for check in checks:
-        if check.get("external_id") != OVERRIDE_EXTERNAL_ID and overridden(repo, head, check["name"], token):
-            # A late e2e result or panel verdict must not undo an authorized override.
-            reconcile_override(repo, head, check["name"], token, run_url)
-            print(f"::notice::qa-review-gate: {check['name']} on {head[:7]} stays overridden")
-            continue
         if check["name"] == decision.get("opener_name"):
-            existing = from_actions(gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={check['name']}"], token).get("check_runs"))
-            if existing and not scope_may_write(existing, decision.get("base_ref", "")):
+            existing = gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={check['name']}"], token)
+            if existing.get("check_runs"):
                 # A retry after a failed reconciliation: the newest run may still be our
                 # provisional opener while a real result sits behind it.
                 reconcile_opener(repo, head, check["name"], None, token, run_url)
                 continue
-        since = newest_run_id(repo, head, check["name"], token) if check.get("external_id") == SCOPE_EXTERNAL_ID else 0
-        external_id = OPENER_EXTERNAL_ID if check["name"] == decision.get("opener_name") else check.get("external_id") or ""
-        if external_id not in (OVERRIDE_EXTERNAL_ID, BOT_EXTERNAL_ID, HUMAN_EXTERNAL_ID):
-            external_id = with_base(external_id, decision.get("base_ref", ""))
         created = gh_api([f"repos/{repo}/check-runs", "-X", "POST"], token, {
             "name": check["name"], "head_sha": head, "status": "completed",
             "conclusion": check["conclusion"], "details_url": run_url,
             "output": {"title": check["title"], "summary": check["summary"]},
-            **({"external_id": external_id} if external_id else {}),
+            **({"external_id": OPENER_EXTERNAL_ID} if check["name"] == decision.get("opener_name")
+               else {"external_id": check["external_id"]} if check.get("external_id") else {}),
         })
         if check["name"] == decision.get("opener_name"):
             # A result may have been published after our lookup but before this
             # opener. Copy it onto the newer opener without creating another run:
             # any result published after the opener remains the newest check.
             reconcile_opener(repo, head, check["name"], created["id"], token, run_url)
-        elif check.get("external_id") != OVERRIDE_EXTERNAL_ID:
-            if check.get("external_id") == SCOPE_EXTERNAL_ID:
-                reconcile_scope_write(repo, head, check["name"], created["id"], since, token, run_url)
-            # An override may have landed between the lookup and this write. The newest
-            # run is what GitHub shows, so copy the override onto ours.
-            reconcile_override(repo, head, check["name"], token, run_url)
     if decision.get("reconcile"):
         reconcile_opener(repo, head, decision["reconcile"], None, token, run_url)
     pr_number = decision["pr_number"]
@@ -1071,35 +667,17 @@ def main():
         decision = collect_ci(event, repo, token, test_check,
                               parse_trees(os.environ.get("INPUT_REPORT_TREES", DEFAULT_TREES)))
     elif mode == "bot":
-        decision = decide_pull_request(event, repo, token,
-                                       parse_bots(os.environ.get("INPUT_BOT_PRS", DEFAULT_BOTS)),
-                                       parse_paths(os.environ.get("INPUT_QA_PATHS", DEFAULT_QA_PATHS)),
-                                       check_name, test_check,
-                                       passed_before=lambda sha: wait_for_bot_pass(repo, sha, check_name, token))
-    elif mode == "sweep":
-        number = os.environ.get("INPUT_PR_NUMBER", "").strip()
-        if number:
-            sweep_one(repo, token, int(number), os.environ.get("INPUT_QUEUED_SHA", "").strip(),
-                      parse_bots(os.environ.get("INPUT_BOT_PRS", DEFAULT_BOTS)),
-                      parse_paths(os.environ.get("INPUT_QA_PATHS", DEFAULT_QA_PATHS)), check_name, test_check,
-                      os.environ.get("INPUT_QA_TEAM", ""), os.environ.get("INPUT_RUN_URL", ""), panel_login)
-        else:
-            sweep(repo, token, check_name, test_check, os.environ.get("INPUT_CALLER_WORKFLOW", ""))
-        return 0
+        decision = decide_bot(event, parse_bots(os.environ.get("INPUT_BOT_PRS", DEFAULT_BOTS)),
+                              check_name, test_check)
     else:
-        raise GateError(f"INPUT_MODE must be review, comment, ci, bot or sweep, got {mode!r}")
+        raise GateError(f"INPUT_MODE must be review, comment, ci or bot, got {mode!r}")
     if "skip" in decision:
         print(f"::notice::qa-review-gate: {decision['skip']}")
         return 0
-    qa_team, run_url = os.environ.get("INPUT_QA_TEAM", ""), os.environ.get("INPUT_RUN_URL", "")
-    head = apply(decision, repo, token, qa_team, run_url, panel_login)
+    head = apply(decision, repo, token, os.environ.get("INPUT_QA_TEAM", ""),
+                 os.environ.get("INPUT_RUN_URL", ""), panel_login)
     for check in decision.get("checks") or [decision["check"]] if head else []:
         print(f"qa-review-gate: {check['name']} -> {check['conclusion']} on {head[:7]}")
-    if mode == "bot" and any(c.get("external_id") == SCOPE_EXTERNAL_ID for c in decision.get("checks") or []):
-        regraded = regrade_if_retargeted(event, repo, token, parse_paths(os.environ.get("INPUT_QA_PATHS", DEFAULT_QA_PATHS)),
-                                         check_name, test_check, qa_team, run_url, panel_login)
-        for check in (regraded or {}).get("checks") or []:
-            print(f"qa-review-gate: {check['name']} -> {check['conclusion']} on {head[:7]} (retargeted meanwhile)")
     return 0
 
 
