@@ -7,6 +7,11 @@ are written, tested, and structured.
 
 ## Available Actions
 
+### UI verifier image
+
+Build and push a private backend dev image for trusted UI verifier runs.
+See [UI verifier image](./.github/actions/ui-verifier-image/README.md) for prerequisites and caller safety.
+
 ### Testing tailnet
 
 Join the testing tailnet from trusted GitHub-hosted Linux jobs using OIDC.
