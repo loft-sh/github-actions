@@ -334,7 +334,9 @@ def test_failed_push_says_the_label_stays(backport, monkeypatch, gh, capsys):
 
     def git_(*args, **kwargs):
         if args[0] == "push":
-            raise RuntimeError("git push failed: ! [rejected] (fetch first)\nhint: pull first")
+            # Git's real order: the remote first, the reason on a later line.
+            raise RuntimeError("git push failed: To https://github.com/loft-sh/repo\n"
+                               " ! [rejected]        HEAD -> backport/x (fetch first)\nhint: pull first")
         return real(*args, **kwargs)
 
     monkeypatch.setattr(ai.fix, "git", git_)

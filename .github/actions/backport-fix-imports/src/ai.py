@@ -246,9 +246,10 @@ def apply() -> None:
         try:
             fix.git("push", "-q", os.environ.get("REMOTE") or "origin", f"HEAD:refs/heads/{branch}")
         except RuntimeError as e:
-            # Said first: main() keeps only the first line of the error.
+            # Said first, on one line: main() keeps only the first line of the error, and
+            # git puts the remote ("To <url>") before the reason ("! [rejected] ...").
             raise RuntimeError(f"the {fix.AI_LABEL} label stays on PR #{pr}, but the AI commit was not "
-                               f"pushed: {e}") from e
+                               f"pushed: {one_line(e)}") from e
     fix.note("ai", {"committed": keep, "commit": fix.git("rev-parse", "HEAD").strip(), "declined": declined})
     print(f"committed AI resolutions for {len(keep)} file(s)")
 
