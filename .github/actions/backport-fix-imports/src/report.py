@@ -34,15 +34,14 @@ def body(notes: dict) -> str:
     committed = ai.get("committed", [])
     if committed:
         files = ", ".join(f"`{p}`" for p in committed)
-        lines.append(f"- AI: resolved the conflicts in {files} in {ai['commit'][:10]}. A model wrote that commit "
-                     f"and only `go vet` checked it, so review it closely. The `{fix.AI_LABEL}` label keeps this "
-                     "PR from being auto-approved.")
+        lines.append(f"- 🤖 **AI-resolved conflicts in {files}** ({ai['commit'][:10]}). Written by a model and "
+                     f"checked only by `go vet`, so review it closely. Auto-approve is off (`{fix.AI_LABEL}`).")
     left = {p: r for p, r in script.get("left", {}).items() if p not in committed}
     left.update(ai.get("declined", {}))
     if left:
         lines.append("- Left for you:")
         lines.extend(f"  - `{p}`: {r}" for p, r in sorted(left.items()))
-    return "\n".join(["### Import fixes for this backport", *lines]) if lines else ""
+    return "\n".join(["### Backport fixes", *lines]) if lines else ""
 
 
 def main() -> int:

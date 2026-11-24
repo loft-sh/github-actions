@@ -48,8 +48,8 @@ def test_ai_commit_is_flagged_and_its_files_are_not_left():
     text = report.body({"script": SCRIPT, "ai": {
         "committed": ["pkg/a/a_test.go"], "commit": "bee5777f0837",
         "declined": {"pkg/b/b.go": "the AI did not resolve it: needs pkg/tenancy"}}})
-    assert "AI: resolved the conflicts in `pkg/a/a_test.go` in bee5777f08" in text
-    assert "review it closely" in text and "backport-ai-resolved" in text
+    assert ("- 🤖 **AI-resolved conflicts in `pkg/a/a_test.go`** (bee5777f08). Written by a model and "
+            "checked only by `go vet`, so review it closely. Auto-approve is off (`backport-ai-resolved`).") in text
     assert "`pkg/a/a_test.go`: conflict" not in text
     assert "  - `pkg/b/b.go`: the AI did not resolve it: needs pkg/tenancy" in text
 
@@ -57,7 +57,7 @@ def test_ai_commit_is_flagged_and_its_files_are_not_left():
 def test_ai_commit_alone_still_comments():
     text = report.body({"script": {"rewritten": 0, "hunks": 0, "commit": "", "left": {"pkg/a/a.go": "conflict markers remain"}},
                         "ai": {"committed": ["pkg/a/a.go"], "commit": "bee5777f0837", "declined": {}}})
-    assert "AI: resolved the conflicts in `pkg/a/a.go`" in text and "Left for you" not in text
+    assert "**AI-resolved conflicts in `pkg/a/a.go`**" in text and "Left for you" not in text
 
 
 @pytest.fixture
@@ -74,7 +74,7 @@ def test_main_hands_sticky_pr_comment_its_inputs(env):
     (env / report.fix.NOTES_FILE).write_text(json.dumps({"script": SCRIPT}))
     assert report.main() == 0
     out = (env / "output").read_text()
-    assert out.startswith("body<<EOF_") and "### Import fixes for this backport" in out
+    assert out.startswith("body<<EOF_") and "### Backport fixes\n" in out
     assert "pr-number=42\n" in out and "author=acme-bot\n" in out
 
 
