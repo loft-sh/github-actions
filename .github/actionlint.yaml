@@ -1,7 +1,9 @@
 # job.workflow_sha / job.workflow_repository (the commit and repo a reusable workflow
-# was called at) are documented context properties actionlint 1.7.12 does not know yet.
+# was called at) and concurrency.queue are documented settings actionlint 1.7.12 does
+# not know yet.
 paths:
   .github/workflows/qa-review-gate.yaml:
     ignore:
       - 'property "workflow_sha" is not defined'
       - 'property "workflow_repository" is not defined'
+      - 'unexpected key "queue" for "concurrency" section'
