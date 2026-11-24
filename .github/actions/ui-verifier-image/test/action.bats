@@ -46,3 +46,34 @@ STUB
   [ "$status" -ne 0 ]
   [ ! -s "$GITHUB_OUTPUT" ]
 }
+
+@test 'documented gate admits only a current same-repository SHA from a writer' {
+  sed -n '/          set -euo pipefail/,/          echo "sha=\$approved_sha"/s/^          //p' "$ACTION_DIR/README.md" > "$BATS_TEST_TMPDIR/gate.sh"
+  export COMMENT="/publish-ui-image $HEAD_SHA" ACTOR=reviewer PR=12 REPO=loft-sh/loft-enterprise
+  export PERMISSION=write PR_STATE=open REPO_ID=246071526 PR_SHA="$HEAD_SHA"
+  cat > "$BATS_TEST_TMPDIR/gh" <<'STUB'
+#!/usr/bin/env bash
+if [[ $* == *collaborators* ]]; then
+  printf '%s\n' "$PERMISSION"
+else
+  jq -n --arg state "$PR_STATE" --argjson id "$REPO_ID" --arg sha "$PR_SHA" '{state:$state,head:{repo:{id:$id},sha:$sha},base:{repo:{id:246071526}}}'
+fi
+STUB
+  chmod +x "$BATS_TEST_TMPDIR/gh"
+  run bash "$BATS_TEST_TMPDIR/gate.sh"
+  [ "$status" -eq 0 ]
+  grep -Fx "sha=$HEAD_SHA" "$GITHUB_OUTPUT"
+  for scenario in fork unauthorized stale closed; do
+    rm -f "$GITHUB_OUTPUT"
+    export PERMISSION=write PR_STATE=open REPO_ID=246071526 PR_SHA="$HEAD_SHA"
+    case "$scenario" in
+      fork) REPO_ID=42 ;;
+      unauthorized) PERMISSION=read ;;
+      stale) PR_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ;;
+      closed) PR_STATE=closed ;;
+    esac
+    run bash "$BATS_TEST_TMPDIR/gate.sh"
+    [ "$status" -eq 0 ]
+    [ ! -s "$GITHUB_OUTPUT" ]
+  done
+}

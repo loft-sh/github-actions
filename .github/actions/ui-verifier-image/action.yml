@@ -1,5 +1,8 @@
 name: Publish UI verifier backend image
 description: Build and push a private backend dev image for the UI verifier
+branding:
+  icon: package
+  color: blue
 inputs:
   head-sha:
     description: Full commit SHA of the checked-out PR head
