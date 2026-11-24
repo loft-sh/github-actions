@@ -27,10 +27,23 @@ def test_no_privileged_pr_trigger_remains_in_workflows():
     matches = [str(path.relative_to(GITHUB)) for path in WORKFLOWS.rglob('*')
                if path.is_file() and '__pycache__' not in path.parts
                and forbidden in path.read_bytes()]
-    assert matches == ['workflows/claude-code-review.yaml']
+    # #391: the QA gate needs a write token for fork check-runs and executes
+    # only its own workflow revision, never code from the PR head.
+    assert sorted(matches) == ['workflows/claude-code-review.yaml',
+                               'workflows/qa-review-gate.yaml']
     review = (WORKFLOWS / 'claude-code-review.yaml').read_bytes()
     assert review.count(forbidden) == 1
     assert b"github.event_name == '" + forbidden + b"'" in review
+    gate = (WORKFLOWS / 'qa-review-gate.yaml').read_text()
+    assert gate.count(forbidden.decode()) == 2  # explanatory comment and event mapping
+    for job in ('sweep', 'gate'):
+        body = jobs('qa-review-gate.yaml')[job]
+        assert body.count('uses: actions/checkout@') == 1
+        assert 'repository: ${{ job.workflow_repository }}' in body
+        assert 'ref: ${{ job.workflow_sha }}' in body
+        assert 'persist-credentials: false' in body
+        assert 'sparse-checkout: .github/actions/qa-review-gate' in body
+    assert 'checkout@' not in jobs('qa-review-gate.yaml')['tested']
 
 
 def test_backport_requires_trusted_default_branch_and_api_resolution():
