@@ -73,7 +73,7 @@ runs:
       if: steps.prepare.outputs.input-file != ''
       continue-on-error: true
       # Pinned by SHA like every internal composite (docs/CONVENTIONS.md).
-      uses: loft-sh/github-actions/.github/actions/ai-step@17f1806257f071e23c72c5fae7cfa7af78ab5bae # ai-step/v1
+      uses: loft-sh/github-actions/.github/actions/ai-step@3a66bdda3d09fdf62a7e3e9898230012a1cdf001 # ai-step/v1
       with:
         provider: anthropic
         # Few calls (only backports with Go conflicts left), and a wrong answer

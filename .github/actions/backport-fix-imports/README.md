@@ -48,6 +48,9 @@ a one-line `reason` and exit 0, and nothing is pushed.
 
 Only with `anthropic-api-key` set, and only when `.go` files the backport
 changed still have conflicts after the fix. Non-Go conflicts are never sent.
+It runs only after the fix concludes `fixed` or `unchanged`, so a backport
+between branches on the same module major (in loft-enterprise, `main` to
+`release-5.0`, both on `loft/v5`) is skipped before it and gets no AI pass.
 
 1. Each conflicted Go file goes, whole, to [`ai-step`](../ai-step/README.md) in
    one call. The model answers per conflict block: replacement code, or "not
