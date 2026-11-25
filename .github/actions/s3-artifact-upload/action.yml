@@ -1,0 +1,40 @@
+name: S3 artifact upload
+description: |
+  Uploads release files to a private S3 bucket under one prefix, each with its
+  sha256 in the object metadata, then a sha256sum manifest of them. The
+  manifest goes last and marks the prefix as released: a prefix that already
+  has one is refused, so a release cannot be overwritten. The caller assumes
+  the upload role first, e.g. with aws-actions/configure-aws-credentials.
+inputs:
+  bucket:
+    description: 'Name of the S3 bucket.'
+    required: true
+  prefix:
+    description: 'Key prefix for the release, e.g. the tag (v1.2.3). Relative, without leading or trailing slashes.'
+    required: true
+  files:
+    description: 'Newline-separated paths of the files to upload. Each is uploaded as <prefix>/<file name>, so names must be unique.'
+    required: true
+  manifest:
+    description: 'File name of the sha256sum manifest written last under the prefix.'
+    required: false
+    default: 'SHA256SUMS'
+outputs:
+  manifest-url:
+    description: 'S3 URL of the uploaded manifest, e.g. s3://bucket/v1.2.3/SHA256SUMS.'
+    value: ${{ steps.upload.outputs.manifest-url }}
+runs:
+  using: composite
+  steps:
+    - name: Upload artifacts
+      id: upload
+      shell: bash
+      env:
+        INPUT_BUCKET: ${{ inputs.bucket }}
+        INPUT_PREFIX: ${{ inputs.prefix }}
+        INPUT_FILES: ${{ inputs.files }}
+        INPUT_MANIFEST: ${{ inputs.manifest }}
+      run: ${{ github.action_path }}/src/upload.sh
+branding:
+  icon: 'upload-cloud'
+  color: 'blue'
