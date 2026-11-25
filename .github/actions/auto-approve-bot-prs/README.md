@@ -34,7 +34,7 @@ jobs:
       github.event.workflow_run.head_repository.full_name == github.repository &&
       startsWith(github.event.workflow_run.head_branch, 'backport/'))
     concurrency:
-      group: backport-approval-reconcile
+      group: backport-approval-${{ github.event.workflow_run.head_branch || 'schedule' }}
       cancel-in-progress: false
     permissions:
       contents: read
@@ -68,7 +68,11 @@ Only open, ready, same-repository PRs from the trusted authors with a `backport/
 branch qualify. Skip labels still leave the PR for a person. The head, base,
 eligibility and checks are read again before posting a review tied to the tested
 head. Duplicate completions and reruns do not add a second current approval by
-the same approver. The caller's lock serializes completion and scheduled runs.
+the same approver. The caller's lock serializes completions per branch and gives
+the schedule its own queue. Do not share one group across branches: GitHub keeps
+one pending run per group, so a later completion would replace a queued run for
+another branch. A scheduled run racing a completion can add a second approval of
+the same commit, which is harmless.
 
 This privileged handler checks out only the trusted shared action from `main`.
 It consumes no PR code or artifacts. CI reads use the caller's `GITHUB_TOKEN`
