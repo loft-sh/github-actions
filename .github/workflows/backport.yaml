@@ -54,6 +54,8 @@ on:
           branch: rewrite the repository's own Go module paths to the target
           line's major, resolve import-only conflicts, and push a fix commit.
           For repositories whose release lines sit on an older module major.
+          With anthropic-api-key set, Go conflicts that remain also go to an AI
+          pass, committed only for packages that pass go vet.
         type: boolean
         required: false
         default: false
@@ -63,6 +65,9 @@ on:
         required: true
       linear-token:
         description: 'Linear API token for linking backport PRs to their matching Linear sub-issue. Optional; linking is skipped when not provided.'
+        required: false
+      anthropic-api-key:
+        description: 'Anthropic API key for the fix-imports AI pass. Optional; without it only the deterministic fix runs.'
         required: false
 
 permissions: {}
@@ -195,6 +200,8 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # go and gofmt for the AI pass come with the hosted runner; go vet
+      # switches to the toolchain the target's go.mod asks for on its own.
       - name: Fix imports on backport/${{ matrix.target }}/pr-${{ fromJSON(needs.resolve-event.outputs.pr-event || '{}').pull_request.number }}
         uses: loft-sh/github-actions/.github/actions/backport-fix-imports@backport-fix-imports/v1 # zizmor: ignore[unpinned-uses] -- internal loft-sh/github-actions ref; reusable workflows check out the CALLER repo, so a local ./.github/actions path is not present here. @backport-fix-imports/v1 is the floating coordination tag kept aligned with backport/v1 (see DEVOPS-923 pin-drift class).
         with:
@@ -202,6 +209,7 @@ jobs:
           backport-branch: backport/${{ matrix.target }}/pr-${{ fromJSON(needs.resolve-event.outputs.pr-event || '{}').pull_request.number }}
           source-branch: ${{ fromJSON(needs.resolve-event.outputs.pr-event || '{}').pull_request.base.ref }}
           github-token: ${{ secrets.gh-access-token }} # zizmor: ignore[secrets-outside-env] -- PAT passed through workflow_call; pushes the fix commit so the backport PR's CI runs on it
+          anthropic-api-key: ${{ secrets.anthropic-api-key }} # zizmor: ignore[secrets-outside-env] -- optional key passed through workflow_call
 
   # --- pre-monorepo (<= v0.36) split/re-root flow ---------------------------
   # sorenlouv (above) only cherry-picks monorepo-era (>= v0.37) targets. Legacy
@@ -316,7 +324,10 @@ jobs:
           # account, not github-actions[bot]. sticky-pr-comment matches on author to
           # find its prior comment -- feed it the resolved login so re-runs update.
           GH_TOKEN: ${{ secrets.gh-access-token }}
-        run: echo "login=$(gh api user --jq '.login')" >> "$GITHUB_OUTPUT"
+        # Assigned first, so a failed lookup stops this step with gh's own error.
+        run: |
+          login=$(gh api user --jq .login)
+          echo "login=$login" >> "$GITHUB_OUTPUT"
 
       - name: Comment backport status on the source PR
         if: ${{ !cancelled() && steps.backport.outputs.comment-body != '' }}
