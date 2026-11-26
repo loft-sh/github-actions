@@ -51,11 +51,13 @@ placeholder) with its normal test-run decision (green when the PR adds no spec, 
 an e2e run otherwise). Every run the gate writes carries the base it graded against in its
 external id (`<kind>^<base>`; an override, a bot pass and a request for a person carry
 none), so a retarget replaces a verdict, an opener or an e2e result graded against the old
-base and keeps one for the new base; an override, a bot pass or `/qa-review human` stays,
+base, or one that records no base (written before the gate recorded it), and keeps one
+for the new base; an override, a bot pass or `/qa-review human` stays,
 whatever order the jobs ran in. The same ownership rule holds for every scope write
 (`opened`, `reopened`, the sweep): the scope check never writes over a result for the
 current base, a request for a person, an override or a bot pass. A fresh panel verdict
-likewise replaces a `qa-test-run` result from another base with its own opener, and an e2e
+likewise replaces a `qa-test-run` result from another base, or with no recorded base,
+with its own opener, and an e2e
 run combines only tree results graded against the same base. A PR-triggered e2e run
 tests the merge commit of the head and the base at that moment, so its `run-name` must
 name that base (`... onto <base-ref>`, from `github.event.pull_request.base.ref`): a run

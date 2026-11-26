@@ -191,7 +191,7 @@ def test_review_opener_rechecks_for_a_result_before_posting(monkeypatch):
     api = review_api(files=NEW_SPEC)
     monkeypatch.setattr(gate, "gh_api", api)
     decision = gate.collect_review(review_event(), "o/r", "tok", "loft-bot", "qa-review")
-    completed = review_api(check_runs=[{"app": {"slug": "github-actions"}, "conclusion": "success"}], files=NEW_SPEC)
+    completed = review_api(check_runs=[{"app": {"slug": "github-actions"}, "conclusion": "success", "external_id": "^main"}], files=NEW_SPEC)
     monkeypatch.setattr(gate, "gh_api", completed)
     gate.apply(decision, "o/r", "tok", "", "https://run")
     assert [payload["name"] for _, payload in completed.writes] == ["qa-review"]
@@ -234,9 +234,19 @@ def test_a_verdict_for_another_base_than_the_pr_targets_is_ignored(monkeypatch):
 
 
 def test_review_leaves_an_existing_test_run_check_alone(monkeypatch):
-    monkeypatch.setattr(gate, "gh_api", review_api(check_runs=[{"app": {"slug": "github-actions"}, "conclusion": "success"}], files=NEW_SPEC))
+    monkeypatch.setattr(gate, "gh_api", review_api(check_runs=[{"app": {"slug": "github-actions"}, "conclusion": "success", "external_id": "^main"}], files=NEW_SPEC))
     decision = gate.collect_review(review_event(), "o/r", "tok", "loft-bot", "qa-review")
     assert "checks" not in decision and decision["check"]["name"] == "qa-review"
+
+
+@pytest.mark.parametrize("legacy", [{}, {"external_id": "qa-review-gate:trees:ginkgo-report=success"}])
+def test_panel_verdict_replaces_a_test_run_result_that_records_no_base(monkeypatch, legacy):
+    # Written before the gate recorded the base: it may be for the diff before a retarget.
+    old = {"app": {"slug": "github-actions"}, "id": 7, "status": "completed", "conclusion": "success", **legacy}
+    monkeypatch.setattr(gate, "gh_api", review_api(check_runs=[old], files=NEW_SPEC))
+    decision = gate.collect_review(review_event(body=marker("pass")), "o/r", "tok", "loft-bot", "qa-review")
+    assert [(c["name"], c["conclusion"]) for c in decision["checks"]] == [
+        ("qa-review", "success"), ("qa-test-run", "action_required")]
 
 
 def test_review_diff_failure_opens_the_test_run_check_for_a_person(monkeypatch):
@@ -458,18 +468,21 @@ def test_a_retarget_into_scope_before_any_check_writes_the_placeholder(monkeypat
 OWNS_BOTH = {"skip": "the panel's verdict, a request for a person or an override owns both checks"}
 
 
-@pytest.mark.parametrize("newest", ["", "qa-review-gate:verdict^release-1.0", gate.OVERRIDE_EXTERNAL_ID,
+@pytest.mark.parametrize("newest", ["qa-review-gate:verdict^release-1.0", gate.OVERRIDE_EXTERNAL_ID,
                                     gate.HUMAN_EXTERNAL_ID, gate.BOT_EXTERNAL_ID])
 def test_a_retarget_into_scope_leaves_a_result_for_the_new_base_alone(monkeypatch, newest):
-    # A verdict with no base (before this tag), one for the new base, an override, a request
-    # for a person and a bot pass all stay.
+    # A verdict for the new base, an override, a request for a person and a bot pass all stay.
     event, api = retarget_event(["e2e/a.go"], newest)
     monkeypatch.setattr(gate, "gh_api", api)
     assert gate.decide_scope(event, "o/r", "tok", QA_PATHS, "qa-review") == OWNS_BOTH
 
 
 @pytest.mark.parametrize("newest", ["qa-review-gate:verdict^main", gate.OPENER_EXTERNAL_ID + "^main",
-                                    "qa-review-gate:trees:ginkgo-report=success^main"])
+                                    "qa-review-gate:trees:ginkgo-report=success^main",
+                                    # No recorded base (written before the gate recorded it): same head,
+                                    # so the result may be for the old diff and needs a fresh decision.
+                                    "qa-review-gate:verdict", gate.OPENER_EXTERNAL_ID,
+                                    "qa-review-gate:trees:ginkgo-report=success"])
 def test_a_retarget_into_scope_replaces_a_result_graded_against_the_old_base(monkeypatch, newest):
     event, api = retarget_event(["e2e/a.go"], newest)
     monkeypatch.setattr(gate, "gh_api", api)
@@ -498,7 +511,7 @@ def test_a_retarget_replaces_only_the_checks_the_scope_check_still_owns(monkeypa
     event, _ = retarget_event(["e2e/a.go"], "")
     def api(args, token, payload=None):
         if "check_name=qa-review&" in args[0]:
-            return {"check_runs": [{"app": {"slug": "github-actions"}, "id": 9, "external_id": ""}]}
+            return {"check_runs": [{"app": {"slug": "github-actions"}, "id": 9, "external_id": "qa-review-gate:verdict^release-1.0"}]}
         if "check_name=qa-test-run&" in args[0]:
             return {"check_runs": [{"app": {"slug": "github-actions"}, "id": 8, "external_id": gate.SCOPE_EXTERNAL_ID, "conclusion": "success"}]}
         return {"files": [{"filename": "e2e/a.go"}]}
@@ -521,7 +534,7 @@ def test_a_retarget_whose_diff_cannot_be_listed_withdraws_the_pass(monkeypatch):
 
 
 def test_a_retarget_out_of_scope_never_overwrites_a_panel_verdict(monkeypatch):
-    event, api = retarget_event(["docs/a.md"], "")
+    event, api = retarget_event(["docs/a.md"], "qa-review-gate:verdict^release-1.0")
     monkeypatch.setattr(gate, "gh_api", api)
     assert "skip" in gate.decide_scope(event, "o/r", "tok", QA_PATHS, "qa-review")
 
@@ -1338,8 +1351,8 @@ def test_collect_ci_reads_the_other_tree_from_the_newest_tagged_check_run(monkey
 
 
 def test_retry_leaves_a_real_newest_result_alone(monkeypatch):
-    runs = [{"app": {"slug": "github-actions"}, "id": 21, "status": "completed", "conclusion": "action_required", "external_id": gate.OPENER_EXTERNAL_ID},
-            {"app": {"slug": "github-actions"}, "id": 22, "status": "completed", "conclusion": "success", "external_id": "qa-review-gate:trees:ginkgo-report=success"}]
+    runs = [{"app": {"slug": "github-actions"}, "id": 21, "status": "completed", "conclusion": "action_required", "external_id": gate.OPENER_EXTERNAL_ID + "^main"},
+            {"app": {"slug": "github-actions"}, "id": 22, "status": "completed", "conclusion": "success", "external_id": "qa-review-gate:trees:ginkgo-report=success^main"}]
     api = review_api(check_runs=runs, files=NEW_SPEC)
     monkeypatch.setattr(gate, "gh_api", api)
     gate.apply(gate.collect_review(review_event(), "o/r", "tok", "loft-bot", "qa-review"), "o/r", "tok", "", "https://panel")
@@ -1401,8 +1414,8 @@ def test_bot_backport_keeps_the_title_the_panel_matches():
 def test_retry_reconciles_an_existing_provisional_opener(monkeypatch):
     """The first attempt posted the opener, then its PATCH failed: the retry sees the opener
     at the first lookup, posts only qa-review, and still copies the real result onto it."""
-    runs = [{"app": {"slug": "github-actions"}, "id": 20, "status": "completed", "conclusion": "success", "output": {"title": "passed", "summary": "ok"}},
-            {"app": {"slug": "github-actions"}, "id": 21, "status": "completed", "conclusion": "action_required", "external_id": gate.OPENER_EXTERNAL_ID}]
+    runs = [{"app": {"slug": "github-actions"}, "id": 20, "status": "completed", "conclusion": "success", "external_id": "^main", "output": {"title": "passed", "summary": "ok"}},
+            {"app": {"slug": "github-actions"}, "id": 21, "status": "completed", "conclusion": "action_required", "external_id": gate.OPENER_EXTERNAL_ID + "^main"}]
     monkeypatch.setattr(gate, "gh_api", review_api(check_runs=runs, files=NEW_SPEC))
     decision = gate.collect_review(review_event(), "o/r", "tok", "loft-bot", "qa-review")
     assert "checks" not in decision and decision["reconcile"] == "qa-test-run"

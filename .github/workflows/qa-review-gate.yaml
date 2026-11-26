@@ -142,7 +142,7 @@ jobs:
           sparse-checkout: .github/actions/qa-review-gate
       - uses: ./.github/actions/qa-review-gate
         with:
-          mode: ${{ github.event_name == 'pull_request_review' && 'review' || github.event_name == 'workflow_run' && 'ci' || startsWith(github.event_name, 'pull_request') && 'bot' || github.event_name == 'workflow_dispatch' && 'sweep' || 'comment' }}
+          mode: ${{ github.event_name == 'pull_request_review' && 'review' || github.event_name == 'workflow_run' && 'ci' || github.base_ref != '' && 'bot' || github.event_name == 'workflow_dispatch' && 'sweep' || 'comment' }}
           override-logins: ${{ inputs.override-logins }}
           override-teams: ${{ inputs.override-teams }}
           org-token: ${{ secrets.org-token }} # zizmor: ignore[secrets-outside-env] -- PAT passed through workflow_call; the action maps it to env itself

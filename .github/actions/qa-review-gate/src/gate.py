@@ -227,14 +227,15 @@ def scope_owned(runs):
 
 def scope_may_write(runs, base):
     """True when the scope check may write over the newest run of a check: no run yet, its
-    own run, or a verdict, opener or e2e result graded against another base (a retarget).
+    own run, or a verdict, opener or e2e result graded against another base (a retarget) or
+    recording none (written before the gate recorded it, so it may be for the old diff).
     An override, a bot pass, a request for a person, or a result for this base stays."""
     newest = max(runs, key=lambda run: run.get("id", 0), default=None)
     if not newest or kind(newest) == SCOPE_EXTERNAL_ID:
         return True
     if kind(newest) in (OVERRIDE_EXTERNAL_ID, BOT_EXTERNAL_ID, HUMAN_EXTERNAL_ID):
         return False
-    return bool(base_of(newest)) and base_of(newest) != base
+    return base_of(newest) != base
 
 
 def scope_writable(repo, head, check_name, base, token):

@@ -48,6 +48,13 @@ jobs:
       org-token: ${{ secrets.GH_ACCESS_TOKEN }}
 ```
 
+Before a ruleset requires `qa-test-run` on a branch, that branch's e2e workflow must set
+its `run-name` to `E2E for PR #<n> (<label>) at <head-sha> onto <base-ref>`. The gate skips a
+native PR run without `onto <base-ref>`, and it needs `at <head-sha>` to find the commit a
+`/test-e2e` run on a fork tested. On a branch with the old format a passing e2e run leaves
+the required check waiting. In loft-enterprise the format comes with #9611 and its
+backports, so `release-4.11` and `release-4.12` qualify only after those merge.
+
 ## Inputs
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
