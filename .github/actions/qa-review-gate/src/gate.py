@@ -794,7 +794,8 @@ def e2e_runs(run, repo, head, pr_number, base_ref, workflows, token):
     need several runs (label filters, a second e2e workflow) before each new spec has run.
     `workflows` (names) are the caller's `workflow_run` list; empty: the workflow of `run`.
     Matched by workflow id: a run's own `name` is its run-name, which differs per run."""
-    listed = gh_api([f"repos/{repo}/actions/workflows?per_page=100"], token).get("workflows") or [] if workflows else []
+    pages = gh_api([f"repos/{repo}/actions/workflows?per_page=100", "--paginate", "--slurp"], token) if workflows else []
+    listed = [w for page in pages for w in page.get("workflows") or []]
     ids = {w["id"] for w in listed if w.get("name") in workflows} | {run.get("workflow_id")}
 
     def tested(r):

@@ -1332,7 +1332,9 @@ def history(monkeypatch, runs, artifacts, reports, lines=2, by_branch=(), workfl
 
     def api(args, token, payload=None):
         if "/actions/workflows?" in args[0]:
-            return {"workflows": [{"id": 70, "name": "E2E"}, {"id": 50, "name": FLOWS}, {"id": 60, "name": "E2E label check"}]}
+            assert args[1:] == ["--paginate", "--slurp"]  # a repo can have more than 100 workflows
+            return [{"workflows": [{"id": 70, "name": "E2E"}, {"id": 60, "name": "E2E label check"}]},
+                    {"workflows": [{"id": 50, "name": FLOWS}]}]
         if "/actions/runs?" in args[0]:
             return {"workflow_runs": list(by_branch if "branch=" in args[0] else runs)}
         if args[0].endswith("/artifacts"):
