@@ -413,6 +413,24 @@ def test_a_pr_outside_the_qa_paths_passes_as_out_of_scope(monkeypatch):
     assert decision["pr_number"] == 12 and decision["request_qa_review"] is False
 
 
+@pytest.mark.parametrize("patch, conclusion, title", [
+    ('@@ -1,0 +1 @@\n+\tIt("new", func() {', "action_required", "QA test run: 1 new spec(s) wait for `/test-e2e <label-filter>`"),
+    ('@@ -1,0 +1 @@\n+\t// a comment', "success", "QA test run: the PR adds no e2e spec"),
+])
+def test_the_test_run_check_of_a_qa_path_pr_waits_for_a_run_not_for_the_panel(monkeypatch, patch, conclusion, title):
+    event, _ = human_pr_event(["e2e/a.go"])
+
+    def api(args, token, payload=None):
+        if "check-runs?" in args[0]:
+            return {"check_runs": []}
+        return {"files": [{"filename": "e2e/a.go", "patch": patch}]}
+    monkeypatch.setattr(gate, "gh_api", api)
+    review, test_run = gate.decide_scope(event, "o/r", "tok", QA_PATHS, "qa-review")["checks"]
+    assert (review["name"], review["conclusion"]) == ("qa-review", "action_required")
+    assert (test_run["name"], test_run["conclusion"], test_run["title"]) == ("qa-test-run", conclusion, title)
+    assert test_run["external_id"] == gate.SCOPE_EXTERNAL_ID  # the verdict's opener and the e2e result may replace it
+
+
 @pytest.mark.parametrize("path", ["e2e/test_foo/foo.go", "e2e-next/setup/x.go",
                                   "staging/github.com/loft-sh/vcluster/e2e/bar.go",
                                   ".github/workflows/e2e-ginkgo.yaml"])
@@ -420,10 +438,17 @@ def test_a_pr_touching_a_qa_path_waits_for_the_panel_and_says_how(monkeypatch, p
     event, files = human_pr_event(["pkg/foo.go", path])
     monkeypatch.setattr(gate, "gh_api", files_api(files))
     decision = gate.decide_scope(event, "o/r", "tok", QA_PATHS, "qa-review")
-    assert [(c["name"], c["conclusion"], c["head_sha"], c["external_id"]) for c in decision["checks"]] == [
-        ("qa-review", "action_required", HEAD, "qa-review-gate:scope"),
-        ("qa-test-run", "action_required", HEAD, "qa-review-gate:scope")]
+    assert [(c["name"], c["head_sha"], c["external_id"]) for c in decision["checks"]] == [
+        ("qa-review", HEAD, "qa-review-gate:scope"), ("qa-test-run", HEAD, "qa-review-gate:scope")]
+    assert decision["checks"][0]["conclusion"] == "action_required"
     assert decision["checks"][0]["title"] == "QA review: waiting for the panel review, comment /vcluster-review"
+    # No readable diff in this fake: the test run still says it waits for a run, not for the panel.
+    assert decision["checks"][1]["title"] in ("QA test run: waiting for an e2e run of the new specs",
+                                              "QA test run: the PR adds no e2e spec")
+    event["pull_request"]["draft"] = True
+    draft = gate.decide_scope(event, "o/r", "tok", QA_PATHS, "qa-review")
+    assert draft["checks"][0]["title"] == "QA review: waiting for the panel review, mark the PR ready or comment /vcluster-review"
+    assert "a repository member comments `/vcluster-review`" in draft["checks"][0]["summary"]
     assert "`/vcluster-review`" in decision["checks"][0]["summary"] and "/qa-review override" in decision["checks"][0]["summary"]
     assert decision["request_qa_review"] is False
 
@@ -944,7 +969,8 @@ def test_sweep_grades_the_pr_as_it_is_now_and_regrades_after_a_retarget(monkeypa
         return {}
     monkeypatch.setattr(gate, "gh_api", api)
     assert gate.sweep_one("o/r", "tok", 6, "6" * 40, BOTS, QA_PATHS, "qa-review", "qa-test-run", "", "https://run", "loft-bot")
-    assert [w["conclusion"] for w in writes] == ["action_required", "action_required"]  # in scope against the base it has now
+    assert [(w["name"], w["conclusion"]) for w in writes] == [  # in scope against the base it has now
+        ("qa-review", "action_required"), ("qa-test-run", "success")]  # this fake diff adds no spec
     assert "#6 6666666 QA review: waiting for the panel review" in capsys.readouterr().out
 
 
