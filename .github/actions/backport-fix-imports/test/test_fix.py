@@ -585,6 +585,43 @@ def test_ai_and_comment_steps_use_the_resolved_branch():
         assert resolved in step, name
 
 
+@pytest.mark.parametrize("candidate", [
+    "manual/release-4.12-fix_release-4.12-fix",
+    "backport/release-4.12/pr-x_pr-x",
+])
+def test_only_canonical_backport_heads_expand(candidate):
+    # Only backport/<target>/pr-<number>, the bot's name, has a multi-commit form.
+    assert not fix.is_backport_branch(candidate, candidate.rsplit("_", 1)[0])
+
+
+def test_other_head_missing_skips_without_using_a_lookalike(repo, monkeypatch):
+    write(repo, "pkg/peer/new.go", 'package peer\n\nimport _ "example.com/acme/app/v5/pkg/util"\n')
+    push_backport_as(repo, "manual/release-4.12-fix_release-4.12-fix")
+    before = git(repo, "rev-parse", "HEAD")
+    monkeypatch.setenv("BACKPORT_BRANCH", "manual/release-4.12-fix")
+    assert fix.main() == 0
+    out = outputs(repo)
+    assert out["conclusion"] == "skipped"
+    assert "no manual/release-4.12-fix branch" in out["reason"]
+    git(repo, "fetch", "-q", "origin")
+    assert git(repo, "rev-parse", "origin/manual/release-4.12-fix_release-4.12-fix") == before
+
+
+def test_other_head_is_fixed_exactly_next_to_a_lookalike(repo, monkeypatch):
+    write(repo, "pkg/peer/new.go", 'package peer\n\nimport _ "example.com/acme/app/v5/pkg/util"\n')
+    push_backport_as(repo, "manual/release-4.12-fix")
+    git(repo, "push", "-q", "origin", "manual/release-4.12-fix:refs/heads/manual/release-4.12-fix_release-4.12-fix")
+    before = git(repo, "rev-parse", "HEAD")
+    monkeypatch.setenv("BACKPORT_BRANCH", "manual/release-4.12-fix")
+    assert fix.main() == 0
+    out = outputs(repo)
+    assert out["conclusion"] == "fixed"
+    assert out["branch"] == "manual/release-4.12-fix"
+    git(repo, "fetch", "-q", "origin")
+    assert git(repo, "rev-parse", "origin/manual/release-4.12-fix") != before
+    assert git(repo, "rev-parse", "origin/manual/release-4.12-fix_release-4.12-fix") == before
+
+
 def test_missing_backport_branch_skips(repo, monkeypatch):
     monkeypatch.setenv("BACKPORT_BRANCH", "backport/release-4.12/pr-404")
     assert fix.main() == 0
