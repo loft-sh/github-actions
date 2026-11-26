@@ -1,8 +1,7 @@
 # UI verifier backend image
 
 Build and push a backend-only dev image to the private UI verifier registry.
-The image contains the default fake license and must stay private. The first
-`ui-verifier-image/v1` tag must be created after merge before use.
+The image contains the default fake license and must stay private.
 
 ## Trusted caller
 
@@ -88,6 +87,28 @@ and otherwise falls back to `v0.0.0`. Install and pin the tools using that image
 job's setup before enabling this workflow. The build runs before Google auth
 because it can outlast federated credentials; job OIDC is still available to
 all steps, so the trust gate must run before the job starts.
+
+## Build and push with caller authentication
+
+Use the `build` and `push` entries in one trusted job when the workflow owns
+Google Cloud authentication. Give that job `id-token: write` and run Google
+Cloud auth and `setup-gcloud` after the build. Use the same SHA in both steps.
+The push step configures the Docker credential helper for the private registry
+and exposes the published reference as `steps.image.outputs.image`.
+
+```yaml
+- uses: loft-sh/github-actions/.github/actions/ui-verifier-image/build@ui-verifier-image/v1
+  with:
+    head-sha: ${{ steps.checkout.outputs.commit }}
+- uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+  with:
+    workload_identity_provider: projects/464415226524/locations/global/workloadIdentityPools/github/providers/github-actions
+- uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+- uses: loft-sh/github-actions/.github/actions/ui-verifier-image/push@ui-verifier-image/v1
+  id: image
+  with:
+    head-sha: ${{ steps.checkout.outputs.commit }}
+```
 
 ## Deployment handoff
 

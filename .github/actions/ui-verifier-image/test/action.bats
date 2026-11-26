@@ -47,6 +47,25 @@ STUB
   [ ! -s "$GITHUB_OUTPUT" ]
 }
 
+@test 'split build and push entries run the shared scripts in the same job' {
+  for entry in build push; do
+    export GITHUB_ACTION_PATH="$ACTION_DIR/$entry"
+    command=$(sed -n 's/^      run: //p' "$GITHUB_ACTION_PATH/action.yml")
+    [ -n "$command" ]
+    run bash -ec "$command"
+    [ "$status" -eq 0 ]
+  done
+
+  image="europe-west3-docker.pkg.dev/loft-prod/ui-verifier/platform:$HEAD_SHA"
+  diff -u - "$CALLS" <<EXPECTED
+git rev-parse HEAD
+just build-image $image false
+gcloud auth configure-docker europe-west3-docker.pkg.dev --quiet
+docker push $image
+EXPECTED
+  grep -Fx "image=$image" "$GITHUB_OUTPUT"
+}
+
 @test 'documented gate admits only a current same-repository SHA from a writer' {
   sed -n '/          set -euo pipefail/,/          echo "sha=\$approved_sha"/s/^          //p' "$ACTION_DIR/README.md" > "$BATS_TEST_TMPDIR/gate.sh"
   export COMMENT="/publish-ui-image $HEAD_SHA" ACTOR=reviewer PR=12 REPO=loft-sh/loft-enterprise
