@@ -768,6 +768,18 @@ def test_a_scope_write_keeps_a_verdict_that_landed_during_it(monkeypatch, capsys
     assert "a result landed during the scope write" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("title, noted", [("QA review: passed", True), ("QA review: blocked (1 weak test)", True),
+                                          ("QA review: out of scope, no QA-owned path (base main@1234567)", False)])
+def test_every_result_but_an_out_of_scope_pass_says_it_is_for_one_commit(monkeypatch, title, noted):
+    posted = []
+    monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None: posted.append(payload) or {"id": 1} if payload else {})
+    decision = {"check": {"name": "qa-review", "head_sha": HEAD, "conclusion": "success", "title": title, "summary": "s"},
+                "request_qa_review": False, "pr_number": 12}
+    gate.apply(decision, "o/r", "tok", "", "https://run")
+    note = f"This result is for commit `{HEAD[:7]}` only. A new commit resets this check."
+    assert (note in posted[0]["output"]["summary"]) is noted
+
+
 def test_a_scope_write_keeps_a_request_for_a_person_that_landed_before_it(monkeypatch, capsys):
     # /qa-review human runs in another queue: it wrote after decide_scope read ownership and
     # before apply read the newest id, so no reconciliation would find it. The waiting check
@@ -2003,6 +2015,8 @@ def test_ci_missing_or_skipped_spec_is_failure_and_names_it():
     assert f"did not run: {SNAPSHOT}:12 c" in decision["check"]["summary"]
     assert f"{SNAPSHOT}:11 b (skipped)" in decision["check"]["summary"]
     assert "2 new spec(s)" in decision["check"]["title"]
+    # Both ways out: /test-e2e when it can run the spec, an override when it cannot (nightly-only environment).
+    assert "`/test-e2e <label-filter>`" in decision["check"]["summary"] and "/qa-review override" in decision["check"]["summary"]
 
 
 @pytest.mark.parametrize("conclusion", ["cancelled", "timed_out", None])

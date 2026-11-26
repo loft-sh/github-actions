@@ -189,6 +189,10 @@ Assigning the author (on `needs_human`) and requesting the QA team's review (on
 `/qa-review human`) are best effort: when the token cannot do it, the job logs a
 warning and stays green.
 
+Every check-run but an out-of-scope pass ends its summary with "This result is for commit
+`<sha>` only. A new commit resets this check.": a check-run belongs to one commit, and an
+author who pushes after a review or an e2e run must ask for them again.
+
 The action creates check-runs with the job's `GITHUB_TOKEN`; the caller grants
 `checks: write` and `pull-requests: write` (`actions: read` too for `ci`). It
 never posts review comments. A `/qa-review` comment that changed nothing (a head
