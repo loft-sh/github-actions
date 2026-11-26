@@ -298,7 +298,16 @@ def decide_scope(event, repo, token, qa_paths, check_name, test_check="qa-test-r
     graded = f"base {base_ref}@{base[:7]}"
     if owned:
         if action != "edited":
-            return {"skip": f"{len(owned)} changed file(s) under a QA-owned path; the panel decides"}
+            # Without a check the PR shows only "Expected", and nothing tells the author what to do.
+            return {"checks": [{"name": n, "head_sha": head, "conclusion": "action_required",
+                                "external_id": SCOPE_EXTERNAL_ID,
+                                "title": f"{labels[n]}: waiting for the panel review, comment /vcluster-review",
+                                "summary": f"{len(owned)} changed file(s) under a QA-owned path, so the review "
+                                           "panel decides this check. It starts by itself when a PR opens or "
+                                           "leaves draft. After a push it does not: comment `/vcluster-review` "
+                                           f"to get a review of this commit.\n\n{OVERRIDE_HINT}\n\n"
+                                           f"PR: {pr.get('html_url', '')}"} for n in names],
+                    "request_qa_review": False, "pr_number": pr.get("number"), "base_ref": base_ref}
         return placeholders(f"{len(owned)} file(s) in scope")
     summary = (f"No changed file is under a QA-owned path ({', '.join(qa_paths)}) against {graded}, "
                f"so the review panel does not run on this PR.\n\nPR: {pr.get('html_url', '')}")
@@ -402,8 +411,8 @@ def sweep_one(repo, token, number, queued_sha, bots, qa_paths, check_name, test_
     """One PR of the sweep, run under the queue of `queued_sha` (the head the `tested` job
     resolved): the QA-scope pass it would have got on `opened`, creating only what is missing
     (a retry after a partial write completes it). A PR that moved to another head since is
-    graded by that head's own event; a trusted bot PR on a later head and a PR that touches
-    a QA-owned path are left for the panel or an override, with a warning."""
+    graded by that head's own event; a PR that touches a QA-owned path gets the checks that
+    wait for the panel; a trusted bot PR on a later head is left to a person, with a warning."""
     pr = gh_api([f"repos/{repo}/pulls/{number}"], token)
     head = (pr.get("head") or {}).get("sha", "")
     if head != queued_sha:
@@ -427,7 +436,7 @@ def sweep_one(repo, token, number, queued_sha, bots, qa_paths, check_name, test_
         return False
     decision["checks"] = [c for c in decision["checks"] if c["name"] in missing]
     apply(decision, repo, token, qa_team, run_url, panel_login)
-    print(f"qa-review-gate: #{number} {head[:7]} passed as out of scope ({', '.join(missing)} created)")
+    print(f"qa-review-gate: #{number} {head[:7]} {decision['checks'][0]['title']} ({', '.join(missing)} created)")
     if regrade_if_retargeted(event, repo, token, qa_paths, check_name, test_check, qa_team, run_url, panel_login):
         print(f"qa-review-gate: #{number} {head[:7]} retargeted meanwhile; graded again")
     return True
