@@ -14,7 +14,7 @@ inputs:
     description: 'Release branch the backport PR targets, e.g. release-4.12. Its root go.mod gives the target module paths.'
     required: true
   backport-branch:
-    description: 'Head branch of the backport PR, e.g. backport/release-4.12/pr-8606. Checked out, fixed and pushed back.'
+    description: 'Head branch of the backport PR, e.g. backport/release-4.12/pr-8606. When the source merged as several commits the bot repeats the ref (backport/release-4.12/pr-8606_pr-8606); that branch is found and used. Checked out, fixed and pushed back.'
     required: true
   source-branch:
     description: 'Branch the original change merged into. Its root go.mod gives the source module paths.'
@@ -110,7 +110,7 @@ runs:
       shell: bash
       env:
         TARGET_BRANCH: ${{ inputs.target-branch }}
-        BACKPORT_BRANCH: ${{ inputs.backport-branch }}
+        BACKPORT_BRANCH: ${{ steps.fix.outputs.branch || inputs.backport-branch }}
         PUSH: ${{ inputs.push }}
         GH_TOKEN: ${{ inputs.github-token }}
         INPUT_FILE: ${{ steps.prepare.outputs.input-file }}
@@ -124,7 +124,7 @@ runs:
       continue-on-error: true
       shell: bash
       env:
-        BACKPORT_BRANCH: ${{ inputs.backport-branch }}
+        BACKPORT_BRANCH: ${{ steps.fix.outputs.branch || inputs.backport-branch }}
         GH_TOKEN: ${{ inputs.github-token }}
       run: python3 "${{ github.action_path }}/src/report.py"
 

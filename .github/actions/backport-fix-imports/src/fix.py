@@ -125,6 +125,40 @@ def backport_pr(branch: str) -> int | None:
     return prs[0]["number"] if prs else None
 
 
+# Where the backport bot cuts the joined refs in its branch name.
+MAX_REF_VALUES_LEN = 200
+
+
+def is_backport_branch(candidate: str, branch: str) -> bool:
+    """Whether candidate is the bot's branch for branch (backport/<target>/pr-<n>): the bot
+    repeats pr-<n> once per backported commit, joined by "_" and cut at 200 characters.
+    The same rule as isBackportHeadBranch in link-backport-prs."""
+    prefix, _, ref = branch.rpartition("/")
+    values = candidate.removeprefix(prefix + "/")
+    if values == candidate or not len(ref) <= len(values) <= MAX_REF_VALUES_LEN:
+        return False
+    repeated = (ref + "_") * (MAX_REF_VALUES_LEN // len(ref) + 1)
+    if len(values) == MAX_REF_VALUES_LEN:
+        return values == repeated[:MAX_REF_VALUES_LEN]
+    # Under the limit nothing was cut, so the refs end on a whole ref.
+    return values + "_" == repeated[:len(values) + 1]
+
+
+def resolve_branch(remote: str, branch: str) -> str:
+    """The backport PR's real head: branch itself, or its multi-commit form."""
+    if git("ls-remote", "--heads", remote, f"refs/heads/{branch}").strip():
+        return branch
+    heads = git("ls-remote", "--heads", remote, f"refs/heads/{branch}_*").split()
+    found = sorted(h.removeprefix("refs/heads/") for h in heads[1::2])
+    found = [h for h in found if is_backport_branch(h, branch)]
+    if len(found) > 1:
+        raise Skip(f"several backport branches match {branch}: {', '.join(found)}; fix it by hand")
+    if not found:
+        # A label with no cherry-pick branch (a legacy line, a failed pick) is not ours to fix.
+        raise Skip(f"no {branch} branch on {remote}; nothing to fix")
+    return found[0]
+
+
 def strip_major(path: str) -> str:
     return MAJOR_SUFFIX.sub("", path)
 
@@ -351,9 +385,8 @@ def run() -> dict[str, str]:
     if not target or not branch:
         raise Skip("target-branch and backport-branch are required; pass both from the backport job")
 
-    # A label with no cherry-pick branch (a legacy line, a failed pick) is not ours to fix.
-    if not git("ls-remote", "--heads", remote, f"refs/heads/{branch}").strip():
-        raise Skip(f"no {branch} branch on {remote}; nothing to fix")
+    branch = resolve_branch(remote, branch)
+    emit("branch", branch)
     git("fetch", "-q", "--no-tags", remote,
         *(f"+refs/heads/{b}:refs/remotes/{remote}/{b}" for b in (target, source, branch)))
     gomods = []
