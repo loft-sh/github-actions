@@ -1365,9 +1365,18 @@ def test_ci_two_label_filters_each_pass_their_spec(monkeypatch):
     """Ginkgo reports a spec the filter left out as skipped with no attempt; that must not
     replace the pass of the run that did select it."""
     check = history(monkeypatch, [older()],
-                    {5: [art(1, "ginkgo-report-flow-a")], 7: [art(2, at="2026-01-02T00:00:00Z")]},
+                    {5: [art(1, "ginkgo-report.flow-a")], 7: [art(2, at="2026-01-02T00:00:00Z")]},
                     {1: [(1, "passed", 1), (2, "skipped", 0)], 2: [(1, "skipped", 0), (2, "passed", 1)]})
     assert check["conclusion"] == "success", check["summary"]
+
+
+def test_ci_an_older_producer_artifact_name_is_not_read(monkeypatch):
+    """`ginkgo-report-<flow>` comes from a workflow that says nothing about what it tested
+    (a PR branch with the older flows workflow, on a released image): only `.` names count."""
+    check = history(monkeypatch, [older()],
+                    {5: [art(1, "ginkgo-report-flow-a")], 7: [art(2, at="2026-01-02T00:00:00Z")]},
+                    {1: [(1, "passed", 1)], 2: [(2, "passed", 1)]})
+    assert check["conclusion"] == "failure" and "did not run: e2e/a.go:1" in check["summary"]
 
 
 def test_ci_a_spec_no_run_attempted_fails_as_skipped(monkeypatch):

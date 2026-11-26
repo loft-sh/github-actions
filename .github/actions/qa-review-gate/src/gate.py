@@ -812,8 +812,9 @@ def e2e_runs(run, repo, head, pr_number, base_ref, workflows, token):
 
 
 def artifact_tree(name, trees):
-    """The tree a report artifact belongs to: named as the tree, or `<tree>-<job>` per matrix job."""
-    return max((t for t in trees if name == t or name.startswith(t + "-")), key=len, default=None)
+    """The tree a report artifact belongs to: named as the tree, or `<tree>.<job>` per matrix job.
+    The dot is a promise of the producer: `<tree>-<job>` from an older workflow is not read."""
+    return max((t for t in trees if name == t or name.startswith(t + ".")), key=len, default=None)
 
 
 def report_artifacts(runs, repo, trees, token):

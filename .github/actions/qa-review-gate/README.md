@@ -158,7 +158,8 @@ every finished run that tested the commit, from the workflows named in `e2e-work
 Runs are matched by workflow id, because a run's own name is its run-name.
 A fork PR's `/test-e2e` runs are found on the base branch by their run-name, among
 its newest 100 dispatch runs. A report
-artifact is `ginkgo-report`, or `ginkgo-report-<job>` when matrix jobs each upload one;
+artifact is `ginkgo-report`, or `ginkgo-report.<job>` when matrix jobs each upload one
+(`ginkgo-report-<job>` is not read: the dot says the run tested the PR's own build);
 an expired artifact is left out. Per spec the attempt that started last counts (the spec's `StartTime`; the
 artifact's upload time when a report has none). A re-run keeps the run id and adds a
 second artifact of the same name, so each artifact is read by its id. A spec a label filter left out
