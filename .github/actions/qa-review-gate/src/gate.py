@@ -880,10 +880,10 @@ def reply(repo, pr_number, text, token):
 
 
 def comment_head(decision, repo, token, panel_login):
-    """The PR head a /qa-review comment applies to. An override answers a panel verdict, so
-    it lands only when the current head carries a panel marker submitted before the comment;
-    a head pushed after the comment, or one the panel has not graded, returns None and the
-    override login comments again on what they see."""
+    """The PR head a /qa-review comment applies to. An override lands on the head its author
+    saw: one with a panel marker or a check suite (CI started on the push) from before the
+    comment. A head pushed after the comment returns None and the override login comments
+    again on what they see; `/qa-review override <sha>` names the head instead."""
     pr_number = decision["pr_number"]
     head = gh_api([f"repos/{repo}/pulls/{pr_number}"], token)["head"]["sha"]
     if not decision.get("binds_to_marker"):
@@ -901,6 +901,9 @@ def comment_head(decision, repo, token, panel_login):
         if (parsed and parsed[2] == head
                 and (review.get("submitted_at") or "") <= decision.get("comment_at", "")):
             return head
+    suites = gh_api([f"repos/{repo}/commits/{head}/check-suites?per_page=100"], token).get("check_suites") or []
+    if any(s.get("created_at") and s["created_at"] <= decision.get("comment_at", "") for s in suites):
+        return head
     return None
 
 
@@ -1010,16 +1013,15 @@ def apply(decision, repo, token, qa_team, run_url, panel_login="loft-bot"):
     if head is None:
         head = comment_head(decision, repo, token, panel_login)
         if head is None:
-            print("::notice::qa-review-gate: no panel verdict on the PR's current head before "
-                  "the comment; wait for the panel, then comment again (or name the head: "
-                  "/qa-review override <sha> [<reason>])")
+            print("::notice::qa-review-gate: the PR's current head is newer than the comment; "
+                  "comment again (or name the head: /qa-review override <sha> [<reason>])")
             current = gh_api([f"repos/{repo}/pulls/{decision['pr_number']}"], token)["head"]["sha"][:7]
             reply(repo, decision["pr_number"],
                   f"the override did nothing. The commit you named is not the PR head, which is `{current}`."
                   if decision.get("sha_prefix") else
-                  f"the override did nothing. The panel has no review of the current commit `{current}` from "
-                  f"before your comment. Wait for its review and comment again, or name the commit: "
-                  f"`/qa-review override {current} <reason>`.", token)
+                  f"the override did nothing. The current commit `{current}` is newer than your comment. "
+                  f"Check it and comment again, or name the commit: `/qa-review override {current} <reason>`.",
+                  token)
             return None
     for check in checks:
         if check.get("external_id") != OVERRIDE_EXTERNAL_ID and overridden(repo, head, check["name"], token):

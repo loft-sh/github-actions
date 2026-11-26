@@ -53,11 +53,13 @@ def panel_review(head=HEAD, submitted_at="2026-11-18T09:00:00Z", login="loft-bot
     return {"user": {"login": login}, "body": marker(head=head), "submitted_at": submitted_at}
 
 
-def pr_api(reviews=None):
-    """A fake gh_api for the PR lookups apply makes: the head, then the PR's reviews."""
+def pr_api(reviews=None, suites=()):
+    """A fake gh_api for the PR lookups apply makes: the head, the PR's reviews, the head's check suites."""
     def fake(args, token, payload=None):
         if args[0].endswith("/reviews"):
             return [[panel_review()] if reviews is None else reviews]
+        if "/check-suites" in args[0]:
+            return {"check_suites": [{"created_at": at} for at in suites]}
         if "/pulls/" in args[0] and len(args) == 1:
             return {"head": {"sha": HEAD}}
         return {}
@@ -1530,9 +1532,28 @@ def test_override_binds_to_a_panel_verdict_on_the_current_head(monkeypatch, caps
     monkeypatch.setattr(gate, "gh_api", fake_gh_api)
     decision = gate.decide_comment(comment_event("/qa-review override covered"), {"sowmyav27"}, "qa-review")
     assert gate.apply(decision, "o/r", "tok", "loft-sh/eng-qa", "https://run") is None
-    assert posted == [] and "no panel verdict on the PR's current head" in capsys.readouterr().out
+    assert posted == [] and "the PR's current head is newer than the comment" in capsys.readouterr().out
     assert len(replies) == 1 and f"`/qa-review override {HEAD[:7]} <reason>`" in replies[0]
     assert not replies[0].startswith("/qa-review")  # the reply must not start the gate again
+
+
+@pytest.mark.parametrize("suites, lands", [
+    (["2026-11-18T09:59:00Z"], True),                           # CI started on this head before the comment
+    (["2026-11-18T10:00:30Z"], False),                          # the head was pushed after the comment
+    (["2026-11-18T10:00:30Z", "2026-11-18T09:00:00Z"], True),
+])
+def test_override_needs_no_panel_verdict_on_a_head_older_than_the_comment(monkeypatch, suites, lands):
+    posted = []
+    lookups = pr_api(reviews=[], suites=suites)
+
+    def fake_gh_api(args, token, payload=None):
+        if args[0].endswith("/check-runs"):
+            posted.append(payload)
+        return lookups(args, token, payload)
+    monkeypatch.setattr(gate, "gh_api", fake_gh_api)
+    decision = gate.decide_comment(comment_event("/qa-review override covered"), {"sowmyav27"}, "qa-review")
+    assert gate.apply(decision, "o/r", "tok", "", "https://run") == (HEAD if lands else None)
+    assert len(posted) == (2 if lands else 0)
 
 
 def test_override_naming_a_stale_commit_says_so_on_the_pr(monkeypatch):

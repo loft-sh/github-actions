@@ -129,12 +129,12 @@ Comments on the PR:
   completes both check-runs as success and records who overrode them and why. Team
   membership is read with `org-token`, a token with `read:org`; `GITHUB_TOKEN` cannot
   read it, and without the token only `override-logins` apply (the job says so). An
-  override answers a panel verdict, so it lands only when the PR's current head
-  carries a panel marker submitted before the comment. A head pushed after the
-  comment, or one the panel has not graded yet, gets nothing: the action says so in
-  a PR comment and the lead comments again on what they see. When the panel never posted on that
-  head (an outage), `/qa-review override <sha> [<reason>]` names the head instead; it
-  lands only while that sha (7 to 40 hex characters) is still the PR head.
+  override needs no panel verdict. It lands on the head its author saw: one with a
+  panel marker or a check suite (CI that started on the push) from before the
+  comment. A head pushed after the comment gets nothing: the action says so in a PR
+  comment and the lead comments again on what they see.
+  `/qa-review override <sha> [<reason>]` names the head instead; it lands only while
+  that sha (7 to 40 hex characters) is still the PR head.
 - `/qa-review human` from a repository member requests the QA team and leaves
   `qa-review` as action_required until a person decides.
 
@@ -167,8 +167,8 @@ warning and stays green.
 
 The action creates check-runs with the job's `GITHUB_TOKEN`; the caller grants
 `checks: write` and `pull-requests: write` (`actions: read` too for `ci`). It
-never posts review comments. A `/qa-review` comment that changed nothing (no panel
-verdict on the head, a login that may not override, an unknown verb) gets one PR
+never posts review comments. A `/qa-review` comment that changed nothing (a head
+newer than the comment, a login that may not override, an unknown verb) gets one PR
 comment that says why.
 
 ## Usage
