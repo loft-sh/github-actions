@@ -1,6 +1,9 @@
 # job.workflow_sha / job.workflow_repository (the commit and repo a reusable workflow
 # was called at) and concurrency.queue are documented settings actionlint 1.7.12 does
 # not know yet.
+self-hosted-runner:
+  labels:
+    - ubuntu-26.04
 paths:
   .github/workflows/qa-review-gate.yaml:
     ignore:
