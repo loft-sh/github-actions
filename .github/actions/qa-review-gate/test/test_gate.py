@@ -1242,7 +1242,7 @@ def ci_api(head=HEAD, files=None, artifacts=("ginkgo-report",), check_runs=()):
                 raise gate.GateError("gh api compare failed: 500")
             return {"files": files}
         if args[0].endswith("/artifacts"):
-            return {"artifacts": [{"name": a} for a in artifacts]}
+            return {"artifacts": [{"name": a, "id": n} for n, a in enumerate(artifacts)]}
         if "/check-runs?" in args[0]:
             return {"check_runs": list(check_runs)}
         return {"head": {"sha": head}, "base": {"ref": "main"}}
@@ -1266,6 +1266,7 @@ def test_ci_diff_failure_asks_a_person_instead_of_failing_the_job(monkeypatch):
 def test_a_pr_run_is_credited_only_for_the_base_it_merged_with(monkeypatch):
     files = [{"filename": "e2e/a_test.go", "patch": '@@ -1,0 +1 @@\n+\tIt("x", func() {'}]
     monkeypatch.setattr(gate, "gh_api", ci_api(files=files))
+    monkeypatch.setattr(gate, "download_report", lambda repo, artifact, dest, token: None)
     run = {**ci_run(), "event": "pull_request", "display_title": f"E2E for PR #9 at {HEAD} onto release-1.0"}
     decision = gate.collect_ci({"workflow_run": run}, "o/r", "tok")
     assert decision == {"skip": "the e2e run tested the head onto release-1.0, the PR now targets main; a new run grades it"}
@@ -1297,7 +1298,7 @@ def test_ci_cancelled_run_without_a_report_is_skipped(monkeypatch):
 def test_ci_missing_report_asks_a_person(monkeypatch):
     files = [{"filename": "e2e/a.go", "patch": '@@ -1,0 +1 @@\n+\tIt("new", func() {'}]
     monkeypatch.setattr(gate, "gh_api", ci_api(files=files, artifacts=()))
-    monkeypatch.setattr(gate, "gh", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no download without an artifact")))
+    monkeypatch.setattr(gate, "download_report", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no download without an artifact")))
     decision = gate.collect_ci({"workflow_run": ci_run()}, "o/r", "tok")
     assert decision["check"]["conclusion"] == "action_required"
     assert "no ginkgo-report for 1 new spec(s)" in decision["check"]["title"]
@@ -1309,13 +1310,152 @@ def test_ci_unreadable_report_asks_a_person(monkeypatch):
     files = [{"filename": "e2e/a.go", "patch": '@@ -1,0 +1 @@\n+\tIt("new", func() {'}]
     monkeypatch.setattr(gate, "gh_api", ci_api(files=files))
 
-    def broken(args, token, **kwargs):
-        raise gate.GateError("gh run download failed: zip is corrupt")
-    monkeypatch.setattr(gate, "gh", broken)
+    def broken(repo, artifact, dest, token):
+        raise gate.GateError("artifact download failed: zip is corrupt")
+    monkeypatch.setattr(gate, "download_report", broken)
     decision = gate.collect_ci({"workflow_run": ci_run()}, "o/r", "tok")
     assert decision["check"]["conclusion"] == "action_required"
     assert "ginkgo-report could not be read" in decision["check"]["title"]
     assert "zip is corrupt" in decision["check"]["summary"]
+
+
+FLOWS = "E2E flows"
+
+
+def history(monkeypatch, runs, artifacts, reports, lines=2, by_branch=(), workflows=frozenset({"E2E", FLOWS})):
+    """collect_ci over `runs` beside the finishing run 7; artifacts {run id: [artifact]},
+    reports {artifact id: [(line, state, attempts)] or a whole report}."""
+    patch = "@@ -1,0 +1,%d @@" % lines + "".join(f'\n+\tIt("s{n}", func() {{' for n in range(1, lines + 1))
+    base = ci_api(files=[{"filename": "e2e/a.go", "patch": patch}])
+
+    def api(args, token, payload=None):
+        if "/actions/workflows?" in args[0]:
+            return {"workflows": [{"id": 70, "name": "E2E"}, {"id": 50, "name": FLOWS}, {"id": 60, "name": "E2E label check"}]}
+        if "/actions/runs?" in args[0]:
+            return {"workflow_runs": list(by_branch if "branch=" in args[0] else runs)}
+        if args[0].endswith("/artifacts"):
+            return {"artifacts": artifacts.get(int(args[0].split("/")[-2]), [])}
+        return base(args, token, payload)
+
+    def download(repo, artifact, dest, token):
+        os.makedirs(dest)
+        report = reports[artifact["id"]]
+        if isinstance(report, list) and report and isinstance(report[0], tuple):
+            report = [{"SpecReports": [{"LeafNodeType": "It", "State": state, "NumAttempts": attempts,
+                                        "StartTime": (when or [""])[0],
+                                        "LeafNodeLocation": {"FileName": "/w/e2e/a.go", "LineNumber": line}}
+                                       for line, state, attempts, *when in report]}]
+        pathlib.Path(dest, "report.json").write_text(json.dumps(report))
+    monkeypatch.setattr(gate, "gh_api", api)
+    monkeypatch.setattr(gate, "download_report", download)
+    run = {**ci_run(), "name": "E2E", "workflow_id": 70, "event": "workflow_dispatch", "display_title": "E2E"}
+    return gate.collect_ci({"workflow_run": run}, "o/r", "tok", workflows=workflows)["check"]
+
+
+def older(**fields):
+    return {"id": 5, "name": FLOWS, "workflow_id": 50, "event": "workflow_dispatch", "conclusion": "success",
+            "head_sha": HEAD, "display_title": FLOWS, **fields}
+
+
+def art(id, name="ginkgo-report", at="2026-01-01T00:00:00Z", **fields):
+    return {"id": id, "name": name, "created_at": at, **fields}
+
+
+def test_ci_two_label_filters_each_pass_their_spec(monkeypatch):
+    """Ginkgo reports a spec the filter left out as skipped with no attempt; that must not
+    replace the pass of the run that did select it."""
+    check = history(monkeypatch, [older()],
+                    {5: [art(1, "ginkgo-report.flow-a")], 7: [art(2, at="2026-01-02T00:00:00Z")]},
+                    {1: [(1, "passed", 1), (2, "skipped", 0)], 2: [(1, "skipped", 0), (2, "passed", 1)]})
+    assert check["conclusion"] == "success", check["summary"]
+
+
+def test_ci_an_older_producer_artifact_name_is_not_read(monkeypatch):
+    """`ginkgo-report-<flow>` comes from a workflow that says nothing about what it tested
+    (a PR branch with the older flows workflow, on a released image): only `.` names count."""
+    check = history(monkeypatch, [older()],
+                    {5: [art(1, "ginkgo-report-flow-a")], 7: [art(2, at="2026-01-02T00:00:00Z")]},
+                    {1: [(1, "passed", 1)], 2: [(2, "passed", 1)]})
+    assert check["conclusion"] == "failure" and "did not run: e2e/a.go:1" in check["summary"]
+
+
+def test_ci_a_spec_no_run_attempted_fails_as_skipped(monkeypatch):
+    check = history(monkeypatch, [], {7: [art(2)]}, {2: [(1, "passed", 1), (2, "skipped", 0)]})
+    assert check["conclusion"] == "failure" and "e2e/a.go:2 s2 (skipped)" in check["summary"]
+
+
+def test_ci_a_rerun_of_one_run_id_is_ordered_by_upload_time(monkeypatch):
+    """A re-run keeps the run id and adds a second artifact of the same name: the newer attempt
+    wins, whatever the listing order."""
+    artifacts = {7: [art(2, at="2026-01-02T00:00:00Z"), art(1, at="2026-01-01T00:00:00Z")]}
+    check = history(monkeypatch, [], artifacts, {1: [(1, "passed", 1)], 2: [(1, "failed", 1)]}, lines=1)
+    assert check["conclusion"] == "failure"
+    check = history(monkeypatch, [], artifacts, {1: [(1, "failed", 1)], 2: [(1, "passed", 1)]}, lines=1)
+    assert check["conclusion"] == "success"
+
+
+def test_ci_the_attempt_that_started_last_counts_not_the_last_upload(monkeypatch):
+    """Run 5 started its spec after run 7's attempt but uploaded first (#9481: an attempt 2 of an
+    older run id beside a newer run). Ginkgo stamps nanoseconds and the runner's offset."""
+    artifacts = {5: [art(1, at="2026-01-01T11:00:00Z")], 7: [art(2, at="2026-01-01T12:00:00Z")]}
+    late, early = "2026-01-01T11:43:16.123456789+01:00", "2026-01-01T10:40:18.5Z"
+    check = history(monkeypatch, [older()], artifacts,
+                    {1: [(1, "failed", 1, late)], 2: [(1, "passed", 1, early)]}, lines=1)
+    assert check["conclusion"] == "failure"
+    check = history(monkeypatch, [older()], artifacts,
+                    {1: [(1, "passed", 1, late)], 2: [(1, "failed", 1, early)]}, lines=1)
+    assert check["conclusion"] == "success"
+
+
+def test_ci_a_dry_run_report_passes_nothing(monkeypatch):
+    dry = [{"SuiteConfig": {"DryRun": True}, "SpecReports": [
+        {"LeafNodeType": "It", "State": "passed", "NumAttempts": 1,
+         "LeafNodeLocation": {"FileName": "/w/e2e/a.go", "LineNumber": 1}}]}]
+    check = history(monkeypatch, [], {7: [art(2)]}, {2: dry}, lines=1)
+    assert check["conclusion"] == "failure" and "did not run" in check["summary"]
+
+
+def test_ci_reads_only_runs_of_the_listed_workflows_for_this_head(monkeypatch):
+    passed = [(1, "passed", 1)]
+    for stranger in (older(workflow_id=60), older(event="schedule"), older(conclusion="cancelled"),
+                     older(display_title=f"E2E for PR #9 (x) at {OTHER}"),
+                     older(display_title=f"E2E for PR #8 (x) at {HEAD}")):
+        check = history(monkeypatch, [stranger], {5: [art(1)], 7: [art(2)]}, {1: passed, 2: []}, lines=1)
+        assert check["conclusion"] == "failure", stranger
+
+
+def test_ci_matches_runs_by_workflow_id_not_by_run_name(monkeypatch):
+    """A run's `name` is its run-name (`E2E for PR #9 (<label>) at <sha>`), different for every
+    dispatch of one workflow (#9481). With no list, only the finishing run's workflow counts."""
+    title = f"E2E for PR #9 (auto-nodes) at {HEAD}"
+    same = older(workflow_id=70, name=title, display_title=title)
+    artifacts = {5: [art(1)], 7: [art(2, at="2026-01-02T00:00:00Z")]}
+    reports = {1: [(1, "passed", 1), (2, "skipped", 0)], 2: [(1, "skipped", 0), (2, "passed", 1)]}
+    for workflows in (frozenset({"E2E", FLOWS}), frozenset()):
+        assert history(monkeypatch, [same], artifacts, reports, workflows=workflows)["conclusion"] == "success"
+    assert history(monkeypatch, [older()], artifacts, reports, workflows=frozenset())["conclusion"] == "failure"
+
+
+def test_ci_reads_an_earlier_fork_dispatch_run_from_the_base_branch(monkeypatch):
+    """A fork PR's /test-e2e run has the base commit as head_sha; its title names the PR and commit."""
+    fork = older(head_sha=OTHER, display_title=f"E2E for PR #9 (x) at {HEAD}")
+    check = history(monkeypatch, [], {5: [art(1)], 7: [art(2, at="2026-01-02T00:00:00Z")]},
+                    {1: [(1, "passed", 1)], 2: [(1, "skipped", 0)]}, lines=1, by_branch=[fork])
+    assert check["conclusion"] == "success", check["summary"]
+
+
+def test_ci_an_expired_report_is_left_out(monkeypatch):
+    def no_expired(repo, artifact, dest, token):
+        assert artifact["id"] != 1, "an expired artifact has no zip"
+        os.makedirs(dest)
+        pathlib.Path(dest, "report.json").write_text(json.dumps([{"SpecReports": [
+            {"LeafNodeType": "It", "State": "passed", "LeafNodeLocation": {"FileName": "/w/e2e/a.go", "LineNumber": 1}}]}]))
+    artifacts = {5: [art(1, expired=True)], 7: [art(2)]}
+    history(monkeypatch, [older()], artifacts, {2: []}, lines=1)
+    monkeypatch.setattr(gate, "download_report", no_expired)
+    run = {**ci_run(), "name": "E2E", "workflow_id": 70, "event": "workflow_dispatch", "display_title": "E2E"}
+    check = gate.collect_ci({"workflow_run": run}, "o/r", "tok", workflows={"E2E", FLOWS})["check"]
+    assert check["conclusion"] == "success"
 
 
 PRO_TREES = {"ginkgo-report": "", "oss-ginkgo-report": "staging/github.com/loft-sh/vcluster/"}
@@ -1381,12 +1521,10 @@ def test_collect_ci_reads_the_other_tree_from_the_newest_tagged_check_run(monkey
     monkeypatch.setattr(gate, "gh_api", ci_api(files=files, artifacts=("oss-ginkgo-report",), check_runs=runs))
     report = [{"SpecReports": [leaf(5, "passed", file=RUNNER + OSS)]}]
 
-    def download(args, token, **kwargs):
-        dest = args[args.index("-D") + 1]
+    def download(repo, artifact, dest, token):
         os.makedirs(dest, exist_ok=True)
         pathlib.Path(dest, "report.json").write_text(json.dumps(report))
-        return ""
-    monkeypatch.setattr(gate, "gh", download)
+    monkeypatch.setattr(gate, "download_report", download)
     decision = gate.collect_ci({"workflow_run": ci_run()}, "o/r", "tok", trees=PRO_TREES)
     assert decision["check"]["conclusion"] == "success"
 
