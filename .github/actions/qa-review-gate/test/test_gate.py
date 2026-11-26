@@ -1318,6 +1318,46 @@ def test_ci_unreadable_report_asks_a_person(monkeypatch):
     assert "zip is corrupt" in decision["check"]["summary"]
 
 
+def test_ci_reads_every_e2e_run_of_the_tested_commit(monkeypatch):
+    """Two runs each ran one of the two new specs (a label filter, a second e2e workflow whose
+    matrix jobs upload ginkgo-report-<flow>); a newer run's state replaces an older one's."""
+    files = [{"filename": "e2e/a.go", "patch": '@@ -1,0 +1,2 @@\n+\tIt("a", func() {\n+\tIt("b", func() {'}]
+    older = {"id": 5, "path": ".github/workflows/e2e-flows.yaml", "event": "workflow_dispatch",
+             "conclusion": "success", "head_sha": HEAD, "display_title": "E2E flows"}
+    ignored = [{**older, "id": 3, "path": ".github/workflows/lint.yaml"},
+               {**older, "id": 4, "display_title": f"E2E for PR #9 (x) at {OTHER}"},
+               {**older, "id": 6, "event": "schedule"}]
+    artifacts = {5: ["ginkgo-report-flow-a", "logs"], 7: ["ginkgo-report"]}
+    reports = {("5", "ginkgo-report-flow-a"): [("e2e/a.go", 1, "passed"), ("e2e/a.go", 2, "failed")],
+               ("7", "ginkgo-report"): [("e2e/a.go", 2, "passed")]}
+    base = ci_api(files=files)
+
+    def api(args, token, payload=None):
+        if "/actions/runs?head_sha=" in args[0]:
+            return {"workflow_runs": [older, *ignored]}
+        if args[0].endswith("/artifacts"):
+            return {"artifacts": [{"name": n} for n in artifacts[int(args[0].split("/")[-2])]]}
+        return base(args, token, payload)
+
+    def download(args, token, **kwargs):
+        run_id, artifact, target = args[2], args[args.index("-n") + 1], args[args.index("-D") + 1]
+        os.makedirs(target)
+        specs = [{"LeafNodeType": "It", "State": state, "LeafNodeLocation": {"FileName": f"/w/{file}", "LineNumber": line}}
+                 for file, line, state in reports[(run_id, artifact)]]
+        with open(os.path.join(target, "report.json"), "w", encoding="utf-8") as fh:
+            json.dump([{"SpecReports": specs}], fh)
+        with open(os.path.join(target, "dump.json"), "w", encoding="utf-8") as fh:
+            json.dump({"kind": "Pod"}, fh)
+    monkeypatch.setattr(gate, "gh_api", api)
+    monkeypatch.setattr(gate, "gh", download)
+    decision = gate.collect_ci({"workflow_run": ci_run()}, "o/r", "tok")
+    assert decision["check"]["conclusion"] == "success", decision["check"]["summary"]
+    reports[("7", "ginkgo-report")] = [("e2e/a.go", 1, "failed")]
+    decision = gate.collect_ci({"workflow_run": ci_run()}, "o/r", "tok")
+    assert decision["check"]["conclusion"] == "failure"
+    assert "e2e/a.go:1 a (failed)" in decision["check"]["summary"] and "e2e/a.go:2 b (failed)" in decision["check"]["summary"]
+
+
 PRO_TREES = {"ginkgo-report": "", "oss-ginkgo-report": "staging/github.com/loft-sh/vcluster/"}
 OSS = "staging/github.com/loft-sh/vcluster/e2e/oss_test.go"
 

@@ -75,6 +75,7 @@ VERDICT_EXTERNAL_ID = "qa-review-gate:verdict"
 BASE_SEP = "^"  # never part of a git ref, so the base a run was graded against can follow it
 # A /test-e2e dispatch run names the PR and the commit it tested in its run-name.
 DISPATCH_TITLE = re.compile(r"#(\d+)\b.*\b([0-9a-f]{40})\b")
+E2E_WORKFLOW = re.compile(r"(^|/)e2e[^/]*\.ya?ml")
 SHA_PREFIX = re.compile(r"^[0-9a-f]{7,40}$")
 COMPARE_FILE_CAP = 300  # the compare API lists at most this many files and says nothing when it cuts
 PR_FILES_CAP = 3000  # the PR files API stops here too
@@ -595,7 +596,7 @@ def report_specs(report, states=None):
     """{(file, line): state} for every leaf spec in a Ginkgo JSON report (a list of suites).
     The file is the runner's absolute path; spec_state matches it by suffix."""
     states = {} if states is None else states
-    for suite in report:
+    for suite in report if isinstance(report, list) else []:  # a failure dump beside the report is no report
         for spec in suite.get("SpecReports") or []:
             if spec.get("LeafNodeType") in ("It", "Specify", None):
                 loc = spec.get("LeafNodeLocation") or {}
@@ -747,6 +748,27 @@ def run_target(run, repo, token):
     return run.get("head_sha", ""), run_pr_number(run, repo, token)
 
 
+def e2e_runs(run, repo, head, base_ref, token):
+    """Every finished e2e run that tested `head`, oldest first, `run` included: one PR can need
+    several runs (label filters, a second e2e workflow) before each new spec has run."""
+    # ponytail: lists by head_sha, so a fork PR's dispatch runs (head_sha = base commit) count only as the triggering run
+    listed = gh_api([f"repos/{repo}/actions/runs?head_sha={head}&status=completed&per_page=100"],
+                    token).get("workflow_runs") or []
+    runs = {r["id"]: r for r in listed
+            if E2E_WORKFLOW.search(r.get("path") or "") and r.get("conclusion") in ("success", "failure")
+            and r.get("event") in ("pull_request", "workflow_dispatch")
+            and (DISPATCH_TITLE.search(r.get("display_title") or "") or [None, None, head])[2] == head
+            and run_base(r) in (None, base_ref)}
+    runs[run["id"]] = run
+    return [runs[i] for i in sorted(runs)]
+
+
+def tree_artifacts(names, trees):
+    """{tree: its report artifacts}: the artifact named as the tree, or `<tree>-<job>` per matrix job."""
+    found = {t: sorted(n for n in names if n == t or n.startswith(t + "-")) for t in trees}
+    return {t: a for t, a in found.items() if a}
+
+
 def pr_diff(repo, base_ref, head_sha, token):
     """The diff of the commits an e2e run tested: the PR base compared with the run's head
     (three dots, so from the merge base), in the `+++ b/<path>` shape added_specs reads."""
@@ -804,9 +826,10 @@ def collect_ci(event, repo, token, test_check="qa-test-run", trees=None):
                                          str(error)))
     if not added:
         return {"skip": "the PR adds no e2e spec"}
-    uploaded = {a["name"] for a in (gh_api([f"repos/{repo}/actions/runs/{run['id']}/artifacts"], token)
-                                    .get("artifacts") or [])}
-    reported = [a for a in trees if a in uploaded]
+    uploads = [(r["id"], tree_artifacts(
+        [a["name"] for a in gh_api([f"repos/{repo}/actions/runs/{r['id']}/artifacts"], token)
+         .get("artifacts") or []], trees)) for r in e2e_runs(run, repo, head, base_ref, token)]
+    reported = [t for t in trees if any(t in found for _, found in uploads)]
     known = tree_results(repo, head, test_check, token, base_ref) if len(trees) > 1 else {}
     if not reported:
         # A run that uploaded nothing (build failure) must not drop the other tree's result.
@@ -822,17 +845,20 @@ def collect_ci(event, repo, token, test_check="qa-test-run", trees=None):
         return graded_against(decision)
     states = {}
     with tempfile.TemporaryDirectory() as tmp:
-        for artifact in reported:
-            try:
-                gh(["run", "download", str(run["id"]), "-R", repo, "-n", artifact, "-D",
-                    os.path.join(tmp, artifact)], token)
-            except GateError as error:
-                return graded_against(ask_person(
-                    test_check, head, pr_number,
-                    f"QA test run: {artifact} could not be read, a person checks the new specs", str(error)))
-        for path in sorted(glob.glob(os.path.join(tmp, "**", "*.json"), recursive=True)):
-            with open(path, encoding="utf-8") as fh:
-                report_specs(json.load(fh), states)
+        for run_id, found in uploads:
+            for artifact in (a for names in found.values() for a in names):
+                try:
+                    gh(["run", "download", str(run_id), "-R", repo, "-n", artifact, "-D",
+                        os.path.join(tmp, str(run_id), artifact)], token)
+                except GateError as error:
+                    return graded_against(ask_person(
+                        test_check, head, pr_number,
+                        f"QA test run: {artifact} could not be read, a person checks the new specs", str(error)))
+            run_states = {}
+            for path in sorted(glob.glob(os.path.join(tmp, str(run_id), "**", "*.json"), recursive=True)):
+                with open(path, encoding="utf-8") as fh:
+                    report_specs(json.load(fh), run_states)
+            states.update(run_states)  # a newer run's state for a spec replaces an older run's
     return graded_against(decide_ci(run, pr_number, added, states, test_check, trees, reported, known))
 
 

@@ -151,6 +151,13 @@ with the same text cannot stand in for a new one and a skipped namesake elsewher
 cannot fail it. The same location in two reports keeps the worst state. A PR that
 adds no spec publishes nothing here (its `qa-test-run` is already green).
 
+One PR can need several e2e runs before each new spec has run: `/test-e2e` runs with
+different label filters, or a second e2e workflow. So the action reads the reports of
+every finished e2e run of the tested commit (workflow file `e2e*.yaml`, `pull_request`
+or `workflow_dispatch`), oldest first; a newer run's state for a spec replaces an older
+run's. A report artifact is `ginkgo-report`, or `ginkgo-report-<job>` when matrix jobs
+each upload one. The caller lists each e2e workflow under `workflow_run`.
+
 A repo whose e2e workflows each test one source tree lists them in `report-trees`
 (`artifact=path-prefix`; vcluster-pro: `ginkgo-report=` for Pro and
 `oss-ginkgo-report=staging/github.com/loft-sh/vcluster/` for OSS). Each run grades the
