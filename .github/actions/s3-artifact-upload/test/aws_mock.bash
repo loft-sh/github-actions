@@ -2,7 +2,7 @@
 # Stub `aws` on PATH for upload.sh tests. Every call is appended to $AWS_MOCK_CALLS, and `aws s3 cp <file> s3://...`
 # copies the file to $AWS_MOCK_STORE/<bucket>/<key>, so tests can read what was uploaded.
 #
-# AWS_MOCK_HEAD     head-object answer: missing (default, a 404), exists, or denied (a 403)
+# AWS_MOCK_HEAD     head-object answer: exists, denied (a 403), or by default whether the key is in the store
 # AWS_MOCK_CP_FAIL  fail the cp of a key ending in this suffix
 
 setup_aws_mock() {
@@ -19,7 +19,11 @@ setup_aws_mock() {
 echo "$*" >>"$AWS_MOCK_CALLS"
 case "$1 $2" in
 "s3api head-object")
-  case "${AWS_MOCK_HEAD:-missing}" in
+  bucket=${*: -3:1}
+  key=${*: -1}
+  head=${AWS_MOCK_HEAD:-}
+  [[ -n $head || ! -f $AWS_MOCK_STORE/$bucket/$key ]] || head=exists
+  case "$head" in
   exists) echo '{"ContentLength": 1}' ;;
   denied) echo "An error occurred (403) when calling the HeadObject operation: Forbidden" >&2; exit 254 ;;
   *) echo "An error occurred (404) when calling the HeadObject operation: Not Found" >&2; exit 254 ;;

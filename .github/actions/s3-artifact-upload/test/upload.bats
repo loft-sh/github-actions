@@ -16,7 +16,7 @@ setup() {
   export INPUT_PREFIX=v1.2.3
   export INPUT_FILES="$FILES_DIR/disk.tar
 $FILES_DIR/installer.bin"
-  unset INPUT_MANIFEST
+  unset INPUT_MANIFEST AWS_MOCK_HEAD
 }
 
 teardown() {
@@ -77,12 +77,61 @@ $(sha installer)  installer.bin" ]
   ! grep -q 'manifest-url=' "$GITHUB_OUTPUT"
 }
 
-@test "a custom manifest name is checked and written" {
-  export INPUT_MANIFEST=checksums.txt
+@test "a second run on a released prefix changes nothing" {
   run "$SCRIPT"
   [ "$status" -eq 0 ]
-  grep -qx 's3api head-object --bucket artifacts --key v1.2.3/checksums.txt' "$AWS_MOCK_CALLS"
-  [ -f "$AWS_MOCK_STORE/artifacts/v1.2.3/checksums.txt" ]
+  printf 'changed' >"$FILES_DIR/disk.tar"
+  : >"$AWS_MOCK_CALLS"
+  run "$SCRIPT"
+  [ "$status" -eq 1 ]
+  [ -z "$(uploads)" ]
+  [ "$(cat "$AWS_MOCK_STORE/artifacts/v1.2.3/disk.tar")" = disk ]
+}
+
+@test "the manifest name cannot be changed to release a prefix again" {
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  printf 'changed' >"$FILES_DIR/disk.tar"
+  : >"$AWS_MOCK_CALLS"
+  export INPUT_MANIFEST=checksums.txt
+  run "$SCRIPT"
+  [ "$status" -eq 1 ]
+  [[ $output == *"s3://artifacts/v1.2.3/SHA256SUMS exists"* ]]
+  [ -z "$(uploads)" ]
+  [ ! -e "$AWS_MOCK_STORE/artifacts/v1.2.3/checksums.txt" ]
+  cd "$AWS_MOCK_STORE/artifacts/v1.2.3"
+  sha256sum -c --quiet SHA256SUMS
+}
+
+@test "a backslash in a name gets a plain sha256 and a manifest that verifies" {
+  printf 'back' >"$FILES_DIR/a\\b.bin"
+  export INPUT_FILES="$FILES_DIR/a\\b.bin"
+  run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qF -- "--metadata sha256=$(sha back) " "$AWS_MOCK_CALLS"
+  cd "$AWS_MOCK_STORE/artifacts/v1.2.3"
+  sha256sum -c --quiet SHA256SUMS
+}
+
+@test "a non-ASCII name is accepted in any locale" {
+  name=$'\xc2\x85nel.bin'
+  printf 'nel' >"$FILES_DIR/$name"
+  export INPUT_FILES="$FILES_DIR/$name"
+  LC_ALL=C.UTF-8 run "$SCRIPT"
+  [ "$status" -eq 0 ]
+  cd "$AWS_MOCK_STORE/artifacts/v1.2.3"
+  sha256sum -c --quiet SHA256SUMS
+}
+
+@test "names with - or a control character fail before any aws call" {
+  for name in - "end"$'\r' "c"$'\r'"d.bin" "tab"$'\t'"x"; do
+    printf 'x' >"$FILES_DIR/$name"
+    export INPUT_FILES="$FILES_DIR/$name"
+    run "$SCRIPT"
+    [ "$status" -eq 1 ] || { echo "accepted $name"; return 1; }
+    [[ $output == *"cannot be listed in the manifest"* ]]
+  done
+  [ ! -s "$AWS_MOCK_CALLS" ]
 }
 
 @test "a nested prefix is accepted" {
@@ -139,13 +188,6 @@ $FILES_DIR/other/disk.tar"
   run "$SCRIPT"
   [ "$status" -eq 1 ]
   [[ $output == *"files lists no file"* ]]
-}
-
-@test "a manifest name with a slash fails" {
-  export INPUT_MANIFEST=sums/SHA256SUMS
-  run "$SCRIPT"
-  [ "$status" -eq 1 ]
-  [[ $output == *"manifest must be a file name"* ]]
 }
 
 @test "unsafe prefixes fail before any aws call" {
