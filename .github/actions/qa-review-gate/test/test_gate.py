@@ -504,6 +504,47 @@ def test_a_reopen_on_the_same_head_never_writes_over_a_request_for_a_person(monk
     assert [c["name"] for c in decision["checks"]] == ["qa-test-run"]
 
 
+def legacy(conclusion, title):
+    # The gate before base tracking wrote manual decisions with no external id.
+    return {"app": {"slug": "github-actions"}, "id": 3, "status": "completed", "conclusion": conclusion,
+            "output": {"title": title, "summary": "s"}}
+
+
+def test_a_reopen_on_the_same_head_keeps_a_request_for_a_person_written_without_an_external_id(monkeypatch):
+    event, files = human_pr_event(["docs/a.md"], action="reopened")
+    def api(args, token, payload=None):
+        if "check-runs?" in args[0]:
+            return {"check_runs": [legacy("action_required", "QA review: a QA engineer decides")]
+                    if "check_name=qa-review&" in args[0] else []}
+        return {"files": [{"filename": f} for f in files]}
+    monkeypatch.setattr(gate, "gh_api", api)
+    decision = gate.decide_scope(event, "o/r", "tok", QA_PATHS, "qa-review")
+    assert [c["name"] for c in decision["checks"]] == ["qa-test-run"]
+
+
+def test_a_retarget_into_scope_keeps_overrides_written_without_an_external_id(monkeypatch):
+    event, _ = retarget_event(["e2e/a.go"], "")
+    def api(args, token, payload=None):
+        if "check_name=qa-review&" in args[0]:
+            return {"check_runs": [legacy("success", "QA review: overridden by @lead")]}
+        if "check_name=qa-test-run&" in args[0]:
+            return {"check_runs": [legacy("success", "QA test run: overridden by @lead")]}
+        return {"files": [{"filename": "e2e/a.go"}]}
+    monkeypatch.setattr(gate, "gh_api", api)
+    assert gate.decide_scope(event, "o/r", "tok", QA_PATHS, "qa-review") == OWNS_BOTH
+
+
+def test_a_retarget_into_scope_regrades_a_panel_verdict_written_without_an_external_id(monkeypatch):
+    event, _ = retarget_event(["e2e/a.go"], "")
+    def api(args, token, payload=None):
+        if "check-runs?" in args[0]:
+            return {"check_runs": [legacy("success", "QA review: the panel passed the PR")]}
+        return {"files": [{"filename": "e2e/a.go"}]}
+    monkeypatch.setattr(gate, "gh_api", api)
+    decision = gate.decide_scope(event, "o/r", "tok", QA_PATHS, "qa-review")
+    assert [c["conclusion"] for c in decision["checks"]] == ["action_required", "action_required"]
+
+
 def test_a_retarget_replaces_only_the_checks_the_scope_check_still_owns(monkeypatch):
     # The panel ran between the base change and this job: its verdict owns qa-review, its
     # opener owns qa-test-run; the opposite split (a verdict, a scope-owned test run) is the

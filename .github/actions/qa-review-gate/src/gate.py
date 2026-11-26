@@ -200,8 +200,16 @@ def changed_files(repo, base_sha, head_sha, token, number=None):
 
 
 def kind(run):
-    """A run's external id without the base it was graded against."""
-    return (run.get("external_id") or "").partition(BASE_SEP)[0]
+    """A run's external id without the base it was graded against. The gate before base
+    tracking wrote an override and a request for a person with no external id: their titles
+    name them, so a manual decision is never regraded as an unbased result."""
+    external = (run.get("external_id") or "").partition(BASE_SEP)[0]
+    if external:
+        return external
+    title = (run.get("output") or {}).get("title") or ""
+    if ": overridden by @" in title:
+        return OVERRIDE_EXTERNAL_ID
+    return HUMAN_EXTERNAL_ID if title == "QA review: a QA engineer decides" else ""
 
 
 def base_of(run):

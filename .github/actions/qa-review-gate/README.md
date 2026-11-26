@@ -52,7 +52,8 @@ an e2e run otherwise). Every run the gate writes carries the base it graded agai
 external id (`<kind>^<base>`; an override, a bot pass and a request for a person carry
 none), so a retarget replaces a verdict, an opener or an e2e result graded against the old
 base, or one that records no base (written before the gate recorded it), and keeps one
-for the new base; an override, a bot pass or `/qa-review human` stays,
+for the new base; an override or a request for a person written back then carries no
+external id either, and the gate knows it by its title, so it stays; an override, a bot pass or `/qa-review human` stays,
 whatever order the jobs ran in. The same ownership rule holds for every scope write
 (`opened`, `reopened`, the sweep): the scope check never writes over a result for the
 current base, a request for a person, an override or a bot pass. A fresh panel verdict
