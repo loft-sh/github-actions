@@ -23,7 +23,8 @@ with exit 0 and a conclusion of fixed, unchanged, skipped or failed.
 Env:
   TARGET_BRANCH    release branch the backport PR targets (required)
   SOURCE_BRANCH    branch the original change merged into (default main)
-  BACKPORT_BRANCH  head branch of the backport PR (required)
+  BACKPORT_BRANCH  head branch of the backport PR (required); its multi-commit form
+                   (pr-<n>_pr-<n>) is found from it
   REMOTE           git remote to fetch from and push to (default origin)
   PUSH             "false" commits locally without pushing (default true)
   GH_TOKEN         token used for fetch and push; never logged
@@ -133,6 +134,8 @@ def is_backport_branch(candidate: str, branch: str) -> bool:
     """Whether candidate is the bot's branch for branch (backport/<target>/pr-<n>): the bot
     repeats pr-<n> once per backported commit, joined by "_" and cut at 200 characters.
     The same rule as isBackportHeadBranch in link-backport-prs."""
+    if candidate == branch:
+        return True
     prefix, _, ref = branch.rpartition("/")
     values = candidate.removeprefix(prefix + "/")
     if values == candidate or not len(ref) <= len(values) <= MAX_REF_VALUES_LEN:
@@ -145,10 +148,9 @@ def is_backport_branch(candidate: str, branch: str) -> bool:
 
 
 def resolve_branch(remote: str, branch: str) -> str:
-    """The backport PR's real head: branch itself, or its multi-commit form."""
-    if git("ls-remote", "--heads", remote, f"refs/heads/{branch}").strip():
-        return branch
-    heads = git("ls-remote", "--heads", remote, f"refs/heads/{branch}_*").split()
+    """The backport PR's real head: branch itself, or its multi-commit form. Both are
+    listed together, so a leftover branch of the other form is a skip, not a guess."""
+    heads = git("ls-remote", "--heads", remote, f"refs/heads/{branch}", f"refs/heads/{branch}_*").split()
     found = sorted(h.removeprefix("refs/heads/") for h in heads[1::2])
     found = [h for h in found if is_backport_branch(h, branch)]
     if len(found) > 1:

@@ -508,6 +508,11 @@ def test_backport_branch_matches_repeated_refs(candidate, want):
     assert fix.is_backport_branch(candidate, "backport/release-4.12/pr-1") is want
 
 
+def test_backport_branch_without_a_slash_matches_itself_only():
+    assert fix.is_backport_branch("hotfix", "hotfix")
+    assert not fix.is_backport_branch("hotfix_hotfix", "hotfix")
+
+
 def test_backport_branch_matches_refs_cut_at_200():
     cut = ("pr-9330_" * 30)[:200]
     assert fix.is_backport_branch("backport/release-4.12/" + cut, "backport/release-4.12/pr-9330")
@@ -534,7 +539,8 @@ def test_multi_commit_backport_branch_is_fixed(repo):
 
 def test_another_prs_branch_is_never_picked(repo):
     write(repo, "pkg/peer/new.go", 'package peer\n\nimport _ "example.com/acme/app/v5/pkg/util"\n')
-    push_backport_as(repo, "backport/release-4.12/pr-11_pr-11")
+    # Listed by the pr-1_* pattern, so this exercises the name filter.
+    push_backport_as(repo, "backport/release-4.12/pr-1_pr-11")
     assert fix.main() == 0
     out = outputs(repo)
     assert out["conclusion"] == "skipped"
@@ -552,6 +558,31 @@ def test_two_candidate_branches_skip_and_name_both(repo):
     assert "backport/release-4.12/pr-1_pr-1," in out["reason"] and "pr-1_pr-1_pr-1" in out["reason"]
     git(repo, "fetch", "-q", "origin")
     assert git(repo, "rev-parse", "origin/backport/release-4.12/pr-1_pr-1") == before
+
+
+def test_exact_and_multi_commit_branches_skip_and_name_both(repo):
+    write(repo, "pkg/peer/new.go", 'package peer\n\nimport _ "example.com/acme/app/v5/pkg/util"\n')
+    push_backport_as(repo, "backport/release-4.12/pr-1")
+    git(repo, "push", "-q", "origin", "backport/release-4.12/pr-1:refs/heads/backport/release-4.12/pr-1_pr-1")
+    before = git(repo, "rev-parse", "HEAD")
+    assert fix.main() == 0
+    out = outputs(repo)
+    assert out["conclusion"] == "skipped"
+    assert "backport/release-4.12/pr-1, backport/release-4.12/pr-1_pr-1" in out["reason"]
+    git(repo, "fetch", "-q", "origin")
+    for name in ("pr-1", "pr-1_pr-1"):
+        assert git(repo, "rev-parse", f"origin/backport/release-4.12/{name}") == before
+
+
+def test_ai_and_comment_steps_use_the_resolved_branch():
+    # A renamed fix step would fall back to the input silently, and the AI pass and the
+    # comment would then miss a multi-commit backport's PR.
+    steps = (Path(__file__).parents[1] / "action.yml").read_text().split("\n    - name: ")
+    assert any("\n      id: fix\n" in s for s in steps)
+    resolved = "BACKPORT_BRANCH: ${{ steps.fix.outputs.branch || inputs.backport-branch }}"
+    for name in ("Apply AI resolutions that pass go vet", "Write the backport PR comment"):
+        step = next(s for s in steps if s.startswith(name))
+        assert resolved in step, name
 
 
 def test_missing_backport_branch_skips(repo, monkeypatch):

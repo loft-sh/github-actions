@@ -140,10 +140,10 @@ the backport PR's CI.
 
 <!-- AUTO-DOC-OUTPUT:START - Do not remove or modify this section -->
 
-|   OUTPUT   |  TYPE  |                                                                       DESCRIPTION                                                                       |
-|------------|--------|---------------------------------------------------------------------------------------------------------------------------------------------------------|
-| conclusion | string | fixed (a commit was made), unchanged (nothing to rewrite), skipped (no backport branch, same module paths, no go.mod, or missing input) <br>or failed.  |
-|   reason   | string |                                                         One-line explanation of the conclusion.                                                         |
+|   OUTPUT   |  TYPE  |                                                                                         DESCRIPTION                                                                                         |
+|------------|--------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| conclusion | string | fixed (a commit was made), unchanged (nothing to rewrite), skipped (no backport branch, several matching backport branches, same module paths, no go.mod, or missing input) <br>or failed.  |
+|   reason   | string |                                                                           One-line explanation of the conclusion.                                                                           |
 
 <!-- AUTO-DOC-OUTPUT:END -->
 

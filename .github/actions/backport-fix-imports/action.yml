@@ -34,7 +34,7 @@ inputs:
 
 outputs:
   conclusion:
-    description: 'fixed (a commit was made), unchanged (nothing to rewrite), skipped (no backport branch, same module paths, no go.mod, or missing input) or failed.'
+    description: 'fixed (a commit was made), unchanged (nothing to rewrite), skipped (no backport branch, several matching backport branches, same module paths, no go.mod, or missing input) or failed.'
     value: ${{ steps.fix.outputs.conclusion || 'failed' }}
   reason:
     description: 'One-line explanation of the conclusion.'
