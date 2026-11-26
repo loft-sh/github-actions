@@ -131,8 +131,8 @@ Comments on the PR:
   read it, and without the token only `override-logins` apply (the job says so). An
   override needs no panel verdict. It lands on the head its author saw: the one the
   panel graded before the comment, or the one the last `pull_request` run of this PR
-  tested before the comment. When the head moved since, or no run tells which head
-  the PR had, nothing lands: the action says so in a PR comment and gives
+  tested before the comment (a run that names this PR's number). When the head moved
+  since, or no run tells which head the PR had (a fork PR), nothing lands: the action says so in a PR comment and gives
   `/qa-review override <sha> [<reason>]`, which names the head; it lands only while
   that sha (7 to 40 hex characters) is still the PR head.
 - `/qa-review human` from a repository member requests the QA team and leaves

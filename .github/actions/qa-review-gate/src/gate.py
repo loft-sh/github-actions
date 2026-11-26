@@ -977,13 +977,12 @@ def reply(repo, pr_number, text, token):
 
 def head_at(repo, pr, comment_at, token):
     """The sha a `pull_request` run of this PR tested last before `comment_at`: the PR's head at
-    that time. None when no run tells (no workflow on pull_request, or the first run came later)."""
+    that time. None when no run tells (no workflow on pull_request, a fork PR, or the first run came later)."""
     head = pr["head"]
     runs = gh_api([f"repos/{repo}/actions/runs?event=pull_request&branch={head.get('ref', '')}"
                    f"&created=<={comment_at}&per_page=50"], token).get("workflow_runs") or []
-    mine = [r for r in runs
-            if pr["number"] in [p.get("number") for p in r.get("pull_requests") or []]
-            or (r.get("head_repository") or {}).get("full_name") == (head.get("repo") or {}).get("full_name")]
+    # By PR number only: one branch can back two PRs. A fork PR's runs name no PR, so its lead names the sha.
+    mine = [r for r in runs if pr["number"] in [p.get("number") for p in r.get("pull_requests") or []]]
     return max(mine, key=lambda r: r.get("created_at", ""))["head_sha"] if mine else None
 
 

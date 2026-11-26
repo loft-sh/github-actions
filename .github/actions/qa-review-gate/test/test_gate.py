@@ -1684,7 +1684,8 @@ def test_override_binds_to_a_panel_verdict_on_the_current_head(monkeypatch, caps
     ([("2026-11-18T09:59:00Z", HEAD)], True, ""),                                  # this PR's CI ran on the head
     ([("2026-11-18T09:00:00Z", HEAD), ("2026-11-18T09:30:00Z", OTHER)], False,     # the head moved back to an older commit
      f"The PR head was `{OTHER[:7]}` when you commented and is `{HEAD[:7]}` now."),
-    ([("2026-11-18T09:59:00Z", HEAD, 2)], False, "I cannot tell if"),              # another PR ran on this commit
+    ([("2026-11-18T09:59:00Z", HEAD, 2)], False, "I cannot tell if"),              # another PR of the same branch and repo
+    ([("2026-11-18T09:59:00Z", HEAD, None)], False, "I cannot tell if"),           # GitHub named no PR (a fork)
     ([], False, "I cannot tell if"),                                               # no run before the comment
 ])
 def test_override_needs_no_panel_verdict_on_the_head_the_pr_had_at_the_comment(monkeypatch, runs, lands, says):
@@ -1698,8 +1699,8 @@ def test_override_needs_no_panel_verdict_on_the_head_the_pr_had_at_the_comment(m
             replies.append(payload["body"])
             return {}
         if "/actions/runs?" in args[0] and runs and len(runs[0]) == 3:
-            return {"workflow_runs": [{"created_at": at, "head_sha": sha, "pull_requests": [{"number": pr}],
-                                       "head_repository": {"full_name": "fork/r"}} for at, sha, pr in runs]}
+            return {"workflow_runs": [{"created_at": at, "head_sha": sha, "pull_requests": [{"number": pr}] if pr else [],
+                                       "head_repository": {"full_name": "o/r"}} for at, sha, pr in runs]}
         return lookups(args, token, payload)
     monkeypatch.setattr(gate, "gh_api", fake_gh_api)
     decision = gate.decide_comment(comment_event("/qa-review override covered"), {"sowmyav27"}, "qa-review")
