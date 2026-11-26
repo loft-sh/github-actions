@@ -299,9 +299,11 @@ def decide_scope(event, repo, token, qa_paths, check_name, test_check="qa-test-r
     if owned:
         if action != "edited":
             # Without a check the PR shows only "Expected", and nothing tells the author what to do.
+            # A draft needs no comment: the panel starts when it is marked ready.
+            how = "it starts when the PR leaves draft" if pr.get("draft") else "comment /vcluster-review"
             return {"checks": [{"name": n, "head_sha": head, "conclusion": "action_required",
                                 "external_id": SCOPE_EXTERNAL_ID,
-                                "title": f"{labels[n]}: waiting for the panel review, comment /vcluster-review",
+                                "title": f"{labels[n]}: waiting for the panel review, {how}",
                                 "summary": f"{len(owned)} changed file(s) under a QA-owned path, so the review "
                                            "panel decides this check. It starts by itself when a PR opens or "
                                            "leaves draft. After a push it does not: comment `/vcluster-review` "

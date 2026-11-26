@@ -34,8 +34,8 @@ never checks out PR code (it checks out its own action only), which is what make
 target trigger safe here.
 
 A PR that touches a QA-owned path and has no panel verdict on its head gets both check-runs
-as action_required, titled "waiting for the panel review, comment /vcluster-review", on
-every push. Without them the PR shows only "Expected" and nothing tells the author what to
+as action_required, titled "waiting for the panel review, comment /vcluster-review" (on a
+draft: "it starts when the PR leaves draft"), on every push. Without them the PR shows only "Expected" and nothing tells the author what to
 do: the panel starts by itself when a PR opens or leaves draft, not after a push. The
 panel's verdict or an override replaces both. `/qa-review human` replaces only `qa-review`;
 `qa-test-run` still waits for the panel or the e2e report.

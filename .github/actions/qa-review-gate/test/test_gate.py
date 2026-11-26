@@ -424,6 +424,9 @@ def test_a_pr_touching_a_qa_path_waits_for_the_panel_and_says_how(monkeypatch, p
         ("qa-review", "action_required", HEAD, "qa-review-gate:scope"),
         ("qa-test-run", "action_required", HEAD, "qa-review-gate:scope")]
     assert decision["checks"][0]["title"] == "QA review: waiting for the panel review, comment /vcluster-review"
+    event["pull_request"]["draft"] = True
+    draft = gate.decide_scope(event, "o/r", "tok", QA_PATHS, "qa-review")
+    assert draft["checks"][0]["title"] == "QA review: waiting for the panel review, it starts when the PR leaves draft"
     assert "`/vcluster-review`" in decision["checks"][0]["summary"] and "/qa-review override" in decision["checks"][0]["summary"]
     assert decision["request_qa_review"] is False
 
