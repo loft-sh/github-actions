@@ -1,0 +1,22 @@
+name: Push UI verifier backend image
+description: Push the locally built backend dev image using the caller's Google Cloud login
+branding:
+  icon: package
+  color: blue
+inputs:
+  head-sha:
+    description: Full commit SHA used to tag the local image
+    required: true
+outputs:
+  image:
+    description: Published image reference
+    value: ${{ steps.push.outputs.image }}
+runs:
+  using: composite
+  steps:
+    - name: Push backend image
+      id: push
+      shell: bash
+      env:
+        HEAD_SHA: ${{ inputs.head-sha }}
+      run: bash "$GITHUB_ACTION_PATH/../src/push.sh"

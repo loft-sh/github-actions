@@ -1,0 +1,17 @@
+name: Build UI verifier backend image
+description: Build the private backend dev image for the checked-out commit
+branding:
+  icon: package
+  color: blue
+inputs:
+  head-sha:
+    description: Full commit SHA of the checked-out source
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Build backend image
+      shell: bash
+      env:
+        HEAD_SHA: ${{ inputs.head-sha }}
+      run: bash "$GITHUB_ACTION_PATH/../src/build.sh"
