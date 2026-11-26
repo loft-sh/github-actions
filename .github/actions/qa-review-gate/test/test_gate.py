@@ -1340,8 +1340,9 @@ def history(monkeypatch, runs, artifacts, reports, lines=2, by_branch=()):
         report = reports[artifact["id"]]
         if isinstance(report, list) and report and isinstance(report[0], tuple):
             report = [{"SpecReports": [{"LeafNodeType": "It", "State": state, "NumAttempts": attempts,
+                                        "StartTime": (when or [""])[0],
                                         "LeafNodeLocation": {"FileName": "/w/e2e/a.go", "LineNumber": line}}
-                                       for line, state, attempts in report]}]
+                                       for line, state, attempts, *when in report]}]
         pathlib.Path(dest, "report.json").write_text(json.dumps(report))
     monkeypatch.setattr(gate, "gh_api", api)
     monkeypatch.setattr(gate, "download_report", download)
@@ -1379,6 +1380,19 @@ def test_ci_a_rerun_of_one_run_id_is_ordered_by_upload_time(monkeypatch):
     check = history(monkeypatch, [], artifacts, {1: [(1, "passed", 1)], 2: [(1, "failed", 1)]}, lines=1)
     assert check["conclusion"] == "failure"
     check = history(monkeypatch, [], artifacts, {1: [(1, "failed", 1)], 2: [(1, "passed", 1)]}, lines=1)
+    assert check["conclusion"] == "success"
+
+
+def test_ci_the_attempt_that_started_last_counts_not_the_last_upload(monkeypatch):
+    """Run 5 started its spec after run 7's attempt but uploaded first (#9481: an attempt 2 of an
+    older run id beside a newer run). Ginkgo stamps nanoseconds and the runner's offset."""
+    artifacts = {5: [art(1, at="2026-01-01T11:00:00Z")], 7: [art(2, at="2026-01-01T12:00:00Z")]}
+    late, early = "2026-01-01T11:43:16.123456789+01:00", "2026-01-01T10:40:18.5Z"
+    check = history(monkeypatch, [older()], artifacts,
+                    {1: [(1, "failed", 1, late)], 2: [(1, "passed", 1, early)]}, lines=1)
+    assert check["conclusion"] == "failure"
+    check = history(monkeypatch, [older()], artifacts,
+                    {1: [(1, "passed", 1, late)], 2: [(1, "failed", 1, early)]}, lines=1)
     assert check["conclusion"] == "success"
 
 

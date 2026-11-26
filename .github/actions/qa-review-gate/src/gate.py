@@ -47,6 +47,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from datetime import datetime, timezone
 import zipfile
 
 MARKER = re.compile(
@@ -593,11 +594,21 @@ def merge_state(states, key, state):
         states[key] = state
 
 
-def report_specs(report, states=None, idle=None):
+def parse_time(text):
+    """An aware datetime from an RFC 3339 stamp (Ginkgo writes nanoseconds), or None."""
+    try:
+        when = datetime.fromisoformat(re.sub(r"(\.\d{1,6})\d*", r"\1", text or "").replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return when if when.tzinfo else when.replace(tzinfo=timezone.utc)
+
+
+def report_specs(report, states=None, idle=None, started=None):
     """{(file, line): state} for every leaf spec in a Ginkgo JSON report (a list of suites).
     The file is the runner's absolute path; spec_state matches it by suffix. A dry-run suite
     reports `passed` without running, so it is left out. With `idle`, a spec the run never
-    attempted (a label filter skipped it: NumAttempts 0) goes there instead."""
+    attempted (a label filter skipped it: NumAttempts 0) goes there instead. `started`
+    collects when each attempted spec last started."""
     states = {} if states is None else states
     for suite in report if isinstance(report, list) else []:  # a failure dump beside the report is no report
         if (suite.get("SuiteConfig") or {}).get("DryRun"):
@@ -605,23 +616,27 @@ def report_specs(report, states=None, idle=None):
         for spec in suite.get("SpecReports") or []:
             if spec.get("LeafNodeType") in ("It", "Specify", None):
                 loc = spec.get("LeafNodeLocation") or {}
-                into = idle if idle is not None and spec.get("NumAttempts", 1) == 0 else states
-                merge_state(into, (loc.get("FileName", ""), loc.get("LineNumber", 0)),
-                            spec.get("State", ""))
+                key = (loc.get("FileName", ""), loc.get("LineNumber", 0))
+                attempted = idle is None or spec.get("NumAttempts", 1) != 0
+                merge_state(states if attempted else idle, key, spec.get("State", ""))
+                when = parse_time(spec.get("StartTime"))
+                if attempted and started is not None and when and when > started.get(key, when.min.replace(tzinfo=timezone.utc)):
+                    started[key] = when
     return states
 
 
 def latest_states(layers, added):
-    """{(path, line): state} per new spec from (states, idle) report layers, oldest first: its
-    newest real attempt, else the newest report that only skipped it."""
+    """{(path, line): state} per new spec from report layers (states, idle, started, uploaded):
+    the attempt that started last (the upload time when the report has no start time), else
+    the newest report that only skipped it."""
+    floor = datetime.min.replace(tzinfo=timezone.utc)
     found = {}
     for spec in added:
-        for pick in (0, 1):
-            state = next((v for v in (spec_state(layer[pick], spec) for layer in reversed(layers))
-                          if v is not None), None)
-            if state is not None:
-                found[(spec["path"], spec["line"])] = state
-                break
+        ran = [(spec_state(started, spec) or uploaded or floor, n, spec_state(states, spec))
+               for n, (states, _, started, uploaded) in enumerate(layers) if spec_state(states, spec) is not None]
+        skipped = [spec_state(idle, spec) for _, idle, _, _ in layers if spec_state(idle, spec) is not None]
+        if ran or skipped:
+            found[(spec["path"], spec["line"])] = max(ran)[2] if ran else skipped[-1]
     return found
 
 
@@ -800,8 +815,8 @@ def artifact_tree(name, trees):
 
 
 def report_artifacts(runs, repo, trees, token):
-    """The unexpired report artifacts of `runs`, oldest first. A re-run keeps the run id and
-    adds a second artifact of the same name, so the upload time orders the attempts."""
+    """The unexpired report artifacts of `runs`, oldest upload first. A re-run keeps the run id
+    and adds a second artifact of the same name, so each is read by its own id."""
     found = [a for r in runs
              for a in gh_api([f"repos/{repo}/actions/runs/{r['id']}/artifacts"], token).get("artifacts") or []
              if artifact_tree(a["name"], trees) and not a.get("expired")]
@@ -902,10 +917,10 @@ def collect_ci(event, repo, token, test_check="qa-test-run", trees=None, workflo
                 return graded_against(ask_person(
                     test_check, head, pr_number,
                     f"QA test run: {artifact['name']} could not be read, a person checks the new specs", str(error)))
-            layers.append(({}, {}))
+            layers.append(({}, {}, {}, parse_time(artifact.get("created_at"))))
             for path in sorted(glob.glob(os.path.join(tmp, str(n), "**", "*.json"), recursive=True)):
                 with open(path, encoding="utf-8") as fh:
-                    report_specs(json.load(fh), *layers[-1])
+                    report_specs(json.load(fh), *layers[-1][:3])
     states = latest_states(layers, added)
     return graded_against(decide_ci(run, pr_number, added, states, test_check, trees, reported, known))
 

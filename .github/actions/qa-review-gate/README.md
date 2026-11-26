@@ -155,10 +155,12 @@ One PR can need several e2e runs before each new spec has run: `/test-e2e` runs 
 different label filters, or a second e2e workflow. So the action reads the reports of
 every finished run that tested the commit, from the workflows named in `e2e-workflows`
 (the caller's `workflow_run` list; empty: only the workflow of the run that finished).
-A fork PR's `/test-e2e` runs are found on the base branch by their run-name. A report
+A fork PR's `/test-e2e` runs are found on the base branch by their run-name, among
+its newest 100 dispatch runs. A report
 artifact is `ginkgo-report`, or `ginkgo-report-<job>` when matrix jobs each upload one;
-an expired artifact is left out. Per spec the newest real attempt counts, by the
-artifact's upload time (a re-run keeps the run id). A spec a label filter left out
+an expired artifact is left out. Per spec the attempt that started last counts (the spec's `StartTime`; the
+artifact's upload time when a report has none). A re-run keeps the run id and adds a
+second artifact of the same name, so each artifact is read by its id. A spec a label filter left out
 (`skipped`, `NumAttempts` 0) never replaces a real attempt, and a dry-run suite counts
 for nothing.
 
