@@ -753,8 +753,9 @@ def decide_ci(run, pr_number, added, states, test_check="qa-test-run", trees=Non
         failed = ", ".join(a for a in by_tree if results[a] == "failure")
         title = (f"QA test run: {bad} new spec(s) did not run or pass" if bad
                  else f"QA test run: new spec(s) for {failed} did not run or pass in an earlier run")
-        lines.append("\nA spec the PR label filter never selects, or a focused/skipped spec, "
-                     "lands here. Fix the filter or the spec and push.")
+        lines.append("\nA spec that the PR run does not select (a nightly label, another label filter) "
+                     "lands here as skipped or \"did not run\": run it with `/test-e2e <label-filter>` on "
+                     "the last commit. For a focused or skipped spec, fix the spec and push.")
     else:
         conclusion = "success"
         title = f"QA test run: all {len(added)} new spec(s) ran and passed"
@@ -1174,10 +1175,13 @@ def apply(decision, repo, token, qa_team, run_url, panel_login="loft-bot"):
         external_id = OPENER_EXTERNAL_ID if check["name"] == decision.get("opener_name") else check.get("external_id") or ""
         if external_id not in (OVERRIDE_EXTERNAL_ID, BOT_EXTERNAL_ID, HUMAN_EXTERNAL_ID):
             external_id = with_base(external_id, decision.get("base_ref", ""))
+        # An out-of-scope pass comes back by itself on the next commit; every other result does not.
+        note = "" if "out of scope" in check["title"] else (
+            f"\n\nThis result is for commit `{head[:7]}` only. A new commit resets this check.")
         created = gh_api([f"repos/{repo}/check-runs", "-X", "POST"], token, {
             "name": check["name"], "head_sha": head, "status": "completed",
             "conclusion": check["conclusion"], "details_url": run_url,
-            "output": {"title": check["title"], "summary": check["summary"]},
+            "output": {"title": check["title"], "summary": check["summary"] + note},
             **({"external_id": external_id} if external_id else {}),
         })
         if check["name"] == decision.get("opener_name"):
