@@ -37,7 +37,8 @@ A PR that touches a QA-owned path and has no panel verdict on its head gets both
 as action_required, titled "waiting for the panel review, comment /vcluster-review", on
 every push. Without them the PR shows only "Expected" and nothing tells the author what to
 do: the panel starts by itself when a PR opens or leaves draft, not after a push. The
-panel's verdict, an override or a request for a person replaces them.
+panel's verdict or an override replaces both. `/qa-review human` replaces only `qa-review`;
+`qa-test-run` still waits for the panel or the e2e report.
 
 A PR that touches no QA-owned path (`qa-paths`, by default the top-level `e2e*/` trees,
 `staging/github.com/loft-sh/vcluster/e2e/` and the `.github/workflows/e2e*.yaml` files, the
@@ -85,8 +86,8 @@ pass on a head that is now in scope. A trusted bot PR whose exemption was declin
 the bot did not push, or a bot push on a head the gate had not passed) never takes this
 pass: it goes to review whatever it touches. The panel never runs on such a PR, so without
 this a required check would block Renovate, version bumps and every code-only change. A PR
-that does touch one of those paths gets nothing from this step: the panel's verdict and the
-e2e report grade it.
+that does touch one of those paths gets the waiting checks above from this step: the panel's
+verdict and the e2e report grade it.
 
 Before the ruleset goes live, run the caller's `workflow_dispatch` once with no `pr-number`
 (mode `sweep`): it lists every open PR whose current head lacks `qa-review` or `qa-test-run`

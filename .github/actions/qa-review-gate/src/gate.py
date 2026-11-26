@@ -1071,11 +1071,6 @@ def overridden(repo, head, name, token):
     return override_run(repo, head, name, token) is not None
 
 
-def newest_run_id(repo, head, name, token):
-    runs = from_actions(gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={name}&filter=all&per_page=100"], token).get("check_runs"))
-    return max((run.get("id", 0) for run in runs), default=0)
-
-
 def reconcile_scope_write(repo, head, name, created_id, since_id, token, run_url):
     """A scope write runs outside the head's queue (the sweep) or after its ownership read:
     a panel verdict or an e2e result that landed in between (id after `since_id`, before
@@ -1153,7 +1148,15 @@ def apply(decision, repo, token, qa_team, run_url, panel_login="loft-bot"):
                 # provisional opener while a real result sits behind it.
                 reconcile_opener(repo, head, check["name"], None, token, run_url)
                 continue
-        since = newest_run_id(repo, head, check["name"], token) if check.get("external_id") == SCOPE_EXTERNAL_ID else 0
+        since = 0
+        if check.get("external_id") == SCOPE_EXTERNAL_ID:
+            # One read for both: a request for a person or a verdict that landed after decide_scope
+            # read ownership is at or below the watermark, so the reconciliation would not see it.
+            runs = from_actions(gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={check['name']}&filter=all&per_page=100"], token).get("check_runs"))
+            if not scope_may_write(runs, decision.get("base_ref", "")):
+                print(f"::notice::qa-review-gate: {check['name']} on {head[:7]} got a result since the scope check; kept it")
+                continue
+            since = max((run.get("id", 0) for run in runs), default=0)
         external_id = OPENER_EXTERNAL_ID if check["name"] == decision.get("opener_name") else check.get("external_id") or ""
         if external_id not in (OVERRIDE_EXTERNAL_ID, BOT_EXTERNAL_ID, HUMAN_EXTERNAL_ID):
             external_id = with_base(external_id, decision.get("base_ref", ""))

@@ -743,6 +743,28 @@ def test_a_scope_write_keeps_a_verdict_that_landed_during_it(monkeypatch, capsys
     assert "a result landed during the scope write" in capsys.readouterr().out
 
 
+def test_a_scope_write_keeps_a_request_for_a_person_that_landed_before_it(monkeypatch, capsys):
+    # /qa-review human runs in another queue: it wrote after decide_scope read ownership and
+    # before apply read the newest id, so no reconciliation would find it. The waiting check
+    # must not go on top of it.
+    decision = {"checks": [{"name": "qa-review", "head_sha": HEAD, "conclusion": "action_required",
+                            "external_id": gate.SCOPE_EXTERNAL_ID, "title": "QA review: waiting", "summary": "s"}],
+                "request_qa_review": False, "pr_number": 12, "base_ref": "main"}
+    human = {"id": 30, "status": "completed", "conclusion": "action_required", "app": {"slug": "github-actions"},
+             "external_id": gate.HUMAN_EXTERNAL_ID, "output": {"title": "QA review: a QA engineer decides"}}
+    writes = []
+    def api(args, token, payload=None):
+        if payload is not None:
+            writes.append((args, payload))
+            return {"id": 40}
+        if "check-runs?" in args[0]:
+            return {"check_runs": [human]}
+        return {}
+    monkeypatch.setattr(gate, "gh_api", api)
+    assert gate.apply(decision, "o/r", "tok", "", "https://run") == HEAD
+    assert writes == [] and "got a result since the scope check; kept it" in capsys.readouterr().out
+
+
 def test_main_regrades_when_a_retarget_overtook_the_scope_write(tmp_path, monkeypatch, capsys):
     # The opened job graded docs-only against main; by the time it wrote, the PR targeted
     # release-1.0, where the same head also changes an e2e file.
