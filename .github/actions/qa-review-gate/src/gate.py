@@ -301,17 +301,27 @@ def decide_scope(event, repo, token, qa_paths, check_name, test_check="qa-test-r
             # Without a check the PR shows only "Expected", and nothing tells the author what to do.
             # A draft needs no comment when its author is one the dispatcher reviews by itself.
             how = "mark the PR ready or comment /vcluster-review" if pr.get("draft") else "comment /vcluster-review"
-            return {"checks": [{"name": n, "head_sha": head, "conclusion": "action_required",
-                                "external_id": SCOPE_EXTERNAL_ID,
-                                "title": f"{labels[n]}: waiting for the panel review, {how}",
-                                "summary": f"{len(owned)} changed file(s) under a QA-owned path, so the review "
-                                           "panel decides this check. It starts by itself when a PR opens or "
-                                           "leaves draft. After a push it does not: comment `/vcluster-review` "
-                                           "to get a review of this commit. If the panel does not start by "
-                                           "itself (an author outside the organization), a repository member "
-                                           f"comments `/vcluster-review`.\n\n{OVERRIDE_HINT}\n\n"
-                                           f"PR: {pr.get('html_url', '')}"} for n in names],
-                    "request_qa_review": False, "pr_number": pr.get("number"), "base_ref": base_ref}
+            checks = [{"name": n, "head_sha": head, "conclusion": "action_required",
+                       "external_id": SCOPE_EXTERNAL_ID,
+                       "title": f"{labels[n]}: waiting for the panel review, {how}",
+                       "summary": f"{len(owned)} changed file(s) under a QA-owned path, so the review "
+                                  "panel decides this check. It starts by itself when a PR opens or "
+                                  "leaves draft. After a push it does not: comment `/vcluster-review` "
+                                  "to get a review of this commit. If the panel does not start by "
+                                  "itself (an author outside the organization), a repository member "
+                                  f"comments `/vcluster-review`.\n\n{OVERRIDE_HINT}\n\n"
+                                  f"PR: {pr.get('html_url', '')}"} for n in names if n != test_check]
+            if test_check in names:
+                # The test run waits for an e2e run, not for the panel: say which specs, or pass when there are none.
+                try:
+                    waits = test_run_pending(added_specs(pr_diff(repo, base_ref, head, token)), head,
+                                             pr.get("number"), test_check)["check"]
+                except GateError:
+                    waits = {"name": test_check, "head_sha": head, "conclusion": "action_required",
+                             "title": f"{labels[test_check]}: waiting for an e2e run of the new specs",
+                             "summary": f"Run `/test-e2e <label-filter>` with a filter covering the new specs. {OVERRIDE_HINT}"}
+                checks.append({**waits, "external_id": SCOPE_EXTERNAL_ID})
+            return {"checks": checks, "request_qa_review": False, "pr_number": pr.get("number"), "base_ref": base_ref}
         return placeholders(f"{len(owned)} file(s) in scope")
     summary = (f"No changed file is under a QA-owned path ({', '.join(qa_paths)}) against {graded}, "
                f"so the review panel does not run on this PR.\n\nPR: {pr.get('html_url', '')}")
