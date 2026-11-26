@@ -54,6 +54,10 @@ on:
         description: 'Comma-separated artifact=path-prefix pairs: which Ginkgo report artifact covers which source tree. One tree by default; vcluster-pro adds oss-ginkgo-report=staging/github.com/loft-sh/vcluster/.'
         type: string
         default: 'ginkgo-report='
+      e2e-workflows:
+        description: 'Comma-separated names of the e2e workflows whose runs count for the test-run check: the same list as the workflow_run trigger. Empty: only the workflow of the run that finished.'
+        type: string
+        default: ''
     secrets:
       org-token:
         description: 'Token with read:org, used only to read override-teams membership (GITHUB_TOKEN cannot). Empty disables the teams.'
@@ -153,5 +157,6 @@ jobs:
           check-name: ${{ inputs.check-name }}
           test-check-name: ${{ inputs.test-check-name }}
           report-trees: ${{ inputs.report-trees }}
+          e2e-workflows: ${{ inputs.e2e-workflows }}
           pr-number: ${{ inputs.pr-number }}
           queued-sha: ${{ needs.tested.outputs.sha }}
