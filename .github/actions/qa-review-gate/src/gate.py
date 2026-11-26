@@ -524,7 +524,8 @@ def decide_comment(event, override_logins, check_name, test_check="qa-test-run",
     verb = words[1]
     if verb == "override":
         if author not in override_logins and not member(author):
-            return {"skip": f"{author or 'unknown'} is not an override login or team member; override ignored"}
+            return {"skip": f"{author or 'unknown'} is not an override login or team member; override ignored",
+                    "pr_number": issue.get("number")}
         rest = words[2:]
         sha_prefix = rest.pop(0) if rest and SHA_PREFIX.match(rest[0]) else None
         reason = " ".join(rest).strip() or "no reason given"
@@ -545,7 +546,7 @@ def decide_comment(event, override_logins, check_name, test_check="qa-test-run",
         }
     if verb == "human":
         if comment.get("author_association") not in MEMBER_ASSOCIATIONS:
-            return {"skip": f"{author or 'unknown'} may not ask for a QA review here"}
+            return {"skip": f"{author or 'unknown'} may not ask for a QA review here", "pr_number": issue.get("number")}
         return {
             "check": {"name": check_name, "head_sha": None, "conclusion": "action_required",
                       "external_id": HUMAN_EXTERNAL_ID, "title": "QA review: a QA engineer decides",
@@ -555,7 +556,8 @@ def decide_comment(event, override_logins, check_name, test_check="qa-test-run",
             "pr_number": issue.get("number"),
             "comment_at": comment.get("created_at", ""),
         }
-    return {"skip": f"unknown {command} verb {verb!r}; use override [<reason>] or human"}
+    return {"skip": f"unknown {command} verb {verb!r}; use override [<reason>] or human",
+            "pr_number": issue.get("number")}
 
 
 def added_specs(diff):
@@ -869,6 +871,14 @@ def gh_api(args, token, payload=None):
     return json.loads(result.stdout) if result.stdout.strip() else {}
 
 
+def reply(repo, pr_number, text, token):
+    """Tell the PR why a /qa-review comment changed nothing; the job log alone goes unread. Best effort."""
+    try:
+        gh_api([f"repos/{repo}/issues/{pr_number}/comments"], token, {"body": f"QA review gate: {text}"})
+    except GateError as error:
+        print(f"::warning::qa-review-gate: could not reply on #{pr_number}: {error}")
+
+
 def comment_head(decision, repo, token, panel_login):
     """The PR head a /qa-review comment applies to. An override answers a panel verdict, so
     it lands only when the current head carries a panel marker submitted before the comment;
@@ -1003,6 +1013,13 @@ def apply(decision, repo, token, qa_team, run_url, panel_login="loft-bot"):
             print("::notice::qa-review-gate: no panel verdict on the PR's current head before "
                   "the comment; wait for the panel, then comment again (or name the head: "
                   "/qa-review override <sha> [<reason>])")
+            current = gh_api([f"repos/{repo}/pulls/{decision['pr_number']}"], token)["head"]["sha"][:7]
+            reply(repo, decision["pr_number"],
+                  f"the override did nothing. The commit you named is not the PR head, which is `{current}`."
+                  if decision.get("sha_prefix") else
+                  f"the override did nothing. The panel has no review of the current commit `{current}` from "
+                  f"before your comment. Wait for its review and comment again, or name the commit: "
+                  f"`/qa-review override {current} <reason>`.", token)
             return None
     for check in checks:
         if check.get("external_id") != OVERRIDE_EXTERNAL_ID and overridden(repo, head, check["name"], token):
@@ -1099,6 +1116,8 @@ def main():
         raise GateError(f"INPUT_MODE must be review, comment, ci, bot or sweep, got {mode!r}")
     if "skip" in decision:
         print(f"::notice::qa-review-gate: {decision['skip']}")
+        if mode == "comment" and decision.get("pr_number"):
+            reply(repo, decision["pr_number"], f"the comment did nothing: {decision['skip']}.", token)
         return 0
     qa_team, run_url = os.environ.get("INPUT_QA_TEAM", ""), os.environ.get("INPUT_RUN_URL", "")
     head = apply(decision, repo, token, qa_team, run_url, panel_login)

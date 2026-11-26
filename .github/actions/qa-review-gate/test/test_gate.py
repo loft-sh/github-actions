@@ -1521,12 +1521,53 @@ def test_override_binds_to_a_panel_verdict_on_the_current_head(monkeypatch, caps
     def fake_gh_api(args, token, payload=None):
         if args[0].endswith("/check-runs"):
             posted.append(payload)
+        if args[0].endswith("/comments"):
+            replies.append(payload["body"])
+            return {}
         return lookups(args, token, payload)
 
+    replies = []
     monkeypatch.setattr(gate, "gh_api", fake_gh_api)
     decision = gate.decide_comment(comment_event("/qa-review override covered"), {"sowmyav27"}, "qa-review")
     assert gate.apply(decision, "o/r", "tok", "loft-sh/eng-qa", "https://run") is None
     assert posted == [] and "no panel verdict on the PR's current head" in capsys.readouterr().out
+    assert len(replies) == 1 and f"`/qa-review override {HEAD[:7]} <reason>`" in replies[0]
+    assert not replies[0].startswith("/qa-review")  # the reply must not start the gate again
+
+
+def test_override_naming_a_stale_commit_says_so_on_the_pr(monkeypatch):
+    replies = []
+    lookups = pr_api(reviews=[])
+
+    def fake_gh_api(args, token, payload=None):
+        if args[0].endswith("/comments"):
+            replies.append(payload["body"])
+            return {}
+        return lookups(args, token, payload)
+    monkeypatch.setattr(gate, "gh_api", fake_gh_api)
+    decision = gate.decide_comment(comment_event(f"/qa-review override {OTHER[:7]} covered"), {"sowmyav27"}, "qa-review")
+    assert gate.apply(decision, "o/r", "tok", "loft-sh/eng-qa", "https://run") is None
+    assert replies == [f"QA review gate: the override did nothing. The commit you named is not the PR head, which is `{HEAD[:7]}`."]
+
+
+@pytest.mark.parametrize("body, expected", [
+    ("/qa-review override covered", "is not an override login or team member"),
+    ("/qa-review approve", "unknown /qa-review verb"),
+    ("thanks", None),  # not the command: the gate stays quiet
+])
+def test_main_replies_on_the_pr_when_a_command_did_nothing(tmp_path, monkeypatch, body, expected):
+    replies = []
+    event_file = tmp_path / "event.json"
+    event_file.write_text(json.dumps(comment_event(body, login="dev-x")))
+    for key, value in {"GITHUB_EVENT_PATH": str(event_file), "INPUT_MODE": "comment", "GITHUB_REPOSITORY": "o/r",
+                       "INPUT_GITHUB_TOKEN": "tok", "INPUT_OVERRIDE_LOGINS": "sowmyav27"}.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None: replies.append((args[0], payload["body"])) or {})
+    assert gate.main() == 0
+    if expected is None:
+        assert replies == []
+    else:
+        assert replies[0][0].endswith("/issues/1/comments") and expected in replies[0][1]
 
 
 def test_override_lands_on_the_head_the_panel_graded_before_the_comment(monkeypatch):
