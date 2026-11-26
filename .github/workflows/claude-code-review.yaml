@@ -43,7 +43,7 @@ jobs:
           git show "origin/${BASE_REF}:CLAUDE.md" > CLAUDE.md 2>/dev/null || rm -f CLAUDE.md
 
       - name: Claude Code Review
-        uses: anthropics/claude-code-action@8cf3482550831fb35a4fc3fbf7ca139cf8028b4c # v1
+        uses: anthropics/claude-code-action@4411a9e9b0283becf4b924f7bce360fd7756c78c # v1
         with:
           anthropic_api_key: ${{ secrets.anthropic-api-key }} # zizmor: ignore[secrets-outside-env] -- API key passed via workflow_call, not a repo secret
           github_token: ${{ secrets.GITHUB_TOKEN }}
