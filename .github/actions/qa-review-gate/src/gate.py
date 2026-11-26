@@ -755,7 +755,9 @@ def decide_ci(run, pr_number, added, states, test_check="qa-test-run", trees=Non
                  else f"QA test run: new spec(s) for {failed} did not run or pass in an earlier run")
         lines.append("\nA spec that the PR run does not select (a nightly label, another label filter) "
                      "lands here as skipped or \"did not run\": run it with `/test-e2e <label-filter>` on "
-                     "the last commit. For a focused or skipped spec, fix the spec and push.")
+                     "the last commit. When `/test-e2e` cannot run it (it needs an environment only the "
+                     f"nightly run has), ask QA or a tech lead for an override. {OVERRIDE_HINT} "
+                     "For a focused or skipped spec, fix the spec and push.")
     else:
         conclusion = "success"
         title = f"QA test run: all {len(added)} new spec(s) ran and passed"

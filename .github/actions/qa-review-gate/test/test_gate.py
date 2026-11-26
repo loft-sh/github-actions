@@ -2015,6 +2015,8 @@ def test_ci_missing_or_skipped_spec_is_failure_and_names_it():
     assert f"did not run: {SNAPSHOT}:12 c" in decision["check"]["summary"]
     assert f"{SNAPSHOT}:11 b (skipped)" in decision["check"]["summary"]
     assert "2 new spec(s)" in decision["check"]["title"]
+    # Both ways out: /test-e2e when it can run the spec, an override when it cannot (nightly-only environment).
+    assert "`/test-e2e <label-filter>`" in decision["check"]["summary"] and "/qa-review override" in decision["check"]["summary"]
 
 
 @pytest.mark.parametrize("conclusion", ["cancelled", "timed_out", None])
