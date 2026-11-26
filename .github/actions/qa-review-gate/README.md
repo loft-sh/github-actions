@@ -33,6 +33,13 @@ run for a fork PR gets a read-only token and could not write the check-runs, and
 never checks out PR code (it checks out its own action only), which is what makes the
 target trigger safe here.
 
+A PR that touches a QA-owned path and has no panel verdict on its head gets both check-runs
+as action_required, titled "waiting for the panel review, comment /vcluster-review", on
+every push. Without them the PR shows only "Expected" and nothing tells the author what to
+do: the panel starts by itself when a PR opens or leaves draft, not after a push. The
+panel's verdict or an override replaces both. `/qa-review human` replaces only `qa-review`;
+`qa-test-run` still waits for the panel or the e2e report.
+
 A PR that touches no QA-owned path (`qa-paths`, by default the top-level `e2e*/` trees,
 `staging/github.com/loft-sh/vcluster/e2e/` and the `.github/workflows/e2e*.yaml` files, the
 same paths the dispatcher starts the panel on, matched the same way: a star stays inside one
@@ -79,8 +86,8 @@ pass on a head that is now in scope. A trusted bot PR whose exemption was declin
 the bot did not push, or a bot push on a head the gate had not passed) never takes this
 pass: it goes to review whatever it touches. The panel never runs on such a PR, so without
 this a required check would block Renovate, version bumps and every code-only change. A PR
-that does touch one of those paths gets nothing from this step: the panel's verdict and the
-e2e report grade it.
+that does touch one of those paths gets the waiting checks above from this step: the panel's
+verdict and the e2e report grade it.
 
 Before the ruleset goes live, run the caller's `workflow_dispatch` once with no `pr-number`
 (mode `sweep`): it lists every open PR whose current head lacks `qa-review` or `qa-test-run`
@@ -88,9 +95,9 @@ from GitHub Actions (the source the ruleset requires) and starts one run of the 
 such PR, with that PR's number as `pr-number`. Each of those runs queues on the PR's head
 like every other writer and gives the PR the same QA-scope pass it would have got on
 `opened`, creating only the missing check (a retry after a partial write completes the
-pair). A run whose PR is a trusted bot PR on a later head, or touches a QA-owned path, ends
-with a warning: that PR needs `/vcluster-review` from a person or `/qa-review override`
-before the ruleset is enabled. A per-PR run grades only while the PR still sits on the head
+pair). A PR that touches a QA-owned path gets the checks that wait for the panel (below).
+A run whose PR is a trusted bot PR on a later head ends with a warning: that PR needs
+`/vcluster-review` from a person or `/qa-review override`. A per-PR run grades only while the PR still sits on the head
 it queued for (`queued-sha`); a PR that moved on is left to that head's own event. In the
 reusable workflow the listing is its own job, the one job with `actions: write`; the gate
 job keeps `actions: read` on every event.

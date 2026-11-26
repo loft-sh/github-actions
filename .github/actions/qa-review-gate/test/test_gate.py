@@ -416,11 +416,16 @@ def test_a_pr_outside_the_qa_paths_passes_as_out_of_scope(monkeypatch):
 @pytest.mark.parametrize("path", ["e2e/test_foo/foo.go", "e2e-next/setup/x.go",
                                   "staging/github.com/loft-sh/vcluster/e2e/bar.go",
                                   ".github/workflows/e2e-ginkgo.yaml"])
-def test_a_pr_touching_a_qa_path_is_left_to_the_panel(monkeypatch, path):
+def test_a_pr_touching_a_qa_path_waits_for_the_panel_and_says_how(monkeypatch, path):
     event, files = human_pr_event(["pkg/foo.go", path])
     monkeypatch.setattr(gate, "gh_api", files_api(files))
-    assert gate.decide_scope(event, "o/r", "tok", QA_PATHS, "qa-review") == \
-        {"skip": "1 changed file(s) under a QA-owned path; the panel decides"}
+    decision = gate.decide_scope(event, "o/r", "tok", QA_PATHS, "qa-review")
+    assert [(c["name"], c["conclusion"], c["head_sha"], c["external_id"]) for c in decision["checks"]] == [
+        ("qa-review", "action_required", HEAD, "qa-review-gate:scope"),
+        ("qa-test-run", "action_required", HEAD, "qa-review-gate:scope")]
+    assert decision["checks"][0]["title"] == "QA review: waiting for the panel review, comment /vcluster-review"
+    assert "`/vcluster-review`" in decision["checks"][0]["summary"] and "/qa-review override" in decision["checks"][0]["summary"]
+    assert decision["request_qa_review"] is False
 
 
 @pytest.mark.parametrize("path", ["e2e/vendor/example.go", "e2e-next/vendor/github.com/x/y.go",
@@ -738,6 +743,28 @@ def test_a_scope_write_keeps_a_verdict_that_landed_during_it(monkeypatch, capsys
     assert "a result landed during the scope write" in capsys.readouterr().out
 
 
+def test_a_scope_write_keeps_a_request_for_a_person_that_landed_before_it(monkeypatch, capsys):
+    # /qa-review human runs in another queue: it wrote after decide_scope read ownership and
+    # before apply read the newest id, so no reconciliation would find it. The waiting check
+    # must not go on top of it.
+    decision = {"checks": [{"name": "qa-review", "head_sha": HEAD, "conclusion": "action_required",
+                            "external_id": gate.SCOPE_EXTERNAL_ID, "title": "QA review: waiting", "summary": "s"}],
+                "request_qa_review": False, "pr_number": 12, "base_ref": "main"}
+    human = {"id": 30, "status": "completed", "conclusion": "action_required", "app": {"slug": "github-actions"},
+             "external_id": gate.HUMAN_EXTERNAL_ID, "output": {"title": "QA review: a QA engineer decides"}}
+    writes = []
+    def api(args, token, payload=None):
+        if payload is not None:
+            writes.append((args, payload))
+            return {"id": 40}
+        if "check-runs?" in args[0]:
+            return {"check_runs": [human]}
+        return {}
+    monkeypatch.setattr(gate, "gh_api", api)
+    assert gate.apply(decision, "o/r", "tok", "", "https://run") == HEAD
+    assert writes == [] and "got a result since the scope check; kept it" in capsys.readouterr().out
+
+
 def test_main_regrades_when_a_retarget_overtook_the_scope_write(tmp_path, monkeypatch, capsys):
     # The opened job graded docs-only against main; by the time it wrote, the PR targeted
     # release-1.0, where the same head also changes an e2e file.
@@ -875,11 +902,12 @@ def test_sweep_passes_only_open_prs_without_a_check_that_touch_no_qa_path(monkey
     writes.clear()
     assert gate.sweep_one("o/r", "tok", 2, "2" * 40, BOTS, QA_PATHS, "qa-review", "qa-test-run", "", "https://run", "loft-bot")
     assert [(w["name"], w["head_sha"]) for w in writes] == [("qa-review", "2" * 40), ("qa-test-run", "2" * 40)]
-    assert not gate.sweep_one("o/r", "tok", 3, "3" * 40, BOTS, QA_PATHS, "qa-review", "qa-test-run", "", "https://run", "loft-bot")
+    assert gate.sweep_one("o/r", "tok", 3, "3" * 40, BOTS, QA_PATHS, "qa-review", "qa-test-run", "", "https://run", "loft-bot")
+    assert [(w["name"], w["conclusion"]) for w in writes[2:]] == [("qa-review", "action_required"), ("qa-test-run", "action_required")]
     assert not gate.sweep_one("o/r", "tok", 4, "4" * 40, BOTS, QA_PATHS, "qa-review", "qa-test-run", "", "https://run", "loft-bot")
     assert not gate.sweep_one("o/r", "tok", 1, "1" * 40, BOTS, QA_PATHS, "qa-review", "qa-test-run", "", "https://run", "loft-bot")
     out = capsys.readouterr().out
-    assert "::warning::qa-review-gate: #3 3333333 still lacks qa-review, qa-test-run (1 changed file(s) under a QA-owned path" in out
+    assert "#3 3333333 QA review: waiting for the panel review, comment /vcluster-review (qa-review, qa-test-run created)" in out
     assert "::warning::qa-review-gate: #4 4444444 still lacks qa-review, qa-test-run (a trusted bot PR on a later head" in out
     assert "#1 1111111 has both checks" in out
 
@@ -915,9 +943,9 @@ def test_sweep_grades_the_pr_as_it_is_now_and_regrades_after_a_retarget(monkeypa
             return {"id": 1}
         return {}
     monkeypatch.setattr(gate, "gh_api", api)
-    assert not gate.sweep_one("o/r", "tok", 6, "6" * 40, BOTS, QA_PATHS, "qa-review", "qa-test-run", "", "https://run", "loft-bot")
-    assert writes == []
-    assert "#6 6666666 still lacks qa-review, qa-test-run (1 changed file(s) under a QA-owned path" in capsys.readouterr().out
+    assert gate.sweep_one("o/r", "tok", 6, "6" * 40, BOTS, QA_PATHS, "qa-review", "qa-test-run", "", "https://run", "loft-bot")
+    assert [w["conclusion"] for w in writes] == ["action_required", "action_required"]  # in scope against the base it has now
+    assert "#6 6666666 QA review: waiting for the panel review" in capsys.readouterr().out
 
 
 def test_sweep_counts_the_missing_checks_on_the_queued_head(monkeypatch):
