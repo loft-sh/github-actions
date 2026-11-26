@@ -2,9 +2,13 @@ name: QA review gate
 
 # Wraps the qa-review-gate composite action for the production repos: picks the
 # mode from the event, sparse-checks-out the action, and publishes the qa-review
-# and qa-test-run check-runs (both green at once on a trusted bot PR). The caller
-# filters the events (the panel's login, the /qa-review command, the bot logins)
-# in its job `if:` so most events spin no runner, and passes a read:org token as
+# and qa-test-run check-runs (both green at once on a trusted bot PR and on a PR
+# outside the QA-owned paths). The caller filters reviews and comments (the panel's
+# login, the /qa-review command) in its job `if:` so most of those spin no runner,
+# lets every pull request event through (its trigger runs from the base branch: a
+# fork's own run gets a read-only token and could write no check-run; the gate checks
+# out nothing from the PR), runs the sweep over open PRs on
+# workflow_dispatch before the ruleset goes live, and passes a read:org token as
 # `org-token` so /qa-review override can check team membership.
 
 on:
@@ -12,6 +16,10 @@ on:
     inputs:
       override-logins:
         description: 'Comma-separated logins allowed to run /qa-review override, on top of override-teams.'
+        type: string
+        default: ''
+      pr-number:
+        description: 'Sweep: grade this one PR under its head queue (set by the sweep itself, one run per PR). Empty on the manual run: list the open PRs lacking a check and start a run per PR.'
         type: string
         default: ''
       override-teams:
@@ -23,9 +31,13 @@ on:
         type: string
         default: 'loft-bot'
       bot-prs:
-        description: 'Comma-separated login:branch-prefix pairs whose PRs pass both check-runs on the head the bot opened them with.'
+        description: 'Comma-separated login:branch-prefix pairs whose PRs pass both check-runs on every head the bot itself pushed.'
         type: string
         default: 'loft-bot:backport/,vcluster-qa-bot[bot]:flake-fixer/'
+      qa-paths:
+        description: 'Comma-separated glob patterns of the QA-owned paths the review panel runs on. A PR that touches none of them passes both check-runs as out of scope.'
+        type: string
+        default: 'e2e*/**,staging/github.com/loft-sh/vcluster/e2e/**,.github/workflows/e2e*.yaml'
       qa-team:
         description: 'org/slug of the team asked for a review on /qa-review human.'
         type: string
@@ -48,17 +60,77 @@ on:
         required: false
 
 jobs:
-  gate:
+  sweep:
+    # The manual run with no pr-number only lists the open PRs lacking a check and starts
+    # one gate run per PR. It is the one job that needs actions: write (a dispatch), so the
+    # gate job stays on actions: read for every event; a called job can only lower the
+    # caller's grant, so the caller still grants write.
+    if: github.event_name == 'workflow_dispatch' && inputs.pr-number == ''
     runs-on: ubuntu-latest
-    # The Pro and OSS e2e runs of one head each read the recorded tree results, then write.
+    permissions:
+      actions: write
+      checks: read
+      pull-requests: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          persist-credentials: false
+          sparse-checkout: .github/actions/qa-review-gate
+      - uses: ./.github/actions/qa-review-gate
+        with:
+          mode: sweep
+          check-name: ${{ inputs.check-name }}
+          test-check-name: ${{ inputs.test-check-name }}
+          caller-workflow: ${{ github.workflow_ref }}
+  tested:
+    # Every event but the sweep listing above; `gate` follows through `needs`.
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.pr-number == '') }}
+    # Every writer for one head shares a queue: the e2e runs of one tested commit (Pro and
+    # OSS trees; a PR run and a /test-e2e dispatch) each read the recorded tree results,
+    # then write, and a PR event job (retarget), the panel verdict job and an e2e result
+    # job each read what the head carries before writing. A dispatch run's head_sha is
+    # the base commit; its title names the tested one (else its head, as run_target reads
+    # it). A comment names no head: run id.
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      sha: ${{ steps.sha.outputs.sha }}
+    steps:
+      - id: sha
+        env:
+          DISPATCH: ${{ github.event.workflow_run.event == 'workflow_dispatch' }}
+          TITLE: ${{ github.event.workflow_run.display_title }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}
+          PR: ${{ inputs.pr-number }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          if [ -n "$PR" ]; then
+            sha="$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" || { echo "::error::qa-review-gate: cannot read the head of #$PR"; exit 1; }
+          elif [ "$DISPATCH" = true ]; then
+            # The same parse as the action's run_target: `#<n> ... <sha>`, else the run's head.
+            sha="$(grep -oE '#[0-9]+\b.*\b[0-9a-f]{40}\b' <<<"$TITLE" | grep -oE '[0-9a-f]{40}' | tail -n1 || true)"
+          fi
+          echo "sha=${sha:-${HEAD_SHA:-$RUN_ID}}" >> "$GITHUB_OUTPUT"
+  gate:
+    needs: tested
+    runs-on: ubuntu-latest
+    # queue: max keeps every queued completion; the default single pending slot would
+    # cancel one of two e2e results that queue behind an active gate job of this commit.
     concurrency:
-      group: qa-review-gate-${{ github.event.workflow_run.head_sha || github.run_id }}
+      group: qa-review-gate-${{ needs.tested.outputs.sha }}
       cancel-in-progress: false
+      queue: max
     permissions:
       checks: write
       pull-requests: write
       contents: read
-      actions: read
+      actions: read # the e2e report; the sweep listing above is the one job that writes
     steps:
       # job.workflow_sha is the commit the caller's `uses:` tag resolved to, so the
       # action comes from the same revision as this workflow, not from main.
@@ -70,13 +142,16 @@ jobs:
           sparse-checkout: .github/actions/qa-review-gate
       - uses: ./.github/actions/qa-review-gate
         with:
-          mode: ${{ github.event_name == 'pull_request_review' && 'review' || github.event_name == 'workflow_run' && 'ci' || github.event_name == 'pull_request' && 'bot' || 'comment' }}
+          mode: ${{ github.event_name == 'pull_request_review' && 'review' || github.event_name == 'workflow_run' && 'ci' || github.base_ref != '' && 'bot' || github.event_name == 'workflow_dispatch' && 'sweep' || 'comment' }}
           override-logins: ${{ inputs.override-logins }}
           override-teams: ${{ inputs.override-teams }}
           org-token: ${{ secrets.org-token }} # zizmor: ignore[secrets-outside-env] -- PAT passed through workflow_call; the action maps it to env itself
           panel-login: ${{ inputs.panel-login }}
           bot-prs: ${{ inputs.bot-prs }}
           qa-team: ${{ inputs.qa-team }}
+          qa-paths: ${{ inputs.qa-paths }}
           check-name: ${{ inputs.check-name }}
           test-check-name: ${{ inputs.test-check-name }}
           report-trees: ${{ inputs.report-trees }}
+          pr-number: ${{ inputs.pr-number }}
+          queued-sha: ${{ needs.tested.outputs.sha }}

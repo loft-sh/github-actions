@@ -7,6 +7,12 @@ on:
       - '.github/workflows/test-qa-review-gate.yaml'
       - 'Makefile'
   workflow_dispatch:
+    inputs:
+      pr-number:
+        description: Leave empty. The sweep starts one run per PR lacking a check and fills this in.
+        required: false
+        type: string
+        default: ''
 
 permissions: {}
 
@@ -27,15 +33,18 @@ jobs:
 
   # Calls the reusable workflow the way a product repo does. The job checks out the
   # action at job.workflow_sha: a ref that resolved to nothing would fall back to main,
-  # where the action may not exist yet, and the call would fail.
+  # where the action may not exist yet, and the call would fail. actions: write is the
+  # ceiling the sweep job asks for; the gate job lowers itself to read.
   caller:
     name: Smoke-test the reusable workflow from a caller
     permissions:
       checks: write
       pull-requests: write
       contents: read
-      actions: read
+      actions: write
     uses: ./.github/workflows/qa-review-gate.yaml
+    with:
+      pr-number: ${{ inputs.pr-number }}
 
   verify-caller:
     needs: [caller]
