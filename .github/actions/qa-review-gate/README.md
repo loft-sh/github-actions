@@ -155,6 +155,7 @@ One PR can need several e2e runs before each new spec has run: `/test-e2e` runs 
 different label filters, or a second e2e workflow. So the action reads the reports of
 every finished run that tested the commit, from the workflows named in `e2e-workflows`
 (the caller's `workflow_run` list; empty: only the workflow of the run that finished).
+Runs are matched by workflow id, because a run's own name is its run-name.
 A fork PR's `/test-e2e` runs are found on the base branch by their run-name, among
 its newest 100 dispatch runs. A report
 artifact is `ginkgo-report`, or `ginkgo-report-<job>` when matrix jobs each upload one;

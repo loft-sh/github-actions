@@ -790,8 +790,10 @@ def parse_workflows(text):
 def e2e_runs(run, repo, head, pr_number, base_ref, workflows, token):
     """Every finished run of the e2e workflows that tested `head`, `run` included: one PR can
     need several runs (label filters, a second e2e workflow) before each new spec has run.
-    `workflows` (names) are the caller's `workflow_run` list; empty: the workflow of `run`."""
-    workflows = workflows or {run.get("name")}
+    `workflows` (names) are the caller's `workflow_run` list; empty: the workflow of `run`.
+    Matched by workflow id: a run's own `name` is its run-name, which differs per run."""
+    listed = gh_api([f"repos/{repo}/actions/workflows?per_page=100"], token).get("workflows") or [] if workflows else []
+    ids = {w["id"] for w in listed if w.get("name") in workflows} | {run.get("workflow_id")}
 
     def tested(r):
         named = r.get("event") == "workflow_dispatch" and DISPATCH_TITLE.search(r.get("display_title") or "")
@@ -802,7 +804,7 @@ def e2e_runs(run, repo, head, pr_number, base_ref, workflows, token):
               for r in gh_api([f"repos/{repo}/actions/runs?{query}&status=completed&per_page=100"],
                               token).get("workflow_runs") or []]
     runs = {r["id"]: r for r in listed
-            if r.get("name") in workflows and r.get("conclusion") in ("success", "failure")
+            if r.get("workflow_id") in ids and r.get("conclusion") in ("success", "failure")
             and r.get("event") in ("pull_request", "workflow_dispatch")
             and tested(r) and run_base(r) in (None, base_ref)}
     runs[run["id"]] = run

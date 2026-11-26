@@ -1322,13 +1322,15 @@ def test_ci_unreadable_report_asks_a_person(monkeypatch):
 FLOWS = "E2E flows"
 
 
-def history(monkeypatch, runs, artifacts, reports, lines=2, by_branch=()):
+def history(monkeypatch, runs, artifacts, reports, lines=2, by_branch=(), workflows=frozenset({"E2E", FLOWS})):
     """collect_ci over `runs` beside the finishing run 7; artifacts {run id: [artifact]},
     reports {artifact id: [(line, state, attempts)] or a whole report}."""
     patch = "@@ -1,0 +1,%d @@" % lines + "".join(f'\n+\tIt("s{n}", func() {{' for n in range(1, lines + 1))
     base = ci_api(files=[{"filename": "e2e/a.go", "patch": patch}])
 
     def api(args, token, payload=None):
+        if "/actions/workflows?" in args[0]:
+            return {"workflows": [{"id": 70, "name": "E2E"}, {"id": 50, "name": FLOWS}, {"id": 60, "name": "E2E label check"}]}
         if "/actions/runs?" in args[0]:
             return {"workflow_runs": list(by_branch if "branch=" in args[0] else runs)}
         if args[0].endswith("/artifacts"):
@@ -1346,12 +1348,12 @@ def history(monkeypatch, runs, artifacts, reports, lines=2, by_branch=()):
         pathlib.Path(dest, "report.json").write_text(json.dumps(report))
     monkeypatch.setattr(gate, "gh_api", api)
     monkeypatch.setattr(gate, "download_report", download)
-    run = {**ci_run(), "name": "E2E", "event": "workflow_dispatch", "display_title": "E2E"}
-    return gate.collect_ci({"workflow_run": run}, "o/r", "tok", workflows={"E2E", FLOWS})["check"]
+    run = {**ci_run(), "name": "E2E", "workflow_id": 70, "event": "workflow_dispatch", "display_title": "E2E"}
+    return gate.collect_ci({"workflow_run": run}, "o/r", "tok", workflows=workflows)["check"]
 
 
 def older(**fields):
-    return {"id": 5, "name": FLOWS, "event": "workflow_dispatch", "conclusion": "success",
+    return {"id": 5, "name": FLOWS, "workflow_id": 50, "event": "workflow_dispatch", "conclusion": "success",
             "head_sha": HEAD, "display_title": FLOWS, **fields}
 
 
@@ -1406,11 +1408,23 @@ def test_ci_a_dry_run_report_passes_nothing(monkeypatch):
 
 def test_ci_reads_only_runs_of_the_listed_workflows_for_this_head(monkeypatch):
     passed = [(1, "passed", 1)]
-    for stranger in (older(name="E2E label check"), older(event="schedule"), older(conclusion="cancelled"),
+    for stranger in (older(workflow_id=60), older(event="schedule"), older(conclusion="cancelled"),
                      older(display_title=f"E2E for PR #9 (x) at {OTHER}"),
                      older(display_title=f"E2E for PR #8 (x) at {HEAD}")):
         check = history(monkeypatch, [stranger], {5: [art(1)], 7: [art(2)]}, {1: passed, 2: []}, lines=1)
         assert check["conclusion"] == "failure", stranger
+
+
+def test_ci_matches_runs_by_workflow_id_not_by_run_name(monkeypatch):
+    """A run's `name` is its run-name (`E2E for PR #9 (<label>) at <sha>`), different for every
+    dispatch of one workflow (#9481). With no list, only the finishing run's workflow counts."""
+    title = f"E2E for PR #9 (auto-nodes) at {HEAD}"
+    same = older(workflow_id=70, name=title, display_title=title)
+    artifacts = {5: [art(1)], 7: [art(2, at="2026-01-02T00:00:00Z")]}
+    reports = {1: [(1, "passed", 1), (2, "skipped", 0)], 2: [(1, "skipped", 0), (2, "passed", 1)]}
+    for workflows in (frozenset({"E2E", FLOWS}), frozenset()):
+        assert history(monkeypatch, [same], artifacts, reports, workflows=workflows)["conclusion"] == "success"
+    assert history(monkeypatch, [older()], artifacts, reports, workflows=frozenset())["conclusion"] == "failure"
 
 
 def test_ci_reads_an_earlier_fork_dispatch_run_from_the_base_branch(monkeypatch):
@@ -1430,7 +1444,7 @@ def test_ci_an_expired_report_is_left_out(monkeypatch):
     artifacts = {5: [art(1, expired=True)], 7: [art(2)]}
     history(monkeypatch, [older()], artifacts, {2: []}, lines=1)
     monkeypatch.setattr(gate, "download_report", no_expired)
-    run = {**ci_run(), "name": "E2E", "event": "workflow_dispatch", "display_title": "E2E"}
+    run = {**ci_run(), "name": "E2E", "workflow_id": 70, "event": "workflow_dispatch", "display_title": "E2E"}
     check = gate.collect_ci({"workflow_run": run}, "o/r", "tok", workflows={"E2E", FLOWS})["check"]
     assert check["conclusion"] == "success"
 
