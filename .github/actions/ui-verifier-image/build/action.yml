@@ -7,6 +7,9 @@ inputs:
   head-sha:
     description: Full commit SHA of the checked-out source
     required: true
+  image-repository:
+    description: Private Artifact Registry Docker image path without a tag or digest
+    required: true
 runs:
   using: composite
   steps:
@@ -14,4 +17,5 @@ runs:
       shell: bash
       env:
         HEAD_SHA: ${{ inputs.head-sha }}
+        IMAGE_REPOSITORY: ${{ inputs.image-repository }}
       run: bash "$GITHUB_ACTION_PATH/../src/build.sh"

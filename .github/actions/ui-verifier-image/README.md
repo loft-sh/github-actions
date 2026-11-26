@@ -5,15 +5,14 @@ The image contains the default fake license and must stay private.
 
 ## Trusted caller
 
-The action runs repository code with job-wide OIDC access. Use a default-branch
-`issue_comment` workflow in loft-enterprise and gate the whole publishing job.
+The action runs repository code with job-wide OIDC access. For a PR-comment
+trigger, use a default-branch workflow and gate the whole publishing job.
 A reviewer with write, maintain or admin permission comments
 `/publish-ui-image <SHA>` with the full current PR head SHA. The gate rejects forks, closed PRs,
 missing data, stale SHA values and unauthorized commenters. A later change to the
 head requires a new command. The job builds the approved SHA even if the branch
-moves after the gate; it never resolves a moving branch for checkout. GitHub
-API errors fail the gate closed. This protects this caller only: the registry IAM
-also permits other OIDC-enabled loft-enterprise jobs.
+moves after the gate. GitHub API errors fail the gate closed. Configure
+`VERIFIER_PUBLISHER_REPOSITORY_ID` with the caller's repository ID.
 
 ```yaml
 name: Publish UI verifier image
@@ -23,8 +22,8 @@ on:
 permissions: {}
 jobs:
   gate:
-    if: github.event.issue.pull_request && github.repository_id == '246071526'
-    runs-on: ubuntu-latest
+    if: github.event.issue.pull_request && github.repository_id == vars.VERIFIER_PUBLISHER_REPOSITORY_ID
+    runs-on: ubuntu-26.04
     permissions:
       pull-requests: read
       contents: read
@@ -38,22 +37,23 @@ jobs:
           ACTOR: ${{ github.event.comment.user.login }}
           PR: ${{ github.event.issue.number }}
           REPO: ${{ github.repository }}
+          PUBLISHER_REPO_ID: ${{ github.repository_id }}
         shell: bash
         run: |
           set -euo pipefail
           [[ "$COMMENT" =~ ^/publish-ui-image\ ([0-9a-f]{40})$ ]] || exit 0
           approved_sha=${BASH_REMATCH[1]}
-          [[ "$PR" =~ ^[0-9]+$ && -n "$ACTOR" ]] || exit 0
+          [[ "$PR" =~ ^[0-9]+$ && "$PUBLISHER_REPO_ID" =~ ^[0-9]+$ && -n "$ACTOR" ]] || exit 0
           permission=$(gh api "repos/$REPO/collaborators/$ACTOR/permission" --jq .permission)
           case "$permission" in admin|maintain|write) ;; *) exit 0 ;; esac
           pr=$(gh api "repos/$REPO/pulls/$PR")
-          jq -e --arg sha "$approved_sha" \
-            '.state == "open" and .head.repo.id == 246071526 and .base.repo.id == 246071526 and .head.sha == $sha' <<<"$pr" >/dev/null || exit 0
+          jq -e --arg sha "$approved_sha" --argjson repo_id "$PUBLISHER_REPO_ID" \
+            '.state == "open" and .head.repo.id == $repo_id and .base.repo.id == $repo_id and .head.sha == $sha' <<<"$pr" >/dev/null || exit 0
           echo "sha=$approved_sha" >> "$GITHUB_OUTPUT"
   publish:
     needs: gate
     if: needs.gate.outputs.sha != ''
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
       id-token: write
@@ -64,10 +64,16 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       # Install the trusted builder prerequisites described below here.
-      - uses: loft-sh/github-actions/.github/actions/ui-verifier-image@ui-verifier-image/v1
+      - uses: loft-sh/github-actions/.github/actions/ui-verifier-image/build@ui-verifier-image/v1
+        with:
+          head-sha: ${{ needs.gate.outputs.sha }}
+          image-repository: ${{ vars.VERIFIER_IMAGE_REPOSITORY }}
+      # Authenticate and configure Docker for the private registry in the caller.
+      - uses: loft-sh/github-actions/.github/actions/ui-verifier-image/push@ui-verifier-image/v1
         id: image
         with:
           head-sha: ${{ needs.gate.outputs.sha }}
+          image-repository: ${{ vars.VERIFIER_IMAGE_REPOSITORY }}
 ```
 
 The gate job has no OIDC, secrets or PR checkout. Do not use this example with
@@ -77,38 +83,30 @@ just a comment on a PR. Secure the default branch and the workflow itself.
 
 ## Builder prerequisites
 
-Use the same builder setup as the [loft-enterprise image job](https://github.com/loft-sh/loft-enterprise/blob/4ca362feef17e12d200fbf148ee1e9f1fe9e9d53/.github/workflows/e2e.yaml#L63): Docker,
-Go from `go.mod`, Just, GoReleaser v2, Helm, and access to private Go modules.
-Configure `GOPRIVATE=github.com/loft-sh/*` and a read-only credential for the
-private dependencies in this trusted job. Provide the credential using the
+Install Docker, Go from `go.mod`, Just, GoReleaser v2, and Helm. Configure
+`GOPRIVATE` for private modules and use a read-only credential for them in
+this trusted job. Provide the credential using the
 repository's approved secret mechanism and avoid persisting it beyond the job.
 Fetch full history and tags, as above: the recipe computes a version from tags
-and otherwise falls back to `v0.0.0`. Install and pin the tools using that image
-job's setup before enabling this workflow. The build runs before Google auth
+and otherwise falls back to `v0.0.0`. Pin the build tools before enabling this
+workflow. Run the build before Google auth
 because it can outlast federated credentials; job OIDC is still available to
 all steps, so the trust gate must run before the job starts.
 
 ## Build and push with caller authentication
 
-Use the `build` and `push` entries in one trusted job when the workflow owns
-Google Cloud authentication. Give that job `id-token: write` and run Google
-Cloud auth and `setup-gcloud` after the build. Use the same SHA in both steps.
-The push step configures the Docker credential helper for the private registry
-and exposes the published reference as `steps.image.outputs.image`.
+Use the `build` and `push` entries in one trusted job. Set
+`VERIFIER_IMAGE_REPOSITORY` to the private Artifact Registry Docker image
+path without a tag or digest. Pass that path and the same commit SHA to both
+entries. The push entry exposes the published reference as
+`steps.image.outputs.image`.
 
-```yaml
-- uses: loft-sh/github-actions/.github/actions/ui-verifier-image/build@ui-verifier-image/v1
-  with:
-    head-sha: ${{ steps.checkout.outputs.commit }}
-- uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
-  with:
-    workload_identity_provider: projects/464415226524/locations/global/workloadIdentityPools/github/providers/github-actions
-- uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
-- uses: loft-sh/github-actions/.github/actions/ui-verifier-image/push@ui-verifier-image/v1
-  id: image
-  with:
-    head-sha: ${{ steps.checkout.outputs.commit }}
-```
+The caller job owns Google Cloud authentication and Docker access. If using
+WIF, grant that job `id-token: write` and keep the project and identity inputs in
+the caller's variables. Authenticate, set up the Cloud SDK, and configure
+Docker for the registry host between build and push. Use an identity with
+write access to the private repository only. When using the combined entry
+point, configure Docker access before calling it.
 
 ## Deployment handoff
 
@@ -133,9 +131,10 @@ the CI image path. A push alone does not prove tenant pull or acceptance.
 
 <!-- AUTO-DOC-INPUT:START - Do not remove or modify this section -->
 
-|  INPUT   |  TYPE  | REQUIRED | DEFAULT |                   DESCRIPTION                   |
-|----------|--------|----------|---------|-------------------------------------------------|
-| head-sha | string |   true   |         | Full commit SHA of the checked-out <br>PR head  |
+|      INPUT       |  TYPE  | REQUIRED | DEFAULT |                               DESCRIPTION                                |
+|------------------|--------|----------|---------|--------------------------------------------------------------------------|
+|     head-sha     | string |   true   |         |              Full commit SHA of the checked-out <br>source               |
+| image-repository | string |   true   |         | Private Artifact Registry Docker image path <br>without a tag or digest  |
 
 <!-- AUTO-DOC-INPUT:END -->
 
