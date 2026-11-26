@@ -521,8 +521,11 @@ def decide_comment(event, override_logins, check_name, test_check="qa-test-run",
     comment = event.get("comment") or {}
     first_line = (comment.get("body") or "").strip().splitlines()[:1]
     words = first_line[0].split() if first_line else []
-    if len(words) < 2 or words[0] != command:
+    if not words or words[0] != command:
         return {"skip": "comment does not open with the command"}
+    if len(words) < 2:
+        return {"skip": f"{command} needs a verb; use `{command} override [<reason>]` or `{command} human`",
+                "pr_number": issue.get("number")}
     author = (comment.get("user") or {}).get("login", "")
     verb = words[1]
     if verb == "override":
@@ -972,17 +975,31 @@ def reply(repo, pr_number, text, token):
         print(f"::warning::qa-review-gate: could not reply on #{pr_number}: {error}")
 
 
+def head_at(repo, pr, comment_at, token):
+    """The sha a `pull_request` run of this PR tested last before `comment_at`: the PR's head at
+    that time. None when no run tells (no workflow on pull_request, or the first run came later)."""
+    head = pr["head"]
+    runs = gh_api([f"repos/{repo}/actions/runs?event=pull_request&branch={head.get('ref', '')}"
+                   f"&created=<={comment_at}&per_page=50"], token).get("workflow_runs") or []
+    mine = [r for r in runs
+            if pr["number"] in [p.get("number") for p in r.get("pull_requests") or []]
+            or (r.get("head_repository") or {}).get("full_name") == (head.get("repo") or {}).get("full_name")]
+    return max(mine, key=lambda r: r.get("created_at", ""))["head_sha"] if mine else None
+
+
 def comment_head(decision, repo, token, panel_login):
-    """The PR head a /qa-review comment applies to. An override lands on the head its author
-    saw: one with a panel marker or a check suite (CI started on the push) from before the
-    comment. A head pushed after the comment returns None and the override login comments
-    again on what they see; `/qa-review override <sha>` names the head instead."""
+    """(head, None) for the PR head a /qa-review comment applies to, or (None, why not). An
+    override lands on the head its author saw: one the panel graded before the comment, or the
+    one this PR's CI ran on last before the comment. Else the login names the head:
+    `/qa-review override <sha>`."""
     pr_number = decision["pr_number"]
-    head = gh_api([f"repos/{repo}/pulls/{pr_number}"], token)["head"]["sha"]
+    pr = gh_api([f"repos/{repo}/pulls/{pr_number}"], token)
+    head = pr["head"]["sha"]
     if not decision.get("binds_to_marker"):
-        return head
+        return head, None
     if decision.get("sha_prefix"):
-        return head if head.startswith(decision["sha_prefix"]) else None
+        return (head, None) if head.startswith(decision["sha_prefix"]) else (
+            None, f"The commit you named is not the PR head, which is `{head[:7]}`.")
     pages = gh_api([f"repos/{repo}/pulls/{pr_number}/reviews", "--paginate", "--slurp"], token)
     for review in (r for page in pages for r in page):
         if (review.get("user") or {}).get("login") != panel_login:
@@ -993,11 +1010,17 @@ def comment_head(decision, repo, token, panel_login):
             continue
         if (parsed and parsed[2] == head
                 and (review.get("submitted_at") or "") <= decision.get("comment_at", "")):
-            return head
-    suites = gh_api([f"repos/{repo}/commits/{head}/check-suites?per_page=100"], token).get("check_suites") or []
-    if any(s.get("created_at") and s["created_at"] <= decision.get("comment_at", "") for s in suites):
-        return head
-    return None
+            return head, None
+    try:
+        seen = head_at(repo, {**pr, "number": pr_number}, decision.get("comment_at", ""), token)
+    except GateError:
+        seen = None
+    if seen == head:
+        return head, None
+    hint = f"Check it and comment again, or name the commit: `/qa-review override {head[:7]} <reason>`."
+    if seen:
+        return None, f"The PR head was `{seen[:7]}` when you commented and is `{head[:7]}` now. {hint}"
+    return None, f"I cannot tell if `{head[:7]}` was the PR head when you commented. {hint}"
 
 
 def reconcile_opener(repo, head, name, opener_id, token, run_url):
@@ -1104,17 +1127,10 @@ def apply(decision, repo, token, qa_team, run_url, panel_login="loft-bot"):
     checks = decision.get("checks") or [decision["check"]]
     head = checks[0]["head_sha"]
     if head is None:
-        head = comment_head(decision, repo, token, panel_login)
+        head, why = comment_head(decision, repo, token, panel_login)
         if head is None:
-            print("::notice::qa-review-gate: the PR's current head is newer than the comment; "
-                  "comment again (or name the head: /qa-review override <sha> [<reason>])")
-            current = gh_api([f"repos/{repo}/pulls/{decision['pr_number']}"], token)["head"]["sha"][:7]
-            reply(repo, decision["pr_number"],
-                  f"the override did nothing. The commit you named is not the PR head, which is `{current}`."
-                  if decision.get("sha_prefix") else
-                  f"the override did nothing. The current commit `{current}` is newer than your comment. "
-                  f"Check it and comment again, or name the commit: `/qa-review override {current} <reason>`.",
-                  token)
+            print(f"::notice::qa-review-gate: the override did nothing. {why}")
+            reply(repo, decision["pr_number"], f"the override did nothing. {why}", token)
             return None
     for check in checks:
         if check.get("external_id") != OVERRIDE_EXTERNAL_ID and overridden(repo, head, check["name"], token):
