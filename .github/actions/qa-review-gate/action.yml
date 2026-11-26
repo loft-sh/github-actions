@@ -65,6 +65,10 @@ inputs:
     description: 'Comma-separated artifact=path-prefix pairs: which Ginkgo report artifact covers which source tree. One tree by default; vcluster-pro adds oss-ginkgo-report=staging/github.com/loft-sh/vcluster/.'
     required: false
     default: 'ginkgo-report='
+  e2e-workflows:
+    description: 'Comma-separated names of the e2e workflows whose runs count for the test-run check: the same list as the caller''s workflow_run trigger. Empty: only the workflow of the run that finished.'
+    required: false
+    default: ''
   pr-number:
     description: 'sweep mode: grade this one PR under its head queue. Empty: list the open PRs lacking a check and start one run of caller-workflow per PR.'
     required: false
@@ -100,6 +104,7 @@ runs:
         INPUT_CHECK_NAME: ${{ inputs.check-name }}
         INPUT_TEST_CHECK_NAME: ${{ inputs.test-check-name }}
         INPUT_REPORT_TREES: ${{ inputs.report-trees }}
+        INPUT_E2E_WORKFLOWS: ${{ inputs.e2e-workflows }}
         INPUT_PR_NUMBER: ${{ inputs.pr-number }}
         INPUT_QUEUED_SHA: ${{ inputs.queued-sha }}
         INPUT_CALLER_WORKFLOW: ${{ inputs.caller-workflow }}

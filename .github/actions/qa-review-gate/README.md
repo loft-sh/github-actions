@@ -153,10 +153,14 @@ adds no spec publishes nothing here (its `qa-test-run` is already green).
 
 One PR can need several e2e runs before each new spec has run: `/test-e2e` runs with
 different label filters, or a second e2e workflow. So the action reads the reports of
-every finished e2e run of the tested commit (workflow file `e2e*.yaml`, `pull_request`
-or `workflow_dispatch`), oldest first; a newer run's state for a spec replaces an older
-run's. A report artifact is `ginkgo-report`, or `ginkgo-report-<job>` when matrix jobs
-each upload one. The caller lists each e2e workflow under `workflow_run`.
+every finished run that tested the commit, from the workflows named in `e2e-workflows`
+(the caller's `workflow_run` list; empty: only the workflow of the run that finished).
+A fork PR's `/test-e2e` runs are found on the base branch by their run-name. A report
+artifact is `ginkgo-report`, or `ginkgo-report-<job>` when matrix jobs each upload one;
+an expired artifact is left out. Per spec the newest real attempt counts, by the
+artifact's upload time (a re-run keeps the run id). A spec a label filter left out
+(`skipped`, `NumAttempts` 0) never replaces a real attempt, and a dry-run suite counts
+for nothing.
 
 A repo whose e2e workflows each test one source tree lists them in `report-trees`
 (`artifact=path-prefix`; vcluster-pro: `ginkgo-report=` for Pro and
@@ -203,6 +207,7 @@ checkout and the event filter.
 |     bot-prs     | string |  false   |              `"loft-bot:backport/,vcluster-qa-bot[bot]:flake-fixer/"`              |                                                                               Comma-separated login:branch-prefix pairs whose PRs pass <br>both check-runs on every head the <br>bot itself pushed.                                                                                 |
 | caller-workflow | string |  false   |                                                                                    |                                           sweep mode without pr-number: the caller <br>workflow to start per PR, as <br>github.workflow_ref (owner/repo/.github/workflows/<file>@<ref>). Only this listing job <br>needs actions: write.                                            |
 |   check-name    | string |  false   |                                   `"qa-review"`                                    |                                                                                                                           Name of the verdict check-run.                                                                                                                            |
+|  e2e-workflows  | string |  false   |                                                                                    |                                     Comma-separated names of the e2e workflows <br>whose runs count for the test-run <br>check: the same list as the <br>caller's workflow_run trigger. Empty: only the <br>workflow of the run that finished.                                      |
 |  github-token   | string |  false   |                              `"${{ github.token }}"`                               |                                        Token for gh. The calling job <br>must grant checks: write and pull-requests: <br>write; ci mode also needs actions: <br>read, the sweep listing (sweep mode without pr-number) actions: <br>write.                                          |
 |      mode       | string |   true   |                                                                                    | "review" (pull_request_review event), "comment" (issue_comment event), "ci" (workflow_run event of the e2e workflow), <br>"bot" (pull_request event: trusted bot PRs and the QA-scope check) or "sweep" (workflow_dispatch: the QA-scope check for every open PR without a check).  |
 |    org-token    | string |  false   |                                                                                    |                                                                              Token with read:org, used only to <br>read override-teams membership. GITHUB_TOKEN cannot; empty <br>disables the teams.                                                                               |

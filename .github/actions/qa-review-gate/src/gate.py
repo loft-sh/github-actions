@@ -39,6 +39,7 @@ function that creates check-runs.
 
 from fnmatch import fnmatchcase
 import glob
+import io
 import json
 import os
 import re
@@ -46,6 +47,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import zipfile
 
 MARKER = re.compile(
     r"<!--\s*qa-review\s+verdict=(?P<verdict>[a-z_]+)\s+classes=(?P<classes>\S*)"
@@ -75,7 +77,6 @@ VERDICT_EXTERNAL_ID = "qa-review-gate:verdict"
 BASE_SEP = "^"  # never part of a git ref, so the base a run was graded against can follow it
 # A /test-e2e dispatch run names the PR and the commit it tested in its run-name.
 DISPATCH_TITLE = re.compile(r"#(\d+)\b.*\b([0-9a-f]{40})\b")
-E2E_WORKFLOW = re.compile(r"(^|/)e2e[^/]*\.ya?ml")
 SHA_PREFIX = re.compile(r"^[0-9a-f]{7,40}$")
 COMPARE_FILE_CAP = 300  # the compare API lists at most this many files and says nothing when it cuts
 PR_FILES_CAP = 3000  # the PR files API stops here too
@@ -592,17 +593,36 @@ def merge_state(states, key, state):
         states[key] = state
 
 
-def report_specs(report, states=None):
+def report_specs(report, states=None, idle=None):
     """{(file, line): state} for every leaf spec in a Ginkgo JSON report (a list of suites).
-    The file is the runner's absolute path; spec_state matches it by suffix."""
+    The file is the runner's absolute path; spec_state matches it by suffix. A dry-run suite
+    reports `passed` without running, so it is left out. With `idle`, a spec the run never
+    attempted (a label filter skipped it: NumAttempts 0) goes there instead."""
     states = {} if states is None else states
     for suite in report if isinstance(report, list) else []:  # a failure dump beside the report is no report
+        if (suite.get("SuiteConfig") or {}).get("DryRun"):
+            continue
         for spec in suite.get("SpecReports") or []:
             if spec.get("LeafNodeType") in ("It", "Specify", None):
                 loc = spec.get("LeafNodeLocation") or {}
-                merge_state(states, (loc.get("FileName", ""), loc.get("LineNumber", 0)),
+                into = idle if idle is not None and spec.get("NumAttempts", 1) == 0 else states
+                merge_state(into, (loc.get("FileName", ""), loc.get("LineNumber", 0)),
                             spec.get("State", ""))
     return states
+
+
+def latest_states(layers, added):
+    """{(path, line): state} per new spec from (states, idle) report layers, oldest first: its
+    newest real attempt, else the newest report that only skipped it."""
+    found = {}
+    for spec in added:
+        for pick in (0, 1):
+            state = next((v for v in (spec_state(layer[pick], spec) for layer in reversed(layers))
+                          if v is not None), None)
+            if state is not None:
+                found[(spec["path"], spec["line"])] = state
+                break
+    return found
 
 
 def spec_state(states, spec):
@@ -748,25 +768,56 @@ def run_target(run, repo, token):
     return run.get("head_sha", ""), run_pr_number(run, repo, token)
 
 
-def e2e_runs(run, repo, head, base_ref, token):
-    """Every finished e2e run that tested `head`, oldest first, `run` included: one PR can need
-    several runs (label filters, a second e2e workflow) before each new spec has run."""
-    # ponytail: lists by head_sha, so a fork PR's dispatch runs (head_sha = base commit) count only as the triggering run
-    listed = gh_api([f"repos/{repo}/actions/runs?head_sha={head}&status=completed&per_page=100"],
-                    token).get("workflow_runs") or []
+def parse_workflows(text):
+    return {name.strip() for name in (text or "").split(",") if name.strip()}
+
+
+def e2e_runs(run, repo, head, pr_number, base_ref, workflows, token):
+    """Every finished run of the e2e workflows that tested `head`, `run` included: one PR can
+    need several runs (label filters, a second e2e workflow) before each new spec has run.
+    `workflows` (names) are the caller's `workflow_run` list; empty: the workflow of `run`."""
+    workflows = workflows or {run.get("name")}
+
+    def tested(r):
+        named = r.get("event") == "workflow_dispatch" and DISPATCH_TITLE.search(r.get("display_title") or "")
+        return (named.group(2), int(named.group(1))) == (head, pr_number) if named else r.get("head_sha") == head
+    # A fork PR's /test-e2e run has the base commit as head_sha: found on the base branch by its title.
+    # ponytail: the newest 100 dispatch runs of the base branch; page when a head waits behind more
+    listed = [r for query in (f"head_sha={head}", f"branch={base_ref}&event=workflow_dispatch")
+              for r in gh_api([f"repos/{repo}/actions/runs?{query}&status=completed&per_page=100"],
+                              token).get("workflow_runs") or []]
     runs = {r["id"]: r for r in listed
-            if E2E_WORKFLOW.search(r.get("path") or "") and r.get("conclusion") in ("success", "failure")
+            if r.get("name") in workflows and r.get("conclusion") in ("success", "failure")
             and r.get("event") in ("pull_request", "workflow_dispatch")
-            and (DISPATCH_TITLE.search(r.get("display_title") or "") or [None, None, head])[2] == head
-            and run_base(r) in (None, base_ref)}
+            and tested(r) and run_base(r) in (None, base_ref)}
     runs[run["id"]] = run
-    return [runs[i] for i in sorted(runs)]
+    return list(runs.values())
 
 
-def tree_artifacts(names, trees):
-    """{tree: its report artifacts}: the artifact named as the tree, or `<tree>-<job>` per matrix job."""
-    found = {t: sorted(n for n in names if n == t or n.startswith(t + "-")) for t in trees}
-    return {t: a for t, a in found.items() if a}
+def artifact_tree(name, trees):
+    """The tree a report artifact belongs to: named as the tree, or `<tree>-<job>` per matrix job."""
+    return max((t for t in trees if name == t or name.startswith(t + "-")), key=len, default=None)
+
+
+def report_artifacts(runs, repo, trees, token):
+    """The unexpired report artifacts of `runs`, oldest first. A re-run keeps the run id and
+    adds a second artifact of the same name, so the upload time orders the attempts."""
+    found = [a for r in runs
+             for a in gh_api([f"repos/{repo}/actions/runs/{r['id']}/artifacts"], token).get("artifacts") or []
+             if artifact_tree(a["name"], trees) and not a.get("expired")]
+    return sorted(found, key=lambda a: a.get("created_at", ""))
+
+
+def download_report(repo, artifact, dest, token):
+    """Unpack one artifact by id: `gh run download -n` cannot tell two attempts' artifacts apart."""
+    result = subprocess.run(["gh", "api", f"repos/{repo}/actions/artifacts/{artifact['id']}/zip"],
+                            capture_output=True, env={**os.environ, "GH_TOKEN": token}, check=False)
+    if result.returncode:
+        raise GateError(f"artifact {artifact['id']} download failed: {result.stderr.decode(errors='replace').strip()}")
+    try:
+        zipfile.ZipFile(io.BytesIO(result.stdout)).extractall(dest)
+    except zipfile.BadZipFile as error:
+        raise GateError(f"artifact {artifact['id']} is no zip: {error}") from error
 
 
 def pr_diff(repo, base_ref, head_sha, token):
@@ -790,7 +841,7 @@ def ask_person(test_check, head, pr_number, title, detail):
             "request_qa_review": False, "pr_number": pr_number}
 
 
-def collect_ci(event, repo, token, test_check="qa-test-run", trees=None):
+def collect_ci(event, repo, token, test_check="qa-test-run", trees=None, workflows=None):
     """Fetch the diff and the Ginkgo report(s) for a finished e2e run, then decide."""
     trees = trees or {REPORT_ARTIFACT: ""}
     run = event.get("workflow_run") or {}
@@ -826,10 +877,9 @@ def collect_ci(event, repo, token, test_check="qa-test-run", trees=None):
                                          str(error)))
     if not added:
         return {"skip": "the PR adds no e2e spec"}
-    uploads = [(r["id"], tree_artifacts(
-        [a["name"] for a in gh_api([f"repos/{repo}/actions/runs/{r['id']}/artifacts"], token)
-         .get("artifacts") or []], trees)) for r in e2e_runs(run, repo, head, base_ref, token)]
-    reported = [t for t in trees if any(t in found for _, found in uploads)]
+    artifacts = report_artifacts(e2e_runs(run, repo, head, pr_number, base_ref, workflows, token),
+                                 repo, trees, token)
+    reported = [t for t in trees if any(artifact_tree(a["name"], trees) == t for a in artifacts)]
     known = tree_results(repo, head, test_check, token, base_ref) if len(trees) > 1 else {}
     if not reported:
         # A run that uploaded nothing (build failure) must not drop the other tree's result.
@@ -843,22 +893,20 @@ def collect_ci(event, repo, token, test_check="qa-test-run", trees=None):
         if known:
             decision["check"]["external_id"] = trees_id(known)
         return graded_against(decision)
-    states = {}
+    layers = []
     with tempfile.TemporaryDirectory() as tmp:
-        for run_id, found in uploads:
-            for artifact in (a for names in found.values() for a in names):
-                try:
-                    gh(["run", "download", str(run_id), "-R", repo, "-n", artifact, "-D",
-                        os.path.join(tmp, str(run_id), artifact)], token)
-                except GateError as error:
-                    return graded_against(ask_person(
-                        test_check, head, pr_number,
-                        f"QA test run: {artifact} could not be read, a person checks the new specs", str(error)))
-            run_states = {}
-            for path in sorted(glob.glob(os.path.join(tmp, str(run_id), "**", "*.json"), recursive=True)):
+        for n, artifact in enumerate(artifacts):
+            try:
+                download_report(repo, artifact, os.path.join(tmp, str(n)), token)
+            except GateError as error:
+                return graded_against(ask_person(
+                    test_check, head, pr_number,
+                    f"QA test run: {artifact['name']} could not be read, a person checks the new specs", str(error)))
+            layers.append(({}, {}))
+            for path in sorted(glob.glob(os.path.join(tmp, str(n), "**", "*.json"), recursive=True)):
                 with open(path, encoding="utf-8") as fh:
-                    report_specs(json.load(fh), run_states)
-            states.update(run_states)  # a newer run's state for a spec replaces an older run's
+                    report_specs(json.load(fh), *layers[-1])
+    states = latest_states(layers, added)
     return graded_against(decide_ci(run, pr_number, added, states, test_check, trees, reported, known))
 
 
@@ -1104,7 +1152,8 @@ def main():
                                   member=lambda login: team_member(login, teams, org_token))
     elif mode == "ci":
         decision = collect_ci(event, repo, token, test_check,
-                              parse_trees(os.environ.get("INPUT_REPORT_TREES", DEFAULT_TREES)))
+                              parse_trees(os.environ.get("INPUT_REPORT_TREES", DEFAULT_TREES)),
+                              parse_workflows(os.environ.get("INPUT_E2E_WORKFLOWS", "")))
     elif mode == "bot":
         decision = decide_pull_request(event, repo, token,
                                        parse_bots(os.environ.get("INPUT_BOT_PRS", DEFAULT_BOTS)),
