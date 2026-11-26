@@ -489,6 +489,139 @@ def test_push_false_leaves_the_remote_alone(repo, monkeypatch):
     assert git(repo, "rev-parse", "origin/backport/release-4.12/pr-1") == before
 
 
+# -- multi-commit backport branches ----------------------------------------
+# The backport bot repeats pr-<n> once per backported commit and cuts the joined refs at
+# 200 characters (the rule link-backport-prs applies), so a PR merged as several commits
+# gets backport/<target>/pr-<n>_pr-<n>.
+
+@pytest.mark.parametrize("candidate,want", [
+    ("backport/release-4.12/pr-1", True),
+    ("backport/release-4.12/pr-1_pr-1", True),
+    ("backport/release-4.12/pr-1_pr-1_pr-1", True),
+    ("backport/release-4.12/pr-11", False),
+    ("backport/release-4.12/pr-11_pr-11", False),
+    ("backport/release-4.12/pr-1_pr-11", False),
+    ("backport/release-4.12/pr-1_", False),
+    ("backport/release-5.0/pr-1_pr-1", False),
+])
+def test_backport_branch_matches_repeated_refs(candidate, want):
+    assert fix.is_backport_branch(candidate, "backport/release-4.12/pr-1") is want
+
+
+def test_backport_branch_without_a_slash_matches_itself_only():
+    assert fix.is_backport_branch("hotfix", "hotfix")
+    assert not fix.is_backport_branch("hotfix_hotfix", "hotfix")
+
+
+def test_backport_branch_matches_refs_cut_at_200():
+    cut = ("pr-9330_" * 30)[:200]
+    assert fix.is_backport_branch("backport/release-4.12/" + cut, "backport/release-4.12/pr-9330")
+    # Below 200 nothing was cut, so a partial ref ("...pr-93") is not the bot's name.
+    assert not fix.is_backport_branch("backport/release-4.12/" + cut[:197], "backport/release-4.12/pr-9330")
+
+
+def push_backport_as(repo: Path, name: str) -> None:
+    git(repo, "checkout", "-q", "-B", name)
+    commit_all(repo, "backport commit")
+    git(repo, "push", "-q", "origin", name)
+
+
+def test_multi_commit_backport_branch_is_fixed(repo):
+    write(repo, "pkg/peer/new.go", 'package peer\n\nimport _ "example.com/acme/app/v5/pkg/util"\n')
+    push_backport_as(repo, "backport/release-4.12/pr-1_pr-1")
+    assert fix.main() == 0
+    out = outputs(repo)
+    assert out["conclusion"] == "fixed"
+    assert out["branch"] == "backport/release-4.12/pr-1_pr-1"
+    git(repo, "fetch", "-q", "origin")
+    assert "app/v4/pkg/util" in git(repo, "show", "origin/backport/release-4.12/pr-1_pr-1:pkg/peer/new.go")
+
+
+def test_another_prs_branch_is_never_picked(repo):
+    write(repo, "pkg/peer/new.go", 'package peer\n\nimport _ "example.com/acme/app/v5/pkg/util"\n')
+    # Listed by the pr-1_* pattern, so this exercises the name filter.
+    push_backport_as(repo, "backport/release-4.12/pr-1_pr-11")
+    assert fix.main() == 0
+    out = outputs(repo)
+    assert out["conclusion"] == "skipped"
+    assert "no backport/release-4.12/pr-1 branch" in out["reason"]
+
+
+def test_two_candidate_branches_skip_and_name_both(repo):
+    write(repo, "pkg/peer/new.go", 'package peer\n\nimport _ "example.com/acme/app/v5/pkg/util"\n')
+    push_backport_as(repo, "backport/release-4.12/pr-1_pr-1")
+    git(repo, "push", "-q", "origin", "backport/release-4.12/pr-1_pr-1:refs/heads/backport/release-4.12/pr-1_pr-1_pr-1")
+    before = git(repo, "rev-parse", "HEAD")
+    assert fix.main() == 0
+    out = outputs(repo)
+    assert out["conclusion"] == "skipped"
+    assert "backport/release-4.12/pr-1_pr-1," in out["reason"] and "pr-1_pr-1_pr-1" in out["reason"]
+    git(repo, "fetch", "-q", "origin")
+    assert git(repo, "rev-parse", "origin/backport/release-4.12/pr-1_pr-1") == before
+
+
+def test_exact_and_multi_commit_branches_skip_and_name_both(repo):
+    write(repo, "pkg/peer/new.go", 'package peer\n\nimport _ "example.com/acme/app/v5/pkg/util"\n')
+    push_backport_as(repo, "backport/release-4.12/pr-1")
+    git(repo, "push", "-q", "origin", "backport/release-4.12/pr-1:refs/heads/backport/release-4.12/pr-1_pr-1")
+    before = git(repo, "rev-parse", "HEAD")
+    assert fix.main() == 0
+    out = outputs(repo)
+    assert out["conclusion"] == "skipped"
+    assert "backport/release-4.12/pr-1, backport/release-4.12/pr-1_pr-1" in out["reason"]
+    git(repo, "fetch", "-q", "origin")
+    for name in ("pr-1", "pr-1_pr-1"):
+        assert git(repo, "rev-parse", f"origin/backport/release-4.12/{name}") == before
+
+
+def test_ai_and_comment_steps_use_the_resolved_branch():
+    # A renamed fix step would fall back to the input silently, and the AI pass and the
+    # comment would then miss a multi-commit backport's PR.
+    steps = (Path(__file__).parents[1] / "action.yml").read_text().split("\n    - name: ")
+    assert any("\n      id: fix\n" in s for s in steps)
+    resolved = "BACKPORT_BRANCH: ${{ steps.fix.outputs.branch || inputs.backport-branch }}"
+    for name in ("Apply AI resolutions that pass go vet", "Write the backport PR comment"):
+        step = next(s for s in steps if s.startswith(name))
+        assert resolved in step, name
+
+
+@pytest.mark.parametrize("candidate", [
+    "manual/release-4.12-fix_release-4.12-fix",
+    "backport/release-4.12/pr-x_pr-x",
+])
+def test_only_canonical_backport_heads_expand(candidate):
+    # Only backport/<target>/pr-<number>, the bot's name, has a multi-commit form.
+    assert not fix.is_backport_branch(candidate, candidate.rsplit("_", 1)[0])
+
+
+def test_other_head_missing_skips_without_using_a_lookalike(repo, monkeypatch):
+    write(repo, "pkg/peer/new.go", 'package peer\n\nimport _ "example.com/acme/app/v5/pkg/util"\n')
+    push_backport_as(repo, "manual/release-4.12-fix_release-4.12-fix")
+    before = git(repo, "rev-parse", "HEAD")
+    monkeypatch.setenv("BACKPORT_BRANCH", "manual/release-4.12-fix")
+    assert fix.main() == 0
+    out = outputs(repo)
+    assert out["conclusion"] == "skipped"
+    assert "no manual/release-4.12-fix branch" in out["reason"]
+    git(repo, "fetch", "-q", "origin")
+    assert git(repo, "rev-parse", "origin/manual/release-4.12-fix_release-4.12-fix") == before
+
+
+def test_other_head_is_fixed_exactly_next_to_a_lookalike(repo, monkeypatch):
+    write(repo, "pkg/peer/new.go", 'package peer\n\nimport _ "example.com/acme/app/v5/pkg/util"\n')
+    push_backport_as(repo, "manual/release-4.12-fix")
+    git(repo, "push", "-q", "origin", "manual/release-4.12-fix:refs/heads/manual/release-4.12-fix_release-4.12-fix")
+    before = git(repo, "rev-parse", "HEAD")
+    monkeypatch.setenv("BACKPORT_BRANCH", "manual/release-4.12-fix")
+    assert fix.main() == 0
+    out = outputs(repo)
+    assert out["conclusion"] == "fixed"
+    assert out["branch"] == "manual/release-4.12-fix"
+    git(repo, "fetch", "-q", "origin")
+    assert git(repo, "rev-parse", "origin/manual/release-4.12-fix") != before
+    assert git(repo, "rev-parse", "origin/manual/release-4.12-fix_release-4.12-fix") == before
+
+
 def test_missing_backport_branch_skips(repo, monkeypatch):
     monkeypatch.setenv("BACKPORT_BRANCH", "backport/release-4.12/pr-404")
     assert fix.main() == 0
