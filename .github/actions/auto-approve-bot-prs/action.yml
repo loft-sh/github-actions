@@ -11,7 +11,7 @@ inputs:
   trusted-authors:
     description: 'Comma-separated list of trusted bot logins'
     required: false
-    default: 'renovate[bot],loft-bot,github-actions[bot]'
+    default: 'renovate[bot],ops-dependency-updater[bot],loft-bot,github-actions[bot]'
   merge-method:
     description: 'Merge method (squash|merge|rebase)'
     required: false
