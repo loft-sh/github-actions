@@ -1,5 +1,5 @@
 name: Approve backports on CI completion
-description: Evaluate current required checks once after a CI workflow completes; never poll or merge.
+description: Evaluate required checks after CI completion or on a reconciliation schedule; never merge.
 inputs:
   github-token:
     description: Existing approval credential, with an identity distinct from the PR author.
