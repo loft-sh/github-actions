@@ -194,6 +194,8 @@ warning and stays green.
 Every check-run but an out-of-scope pass ends its summary with "This result is for commit
 `<sha>` only. A new commit resets this check.": a check-run belongs to one commit, and an
 author who pushes after a review or an e2e run must ask for them again.
+A green `qa-review` on a PR in QA scope also says that the check does not replace an approval:
+the PR still needs an approving review from a teammate.
 
 The action creates check-runs with the job's `GITHUB_TOKEN`; the caller grants
 `checks: write` and `pull-requests: write` (`actions: read` too for `ci`). It

@@ -780,6 +780,21 @@ def test_every_result_but_an_out_of_scope_pass_says_it_is_for_one_commit(monkeyp
     assert (note in posted[0]["output"]["summary"]) is noted
 
 
+@pytest.mark.parametrize("name, conclusion, title, noted", [
+    ("qa-review", "success", "QA review: passed", True),
+    ("qa-review", "success", "QA review: overridden by @x", True),
+    ("qa-review", "failure", "QA review: blocked (1 weak test)", False),
+    ("qa-review", "success", "QA review: out of scope, no QA-owned path (base main@1234567)", False),
+    ("qa-test-run", "success", "QA test run: all 2 new spec(s) ran and passed", False)])
+def test_a_green_review_check_in_scope_says_an_approval_is_still_needed(monkeypatch, name, conclusion, title, noted):
+    posted = []
+    monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None: posted.append(payload) or {"id": 1} if payload else {})
+    decision = {"check": {"name": name, "head_sha": HEAD, "conclusion": conclusion, "title": title, "summary": "s"},
+                "request_qa_review": False, "pr_number": 12}
+    gate.apply(decision, "o/r", "tok", "", "https://run")
+    assert ("does not replace an approval" in posted[0]["output"]["summary"]) is noted
+
+
 def test_a_scope_write_keeps_a_request_for_a_person_that_landed_before_it(monkeypatch, capsys):
     # /qa-review human runs in another queue: it wrote after decide_scope read ownership and
     # before apply read the newest id, so no reconciliation would find it. The waiting check
