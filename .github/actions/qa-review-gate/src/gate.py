@@ -920,6 +920,10 @@ def ask_person(test_check, head, pr_number, title, detail):
 def collect_ci(event, repo, token, test_check="qa-test-run", trees=None, workflows=None):
     """Fetch the diff and the Ginkgo report(s) for a finished e2e run, then decide."""
     trees = trees or {REPORT_ARTIFACT: ""}
+    if "check_run" in event:
+        event = {"workflow_run": run_of_check(event, repo, token)}
+        if not event["workflow_run"]:
+            return {"skip": "the check links no e2e run"}
     run = event.get("workflow_run") or {}
     if run.get("conclusion") not in ("success", "failure"):
         return {"skip": f"e2e run ended {run.get('conclusion') or 'unknown'}, nothing to compare"}
@@ -1265,8 +1269,6 @@ def main():
         decision = decide_comment(event, logins, check_name, test_check,
                                   member=lambda login: team_member(login, teams, org_token))
     elif mode == "ci":
-        if "check_run" in event:
-            event = {"workflow_run": run_of_check(event, repo, token)}
         decision = collect_ci(event, repo, token, test_check,
                               parse_trees(os.environ.get("INPUT_REPORT_TREES", DEFAULT_TREES)),
                               parse_workflows(os.environ.get("INPUT_E2E_WORKFLOWS", "")))

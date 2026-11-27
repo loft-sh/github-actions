@@ -2113,7 +2113,8 @@ def test_a_check_that_links_the_comment_run_is_not_an_e2e_run(monkeypatch):
     monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None: {"event": "issue_comment", "status": "in_progress"})
     event = {"check_run": {"details_url": "https://github.com/o/r/actions/runs/78"}}
     assert gate.run_of_check(event, "o/r", "tok", wait=lambda s: pytest.fail("must not wait")) == {}
-    assert "skip" in gate.collect_ci({"workflow_run": {}}, "o/r", "tok")
+    assert gate.collect_ci(event, "o/r", "tok") == {"skip": "the check links no e2e run"}
+    assert gate.collect_ci({"check_run": {"details_url": "https://cursor.com/docs/bugbot"}}, "o/r", "tok") == {"skip": "the check links no e2e run"}
 
 
 def test_a_fork_pr_check_grades_the_commit_its_run_names(monkeypatch):
