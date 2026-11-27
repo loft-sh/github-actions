@@ -14,7 +14,8 @@ import uuid
 MAX_BYTES = 4 * 1024 * 1024
 SHA = re.compile(r'^[0-9a-f]{40}$')
 # Seconds to wait before each retry of the commits that had no PR association.
-RETRY_DELAYS = (2, 4)
+RETRY_DELAYS = (2, 4, 8, 16)
+API_RETRY_DELAYS = (1, 2, 4)
 
 class Reject(Exception):
     pass
@@ -59,13 +60,18 @@ class API:
         request = urllib.request.Request(self.root + '/repos/' + self.repo + path,
             headers={'Authorization': 'Bearer ' + self.token, 'Accept': 'application/vnd.github+json',
                      'X-GitHub-Api-Version': '2022-11-28'})
-        try:
-            with urllib.request.build_opener(SafeRedirect()).open(request, timeout=30) as response:
-                raw = response.read(MAX_BYTES + 1)
-        except urllib.error.HTTPError as exc:
-            raise RuntimeError('GitHub API request failed (HTTP %d)' % exc.code) from exc
-        except urllib.error.URLError as exc:
-            raise RuntimeError('GitHub API request failed') from exc
+        for attempt in range(len(API_RETRY_DELAYS) + 1):
+            try:
+                with urllib.request.build_opener(SafeRedirect()).open(request, timeout=30) as response:
+                    raw = response.read(MAX_BYTES + 1)
+                break
+            except urllib.error.HTTPError as exc:
+                if (exc.code != 429 and not 500 <= exc.code <= 599) or attempt == len(API_RETRY_DELAYS):
+                    raise RuntimeError('GitHub API request failed (HTTP %d)' % exc.code) from exc
+            except (urllib.error.URLError, OSError) as exc:
+                if attempt == len(API_RETRY_DELAYS):
+                    raise RuntimeError('GitHub API request failed after retries') from exc
+            time.sleep(API_RETRY_DELAYS[attempt])
         if len(raw) > MAX_BYTES:
             raise Reject('API response too large')
         return parse_json(raw)
