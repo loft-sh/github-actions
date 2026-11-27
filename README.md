@@ -925,7 +925,7 @@ jobs:
       statuses: read    # required — CI poll reads /commits/:sha/status
     uses: loft-sh/github-actions/.github/workflows/auto-approve-bot-prs.yaml@main
     with:
-      trusted-authors: 'renovate[bot],loft-bot,github-actions[bot],dependabot[bot]'
+      trusted-authors: 'renovate[bot],ops-dependency-updater[bot],loft-bot,github-actions[bot],dependabot[bot]'
       auto-merge: false
     secrets:
       gh-access-token: ${{ secrets.GH_ACCESS_TOKEN }}

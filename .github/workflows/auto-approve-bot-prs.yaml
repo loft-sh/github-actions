@@ -6,7 +6,7 @@ on:
       trusted-authors:
         description: 'Comma-separated list of trusted bot logins'
         type: string
-        default: 'renovate[bot],loft-bot,github-actions[bot]'
+        default: 'renovate[bot],ops-dependency-updater[bot],loft-bot,github-actions[bot]'
       merge-method:
         description: 'Merge method (squash, merge, rebase)'
         type: string

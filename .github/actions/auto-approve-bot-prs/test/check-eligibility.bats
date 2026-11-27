@@ -2,7 +2,7 @@
 # Decision-table coverage for check-eligibility.sh.
 
 SCRIPT="$BATS_TEST_DIRNAME/../src/check-eligibility.sh"
-DEFAULT='renovate[bot],loft-bot,github-actions[bot],dependabot[bot]'
+DEFAULT='renovate[bot],ops-dependency-updater[bot],loft-bot,github-actions[bot],dependabot[bot]'
 load assertions
 
 setup() { export GITHUB_OUTPUT; GITHUB_OUTPUT="$(mktemp)"; }
@@ -44,6 +44,19 @@ assert_kv() {
 
 @test "renovate/ branch → eligible" {
   run_script "$DEFAULT" 'renovate[bot]' 'anything' 'renovate/pkg'; assert_kv eligible true
+}
+
+@test "self-hosted Renovate (ops-dependency-updater[bot]) on shipped default → eligible" {
+  local action_yml="$BATS_TEST_DIRNAME/../action.yml"
+  local workflow_yml="$BATS_TEST_DIRNAME/../../../workflows/auto-approve-bot-prs.yaml"
+  local action_default workflow_default
+  action_default=$(grep -A3 '^  trusted-authors:' "$action_yml" | sed -n "s/^ *default: '\(.*\)'$/\1/p")
+  workflow_default=$(grep -A3 '^      trusted-authors:' "$workflow_yml" | sed -n "s/^ *default: '\(.*\)'$/\1/p")
+  [ -n "$action_default" ]; [ "$action_default" = "$workflow_default" ]
+  run_script "$action_default" 'ops-dependency-updater[bot]' 'chore(deps): update foo' 'renovate/foo'
+  [ "$status" -eq 0 ]; assert_kv eligible true
+  run_script "$action_default" 'renovate[bot]' 'chore(deps): update foo' 'renovate/foo'
+  [ "$status" -eq 0 ]; assert_kv eligible true
 }
 
 @test "update-platform-version- branch → eligible" {
