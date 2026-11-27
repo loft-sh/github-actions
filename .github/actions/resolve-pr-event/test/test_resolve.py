@@ -3,6 +3,8 @@ import json
 import os
 import pathlib
 import subprocess
+import urllib.error
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -332,7 +334,7 @@ def test_unassociated_commits_retry_as_one_batch_then_skip(monkeypatch):
     api, unassociated = EmptyAPI(), []
     assert r.resolve(api, push(), 'push', unassociated=unassociated) == []
     assert unassociated == [B, C]
-    assert len([c for c in api.calls if c.startswith('/commits/')]) == 6
+    assert len([c for c in api.calls if c.startswith('/commits/')]) == 2 * (1 + len(r.RETRY_DELAYS))
     # One wait per retry round, not per commit.
     assert sleeps == list(r.RETRY_DELAYS)
 
@@ -379,3 +381,54 @@ def test_commit_association_retry_succeeds(monkeypatch):
             return super().get(path)
     monkeypatch.setattr(r.time, 'sleep', lambda _: None)
     assert [e['number'] for e in r.resolve(DelayedAPI(), push(), 'push')] == [1, 2]
+
+def test_commit_association_can_arrive_on_last_retry(monkeypatch):
+    class DelayedAPI(FakeAPI):
+        attempts = 0
+        def get(self, path):
+            if path.startswith('/commits/'):
+                self.attempts += 1
+                if self.attempts <= len(r.RETRY_DELAYS):
+                    return []
+            return super().get(path)
+    monkeypatch.setattr(r.time, 'sleep', lambda _: None)
+    assert r.associated_numbers(DelayedAPI(), [B]) == ({1}, [])
+
+@pytest.mark.parametrize('error', [
+    urllib.error.HTTPError('https://api.github.com', 500, 'error', {}, None),
+    urllib.error.HTTPError('https://api.github.com', 429, 'error', {}, None),
+    urllib.error.URLError('network error'),
+    TimeoutError('timeout'),
+])
+def test_api_retries_transient_errors(monkeypatch, error):
+    response = MagicMock()
+    response.__enter__.return_value.read.return_value = b'{"ok": true}'
+    opener = MagicMock()
+    opener.open.side_effect = [error, response]
+    monkeypatch.setattr(r.urllib.request, 'build_opener', lambda *args: opener)
+    sleeps = []
+    monkeypatch.setattr(r.time, 'sleep', sleeps.append)
+    assert r.API('token', 'org/repo').get('') == {'ok': True}
+    assert opener.open.call_count == 2
+    assert sleeps == [1]
+
+@pytest.mark.parametrize('code,attempts', [(403, 1), (503, 4), (429, 4)])
+def test_api_fails_after_bounded_retries_or_permanent_error(monkeypatch, code, attempts):
+    opener = MagicMock()
+    opener.open.side_effect = urllib.error.HTTPError('https://api.github.com', code, 'error', {}, None)
+    monkeypatch.setattr(r.urllib.request, 'build_opener', lambda *args: opener)
+    sleeps = []
+    monkeypatch.setattr(r.time, 'sleep', sleeps.append)
+    with pytest.raises(RuntimeError, match='HTTP %d' % code):
+        r.API('token', 'org/repo').get('')
+    assert opener.open.call_count == attempts
+    assert sleeps == list(r.API_RETRY_DELAYS[:attempts - 1])
+
+def test_api_network_retry_exhaustion_fails(monkeypatch):
+    opener = MagicMock()
+    opener.open.side_effect = urllib.error.URLError('network error')
+    monkeypatch.setattr(r.urllib.request, 'build_opener', lambda *args: opener)
+    monkeypatch.setattr(r.time, 'sleep', lambda _: None)
+    with pytest.raises(RuntimeError, match='failed after retries'):
+        r.API('token', 'org/repo').get('')
+    assert opener.open.call_count == 4
