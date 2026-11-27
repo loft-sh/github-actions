@@ -102,7 +102,6 @@ jobs:
       pull-requests: write
       checks: read
       statuses: read
-    continue-on-error: true
     steps:
       # Always trusted shared code, never code or artifacts from the completed PR.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

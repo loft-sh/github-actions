@@ -13,6 +13,24 @@ class Skip(Exception):
     """An expected policy miss, reevaluated on the next completion event."""
 
 
+class ApiFailure(Exception):
+    """A sanitized gh failure, safe to include in an Actions annotation."""
+
+
+def operation(path, payload):
+    if path == "graphql":
+        return "read branch protection"
+    for fragment, name in (("/rules/branches/", "read branch rules"),
+                           ("/check-runs", "read check runs"),
+                           ("/statuses", "read commit statuses"),
+                           ("/reviews", "submit review" if payload is not None else "read reviews"),
+                           ("/commits/", "find commit pull requests"),
+                           ("/pulls", "read pull requests")):
+        if fragment in path:
+            return name
+    return "read approver identity" if path == "user" else "GitHub API request"
+
+
 class GitHub:
     def __init__(self, token):
         if not token:
@@ -25,10 +43,15 @@ class GitHub:
             args += ["--paginate", "--slurp"]
         if payload is not None:
             args += ["--input", "-"]
-        result = subprocess.run(
-            args, input=json.dumps(payload) if payload is not None else None,
-            env=self.env, text=True, capture_output=True, timeout=120, check=True,
-        )
+        try:
+            result = subprocess.run(
+                args, input=json.dumps(payload) if payload is not None else None,
+                env=self.env, text=True, capture_output=True, timeout=120, check=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            status = re.search(r"\bHTTP ([45][0-9]{2})\b", exc.stderr or "")
+            detail = f"HTTP {status.group(1)}" if status else f"exit code {exc.returncode}"
+            raise ApiFailure(f"gh api: {operation(path, payload)}: {detail}") from None
         data = json.loads(result.stdout)
         if isinstance(data, dict) and data.get("errors"):
             raise ValueError("GraphQL read failed")
@@ -178,6 +201,7 @@ def reconcile(reader, approver, repo, authors, skip_labels):
 
 
 def evaluate_candidates(reader, approver, repo, candidates, authors, skip_labels, sha=None):
+    failures = 0
     for candidate in candidates:
         try:
             evaluate_candidate(reader, approver, repo, candidate, authors, skip_labels, sha)
@@ -185,7 +209,11 @@ def evaluate_candidates(reader, approver, repo, candidates, authors, skip_labels
             if sha is not None:
                 raise
             # A broken candidate must not starve other PRs. Avoid printing API data.
-            print(f"::warning::Reconcile candidate failed ({type(exc).__name__}); retry on next schedule.")
+            failures += 1
+            detail = str(exc) if isinstance(exc, ApiFailure) else type(exc).__name__
+            print(f"::warning::Reconcile candidate failed ({detail}); retry on next schedule.")
+    if failures:
+        raise RuntimeError(f"{failures} reconciliation candidate(s) failed")
 
 
 def evaluate_candidate(reader, approver, repo, candidate, authors, skip_labels, sha):
@@ -251,13 +279,12 @@ def main():
             evaluate(reader, approver, repo, event, authors, labels)
     except Exception as exc:
         # Never print an API body, token, or attacker-controlled workflow command.
-        status = None
-        if isinstance(exc, subprocess.CalledProcessError):
-            status = re.search(r"\bHTTP ([45][0-9]{2})\b", exc.stderr or "")
-        detail = f", HTTP {status.group(1)}" if status else ""
-        print(f"::warning::Completion approval skipped ({type(exc).__name__}{detail}); "
+        detail = str(exc) if isinstance(exc, ApiFailure) else type(exc).__name__
+        print(f"::warning::Completion approval failed ({detail}); "
               "inspect required checks and token permissions, then rerun this workflow.")
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

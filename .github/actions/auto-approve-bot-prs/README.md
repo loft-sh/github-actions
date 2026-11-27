@@ -2,8 +2,9 @@
 
 Approves PRs from trusted bot authors whose title or branch matches a known
 safe pattern, after all other CI checks pass. No API, parse, permission or
-input-validation failure exits non-zero: each degrades to an annotated skip and
-exit 0.
+input-validation failure in the pull request polling path exits non-zero: each
+degrades to an annotated skip and exit 0. The completion path reports unexpected
+errors as a failed job.
 
 Refusing to approve is annotated at **error** level, because it is a real
 outcome that something downstream may be blocking on (a release cut waiting for
@@ -78,10 +79,11 @@ This privileged handler checks out only the trusted shared action from `main`.
 It consumes no PR code or artifacts. CI reads use the caller's `GITHUB_TOKEN`
 (or existing `ci-read-token`); review reads/writes use the existing approval
 credential. No new secret or organization setting is needed. Branch rules need
-only metadata read access. API or schema errors log a warning and skip approval;
+only metadata read access. API or schema errors log a warning and fail the job;
 policy skips log the PR number and reason. The schedule lists open PRs and runs
 the same gate, so a missed event or transient error is retried on a later run.
-Candidate errors do not stop the remaining PRs. GitHub schedules can be delayed
+Candidate errors do not stop the remaining PRs, but fail the job after the sweep.
+GitHub schedules can be delayed
 or disabled, so timely recovery depends on the schedule remaining active.
 
 Ship the shared change and verify `auto-approve-bot-prs/v1` has advanced before
