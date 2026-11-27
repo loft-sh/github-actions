@@ -29,6 +29,17 @@ checks out no PR code.
 See [resolve-pr-event](./.github/actions/resolve-pr-event/README.md) for the caller
 pattern, permissions, inputs, and outputs.
 
+### S3 artifact upload
+
+Uploads release files to a private S3 bucket under one prefix with a sha256
+manifest written last. A prefix that already has a manifest is refused, so a
+release cannot be overwritten.
+
+Location: `.github/actions/s3-artifact-upload`
+
+See [S3 artifact upload](./.github/actions/s3-artifact-upload/README.md) for the
+caller pattern and the permissions it needs.
+
 ### GHCR tag guard
 
 Checks every version tag before publication. Existing digests and ambiguous
