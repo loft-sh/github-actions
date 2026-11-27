@@ -31,8 +31,9 @@ class FakeGitHub:
                             "repo": {"full_name": REPO}},
                    "base": {"ref": "release-5.0", "sha": "b" * 40,
                             "repo": {"full_name": REPO}}}
-        self.classic = {"requiresStatusChecks": True, "requiredStatusChecks": [
-            {"context": "build", "app": {"databaseId": 15368}}]}
+        self.protection = {"enabled": True, "required_status_checks": {
+            "enforcement_level": "non_admins", "contexts": ["build"],
+            "checks": [{"context": "build", "app_id": 15368}]}}
         self.rules = []
         self.runs = [check()]
         self.statuses = []
@@ -46,8 +47,8 @@ class FakeGitHub:
     def api(self, path, payload=None, paginate=False):
         if self.fail_path and self.fail_path in path:
             raise RuntimeError("API unavailable")
-        if path == "graphql":
-            return {"data": {"repository": {"ref": {"branchProtectionRule": self.classic}}}}
+        if path == f"repos/{REPO}/branches/release-5.0":
+            return {"protection": self.protection}
         if path.endswith("/reviews") and payload:
             self.writes.append(payload)
             review = {"id": len(self.reviews) + 1, "user": {"login": "approver"},
@@ -247,12 +248,32 @@ class CompletionTests(unittest.TestCase):
         self.assertEqual(len(self.api.writes), 1)
 
     def test_empty_gate_refuses_approval(self):
-        self.api.classic = None
+        self.api.protection["enabled"] = False
         self.evaluate()
         self.assertEqual(self.api.writes, [])
 
+    def test_missing_classic_app_bindings_block_even_when_ruleset_has_the_context(self):
+        self.api.protection["required_status_checks"]["checks"] = []
+        self.api.rules = [{"type": "required_status_checks", "parameters": {
+            "required_status_checks": [{"context": "build"}]}}]
+        self.evaluate()
+        self.assertEqual(self.api.writes, [])
+
+    def test_ruleset_gates_when_classic_status_checks_are_disabled(self):
+        for classic in ({"enforcement_level": "off", "contexts": [], "checks": []}, None):
+            with self.subTest(classic=classic):
+                self.api = FakeGitHub()
+                self.api.protection["required_status_checks"] = classic
+                self.api.rules = [{"type": "required_status_checks", "parameters": {
+                    "required_status_checks": [{"context": "lint", "integration_id": 15368}]}}]
+                self.evaluate()
+                self.assertEqual(self.api.writes, [])
+                self.api.runs = [check("lint")]
+                self.evaluate()
+                self.assertEqual(len(self.api.writes), 1)
+
     def test_api_failures_propagate_without_approval(self):
-        for endpoint in ("graphql", "/rules/", "/check-runs?", "/statuses?", "/reviews?"):
+        for endpoint in ("/branches/", "/rules/", "/check-runs?", "/statuses?", "/reviews?"):
             with self.subTest(endpoint=endpoint):
                 self.api.fail_path = endpoint
                 with self.assertRaises(RuntimeError):
@@ -265,7 +286,7 @@ class CompletionTests(unittest.TestCase):
         self.assertEqual(self.api.writes, [])
 
     def test_unpinned_legacy_status_can_satisfy_requirement(self):
-        self.api.classic["requiredStatusChecks"][0]["app"] = None
+        self.api.protection["required_status_checks"]["checks"][0]["app_id"] = None
         self.api.runs = []
         self.api.statuses = [{"context": "build", "id": 1, "state": "pending"}]
         self.evaluate()
@@ -324,10 +345,20 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(kwargs["env"]["GH_TOKEN"], "read-token")
 
     @patch.object(completion.subprocess, "run")
-    def test_graphql_errors_do_not_become_empty_gate(self, run):
-        run.return_value.stdout = '{"data":null,"errors":[{"message":"denied"}]}'
-        with self.assertRaises(ValueError):
-            completion.GitHub("read-token").api("graphql", {"query": "query {}"})
+    def test_required_checks_use_rest_with_read_identity_and_quoted_branch(self, run):
+        run.side_effect = [
+            subprocess.CompletedProcess([], 0, stdout=json.dumps({"protection": FakeGitHub().protection})),
+            subprocess.CompletedProcess([], 0, stdout="[[]]"),
+        ]
+        checks = completion.required_checks(completion.GitHub("read-token"), REPO, "release/5.0")
+        self.assertEqual(checks, {("build", 15368)})
+        self.assertEqual([call.args[0] for call in run.call_args_list], [
+            ["gh", "api", f"repos/{REPO}/branches/release%2F5.0"],
+            ["gh", "api", f"repos/{REPO}/rules/branches/release%2F5.0?per_page=100", "--paginate", "--slurp"],
+        ])
+        for call in run.call_args_list:
+            self.assertEqual(call.kwargs["env"]["GH_TOKEN"], "read-token")
+            self.assertIsNone(call.kwargs["input"])
 
     @patch.dict(os.environ, {"GITHUB_EVENT_NAME": "workflow_run"}, clear=True)
     def test_missing_configuration_is_annotated_without_crashing(self):

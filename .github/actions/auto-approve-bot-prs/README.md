@@ -78,7 +78,8 @@ This privileged handler checks out only the trusted shared action from `main`.
 It consumes no PR code or artifacts. CI reads use the caller's `GITHUB_TOKEN`
 (or existing `ci-read-token`); review reads/writes use the existing approval
 credential. No new secret or organization setting is needed. Branch rules need
-only metadata read access. API or schema errors log a warning and skip approval;
+only metadata read access. The REST branch endpoint returns classic check app
+bindings with `contents: read`. API or schema errors log a warning and skip approval;
 policy skips log the PR number and reason. The schedule lists open PRs and runs
 the same gate, so a missed event or transient error is retried on a later run.
 Candidate errors do not stop the remaining PRs. GitHub schedules can be delayed

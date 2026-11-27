@@ -29,45 +29,26 @@ class GitHub:
             args, input=json.dumps(payload) if payload is not None else None,
             env=self.env, text=True, capture_output=True, timeout=120, check=True,
         )
-        data = json.loads(result.stdout)
-        if isinstance(data, dict) and data.get("errors"):
-            raise ValueError("GraphQL read failed")
-        return data
+        return json.loads(result.stdout)
 
     def items(self, path, key=None):
         pages = self.api(path, paginate=True)
         return [item for page in pages for item in (page[key] if key else page)]
 
 
-PROTECTION_QUERY = """
-query($owner: String!, $name: String!, $ref: String!) {
-  repository(owner: $owner, name: $name) {
-    ref(qualifiedName: $ref) {
-      branchProtectionRule {
-        requiresStatusChecks
-        requiredStatusChecks { context app { databaseId } }
-      }
-    }
-  }
-}
-"""
-
-
 def required_checks(api, repo, base):
     """Union classic branch protection with all enforced repository/org rules."""
-    owner, name = repo.split("/")
-    data = api.api("graphql", {"query": PROTECTION_QUERY, "variables": {
-        "owner": owner, "name": name, "ref": f"refs/heads/{base}",
-    }})
-    ref = data["data"]["repository"]["ref"]
-    if ref is None:
-        raise Skip("base branch is unavailable")
+    branch = quote(base, safe="")
+    # Get a branch needs contents: read and exposes classic check app bindings.
+    # The Actions token cannot read the same policy through GraphQL.
+    protection = api.api(f"repos/{repo}/branches/{branch}")["protection"]
     checks = set()
-    classic = ref["branchProtectionRule"]
-    if classic and classic["requiresStatusChecks"]:
-        checks.update((c["context"], (c["app"] or {}).get("databaseId"))
-                      for c in classic["requiredStatusChecks"])
-    rules = api.items(f"repos/{repo}/rules/branches/{quote(base, safe='')}?per_page=100")
+    classic = protection.get("required_status_checks")
+    if protection["enabled"] and classic is not None and classic.get("enforcement_level") != "off":
+        checks.update((check["context"], check["app_id"]) for check in classic["checks"])
+        if set(classic["contexts"]) != {name for name, _ in checks}:
+            raise Skip("classic check policy is incomplete; verify branch protection and rerun")
+    rules = api.items(f"repos/{repo}/rules/branches/{branch}?per_page=100")
     for rule in rules:
         if rule["type"] == "workflows":
             raise Skip("required workflows need a separate verified gate")
