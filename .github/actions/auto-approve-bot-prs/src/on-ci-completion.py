@@ -13,6 +13,23 @@ class Skip(Exception):
     """An expected policy miss, reevaluated on the next completion event."""
 
 
+class ApiFailure(Exception):
+    """A sanitized gh failure, safe to include in an Actions annotation."""
+
+
+def operation(path, payload):
+    for fragment, name in (("/rules/branches/", "read branch rules"),
+                           ("/branches/", "read branch protection"),
+                           ("/check-runs", "read check runs"),
+                           ("/statuses", "read commit statuses"),
+                           ("/reviews", "submit review" if payload is not None else "read reviews"),
+                           ("/commits/", "find commit pull requests"),
+                           ("/pulls", "read pull requests")):
+        if fragment in path:
+            return name
+    return "read approver identity" if path == "user" else "GitHub API request"
+
+
 class GitHub:
     def __init__(self, token):
         if not token:
@@ -25,49 +42,35 @@ class GitHub:
             args += ["--paginate", "--slurp"]
         if payload is not None:
             args += ["--input", "-"]
-        result = subprocess.run(
-            args, input=json.dumps(payload) if payload is not None else None,
-            env=self.env, text=True, capture_output=True, timeout=120, check=True,
-        )
-        data = json.loads(result.stdout)
-        if isinstance(data, dict) and data.get("errors"):
-            raise ValueError("GraphQL read failed")
-        return data
+        try:
+            result = subprocess.run(
+                args, input=json.dumps(payload) if payload is not None else None,
+                env=self.env, text=True, capture_output=True, timeout=120, check=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            status = re.search(r"\bHTTP ([45][0-9]{2})\b", exc.stderr or "")
+            detail = f"HTTP {status.group(1)}" if status else f"exit code {exc.returncode}"
+            raise ApiFailure(f"gh api: {operation(path, payload)}: {detail}") from None
+        return json.loads(result.stdout)
 
     def items(self, path, key=None):
         pages = self.api(path, paginate=True)
         return [item for page in pages for item in (page[key] if key else page)]
 
 
-PROTECTION_QUERY = """
-query($owner: String!, $name: String!, $ref: String!) {
-  repository(owner: $owner, name: $name) {
-    ref(qualifiedName: $ref) {
-      branchProtectionRule {
-        requiresStatusChecks
-        requiredStatusChecks { context app { databaseId } }
-      }
-    }
-  }
-}
-"""
-
-
 def required_checks(api, repo, base):
     """Union classic branch protection with all enforced repository/org rules."""
-    owner, name = repo.split("/")
-    data = api.api("graphql", {"query": PROTECTION_QUERY, "variables": {
-        "owner": owner, "name": name, "ref": f"refs/heads/{base}",
-    }})
-    ref = data["data"]["repository"]["ref"]
-    if ref is None:
-        raise Skip("base branch is unavailable")
+    branch = quote(base, safe="")
+    # Get a branch needs contents: read and exposes classic check app bindings.
+    # The Actions token cannot read the same policy through GraphQL.
+    protection = api.api(f"repos/{repo}/branches/{branch}")["protection"]
     checks = set()
-    classic = ref["branchProtectionRule"]
-    if classic and classic["requiresStatusChecks"]:
-        checks.update((c["context"], (c["app"] or {}).get("databaseId"))
-                      for c in classic["requiredStatusChecks"])
-    rules = api.items(f"repos/{repo}/rules/branches/{quote(base, safe='')}?per_page=100")
+    classic = protection.get("required_status_checks")
+    if protection["enabled"] and classic is not None and classic.get("enforcement_level") != "off":
+        checks.update((check["context"], check["app_id"]) for check in classic["checks"])
+        if set(classic["contexts"]) != {name for name, _ in checks}:
+            raise Skip("classic check policy is incomplete; verify branch protection and rerun")
+    rules = api.items(f"repos/{repo}/rules/branches/{branch}?per_page=100")
     for rule in rules:
         if rule["type"] == "workflows":
             raise Skip("required workflows need a separate verified gate")
@@ -178,6 +181,7 @@ def reconcile(reader, approver, repo, authors, skip_labels):
 
 
 def evaluate_candidates(reader, approver, repo, candidates, authors, skip_labels, sha=None):
+    failures = 0
     for candidate in candidates:
         try:
             evaluate_candidate(reader, approver, repo, candidate, authors, skip_labels, sha)
@@ -185,7 +189,11 @@ def evaluate_candidates(reader, approver, repo, candidates, authors, skip_labels
             if sha is not None:
                 raise
             # A broken candidate must not starve other PRs. Avoid printing API data.
-            print(f"::warning::Reconcile candidate failed ({type(exc).__name__}); retry on next schedule.")
+            failures += 1
+            detail = str(exc) if isinstance(exc, ApiFailure) else type(exc).__name__
+            print(f"::warning::Reconcile candidate failed ({detail}); retry on next schedule.")
+    if failures:
+        raise RuntimeError(f"{failures} reconciliation candidate(s) failed")
 
 
 def evaluate_candidate(reader, approver, repo, candidate, authors, skip_labels, sha):
@@ -251,13 +259,12 @@ def main():
             evaluate(reader, approver, repo, event, authors, labels)
     except Exception as exc:
         # Never print an API body, token, or attacker-controlled workflow command.
-        status = None
-        if isinstance(exc, subprocess.CalledProcessError):
-            status = re.search(r"\bHTTP ([45][0-9]{2})\b", exc.stderr or "")
-        detail = f", HTTP {status.group(1)}" if status else ""
-        print(f"::warning::Completion approval skipped ({type(exc).__name__}{detail}); "
+        detail = str(exc) if isinstance(exc, ApiFailure) else type(exc).__name__
+        print(f"::warning::Completion approval failed ({detail}); "
               "inspect required checks and token permissions, then rerun this workflow.")
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
