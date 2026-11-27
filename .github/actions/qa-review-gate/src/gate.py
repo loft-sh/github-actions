@@ -832,6 +832,8 @@ def run_of_check(event, repo, token, wait=time.sleep):
         return {}
     for _ in range(36):  # the check closes in the run's last job, seconds before the run ends
         run = gh_api([f"repos/{repo}/actions/runs/{linked.group(1)}"], token)
+        if run.get("event") not in ("pull_request", "workflow_dispatch"):
+            return {}  # a command that could not start the suite links its own comment run
         if run.get("status") == "completed":
             return run
         wait(5)

@@ -2095,14 +2095,22 @@ def test_reconciliation_ignores_other_provisional_openers(monkeypatch):
 def test_a_finished_test_e2e_check_gives_its_run(monkeypatch):
     # GitHub sends no workflow_run for a run GITHUB_TOKEN started; the command's check ends seconds before the run.
     states, waits = iter(["in_progress", "completed"]), []
-    monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None: {"id": 77, "status": next(states), "url": args[0]})
+    monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None: {"id": 77, "event": "workflow_dispatch", "status": next(states), "url": args[0]})
     event = {"check_run": {"details_url": "https://github.com/o/r/actions/runs/77"}}
     run = gate.run_of_check(event, "o/r", "tok", wait=waits.append)
     assert run["status"] == "completed" and run["url"] == "repos/o/r/actions/runs/77" and waits == [5]
 
 
 def test_a_check_with_no_run_link_or_a_run_that_never_ends(monkeypatch):
-    monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None: {"status": "in_progress"})
+    monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None: {"event": "workflow_dispatch", "status": "in_progress"})
     assert gate.run_of_check({"check_run": {"details_url": "https://cursor.com/docs/bugbot"}}, "o/r", "tok") == {}
     with pytest.raises(gate.GateError, match="did not finish"):
         gate.run_of_check({"check_run": {"details_url": "https://github.com/o/r/actions/runs/77"}}, "o/r", "tok", wait=lambda s: None)
+
+
+def test_a_check_that_links_the_comment_run_is_not_an_e2e_run(monkeypatch):
+    # /test-e2e could not start the suite: its check links the e2e-command run, still in progress.
+    monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None: {"event": "issue_comment", "status": "in_progress"})
+    event = {"check_run": {"details_url": "https://github.com/o/r/actions/runs/78"}}
+    assert gate.run_of_check(event, "o/r", "tok", wait=lambda s: pytest.fail("must not wait")) == {}
+    assert "skip" in gate.collect_ci({"workflow_run": {}}, "o/r", "tok")
