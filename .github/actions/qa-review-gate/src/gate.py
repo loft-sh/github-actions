@@ -1187,7 +1187,8 @@ def apply(decision, repo, token, qa_team, run_url, panel_login="loft-bot"):
         # An out-of-scope pass comes back by itself on the next commit; every other result does not.
         note = "" if "out of scope" in check["title"] else (
             f"\n\nThis result is for commit `{head[:7]}` only. A new commit resets this check.")
-        if note and check["conclusion"] == "success" and check["title"].startswith("QA review:"):
+        if (note and check["conclusion"] == "success" and check["title"].startswith("QA review:")
+                and check.get("external_id") != BOT_EXTERNAL_ID):
             note = "\n\nThis check does not replace an approval. The PR still needs an approving review from a teammate." + note
         created = gh_api([f"repos/{repo}/check-runs", "-X", "POST"], token, {
             "name": check["name"], "head_sha": head, "status": "completed",
