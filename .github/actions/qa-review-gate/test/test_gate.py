@@ -2028,6 +2028,23 @@ def test_ci_skips_when_the_pr_adds_no_spec():
     assert "skip" in gate.decide_ci(run(), 1, [], {})
 
 
+@pytest.mark.parametrize("conclusion, external_id, skipped", [
+    ("success", "qa-review-gate:scope^main", True),            # out of scope: the verdict is advice
+    ("action_required", "qa-review-gate:scope^main", False),   # in scope, waiting for the panel
+    ("success", "qa-review-gate:scope^release-1.0", False),    # a pass for another base (retarget)
+])
+def test_a_verdict_does_not_replace_an_out_of_scope_pass(monkeypatch, conclusion, external_id, skipped):
+    """loft-enterprise #9716: /vcluster-review on a PR with no QA-owned path blocked it, and the
+    next commit passed it again as out of scope."""
+    scope = {"id": 5, "app": {"slug": "github-actions"}, "status": "completed", "conclusion": conclusion,
+             "external_id": external_id}
+    monkeypatch.setattr(gate, "gh_api", review_api(check_runs=[scope], files=[]))
+    decision = gate.collect_review(review_event(), "o/r", "tok", "loft-bot", "qa-review")
+    assert ("skip" in decision) is skipped
+    if skipped:
+        assert "no QA-owned path" in decision["skip"]
+
+
 def test_missing_patch_for_added_e2e_file_cannot_pass(monkeypatch):
     monkeypatch.setattr(gate, "gh_api", review_api(files=[{"filename": "e2e/big.go", "additions": 1}]))
     check = gate.collect_review(review_event(), "o/r", "tok", "loft-bot", "qa-review")["checks"][1]

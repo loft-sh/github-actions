@@ -517,6 +517,13 @@ def collect_review(event, repo, token, panel_login, check_name, test_check="qa-t
         # A panel run that started before a retarget graded the old diff; the panel runs again.
         return {"skip": f"marker is for base {decision['base_ref']}, PR targets {live or 'unknown'}; "
                         "the panel reviews the new base"}
+    graded = from_actions(gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={check_name}&filter=all&per_page=100"], token).get("check_runs"))
+    newest = max(graded, key=lambda run: run.get("id", 0), default=None)
+    if (newest and kind(newest) == SCOPE_EXTERNAL_ID and newest.get("conclusion") == "success"
+            and base_of(newest) == decision["base_ref"]):
+        # A /vcluster-review on a PR with no QA-owned path is advice: it must not block the PR,
+        # only for the next commit to pass it again as out of scope.
+        return {"skip": "the PR touches no QA-owned path; the panel's verdict does not replace its out-of-scope pass"}
     existing = from_actions(gh_api([f"repos/{repo}/commits/{head}/check-runs?check_name={test_check}"], token).get("check_runs"))
     if existing and not scope_may_write(existing, decision["base_ref"]):
         # A retry: our own provisional opener may still hide a real result behind it.
