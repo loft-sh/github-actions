@@ -89,7 +89,9 @@ the bot did not push, or a bot push on a head the gate had not passed) never tak
 pass: it goes to review whatever it touches. The panel never runs on such a PR, so without
 this a required check would block Renovate, version bumps and every code-only change. A PR
 that does touch one of those paths gets the waiting checks above from this step: the panel's
-verdict and the e2e report grade it.
+verdict and the e2e report grade it. Once the gate has posted an out-of-scope pass for the
+current base, a manual `/vcluster-review` leaves that pass in place and the verdict stays
+advisory.
 
 Before the ruleset goes live, run the caller's `workflow_dispatch` once with no `pr-number`
 (mode `sweep`): it lists every open PR whose current head lacks `qa-review` or `qa-test-run`
