@@ -167,7 +167,9 @@ starts its run that way. So the caller also listens to `check_run: completed` fo
 the command opens (an app owns it, so its events do start workflows), filtered to that app and
 check name in the job's `if`. The action reads the run from the check's `details_url`, waits
 up to 3 minutes for the run to finish (the check closes in the run's last job), and then
-grades it like a `workflow_run`.
+grades it like a `workflow_run`. The command opens the check on the PR head, also for a fork
+PR, so the gate job queues on the tested commit; the fork run itself is still read from its
+title, as below.
 
 One PR can need several e2e runs before each new spec has run: `/test-e2e` runs with
 different label filters, or a second e2e workflow. So the action reads the reports of
