@@ -108,7 +108,7 @@ jobs:
         env:
           DISPATCH: ${{ github.event.workflow_run.event == 'workflow_dispatch' }}
           TITLE: ${{ github.event.workflow_run.display_title }}
-          HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha || github.event.check_run.head_sha }}
           PR: ${{ inputs.pr-number }}
           REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
@@ -146,7 +146,7 @@ jobs:
           sparse-checkout: .github/actions/qa-review-gate
       - uses: ./.github/actions/qa-review-gate
         with:
-          mode: ${{ github.event_name == 'pull_request_review' && 'review' || github.event_name == 'workflow_run' && 'ci' || github.base_ref != '' && 'bot' || github.event_name == 'workflow_dispatch' && 'sweep' || 'comment' }}
+          mode: ${{ github.event_name == 'pull_request_review' && 'review' || (github.event_name == 'workflow_run' || github.event_name == 'check_run') && 'ci' || github.base_ref != '' && 'bot' || github.event_name == 'workflow_dispatch' && 'sweep' || 'comment' }}
           override-logins: ${{ inputs.override-logins }}
           override-teams: ${{ inputs.override-teams }}
           org-token: ${{ secrets.org-token }} # zizmor: ignore[secrets-outside-env] -- PAT passed through workflow_call; the action maps it to env itself

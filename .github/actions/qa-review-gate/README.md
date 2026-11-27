@@ -162,6 +162,13 @@ with the same text cannot stand in for a new one and a skipped namesake elsewher
 cannot fail it. The same location in two reports keeps the worst state. A PR that
 adds no spec publishes nothing here (its `qa-test-run` is already green).
 
+GitHub sends no `workflow_run` event for a run that `GITHUB_TOKEN` started, and `/test-e2e`
+starts its run that way. So the caller also listens to `check_run: completed` for the check
+the command opens (an app owns it, so its events do start workflows), filtered to that app and
+check name in the job's `if`. The action reads the run from the check's `details_url`, waits
+up to 3 minutes for the run to finish (the check closes in the run's last job), and then
+grades it like a `workflow_run`.
+
 One PR can need several e2e runs before each new spec has run: `/test-e2e` runs with
 different label filters, or a second e2e workflow. So the action reads the reports of
 every finished run that tested the commit, from the workflows named in `e2e-workflows`

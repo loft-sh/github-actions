@@ -821,6 +821,23 @@ def run_target(run, repo, token):
     return run.get("head_sha", ""), run_pr_number(run, repo, token)
 
 
+RUN_URL = re.compile(r"/actions/runs/(\d+)")
+
+
+def run_of_check(event, repo, token, wait=time.sleep):
+    """The e2e run behind a finished /test-e2e check-run. GitHub sends no workflow_run for a run
+    that GITHUB_TOKEN started, so the check the command opened stands in for it."""
+    linked = RUN_URL.search((event.get("check_run") or {}).get("details_url") or "")
+    if not linked:
+        return {}
+    for _ in range(36):  # the check closes in the run's last job, seconds before the run ends
+        run = gh_api([f"repos/{repo}/actions/runs/{linked.group(1)}"], token)
+        if run.get("status") == "completed":
+            return run
+        wait(5)
+    raise GateError(f"e2e run {linked.group(1)} did not finish within 3 minutes of its check")
+
+
 def parse_workflows(text):
     return {name.strip() for name in (text or "").split(",") if name.strip()}
 
@@ -1246,6 +1263,8 @@ def main():
         decision = decide_comment(event, logins, check_name, test_check,
                                   member=lambda login: team_member(login, teams, org_token))
     elif mode == "ci":
+        if "check_run" in event:
+            event = {"workflow_run": run_of_check(event, repo, token)}
         decision = collect_ci(event, repo, token, test_check,
                               parse_trees(os.environ.get("INPUT_REPORT_TREES", DEFAULT_TREES)),
                               parse_workflows(os.environ.get("INPUT_E2E_WORKFLOWS", "")))
