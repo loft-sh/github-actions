@@ -1664,7 +1664,8 @@ def test_ci_jobs_of_one_tested_commit_are_serialized():
     assert 'echo "sha=${sha:-${HEAD_SHA:-$RUN_ID}}"' in text  # a title without a SHA queues on the run head, as run_target reads it
     assert "    permissions:\n      pull-requests: read\n    outputs:" in text
     # A PR event job and the panel verdict job write to the same head as the e2e jobs do.
-    assert "HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}" in text
+    assert "HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha || github.event.check_run.head_sha }}" in text
+    assert "(github.event_name == 'workflow_run' || github.event_name == 'check_run') && 'ci'" in text  # a /test-e2e check stands in for its run
     # A sweep run for one PR queues on that PR's current head, fails when it cannot read it,
     # and grades only while the PR still sits on it; the listing alone holds actions: write.
     assert 'sha="$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" || { echo "::error::' in text
@@ -2089,3 +2090,38 @@ def test_reconciliation_ignores_other_provisional_openers(monkeypatch):
     gate.apply(decision, "o/r", "tok", "", "https://panel")
     assert writes[-2][1]["external_id"] == gate.OPENER_EXTERNAL_ID + "^main"
     assert writes[-1][1]["conclusion"] == "success"
+
+
+def test_a_finished_test_e2e_check_gives_its_run(monkeypatch):
+    # GitHub sends no workflow_run for a run GITHUB_TOKEN started; the command's check ends seconds before the run.
+    states, waits = iter(["in_progress", "completed"]), []
+    monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None: {"id": 77, "event": "workflow_dispatch", "status": next(states), "url": args[0]})
+    event = {"check_run": {"details_url": "https://github.com/o/r/actions/runs/77"}}
+    run = gate.run_of_check(event, "o/r", "tok", wait=waits.append)
+    assert run["status"] == "completed" and run["url"] == "repos/o/r/actions/runs/77" and waits == [5]
+
+
+def test_a_check_with_no_run_link_or_a_run_that_never_ends(monkeypatch):
+    monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None: {"event": "workflow_dispatch", "status": "in_progress"})
+    assert gate.run_of_check({"check_run": {"details_url": "https://cursor.com/docs/bugbot"}}, "o/r", "tok") == {}
+    with pytest.raises(gate.GateError, match="did not finish"):
+        gate.run_of_check({"check_run": {"details_url": "https://github.com/o/r/actions/runs/77"}}, "o/r", "tok", wait=lambda s: None)
+
+
+def test_a_check_that_links_the_comment_run_is_not_an_e2e_run(monkeypatch):
+    # /test-e2e could not start the suite: its check links the e2e-command run, still in progress.
+    monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None: {"event": "issue_comment", "status": "in_progress"})
+    event = {"check_run": {"details_url": "https://github.com/o/r/actions/runs/78"}}
+    assert gate.run_of_check(event, "o/r", "tok", wait=lambda s: pytest.fail("must not wait")) == {}
+    assert gate.collect_ci(event, "o/r", "tok") == {"skip": "the check links no e2e run"}
+    assert gate.collect_ci({"check_run": {"details_url": "https://cursor.com/docs/bugbot"}}, "o/r", "tok") == {"skip": "the check links no e2e run"}
+
+
+def test_a_fork_pr_check_grades_the_commit_its_run_names(monkeypatch):
+    # A fork PR's /test-e2e run is a dispatch on the base branch: head_sha is the base commit and
+    # the title names the PR and the tested commit. The check itself sits on the PR head.
+    run = {"id": 77, "event": "workflow_dispatch", "status": "completed", "conclusion": "success",
+           "head_sha": OTHER, "display_title": f"E2E for PR #9 (x) at {HEAD}"}
+    monkeypatch.setattr(gate, "gh_api", lambda args, token, payload=None: run)
+    event = {"check_run": {"head_sha": HEAD, "details_url": "https://github.com/o/r/actions/runs/77"}}
+    assert gate.run_target(gate.run_of_check(event, "o/r", "tok"), "o/r", "tok") == (HEAD, 9)
