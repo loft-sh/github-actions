@@ -135,7 +135,8 @@ class CompletionTests(unittest.TestCase):
         with patch.object(self.api, 'items', wraps=self.api.items) as items:
             items.side_effect = lambda path, key=None: ([{'number': 124}, {'number': 123}]
                 if '/pulls?state=open' in path else items._mock_wraps(path, key))
-            self.reconcile()
+            with self.assertRaises(RuntimeError):
+                self.reconcile()
         self.assertEqual(len(self.api.writes), 1)
 
     def test_green_completion_approves_exact_sha_and_duplicate_is_noop(self):
@@ -361,23 +362,38 @@ class TransportTests(unittest.TestCase):
             self.assertIsNone(call.kwargs["input"])
 
     @patch.dict(os.environ, {"GITHUB_EVENT_NAME": "workflow_run"}, clear=True)
-    def test_missing_configuration_is_annotated_without_crashing(self):
+    def test_missing_configuration_fails_with_annotation(self):
         with patch("builtins.print") as printer:
-            completion.main()
-        self.assertIn("::warning::Completion approval skipped", printer.call_args.args[0])
+            self.assertEqual(completion.main(), 1)
+        self.assertIn("::warning::Completion approval failed", printer.call_args.args[0])
 
     @patch.dict(os.environ, {"GITHUB_EVENT_NAME": "workflow_run", "GITHUB_REPOSITORY": "o/r",
                             "GITHUB_EVENT_PATH": "/event", "CI_READ_TOKEN": "x",
                             "APPROVER_TOKEN": "x", "TRUSTED_AUTHORS": "bot"}, clear=True)
-    def test_api_error_logs_only_http_status(self):
-        error = subprocess.CalledProcessError(1, "gh", stderr="secret (HTTP 403)\nmore secret")
+    def test_api_error_logs_safe_operation_and_http_status(self):
+        error = subprocess.CalledProcessError(1, ["gh", "secret"], stderr="secret (HTTP 403)\nmore secret")
+        with patch.object(completion.subprocess, "run", side_effect=error):
+            with self.assertRaises(completion.ApiFailure) as caught:
+                completion.GitHub("secret").api("repos/o/r/pulls/123/reviews", {})
+        self.assertEqual(str(caught.exception), "gh api: submit review: HTTP 403")
+
+    def test_api_error_without_http_reports_exit_code(self):
+        error = subprocess.CalledProcessError(4, "gh", stderr="secret")
+        with patch.object(completion.subprocess, "run", side_effect=error):
+            with self.assertRaises(completion.ApiFailure) as caught:
+                completion.GitHub("secret").api(f"repos/{REPO}/branches/release-5.0")
+        self.assertEqual(str(caught.exception), "gh api: read branch protection: exit code 4")
+
+    @patch.dict(os.environ, {"GITHUB_EVENT_NAME": "workflow_run", "GITHUB_REPOSITORY": "o/r",
+                            "GITHUB_EVENT_PATH": "/event", "CI_READ_TOKEN": "x",
+                            "APPROVER_TOKEN": "x", "TRUSTED_AUTHORS": "bot"}, clear=True)
+    def test_api_error_fails_main_without_leaking_body(self):
+        error = completion.ApiFailure("gh api: read check runs: HTTP 403")
         with patch.object(completion.Path, "read_text", return_value="{}"), \
              patch.object(completion, "evaluate", side_effect=error), \
              patch("builtins.print") as printer:
-            completion.main()
-        message = printer.call_args.args[0]
-        self.assertIn("HTTP 403", message)
-        self.assertNotIn("secret", message)
+            self.assertEqual(completion.main(), 1)
+        self.assertIn("gh api: read check runs: HTTP 403", printer.call_args.args[0])
 
 
 if __name__ == "__main__":
